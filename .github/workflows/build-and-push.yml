@@ -25,7 +25,30 @@ env:
   NEXT_PUBLIC_API_URL: https://api-adyutant.glb-engineering.kz
 
 jobs:
+  # Аудит 10.09.2026, п. 5.2: раньше этот workflow только собирал и пушил
+  # образы — сломанный код спокойно доехал бы до прода, единственной
+  # проверкой был сам `docker build` (типы компилируются, но lint/тесты
+  # никто не запускал). gate — обычный CI-гейт перед сборкой: prisma
+  # validate + lint всех трёх воркспейсов + юнит-тесты api (RBAC-границы,
+  # часовой пояс, проверка initData — см. *.spec.ts).
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:generate
+      - run: npx prisma validate --schema apps/api/prisma/schema.prisma
+      - run: npm run lint --workspace=apps/api
+      - run: npm run lint --workspace=apps/web
+      - run: npm run lint --workspace=apps/miniapp
+      - run: npm run test --workspace=apps/api
+
   build:
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: read

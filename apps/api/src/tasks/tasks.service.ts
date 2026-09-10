@@ -81,7 +81,9 @@ const TASK_DETAIL_SELECT = {
 // Подчинённому, который меняет статус сам себе, доступны только рабочие
 // переходы — возврат на доработку/отмена остаются решением руководителя
 // (раздел 10 ТЗ: значимые решения не отдаются в автономию).
-const EMPLOYEE_ALLOWED_STATUSES: TaskStatus[] = [
+// export — тестируется напрямую в tasks.service.spec.ts (аудит 10.09.2026,
+// п. 5.1: граница доступа, значимая для RBAC, должна быть под тестом).
+export const EMPLOYEE_ALLOWED_STATUSES: TaskStatus[] = [
   TaskStatus.IN_PROGRESS,
   TaskStatus.IN_REVIEW,
   TaskStatus.DONE,
