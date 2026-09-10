@@ -1,9 +1,11 @@
 import { TaskPriority } from '@prisma/client';
 
-// Ответ POST /voice/parse — эфемерный черновик, ничего не пишется в Task/Event
-// (см. README «Голосовой AI-агент»: Task.status=DRAFT зарезервирован под
-// Этап 5 AI Routing Engine, использовать его здесь означало бы влезть в
-// чужую зарезервированную семантику).
+// Ответ POST /voice/parse. Черновик разбирается и ВЫПОЛНЯЕТСЯ в одном и том
+// же запросе (владелец 10.09.2026, аудит п. 2.11 — см. комментарий у
+// VoiceParseResponse внизу файла); status=DRAFT из Task/Event сюда не
+// задействован — это отдельная зарезервированная семантика Этапа 5 AI
+// Routing Engine (см. README «Голосовой AI-агент»), не про этот эфемерный
+// черновик разбора.
 //
 // task/event создание+редактирование+удаление объединены в ОДИН тип
 // каждый (action: create/update/delete), а не в 7 отдельных веток
@@ -67,8 +69,8 @@ export interface VoiceEventActionDraft {
 // событие. Раньше на вопрос/реплику/неразборчивую запись система всё равно
 // создавала задачу-заглушку («Уточнить формулировку задачи») — ответить
 // собеседнику было нечем, только замусорить список задач. type: 'chat' —
-// отдельная ветка: ничего не создаётся, ассистент просто отвечает текстом
-// в чате (см. VoiceScreen — при этом типе confirmDraft вообще не вызывается).
+// отдельная ветка: ничего не создаётся/выполняется, ассистент просто
+// отвечает текстом в чате.
 export interface VoiceChatReply {
   type: 'chat';
   reply: string;
@@ -76,18 +78,64 @@ export interface VoiceChatReply {
 
 export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
-// drafts: массив, не одиночный draft (владелец 10.09.2026, найдено в
+// Зеркало packages/shared-types (проект дублирует типы api/web вручную,
+// см. остальные dto в этой папке) — подробные комментарии там.
+export interface TaskRevertPayload {
+  title?: string;
+  description?: string;
+  assigneeId?: string | null;
+  dueDate?: string | null;
+  priority?: TaskPriority | null;
+}
+export interface EventRevertPayload {
+  title?: string;
+  description?: string;
+  location?: string;
+  startAt?: string;
+  endAt?: string;
+  allDay?: boolean;
+}
+
+export interface VoiceTaskActionResult {
+  type: 'task_action';
+  draft: VoiceTaskActionDraft;
+  ok: boolean;
+  error: string | null;
+  taskId: string | null;
+  previous: TaskRevertPayload | null;
+}
+export interface VoiceEventActionResult {
+  type: 'event_action';
+  draft: VoiceEventActionDraft;
+  ok: boolean;
+  error: string | null;
+  eventId: string | null;
+  previous: EventRevertPayload | null;
+}
+export interface VoiceChatResult {
+  type: 'chat';
+  reply: string;
+}
+
+export type VoiceActionResult = VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
+
+// results: массив, не одиночный результат (владелец 10.09.2026, найдено в
 // проде: "удали встречу с Петром и создай новую на пятницу" в одной
-// аудиозаписи — агент удалил встречу, а создание потерялось, потому что
+// аудиозаписи — агент удалил встречу, а создание терялось, потому что
 // схема инструмента физически могла вернуть только ОДНО действие за раз).
 // Один элемент на каждую самостоятельную команду в транскрипте, в порядке
-// произнесения — фронтенд выполняет их последовательно (см. VoiceScreen/
-// voice/page.tsx), сбой одного действия не блокирует остальные. Для
-// обычной однозадачной заметки — массив из одного элемента, как раньше.
+// произнесения — уже ВЫПОЛНЕННую сервером (владелец 10.09.2026, аудит п.
+// 2.11: раньше /voice/parse только возвращал черновик, а POST/PATCH/DELETE
+// был отдельным запросом с фронтенда — при потере сети между ними
+// Whisper+Claude уже оплачены, а задача не создана; удаление теперь тоже
+// выполняется сразу, без дополнительного подтверждения кнопками — "по
+// удалению давай доверять", сознательное решение владельца после
+// практической проверки). Фронтенд только отображает; сбой одного
+// действия (ok=false) не блокирует остальные.
 export interface VoiceParseResponse {
   transcript: string;
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   clarificationNeeded: boolean;
   clarificationReason: string | null;
-  drafts: VoiceDraft[];
+  results: VoiceActionResult[];
 }

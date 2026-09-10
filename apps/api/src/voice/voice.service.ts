@@ -6,10 +6,34 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
+import type { CreateTaskDto } from '../tasks/dto/create-task.dto';
+import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
+import type { CreateEventDto } from '../calendar/dto/create-event.dto';
+import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { formatLocalDateTime } from '../common/timezone';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
-import type { VoiceDraft, VoiceParseResponse } from './dto/voice-draft-response.dto';
+import type {
+  EventRevertPayload,
+  TaskRevertPayload,
+  VoiceActionResult,
+  VoiceDraft,
+  VoiceEventActionDraft,
+  VoiceEventActionResult,
+  VoiceParseResponse,
+  VoiceTaskActionDraft,
+  VoiceTaskActionResult,
+} from './dto/voice-draft-response.dto';
+
+// HttpException'ы (ForbiddenException/NotFoundException/BadRequestException
+// и т.п.) везде в проекте конструируются с обычной строкой — .message уже
+// человекочитаемый текст, тот же, что ушёл бы клиенту при вызове через
+// HTTP. Раньше эти же сообщения пользователь видел как ответ на PATCH/
+// DELETE с фронтенда (аудит 10.09.2026, п. 2.11) — теперь мутация внутри
+// parse(), но текст ошибки в чате должен остаться тем же.
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : 'Не удалось выполнить действие';
+}
 
 type MulterFile = Express.Multer.File;
 
@@ -121,8 +145,9 @@ export class VoiceService {
     // Реплику пользователя пишем сама — транскрипт уже есть на сервере.
     // Финальный текст ответа ассистента (chat-реплика, итог действия или
     // текст ошибки) пишет фронтенд отдельно, см. logAssistantMessage ниже —
-    // здесь он ещё не известен для task_action/event_action (зависит от
-    // того, успешно ли выполнится мутация на клиенте).
+    // он собирает его из VoiceActionResult, который возвращает этот метод
+    // (действие уже выполнено на момент ответа, см. комментарий у
+    // VoiceParseResponse в dto).
     await this.prisma.voiceMessage.create({
       data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript },
     });
@@ -159,12 +184,33 @@ export class VoiceService {
       drafts.push({ type: 'chat', reply: 'Не расслышал — повторите, пожалуйста.' });
     }
 
+    // Выполняем каждый черновик (владелец 10.09.2026, аудит п. 2.11) — не
+    // возвращаем черновики фронтенду на отдельный POST/PATCH/DELETE, а
+    // сразу мутируем здесь, в том же запросе. Последовательно, не
+    // Promise.all: порядок имеет значение (например, "удали встречу с
+    // Петром и создай новую на пятницу" — два действия над разными
+    // записями, но естественно выполнить их в порядке произнесения), и
+    // executeTaskAction/executeEventAction сами ловят свои ошибки — сбой
+    // одного действия не должен прерывать остальные в этом же транскрипте.
+    const results: VoiceActionResult[] = [];
+    for (const draft of drafts) {
+      if (draft.type === 'chat') {
+        results.push({ type: 'chat', reply: draft.reply });
+      } else if (draft.type === 'task_action') {
+        results.push(await this.executeTaskAction(draft, user));
+      } else {
+        results.push(await this.executeEventAction(draft, user));
+      }
+    }
+
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам
-    // факт транскрибации/разбора, не текст транскрипта. randomUUID(), а не
-    // константа — черновик эфемерный, своего id в БД у него нет, но записи
-    // аудита не должны схлопываться в одну неразличимую строку.
+    // факт транскрибации/разбора и её исход, не текст транскрипта.
+    // randomUUID(), а не константа — черновик эфемерный, своего id в БД у
+    // него нет, но записи аудита не должны схлопываться в одну
+    // неразличимую строку.
     await this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', randomUUID(), {
       draftTypes: drafts.map((d) => d.type),
+      outcomes: results.map((r) => (r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error')),
       confidence: result.confidence,
     });
 
@@ -173,8 +219,120 @@ export class VoiceService {
       confidence: result.confidence,
       clarificationNeeded: result.clarificationNeeded,
       clarificationReason: result.clarificationReason,
-      drafts,
+      results,
     };
+  }
+
+  // Создаёт/обновляет/удаляет задачу напрямую через TasksService (та же
+  // RBAC-проверка, что у обычного PATCH/DELETE /tasks/:id — не дублируем
+  // её здесь) и возвращает итог вместо черновика. previous — снимок ДО
+  // мутации тех полей, что реально меняются (черновик несёт только новые
+  // значения), нужен фронтенду для кнопки "Отменить" (UNDO_WINDOW_MS).
+  private async executeTaskAction(draft: VoiceTaskActionDraft, user: AuthenticatedUser): Promise<VoiceTaskActionResult> {
+    try {
+      if (draft.action === 'create') {
+        const dto: CreateTaskDto = {
+          title: draft.title,
+          description: draft.description || undefined,
+          assigneeId: draft.assigneeId || undefined,
+          priority: draft.priority || undefined,
+          dueDate: draft.dueDate || undefined,
+          sourceMeetingId: draft.sourceMeetingId || undefined,
+        };
+        const created = await this.tasks.create(dto, user);
+        return { type: 'task_action', draft, ok: true, error: null, taskId: created.id, previous: null };
+      }
+
+      if (draft.action === 'update') {
+        const dto: Partial<CreateTaskDto> = {};
+        if (draft.title !== '') dto.title = draft.title;
+        if (draft.description !== '') dto.description = draft.description;
+        if (draft.assigneeId !== null) dto.assigneeId = draft.assigneeId;
+        if (draft.dueDate !== null) dto.dueDate = draft.dueDate;
+        if (draft.priority !== null) dto.priority = draft.priority;
+
+        // Снимок ДО патча — единственный способ узнать старые значения,
+        // черновик их не несёт.
+        const before = await this.tasks.findOne(draft.targetTaskId, user);
+        const previous: TaskRevertPayload = {};
+        if (dto.title !== undefined) previous.title = before.title;
+        if (dto.description !== undefined) previous.description = before.description ?? '';
+        if (dto.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
+        if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
+        if (dto.priority !== undefined) previous.priority = before.priority;
+
+        await this.tasks.update(draft.targetTaskId, dto as UpdateTaskDto, user);
+        return { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous };
+      }
+
+      // delete — без дополнительного подтверждения (владелец 10.09.2026:
+      // "по удалению давай доверять", после практической проверки).
+      await this.tasks.remove(draft.targetTaskId, user);
+      return { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous: null };
+    } catch (err) {
+      return { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, previous: null };
+    }
+  }
+
+  // Аналог executeTaskAction для событий — EventsService.create/update/
+  // remove/addParticipant/removeParticipant принимают employeeId, не весь
+  // AuthenticatedUser (весь модуль и так закрыт на Role.OWNER на уровне
+  // контроллера, см. комментарий в events.service.ts); enforceEventRbac
+  // выше гарантирует, что сюда event_action от не-OWNER не попадает.
+  private async executeEventAction(draft: VoiceEventActionDraft, user: AuthenticatedUser): Promise<VoiceEventActionResult> {
+    try {
+      if (draft.action === 'create') {
+        const dto: CreateEventDto = {
+          title: draft.title,
+          description: draft.description || undefined,
+          location: draft.location || undefined,
+          startAt: draft.startAt ?? '',
+          endAt: draft.endAt ?? '',
+          allDay: draft.allDay ?? false,
+        };
+        const created = await this.events.create(dto, user.id);
+        for (const employeeId of draft.addParticipantIds) {
+          await this.events.addParticipant(created.id, employeeId).catch(() => {});
+        }
+        return { type: 'event_action', draft, ok: true, error: null, eventId: created.id, previous: null };
+      }
+
+      if (draft.action === 'update') {
+        const dto: Partial<CreateEventDto> = {};
+        if (draft.title !== '') dto.title = draft.title;
+        if (draft.description !== '') dto.description = draft.description;
+        if (draft.location !== '') dto.location = draft.location;
+        if (draft.startAt !== null) dto.startAt = draft.startAt;
+        if (draft.endAt !== null) dto.endAt = draft.endAt;
+        if (draft.allDay !== null) dto.allDay = draft.allDay;
+
+        const previous: EventRevertPayload = {};
+        if (Object.keys(dto).length > 0) {
+          const before = await this.events.findOne(draft.targetEventId);
+          if (dto.title !== undefined) previous.title = before.title;
+          if (dto.description !== undefined) previous.description = before.description ?? '';
+          if (dto.location !== undefined) previous.location = before.location ?? '';
+          if (dto.startAt !== undefined) previous.startAt = before.startAt.toISOString();
+          if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
+          if (dto.allDay !== undefined) previous.allDay = before.allDay;
+          await this.events.update(draft.targetEventId, dto as UpdateEventDto, user.id);
+        }
+        for (const employeeId of draft.addParticipantIds) {
+          await this.events.addParticipant(draft.targetEventId, employeeId).catch(() => {});
+        }
+        for (const employeeId of draft.removeParticipantIds) {
+          await this.events.removeParticipant(draft.targetEventId, employeeId).catch(() => {});
+        }
+        return { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous };
+      }
+
+      // delete — без дополнительного подтверждения, тот же принцип, что и
+      // для задач (владелец 10.09.2026).
+      await this.events.remove(draft.targetEventId, user.id);
+      return { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous: null };
+    } catch (err) {
+      return { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, previous: null };
+    }
   }
 
   // Последние реплики этого пользователя, в хронологическом порядке, в
@@ -192,11 +350,11 @@ export class VoiceService {
   }
 
   // Вызывается фронтендом (POST /voice/messages) в момент, когда текст в
-  // чат-пузыре ассистента становится окончательным — chat-реплика сразу,
-  // итог создания/редактирования/удаления или текст ошибки после того, как
-  // соответствующий запрос (POST/PATCH/DELETE /tasks или /events)
-  // выполнится или упадёт. См. комментарий у модели VoiceMessage в schema.prisma
-  // про то, почему это не пишется здесь же, в parse().
+  // чат-пузыре ассистента становится окончательным — chat-реплика, итог
+  // действия (ok/error уже известны из VoiceActionResult, action выполнено
+  // внутри parse(), см. п. 2.11) или текст после отдельного вызова undo.
+  // См. комментарий у модели VoiceMessage в schema.prisma про то, почему
+  // это не пишется здесь же, в parse().
   async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
     await this.prisma.voiceMessage.create({
       data: { employeeId: user.id, role: VoiceMessageRole.ASSISTANT, text },

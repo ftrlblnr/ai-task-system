@@ -4,14 +4,11 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mic, Square } from 'lucide-react';
 import type {
-  CalendarEvent,
-  CreateEventInput,
-  CreateTaskInput,
+  EventRevertPayload,
   LogVoiceMessageInput,
   MeetingDetail,
-  TaskDetail,
-  TaskPriority,
-  VoiceDraft,
+  TaskRevertPayload,
+  VoiceActionResult,
   VoiceEventActionDraft,
   VoiceParseResponse,
   VoiceTaskActionDraft,
@@ -27,45 +24,14 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   status?: 'pending' | 'error';
-  // Подтверждение удаления голосом (владелец 09.09.2026) — кнопками в
-  // чате, не второй голосовой репликой (см. draft-extraction.service.ts:
-  // "да"/"нет" ненадёжно как подтверждение, ещё один шанс на ошибку
-  // распознавания поверх уже состоявшейся). Пока не null — ничего не
-  // удалено, DELETE вызывается только по клику "Удалить".
-  pendingAction?: { kind: 'task' | 'event'; targetId: string; targetTitle: string } | null;
   // Undo (аудит 10.09.2026, п. 4.2) — после голосового создания/правки
   // сообщение "Создал задачу «X»" раньше было тупиком: нет ссылки, нет
   // отмены. Активно ~30 секунд после действия (см. UNDO_WINDOW_MS), потом
-  // само гаснет — таймер в confirmDraft. Для удаления не заводится: там
-  // уже есть pendingAction (подтверждение ДО, а не отмена ПОСЛЕ).
+  // само гаснет — таймер в renderResult. Удаление не даёт undo (см.
+  // buildUndo ниже) — откат удаления означал бы полное восстановление
+  // задачи/встречи со всеми комментариями/подзадачами/участниками, это
+  // отдельная, более тяжёлая фича, не часть этого захода.
   undo?: UndoInfo | null;
-}
-
-// previous — старые значения ТОЛЬКО тех полей, что реально поменялись
-// (снимок через GET непосредственно перед PATCH, см. confirmDraft) —
-// откат применяет их обратно тем же PATCH-эндпоинтом, каким было применено
-// изменение. Для события отдельно addedParticipantIds/removedParticipantIds
-// — не снимок, а сами draft.addParticipantIds/removeParticipantIds:
-// отменить "добавил X" значит просто убрать X, инвертировать нечего
-// снимать заранее.
-// Не Partial<CreateTaskInput/CreateEventInput> — те типизируют assigneeId/
-// dueDate как string | undefined (нет null), а PATCH-эндпоинты трактуют
-// null как "снять значение" (см. TasksService.update: dueDate === null
-// значит явно снят срок) — снимку до патча нужно уметь выразить именно это.
-interface TaskRevertPayload {
-  title?: string;
-  description?: string;
-  assigneeId?: string | null;
-  dueDate?: string | null;
-  priority?: TaskPriority;
-}
-interface EventRevertPayload {
-  title?: string;
-  description?: string;
-  location?: string;
-  startAt?: string;
-  endAt?: string;
-  allDay?: boolean;
 }
 
 type UndoInfo =
@@ -106,6 +72,10 @@ function loadStoredMessages(userId: string): ChatMessage[] {
     const raw = localStorage.getItem(chatStorageKey(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ChatMessage[];
+    // Обрубленное pending-сообщение теоретически возможно только из
+    // localStorage, сохранённого до перехода на серверное исполнение
+    // (аудит 10.09.2026, п. 2.11) — новый код 'pending' больше не пишет,
+    // это защита от старых данных, а не текущий путь.
     return parsed.map((m) => (m.status === 'pending' ? { ...m, status: 'error' as const } : m));
   } catch {
     return [];
@@ -133,7 +103,8 @@ function VoiceView() {
   const router = useRouter();
   // Диктовка со страницы встречи (владелец 09.09.2026, /voice?meetingId=...)
   // — саммари этой встречи передаётся Claude как контекст, а созданная
-  // задача получает sourceMeetingId (см. confirmDraft ниже).
+  // задача получает sourceMeetingId (см. VoiceService.attachSourceMeeting
+  // на бэкенде — выполняется уже там, не здесь).
   const meetingId = useSearchParams().get('meetingId') ?? undefined;
   const [meetingTitle, setMeetingTitle] = useState<string | null>(null);
 
@@ -269,9 +240,8 @@ function VoiceView() {
 
   // Память диалога (аудит 10.09.2026, п. 2.9) — сервер сам пишет реплику
   // пользователя (транскрипт) в VoiceService.parse; финальный текст ответа
-  // ассистента пишем здесь, в момент, когда он становится окончательным
-  // (не "Понял вас, создаю задачу…" на середине запроса). Fire-and-forget —
-  // сбой логирования истории не должен мешать самому чату.
+  // ассистента пишем здесь, в момент, когда он становится окончательным.
+  // Fire-and-forget — сбой логирования истории не должен мешать самому чату.
   function logAssistant(text: string) {
     const payload: LogVoiceMessageInput = { text };
     api.post('/voice/messages', payload).catch(() => {});
@@ -294,19 +264,22 @@ function VoiceView() {
       formData.append('audio', blob, `voice.${ext}`);
       if (meetingId) formData.append('meetingId', meetingId);
 
+      // Сервер уже выполнил все действия к моменту ответа (аудит
+      // 10.09.2026, п. 2.11 — раньше /voice/parse только возвращал
+      // черновик, а создание/правку/удаление отдельным запросом делал
+      // фронтенд; при потере сети между ними Whisper+Claude были уже
+      // оплачены, а задача не создана). Здесь только рендерим итог.
       const result = await api.postForm<VoiceParseResponse>('/voice/parse', formData);
       setPhase('idle');
 
       pushMessage({ id: crypto.randomUUID(), role: 'user', text: result.transcript });
 
-      // drafts — массив, не одно действие (владелец 10.09.2026, найдено в
+      // results — массив, не один элемент (владелец 10.09.2026, найдено в
       // проде: "удали встречу с Петром и создай новую на пятницу" в одной
       // заметке — выполнилось только удаление, создание терялось). Каждый
-      // элемент — своя реплика ассистента, обрабатываем по очереди; сбой
-      // одного действия (см. try/catch внутри processDraft/confirmDraft)
-      // не должен блокировать остальные.
-      for (const draft of result.drafts) {
-        await processDraft(draft);
+      // элемент уже содержит исход выполнения — просто рендерим по порядку.
+      for (const item of result.results) {
+        renderResult(item);
       }
 
       // Общая оценка неуверенности на весь транскрипт целиком (не про
@@ -323,149 +296,55 @@ function VoiceView() {
     }
   }
 
-  // Один элемент result.drafts — своя реплика ассистента в чате.
-  async function processDraft(draft: VoiceDraft) {
-    // Не всё сказанное — попытка поставить задачу/событие: вопрос,
-    // реплика, реакция на прошлый ответ. Раньше на это тоже создавалась
-    // задача-заглушка («Уточнить формулировку») — владелец 07.09.2026
-    // указал, что ожидал вместо этого живой ответ, а не мусор в списке
-    // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
-    if (draft.type === 'chat') {
-      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: draft.reply });
-      logAssistant(draft.reply);
+  // Один элемент result.results → одна реплика ассистента в чате. Действие
+  // (если это не chat) сервер уже выполнил — здесь только текст, undo и
+  // необязательное "Открыть".
+  function renderResult(item: VoiceActionResult) {
+    if (item.type === 'chat') {
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: item.reply });
+      logAssistant(item.reply);
       return;
     }
 
-    // Удаление ничего не удаляет само по себе — только показывает кнопки
-    // подтверждения в баббле (владелец 09.09.2026, см. комментарий у
-    // ChatMessage.pendingAction).
-    if (draft.action === 'delete') {
-      const targetId = draft.type === 'task_action' ? draft.targetTaskId : draft.targetEventId;
-      pushMessage({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        text: `Удалить «${draft.targetTitle}»?`,
-        pendingAction: { kind: draft.type === 'task_action' ? 'task' : 'event', targetId, targetTitle: draft.targetTitle },
-      });
-      return;
-    }
+    const text = item.ok ? describeOutcome(item.draft) : `Не получилось выполнить: ${item.error}`;
+    const undo = item.ok ? buildUndo(item) : null;
+    const messageId = crypto.randomUUID();
 
-    const assistantId = crypto.randomUUID();
-    pushMessage({
-      id: assistantId,
-      role: 'assistant',
-      text: describeInFlight(draft.type, draft.action),
-      status: 'pending',
-    });
-    await confirmDraft(draft, assistantId);
+    pushMessage({ id: messageId, role: 'assistant', text, status: item.ok ? undefined : 'error', undo });
+    logAssistant(text);
+    if (undo) {
+      setTimeout(() => updateMessage(messageId, { undo: null }), UNDO_WINDOW_MS);
+    }
   }
 
-  // action='delete' сюда не попадает — уходит отдельной веткой в
-  // processDraft (см. комментарий у ChatMessage.pendingAction).
-  async function confirmDraft(draft: VoiceTaskActionDraft | VoiceEventActionDraft, assistantId: string) {
-    try {
-      let undo: UndoInfo | null = null;
-
-      if (draft.type === 'task_action') {
-        if (draft.action === 'create') {
-          const payload: CreateTaskInput = {
-            title: draft.title,
-            description: draft.description || undefined,
-            assigneeId: draft.assigneeId || undefined,
-            priority: draft.priority || undefined,
-            dueDate: draft.dueDate || undefined,
-            sourceMeetingId: draft.sourceMeetingId || undefined,
-          };
-          const created = await api.post<TaskDetail>('/tasks', payload);
-          undo = { kind: 'task', action: 'create', id: created.id };
-        } else {
-          const payload: Partial<CreateTaskInput> = {};
-          if (draft.title !== '') payload.title = draft.title;
-          if (draft.description !== '') payload.description = draft.description;
-          if (draft.assigneeId !== null) payload.assigneeId = draft.assigneeId;
-          if (draft.dueDate !== null) payload.dueDate = draft.dueDate;
-          if (draft.priority !== null) payload.priority = draft.priority;
-          // Снимок ДО патча — только он даёт старые значения тех полей,
-          // что мы сейчас поменяем (черновик несёт только новые).
-          const before = await api.get<TaskDetail>(`/tasks/${draft.targetTaskId}`);
-          const previous: TaskRevertPayload = {};
-          if (payload.title !== undefined) previous.title = before.title;
-          if (payload.description !== undefined) previous.description = before.description ?? '';
-          if (payload.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
-          if (payload.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
-          if (payload.priority !== undefined) previous.priority = before.priority;
-          await api.patch(`/tasks/${draft.targetTaskId}`, payload);
-          undo = { kind: 'task', action: 'update', id: draft.targetTaskId, previous };
-        }
-      } else if (draft.type === 'event_action') {
-        if (draft.action === 'create') {
-          const payload: CreateEventInput = {
-            title: draft.title,
-            description: draft.description || undefined,
-            location: draft.location || undefined,
-            startAt: draft.startAt ?? '',
-            endAt: draft.endAt ?? '',
-            allDay: draft.allDay ?? false,
-          };
-          const created = await api.post<CalendarEvent>('/events', payload);
-          for (const employeeId of draft.addParticipantIds) {
-            await api.post(`/events/${created.id}/participants`, { employeeId }).catch(() => {});
-          }
-          undo = { kind: 'event', action: 'create', id: created.id };
-        } else {
-          const payload: Partial<CreateEventInput> = {};
-          if (draft.title !== '') payload.title = draft.title;
-          if (draft.description !== '') payload.description = draft.description;
-          if (draft.location !== '') payload.location = draft.location;
-          if (draft.startAt !== null) payload.startAt = draft.startAt;
-          if (draft.endAt !== null) payload.endAt = draft.endAt;
-          if (draft.allDay !== null) payload.allDay = draft.allDay;
-          const previous: Partial<CreateEventInput> = {};
-          if (Object.keys(payload).length > 0) {
-            const before = await api.get<CalendarEvent>(`/events/${draft.targetEventId}`).catch(() => null);
-            if (before) {
-              if (payload.title !== undefined) previous.title = before.title;
-              if (payload.description !== undefined) previous.description = before.description ?? '';
-              if (payload.location !== undefined) previous.location = before.location ?? '';
-              if (payload.startAt !== undefined) previous.startAt = before.startAt;
-              if (payload.endAt !== undefined) previous.endAt = before.endAt;
-              if (payload.allDay !== undefined) previous.allDay = before.allDay;
-            }
-            await api.patch(`/events/${draft.targetEventId}`, payload);
-          }
-          for (const employeeId of draft.addParticipantIds) {
-            await api.post(`/events/${draft.targetEventId}/participants`, { employeeId }).catch(() => {});
-          }
-          for (const employeeId of draft.removeParticipantIds) {
-            await api.delete(`/events/${draft.targetEventId}/participants/${employeeId}`).catch(() => {});
-          }
-          undo = {
-            kind: 'event',
-            action: 'update',
-            id: draft.targetEventId,
-            previous,
-            addedParticipantIds: draft.addParticipantIds,
-            removedParticipantIds: draft.removeParticipantIds,
-          };
-        }
+  // create/update дают undo; delete — нет (см. комментарий у ChatMessage.undo).
+  function buildUndo(item: VoiceActionResult): UndoInfo | null {
+    if (item.type === 'chat') return null;
+    if (item.type === 'task_action') {
+      if (item.draft.action === 'create' && item.taskId) return { kind: 'task', action: 'create', id: item.taskId };
+      if (item.draft.action === 'update' && item.taskId && item.previous) {
+        return { kind: 'task', action: 'update', id: item.taskId, previous: item.previous };
       }
-
-      const successText = describeSuccess(draft);
-      updateMessage(assistantId, { text: successText, status: undefined, undo });
-      logAssistant(successText);
-      if (undo) {
-        setTimeout(() => updateMessage(assistantId, { undo: null }), UNDO_WINDOW_MS);
-      }
-    } catch (err) {
-      const errorText = `Не получилось сохранить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
-      updateMessage(assistantId, { text: errorText, status: 'error' });
-      logAssistant(errorText);
+      return null;
     }
+    if (item.draft.action === 'create' && item.eventId) return { kind: 'event', action: 'create', id: item.eventId };
+    if (item.draft.action === 'update' && item.eventId && item.previous) {
+      return {
+        kind: 'event',
+        action: 'update',
+        id: item.eventId,
+        previous: item.previous,
+        addedParticipantIds: item.draft.addParticipantIds,
+        removedParticipantIds: item.draft.removeParticipantIds,
+      };
+    }
+    return null;
   }
 
   // "Отменить" в баббле (аудит 10.09.2026, п. 4.2). create — просто удаляет
-  // только что созданное; update — откатывает снятые в confirmDraft
-  // значения тем же PATCH-эндпоинтом плюс инвертирует изменения участников.
+  // только что созданное; update — откатывает снятые на бэкенде (см.
+  // VoiceService.executeTaskAction/executeEventAction) значения тем же
+  // PATCH-эндпоинтом плюс инвертирует изменения участников.
   async function performUndo(messageId: string, undo: UndoInfo) {
     updateMessage(messageId, { undo: null });
     try {
@@ -495,63 +374,32 @@ function VoiceView() {
     }
   }
 
-  function describeInFlight(type: 'task_action' | 'event_action', action: 'create' | 'update' | 'delete'): string {
-    if (type === 'task_action') return action === 'create' ? 'Понял вас — создаю задачу…' : 'Понял вас — обновляю задачу…';
-    return action === 'create' ? 'Понял вас — создаю событие…' : 'Понял вас — обновляю встречу…';
-  }
-
-  async function confirmDelete(messageId: string, action: NonNullable<ChatMessage['pendingAction']>) {
-    updateMessage(messageId, { pendingAction: null, status: 'pending' });
-    try {
-      if (action.kind === 'task') {
-        await api.delete(`/tasks/${action.targetId}`);
-      } else {
-        await api.delete(`/events/${action.targetId}`);
+  function describeOutcome(draft: VoiceTaskActionDraft | VoiceEventActionDraft): string {
+    if (draft.type === 'task_action') {
+      if (draft.action === 'create') {
+        const parts = [`Создал задачу «${draft.title}».`];
+        if (draft.assigneeName) parts.push(`Исполнитель: ${draft.assigneeName}.`);
+        if (draft.dueDate) parts.push(`Срок — до ${new Date(draft.dueDate).toLocaleDateString('ru-RU')}.`);
+        return parts.join(' ');
       }
-      const successText = `Удалил «${action.targetTitle}».`;
-      updateMessage(messageId, { text: successText, status: undefined });
-      logAssistant(successText);
-    } catch (err) {
-      const errorText = `Не получилось удалить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
-      updateMessage(messageId, { text: errorText, status: 'error' });
-      logAssistant(errorText);
+      if (draft.action === 'update') return `Обновил задачу «${draft.targetTitle}».`;
+      return `Удалил задачу «${draft.targetTitle}».`;
     }
-  }
-
-  function cancelDelete(messageId: string) {
-    updateMessage(messageId, { text: 'Отменено.', pendingAction: null });
-    logAssistant('Отменено.');
-  }
-
-  function describeSuccess(draft: VoiceTaskActionDraft | VoiceEventActionDraft): string {
-    let base: string;
-    if (draft.type === 'task_action' && draft.action === 'create') {
-      const parts = [`Создал задачу «${draft.title}».`];
-      if (draft.assigneeName) parts.push(`Исполнитель: ${draft.assigneeName}.`);
-      if (draft.dueDate) parts.push(`Срок — до ${new Date(draft.dueDate).toLocaleDateString('ru-RU')}.`);
-      base = parts.join(' ');
-    } else if (draft.type === 'task_action') {
-      base = `Обновил задачу «${draft.targetTitle}».`;
-    } else if (draft.type === 'event_action' && draft.action === 'create') {
+    if (draft.action === 'create') {
       const when = draft.startAt
         ? new Date(draft.startAt).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
         : '';
-      base = `Создал событие «${draft.title}»${when ? ` на ${when}` : ''}.`;
+      let base = `Создал событие «${draft.title}»${when ? ` на ${when}` : ''}.`;
       if (draft.addParticipantNames.length > 0) base += ` Участники: ${draft.addParticipantNames.join(', ')}.`;
-    } else if (draft.type === 'event_action') {
+      return base;
+    }
+    if (draft.action === 'update') {
       const parts = [`Обновил встречу «${draft.targetTitle}».`];
       if (draft.addParticipantNames.length > 0) parts.push(`Добавил: ${draft.addParticipantNames.join(', ')}.`);
       if (draft.removeParticipantNames.length > 0) parts.push(`Убрал: ${draft.removeParticipantNames.join(', ')}.`);
-      base = parts.join(' ');
-    } else {
-      // describeSuccess вызывается только из confirmDraft, а тот — только
-      // для action='create'/'update' (chat и action='delete' уходят
-      // отдельными ветками в processDraft) — сюда попасть не должны, но TS
-      // не знает об этом на уровне сигнатур (action='delete' — валидное
-      // значение типа, просто недостижимое на практике здесь).
-      base = '';
+      return parts.join(' ');
     }
-    return base;
+    return `Удалил встречу «${draft.targetTitle}».`;
   }
 
   const minutes = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
@@ -583,16 +431,6 @@ function VoiceView() {
         {messages.map((m) => (
           <div key={m.id} className={`voice-bubble voice-bubble-${m.role} ${m.status ?? ''}`}>
             {m.text}
-            {m.pendingAction && (
-              <div className="voice-confirm-actions">
-                <button type="button" className="btn-secondary btn-small" onClick={() => confirmDelete(m.id, m.pendingAction!)}>
-                  Удалить
-                </button>
-                <button type="button" className="btn-secondary btn-small" onClick={() => cancelDelete(m.id)}>
-                  Отмена
-                </button>
-              </div>
-            )}
             {m.undo && (
               <div className="voice-confirm-actions">
                 {m.undo.kind === 'task' && (

@@ -281,9 +281,13 @@ export interface PlaudStatus {
 }
 
 // Голосовой режим Mini App (раздел 14.2 ТЗ / Адъютант) — POST /voice/parse.
-// Черновик эфемерный: бэкенд ничего не пишет в Task/Event, поля подобраны
-// так, чтобы Mini App/веб собрали из них тело POST/PATCH/DELETE без доп.
-// маппинга (см. CreateTaskInput/CreateEventInput выше).
+// Действие выполняется сервером В ТОМ ЖЕ запросе (владелец 10.09.2026,
+// аудит п. 2.11: раньше /voice/parse только возвращал черновик, а
+// POST/PATCH/DELETE был отдельным запросом с фронтенда — если сеть
+// падала между ними, Whisper+Claude уже оплачены, а задача не создана).
+// Поля черновика подобраны так, чтобы бэкенду было удобно собрать из них
+// тело мутации без доп. маппинга (см. CreateTaskInput/CreateEventInput
+// выше) — сам черновик остаётся в VoiceActionResult ниже для текста в чате.
 //
 // Создание/редактирование/удаление объединены в ОДИН тип на задачу и ОДИН
 // на событие (action: create/update/delete), а не в 6 отдельных типов —
@@ -298,9 +302,13 @@ export interface PlaudStatus {
 // nullable-поля (assigneeId/dueDate/priority/startAt/endAt/allDay) — null
 // означает то же самое. Голосовая ОЧИСТКА уже заполненного поля не
 // поддерживается в этом заходе (осознанное упрощение) — только установка
-// нового значения. Удаление (action='delete') ничего не удаляет само по
-// себе — фронтенд обязан показать подтверждение (кнопки в чате) прежде чем
-// звать DELETE.
+// нового значения. Удаление (action='delete') выполняется сразу, без
+// дополнительного подтверждения — владелец 10.09.2026: "по удалению давай
+// доверять", сознательное решение после практической проверки (ранее
+// требовало кнопок "Удалить"/"Отмена" в чате — распознавание речи было
+// признано ненадёжной границей для необратимого действия; теперь риск
+// принят, undo в течение 30 секунд остаётся подстраховкой, см. UndoInfo
+// на фронтенде).
 export interface VoiceTaskActionDraft {
   type: 'task_action';
   action: 'create' | 'update' | 'delete';
@@ -348,20 +356,77 @@ export interface VoiceChatReply {
 
 export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
-// drafts: массив, не одиночный draft (владелец 10.09.2026, найдено в
+// Снимок полей ДО применения голосового изменения (владелец 10.09.2026) —
+// сервер строит его сам непосредственно перед мутацией (черновик несёт
+// только новые значения, не старые) и возвращает во VoiceTaskActionResult/
+// VoiceEventActionResult, чтобы фронтенд мог откатить именно те поля,
+// которые реально поменялись, кнопкой "Отменить" в чате (UNDO_WINDOW_MS —
+// 30 секунд). Не Partial<CreateTaskInput/CreateEventInput> — те типизируют
+// assigneeId/dueDate как string | undefined без null, а PATCH-эндпоинты
+// трактуют null как "явно снять значение" (см. TasksService.update).
+export interface TaskRevertPayload {
+  title?: string;
+  description?: string;
+  assigneeId?: string | null;
+  dueDate?: string | null;
+  priority?: TaskPriority;
+}
+export interface EventRevertPayload {
+  title?: string;
+  description?: string;
+  location?: string;
+  startAt?: string;
+  endAt?: string;
+  allDay?: boolean;
+}
+
+// Итог выполнения ОДНОГО черновика (владелец 10.09.2026, аудит п. 2.11) —
+// draft здесь тот же обогащённый черновик (assigneeName и т.п.), которым
+// фронтенд уже умел пользоваться для текста в чате до перехода на
+// серверное исполнение; ok/error/*Id/previous — новое, описывает, что
+// реально произошло. taskId/eventId — id созданной/изменённой/удалённой
+// записи (для create — новый, для update/delete — тот же, что
+// targetTaskId/targetEventId в draft), null только при ok=false. previous
+// заполнен только при action='update' и ok=true — иначе отменять нечего
+// (create отменяется удалением по id, delete/ошибка — никак).
+export interface VoiceTaskActionResult {
+  type: 'task_action';
+  draft: VoiceTaskActionDraft;
+  ok: boolean;
+  error: string | null;
+  taskId: string | null;
+  previous: TaskRevertPayload | null;
+}
+export interface VoiceEventActionResult {
+  type: 'event_action';
+  draft: VoiceEventActionDraft;
+  ok: boolean;
+  error: string | null;
+  eventId: string | null;
+  previous: EventRevertPayload | null;
+}
+export interface VoiceChatResult {
+  type: 'chat';
+  reply: string;
+}
+
+export type VoiceActionResult = VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
+
+// results: массив, не одиночный результат (владелец 10.09.2026, найдено в
 // проде: "удали встречу с Петром и создай новую на пятницу" в одной
-// аудиозаписи — агент удалил встречу, а создание потерялось, потому что
+// аудиозаписи — агент удалил встречу, а создание терялось, потому что
 // схема инструмента физически могла вернуть только ОДНО действие за раз).
 // Один элемент на каждую самостоятельную команду в транскрипте, в порядке
-// произнесения — фронтенд выполняет их последовательно, сбой одного
-// действия не блокирует остальные. Для обычной однозадачной заметки —
-// массив из одного элемента, как раньше.
+// произнесения — уже ВЫПОЛНЕННую сервером (см. комментарий у
+// VoiceTaskActionDraft про п. 2.11), фронтенд только отображает; сбой
+// одного действия (ok=false) не блокирует остальные. Для обычной
+// однозадачной заметки — массив из одного элемента, как раньше.
 export interface VoiceParseResponse {
   transcript: string;
   confidence: ConfidenceLevel;
   clarificationNeeded: boolean;
   clarificationReason: string | null;
-  drafts: VoiceDraft[];
+  results: VoiceActionResult[];
 }
 
 // Память голосового диалога (аудит 10.09.2026, п. 2.9) — POST
