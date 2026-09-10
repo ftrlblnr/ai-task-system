@@ -1,8 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -26,10 +25,7 @@ const EMPLOYEE_SELECT = {
 
 @Injectable()
 export class EmployeesService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly audit: AuditService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   // Раздел 5 ТЗ (скорректировано 28.08.2026): ставить задачи друг другу
   // может любой участник, не только руководитель — значит, любому нужен
@@ -50,7 +46,7 @@ export class EmployeesService {
     });
   }
 
-  async findOne(id: string, viewerId: string) {
+  async findOne(id: string) {
     const employee = await this.prisma.employee.findUnique({
       where: { id },
       select: {
@@ -62,7 +58,9 @@ export class EmployeesService {
     });
     if (!employee) throw new NotFoundException('Сотрудник не найден');
 
-    await this.audit.log(viewerId, 'READ', 'Employee', id);
+    // Раньше здесь писался AuditLog READ на каждое открытие профиля,
+    // включая /me на каждый заход в приложение — аудит 10.09.2026, п. 2.13,
+    // тот же принцип, что и у TasksService.findOne (см. комментарий там).
     return employee;
   }
 
@@ -81,8 +79,23 @@ export class EmployeesService {
     });
   }
 
+  // Аудит 10.09.2026, п. 2.13: раньше руководитель мог снять роль OWNER с
+  // самого себя (или с любого другого единственного оставшегося
+  // руководителя) через обычный PATCH — дальше в систему было бы просто
+  // некому зайти с правами, открывающими @Roles(Role.OWNER) (создание
+  // сотрудников, календарь, /meetings и т.д.). Проверяем инвариант "хотя бы
+  // один активный OWNER остаётся" только когда роль реально меняется С
+  // OWNER на что-то другое — не блокирует ничего остального.
   async update(id: string, dto: UpdateEmployeeDto) {
-    await this.ensureExists(id);
+    const current = await this.ensureExists(id);
+    if (dto.role !== undefined && dto.role !== Role.OWNER && current.role === Role.OWNER) {
+      const otherOwners = await this.prisma.employee.count({
+        where: { role: Role.OWNER, status: 'ACTIVE', id: { not: id } },
+      });
+      if (otherOwners === 0) {
+        throw new BadRequestException('Нельзя снять роль руководителя — в системе не останется ни одного OWNER');
+      }
+    }
     return this.prisma.employee.update({
       where: { id },
       data: dto,
@@ -106,7 +119,8 @@ export class EmployeesService {
   }
 
   private async ensureExists(id: string) {
-    const exists = await this.prisma.employee.findUnique({ where: { id }, select: { id: true } });
+    const exists = await this.prisma.employee.findUnique({ where: { id }, select: { id: true, role: true } });
     if (!exists) throw new NotFoundException('Сотрудник не найден');
+    return exists;
   }
 }

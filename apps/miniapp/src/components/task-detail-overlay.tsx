@@ -10,6 +10,18 @@ import { OverlayPortal } from './overlay-portal';
 import { STATUS_LABELS, STATUS_DOT_COLOR, EMPLOYEE_SETTABLE_STATUSES, PRIORITY_LABELS } from '@/lib/labels';
 import { haptic } from '@/lib/telegram';
 
+// История изменений (аудит 10.09.2026, п. 2.3) — та же логика, что в
+// apps/web/src/app/tasks/[id]/page.tsx.
+const HISTORY_FIELD_LABELS: Record<string, string> = {
+  title: 'Название',
+  assigneeId: 'Исполнитель',
+  priority: 'Приоритет',
+  status: 'Статус',
+  dueDate: 'Срок',
+  description: 'Описание',
+  taskProfileId: 'Профиль задачи',
+};
+
 export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose: () => void }) {
   const { user } = useAuth();
   // Стек, а не одиночный id — клик по подзадаче открывает её тут же поверх
@@ -186,6 +198,15 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
   const watchableEmployees = employees.filter(
     (e) => e.id !== user?.id && !task?.watchers.some((w) => w.id === e.id),
   );
+
+  function formatHistoryValue(field: string, value: string | null): string {
+    if (value === null) return '—';
+    if (field === 'assigneeId') return employees.find((e) => e.id === value)?.fullName ?? value;
+    if (field === 'priority') return PRIORITY_LABELS[value as TaskPriority] ?? value;
+    if (field === 'status') return STATUS_LABELS[value as TaskStatus] ?? value;
+    if (field === 'dueDate') return new Date(value).toLocaleDateString('ru-RU');
+    return value;
+  }
 
   async function removeTask() {
     if (!task) return;
@@ -443,6 +464,22 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
                 </form>
               </div>
             )}
+
+            <div className="card">
+              <h2>История изменений</h2>
+              {task.history.length === 0 && <p className="hint">Пока нет изменений.</p>}
+              {task.history.map((h) => (
+                <div key={h.id} style={{ marginBottom: 8 }}>
+                  <div className="hint" style={{ fontSize: '0.8em' }}>
+                    {h.changedBy?.fullName ?? 'Система'} · {new Date(h.createdAt).toLocaleString('ru-RU')}
+                  </div>
+                  <div>
+                    {HISTORY_FIELD_LABELS[h.field] ?? h.field}: {formatHistoryValue(h.field, h.oldValue)} →{' '}
+                    {formatHistoryValue(h.field, h.newValue)}
+                  </div>
+                </div>
+              ))}
+            </div>
           </>
         )}
       </div>

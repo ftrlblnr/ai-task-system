@@ -6,13 +6,9 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
+import { formatLocalDateTime } from '../common/timezone';
 import { WhisperService } from './whisper.service';
-import {
-  DraftExtractionService,
-  formatLocalDateTime,
-  MAX_DRAFTS_PER_NOTE,
-  type VoiceHistoryItem,
-} from './draft-extraction.service';
+import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
 import type { VoiceDraft, VoiceParseResponse } from './dto/voice-draft-response.dto';
 
 type MulterFile = Express.Multer.File;

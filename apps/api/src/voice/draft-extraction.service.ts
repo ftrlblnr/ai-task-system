@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { Role } from '@prisma/client';
+import { nowInLocalTimezone, withLocalOffset } from '../common/timezone';
 import type { VoiceDraft } from './dto/voice-draft-response.dto';
 
 export interface EmployeeOption {
@@ -40,42 +41,6 @@ interface ExtractionResult {
 export interface VoiceHistoryItem {
   role: 'user' | 'assistant';
   text: string;
-}
-
-// Сервер (Docker-контейнер) всегда работает в UTC, а компания — в Казахстане
-// (Asia/Almaty, UTC+5, без перехода на летнее время — фиксированное
-// смещение, без нужды в полноценной библиотеке часовых поясов). Раньше
-// Claude получала "текущее время" в UTC и озвученное "в 13:00" трактовала
-// как 13:00 UTC — на бэкенде это превращалось в 18:00 по Алматы (найдено
-// 01.09.2026: пользователь сказал "завтра в 13:00", черновик события ушёл
-// с 18:00). Модель теперь думает только в местном времени пользователя
-// (naive, без Z/смещения), а единственный источник правды по смещению —
-// TIMEZONE_OFFSET здесь, а не то, что допишет сама модель.
-const TIMEZONE_OFFSET_HOURS = 5;
-const TIMEZONE_OFFSET_STRING = '+05:00';
-
-function nowInLocalTimezone(): string {
-  const localMs = Date.now() + TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000;
-  return new Date(localMs).toISOString().replace('Z', '');
-}
-
-// Даты задач/событий из БД (Date, реальный UTC-момент) — в отличие от
-// nowInLocalTimezone(), для контекста в промпте нужен честный пересчёт в
-// местное время, а не просто "как есть" (это не то, что вернула сама
-// модель, а то, что модели ещё предстоит прочитать и понять).
-export function formatLocalDateTime(date: Date): string {
-  const localMs = date.getTime() + TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000;
-  return new Date(localMs).toISOString().replace('Z', TIMEZONE_OFFSET_STRING);
-}
-
-// Приводит дату/время, которые вернула модель, к однозначной ISO-строке со
-// смещением +05:00 — не полагаемся на то, что Claude сама допишет
-// правильное смещение (или не допишет вовсе Z по ошибке): обрезаем любой
-// уже присутствующий суффикс и подставляем свой.
-function withLocalOffset(value: string | null): string | null {
-  if (!value) return value;
-  const bare = value.replace(/(Z|[+-]\d{2}:?\d{2})$/, '');
-  return `${bare}${TIMEZONE_OFFSET_STRING}`;
 }
 
 // Час — стандартная длительность встречи/созвона по умолчанию, если конец

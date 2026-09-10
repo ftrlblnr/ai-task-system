@@ -1,7 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role, TaskStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateTaskDto } from './dto/create-task.dto';
@@ -121,7 +120,6 @@ export function isTaskOverdue(task: { dueDate: Date | null; status: TaskStatus }
 export class TasksService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly audit: AuditService,
     private readonly bot: TelegramBotService,
   ) {}
 
@@ -169,7 +167,12 @@ export class TasksService {
     if (!task) throw new NotFoundException('Задача не найдена');
     this.assertVisible(task, user);
 
-    await this.audit.log(user.id, 'READ', 'Task', id);
+    // Раньше здесь писался AuditLog READ на каждое открытие карточки —
+    // аудит 10.09.2026, п. 2.13: обычная задача не «чувствительный контент»
+    // в смысле раздела 15 ТЗ (это встречи — протокол/саммари реального
+    // разговора), а таблица аудита росла быстрее всех остальных без какой-
+    // либо ретенции ради этого шума. AuditService/MeetingsService.findOne
+    // по-прежнему логируют READ там, где это оправдано.
 
     const { subtasks, watchers, ...rest } = task;
     return {
@@ -385,8 +388,21 @@ export class TasksService {
     return task;
   }
 
+  // Аудит 10.09.2026, п. 2.3: комментарий у модели TaskHistory обещает
+  // "статус, исполнитель, срок", но реально отслеживались только title/
+  // assigneeId/priority — перенос срока (то, что руководитель проверяет в
+  // первую очередь) в историю не попадал вообще. Добавлены dueDate/
+  // description/taskProfileId.
   private diff(
-    task: { title: string; assigneeId: string | null; priority: string; status: string },
+    task: {
+      title: string;
+      assigneeId: string | null;
+      priority: string;
+      status: string;
+      dueDate: Date | null;
+      description: string | null;
+      taskProfileId: string | null;
+    },
     dto: UpdateTaskDto,
   ) {
     const changes: { field: string; oldValue: string | null; newValue: string | null }[] = [];
@@ -398,6 +414,20 @@ export class TasksService {
     }
     if (dto.priority !== undefined && dto.priority !== task.priority) {
       changes.push({ field: 'priority', oldValue: task.priority, newValue: dto.priority });
+    }
+    // dueDate === undefined — не пришло в запросе, не трогаем; null — явно
+    // снят срок; строка — новый. Сравниваем по ISO-строке, а не Date-объекту
+    // (task.dueDate — Date, dto.dueDate — строка из тела запроса).
+    if (dto.dueDate !== undefined) {
+      const oldIso = task.dueDate ? task.dueDate.toISOString() : null;
+      const newIso = dto.dueDate ? new Date(dto.dueDate).toISOString() : null;
+      if (oldIso !== newIso) changes.push({ field: 'dueDate', oldValue: oldIso, newValue: newIso });
+    }
+    if (dto.description !== undefined && dto.description !== task.description) {
+      changes.push({ field: 'description', oldValue: task.description, newValue: dto.description });
+    }
+    if (dto.taskProfileId !== undefined && dto.taskProfileId !== task.taskProfileId) {
+      changes.push({ field: 'taskProfileId', oldValue: task.taskProfileId, newValue: dto.taskProfileId });
     }
     return changes;
   }

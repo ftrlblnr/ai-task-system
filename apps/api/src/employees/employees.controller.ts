@@ -37,8 +37,8 @@ export class EmployeesController {
 
   @Get(':id')
   @Roles(Role.OWNER)
-  findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.employeesService.findOne(id, user.id);
+  findOne(@Param('id') id: string) {
+    return this.employeesService.findOne(id);
   }
 
   @Post()

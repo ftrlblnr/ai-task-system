@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { PrismaExceptionFilter } from './prisma/prisma-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -23,17 +24,21 @@ async function bootstrap() {
   );
   app.enableCors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`CORS: origin ${origin} не разрешён`));
-      }
+      // callback(null, false), не callback(new Error(...)) — аудит
+      // 10.09.2026, п. 2.13: передача Error превращает обычный CORS-отказ
+      // в необработанное исключение (500 клиенту) вместо чистого "не
+      // разрешено" (браузер и так блокирует ответ без нужных заголовков).
+      callback(null, !origin || allowedOrigins.includes(origin));
     },
     credentials: true,
   });
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
   );
+  // Аудит 10.09.2026, п. 2.12: несуществующий assigneeId/taskProfileId/
+  // parentTaskId и т.п. отдавал 500 вместо внятной 400 — см. комментарий в
+  // самом фильтре.
+  app.useGlobalFilters(new PrismaExceptionFilter());
 
   await app.listen(process.env.PORT ?? 3001);
 }

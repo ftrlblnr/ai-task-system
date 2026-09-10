@@ -6,6 +6,21 @@ import { EventSource, EventStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { GoogleOAuthService } from './google-oauth.service';
 
+// Google Calendar: end.date у all-day события ЭКСКЛЮЗИВЕН (однодневное
+// событие 15 сентября требует end.date = "2026-09-16") — аудит 10.09.2026,
+// п. 2.4: раньше отправляли/читали endAt как есть, без этой поправки,
+// однодневное all-day событие уходило с нулевой длительностью и
+// схлопывалось при обратном пуле. Внутри нашей БД endAt для all-day
+// событий хранится ВКЛЮЧИТЕЛЬНО (последний день события, тем же смыслом,
+// что startAt для однодневного) — эти два хелпера переводят между двумя
+// представлениями на границе с Google API, больше нигде в приложении
+// endAt all-day событий не участвует ни в каких расчётах.
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 // Раздел 14.2 ТЗ / Адъютант (28.08.2026): двусторонняя синхронизация.
 // Единственный писатель с обеих сторон — руководитель, поэтому конфликт-
 // резолюция упрощена до last-write-wins по времени последнего изменения,
@@ -44,17 +59,26 @@ export class GoogleCalendarSyncService {
       start: event.allDay
         ? { date: event.startAt.toISOString().slice(0, 10) }
         : { dateTime: event.startAt.toISOString() },
+      // +1 день — наш endAt включительный, Google.end.date эксклюзивен
+      // (см. комментарий у addDays выше).
       end: event.allDay
-        ? { date: event.endAt.toISOString().slice(0, 10) }
+        ? { date: addDays(event.endAt.toISOString().slice(0, 10), 1) }
         : { dateTime: event.endAt.toISOString() },
     };
 
+    // If-Match с текущим googleEtag на update (аудит 10.09.2026, п. 2.6):
+    // без него правка, сделанная в самом Google секунду назад (до того как
+    // её подхватит fallback-pull раз в 15 минут), молча затиралась бы
+    // push'ем отсюда. На insert применять нечего — события ещё нет.
     const response = event.googleEventId
-      ? await calendar.events.update({
-          calendarId: connection.calendarId,
-          eventId: event.googleEventId,
-          requestBody: body,
-        })
+      ? await calendar.events.update(
+          {
+            calendarId: connection.calendarId,
+            eventId: event.googleEventId,
+            requestBody: body,
+          },
+          event.googleEtag ? { headers: { 'If-Match': event.googleEtag } } : undefined,
+        )
       : await calendar.events.insert({ calendarId: connection.calendarId, requestBody: body });
 
     await this.prisma.event.update({
@@ -84,7 +108,15 @@ export class GoogleCalendarSyncService {
   // Инкрементальная синхронизация: с syncToken запрашиваем только дельту,
   // без него — полный список вперёд от "сейчас" (первый sync или Google
   // сбросил токен, отдав 410 GONE).
-  async pullChanges(employeeId: string): Promise<void> {
+  //
+  // retriedAfter410 (аудит 10.09.2026, п. 2.5) — раньше на 410 функция
+  // безусловно вызывала сама себя ещё раз; если бы Google отдал 410
+  // повторно (бывает при проблемах на стороне календаря), это уходило в
+  // бесконечную рекурсию до переполнения стека прямо внутри крона
+  // (calendar-sync.cron.ts, fallbackPull). Теперь — не более одного
+  // повторного захода: второй 410 подряд бросает исключение наверх
+  // (там его и так ловит try/catch в кроне), а не рекурсирует снова.
+  async pullChanges(employeeId: string, retriedAfter410 = false): Promise<void> {
     const connection = await this.prisma.googleCalendarConnection.findUnique({ where: { employeeId } });
     if (!connection) return;
 
@@ -108,13 +140,13 @@ export class GoogleCalendarSyncService {
         nextSyncToken = response.data.nextSyncToken ?? nextSyncToken;
       } while (pageToken);
     } catch (err: any) {
-      if (err?.code === 410) {
-        // syncToken протух — полный ресинк с нуля.
+      if (err?.code === 410 && !retriedAfter410) {
+        // syncToken протух — полный ресинк с нуля, но только одна попытка.
         await this.prisma.googleCalendarConnection.update({
           where: { employeeId },
           data: { syncToken: null },
         });
-        return this.pullChanges(employeeId);
+        return this.pullChanges(employeeId, true);
       }
       throw err;
     }
@@ -154,8 +186,11 @@ export class GoogleCalendarSyncService {
       return;
     }
 
+    const isAllDay = Boolean(googleEvent.start?.date && !googleEvent.start?.dateTime);
     const startAt = googleEvent.start?.dateTime ?? googleEvent.start?.date;
-    const endAt = googleEvent.end?.dateTime ?? googleEvent.end?.date;
+    // -1 день у all-day событий — Google.end.date эксклюзивен, наш endAt
+    // включительный (см. комментарий у addDays выше).
+    const endAt = googleEvent.end?.dateTime ?? (googleEvent.end?.date ? addDays(googleEvent.end.date, -1) : undefined);
     if (!startAt || !endAt) return;
 
     const googleUpdated = googleEvent.updated ? new Date(googleEvent.updated) : new Date();
@@ -173,7 +208,7 @@ export class GoogleCalendarSyncService {
       location: googleEvent.location ?? null,
       startAt: new Date(startAt),
       endAt: new Date(endAt),
-      allDay: Boolean(googleEvent.start?.date && !googleEvent.start?.dateTime),
+      allDay: isAllDay,
       status: EventStatus.CONFIRMED,
       googleEventId: googleEvent.id,
       googleEtag: googleEvent.etag ?? null,

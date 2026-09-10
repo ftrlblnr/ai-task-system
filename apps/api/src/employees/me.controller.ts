@@ -13,6 +13,6 @@ export class MeController {
 
   @Get()
   getMe(@CurrentUser() user: AuthenticatedUser) {
-    return this.employeesService.findOne(user.id, user.id);
+    return this.employeesService.findOne(user.id);
   }
 }

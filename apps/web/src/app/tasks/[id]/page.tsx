@@ -17,6 +17,19 @@ import {
   PRIORITY_LABELS,
 } from '@/lib/labels';
 
+// История изменений (аудит 10.09.2026, п. 2.3) — TaskHistory уже писался
+// бэкендом, но нигде не отображался. Метки полей — тот же список, что
+// теперь отслеживает TasksService.diff().
+const HISTORY_FIELD_LABELS: Record<string, string> = {
+  title: 'Название',
+  assigneeId: 'Исполнитель',
+  priority: 'Приоритет',
+  status: 'Статус',
+  dueDate: 'Срок',
+  description: 'Описание',
+  taskProfileId: 'Профиль задачи',
+};
+
 function TaskDetailView({ id }: { id: string }) {
   const { user } = useAuth();
   const router = useRouter();
@@ -185,6 +198,18 @@ function TaskDetailView({ id }: { id: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Резолвим id в имя/подпись там, где это возможно — история хранит сырые
+  // значения (см. TasksService.diff), employees уже загружены на странице
+  // ради формы наблюдателей, отдельный запрос не нужен.
+  function formatHistoryValue(field: string, value: string | null): string {
+    if (value === null) return '—';
+    if (field === 'assigneeId') return employees.find((e) => e.id === value)?.fullName ?? value;
+    if (field === 'priority') return PRIORITY_LABELS[value as TaskPriority] ?? value;
+    if (field === 'status') return STATUS_LABELS[value as TaskStatus] ?? value;
+    if (field === 'dueDate') return new Date(value).toLocaleDateString('ru-RU');
+    return value;
   }
 
   if (error) return <p className="error">{error}</p>;
@@ -448,6 +473,24 @@ function TaskDetailView({ id }: { id: string }) {
           </form>
         </div>
       )}
+
+      <div className="card">
+        <h2>История изменений</h2>
+        {task.history.length === 0 && <p className="hint">Пока нет изменений.</p>}
+        <ul className="plain-list">
+          {task.history.map((h) => (
+            <li key={h.id} className="plain-list-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+              <span className="hint">
+                {h.changedBy?.fullName ?? 'Система'} · {new Date(h.createdAt).toLocaleString('ru-RU')}
+              </span>
+              <span>
+                {HISTORY_FIELD_LABELS[h.field] ?? h.field}: {formatHistoryValue(h.field, h.oldValue)} →{' '}
+                {formatHistoryValue(h.field, h.newValue)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { EmployeeStatus, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
+import { localDateString } from '../common/timezone';
 import { TasksService } from './tasks.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
@@ -45,14 +46,18 @@ export class DailyDigestCron {
         // Просрочка — вычисляемый признак (isOverdue от TasksService), не
         // статус, см. аудит 10.09.2026 п. 2.1.
         const overdue = allTasks.filter((t) => t.isOverdue);
-        const today = new Date();
+        // localDateString, не toDateString() (аудит 10.09.2026, п. 2.7):
+        // toDateString() сравнивает в UTC сервера, а не в местном времени
+        // компании (+5) — срок "завтра 02:00 по Алматы" это "сегодня
+        // 21:00 UTC" и раньше засчитывался как "сегодня" на день раньше.
+        const today = localDateString(new Date());
         const dueToday = allTasks.filter(
           (t) =>
             !t.isOverdue &&
             t.status !== 'DONE' &&
             t.status !== 'CANCELLED' &&
             t.dueDate &&
-            new Date(t.dueDate).toDateString() === today.toDateString(),
+            localDateString(new Date(t.dueDate)) === today,
         );
         // Только руководителю — задачи, которые сам голосовой агент
         // пометил низкой уверенностью разбора, стоит перепроверить.
