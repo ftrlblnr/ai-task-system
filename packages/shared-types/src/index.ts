@@ -356,6 +356,13 @@ export interface VoiceParseResponse {
   draft: VoiceDraft;
 }
 
+// Память голосового диалога (аудит 10.09.2026, п. 2.9) — POST
+// /voice/messages, фронтенд шлёт это, когда текст чат-пузыря ассистента
+// становится окончательным (см. VoiceService.logAssistantMessage).
+export interface LogVoiceMessageInput {
+  text: string;
+}
+
 export interface GoogleCalendarStatus {
   connected: boolean;
   // Настроен ли OAuth-клиент (GoogleOAuthAppConfig, вводится владельцем в

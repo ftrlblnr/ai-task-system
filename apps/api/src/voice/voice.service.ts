@@ -1,13 +1,13 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Role, VoiceMessageRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { WhisperService } from './whisper.service';
-import { DraftExtractionService, formatLocalDateTime } from './draft-extraction.service';
+import { DraftExtractionService, formatLocalDateTime, type VoiceHistoryItem } from './draft-extraction.service';
 import type { VoiceDraft, VoiceParseResponse } from './dto/voice-draft-response.dto';
 
 type MulterFile = Express.Multer.File;
@@ -19,6 +19,15 @@ type MulterFile = Express.Multer.File;
 const MAX_CONTEXT_TASKS = 40;
 const MAX_CONTEXT_EVENTS = 40;
 const EVENT_LOOKAHEAD_DAYS = 30;
+
+// Память голосового диалога (аудит 10.09.2026, п. 2.9). Оба лимита разом:
+// не только последние N реплик, но и не старше 3 часов — иначе "перенеси
+// на вторник", сказанное с утра, случайно подхватило бы контекст заметки
+// из позавчерашнего дня только потому, что она попала в последние 20 строк
+// у пользователя с редкой активностью. 3 часа — обычный рабочий перерыв
+// (например, обед) всё ещё "тот же разговор", ночь — уже нет.
+const VOICE_HISTORY_LIMIT = 20;
+const VOICE_HISTORY_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
 @Injectable()
 export class VoiceService {
@@ -94,6 +103,8 @@ export class VoiceService {
         allDay: e.allDay,
       }));
 
+    const history = await this.loadHistory(user.id);
+
     const result = await this.extraction.extract(
       transcript,
       employees,
@@ -103,7 +114,17 @@ export class VoiceService {
       meetingContext
         ? { title: meetingContext.title, summary: meetingContext.enhancedSummary ?? meetingContext.rawSummary }
         : null,
+      history,
     );
+
+    // Реплику пользователя пишем сама — транскрипт уже есть на сервере.
+    // Финальный текст ответа ассистента (chat-реплика, итог действия или
+    // текст ошибки) пишет фронтенд отдельно, см. logAssistantMessage ниже —
+    // здесь он ещё не известен для task_action/event_action (зависит от
+    // того, успешно ли выполнится мутация на клиенте).
+    await this.prisma.voiceMessage.create({
+      data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript },
+    });
     // id больше не ограничены enum'ом в схеме инструмента (Anthropic
     // отклоняет схему целиком, если она "слишком большая" — см. комментарий
     // в draft-extraction.service.ts у NULLABLE_ID) — проверяем сами, что
@@ -147,6 +168,32 @@ export class VoiceService {
         : result.clarificationReason,
       draft,
     };
+  }
+
+  // Последние реплики этого пользователя, в хронологическом порядке, в
+  // пределах окна VOICE_HISTORY_MAX_AGE_MS — см. комментарий у констант
+  // выше. findMany с take по индексу [employeeId, createdAt] дёшев
+  // независимо от того, сколько всего реплик накопилось за всё время.
+  private async loadHistory(employeeId: string): Promise<VoiceHistoryItem[]> {
+    const rows = await this.prisma.voiceMessage.findMany({
+      where: { employeeId, createdAt: { gte: new Date(Date.now() - VOICE_HISTORY_MAX_AGE_MS) } },
+      orderBy: { createdAt: 'desc' },
+      take: VOICE_HISTORY_LIMIT,
+      select: { role: true, text: true },
+    });
+    return rows.reverse().map((r) => ({ role: r.role === VoiceMessageRole.USER ? 'user' : 'assistant', text: r.text }));
+  }
+
+  // Вызывается фронтендом (POST /voice/messages) в момент, когда текст в
+  // чат-пузыре ассистента становится окончательным — chat-реплика сразу,
+  // итог создания/редактирования/удаления или текст ошибки после того, как
+  // соответствующий запрос (POST/PATCH/DELETE /tasks или /events)
+  // выполнится или упадёт. См. комментарий у модели VoiceMessage в schema.prisma
+  // про то, почему это не пишется здесь же, в parse().
+  async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
+    await this.prisma.voiceMessage.create({
+      data: { employeeId: user.id, role: VoiceMessageRole.ASSISTANT, text },
+    });
   }
 
   // id-поля в схеме инструмента больше не enum (см. комментарий у

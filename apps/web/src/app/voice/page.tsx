@@ -7,6 +7,7 @@ import type {
   CalendarEvent,
   CreateEventInput,
   CreateTaskInput,
+  LogVoiceMessageInput,
   MeetingDetail,
   TaskDetail,
   VoiceParseResponse,
@@ -213,6 +214,16 @@ function VoiceView() {
     streamRef.current?.getTracks().forEach((t) => t.stop());
   }
 
+  // Память диалога (аудит 10.09.2026, п. 2.9) — сервер сам пишет реплику
+  // пользователя (транскрипт) в VoiceService.parse; финальный текст ответа
+  // ассистента пишем здесь, в момент, когда он становится окончательным
+  // (не "Понял вас, создаю задачу…" на середине запроса). Fire-and-forget —
+  // сбой логирования истории не должен мешать самому чату.
+  function logAssistant(text: string) {
+    const payload: LogVoiceMessageInput = { text };
+    api.post('/voice/messages', payload).catch(() => {});
+  }
+
   function pushMessage(msg: ChatMessage) {
     setMessages((prev) => [...prev, msg]);
   }
@@ -242,6 +253,7 @@ function VoiceView() {
       // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
       if (result.draft.type === 'chat') {
         pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.draft.reply });
+        logAssistant(result.draft.reply);
         return;
       }
 
@@ -332,12 +344,13 @@ function VoiceView() {
           }
         }
       }
-      updateMessage(assistantId, { text: describeSuccess(result), status: undefined });
+      const successText = describeSuccess(result);
+      updateMessage(assistantId, { text: successText, status: undefined });
+      logAssistant(successText);
     } catch (err) {
-      updateMessage(assistantId, {
-        text: `Не получилось сохранить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`,
-        status: 'error',
-      });
+      const errorText = `Не получилось сохранить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
+      updateMessage(assistantId, { text: errorText, status: 'error' });
+      logAssistant(errorText);
     }
   }
 
@@ -354,17 +367,19 @@ function VoiceView() {
       } else {
         await api.delete(`/events/${action.targetId}`);
       }
-      updateMessage(messageId, { text: `Удалил «${action.targetTitle}».`, status: undefined });
+      const successText = `Удалил «${action.targetTitle}».`;
+      updateMessage(messageId, { text: successText, status: undefined });
+      logAssistant(successText);
     } catch (err) {
-      updateMessage(messageId, {
-        text: `Не получилось удалить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`,
-        status: 'error',
-      });
+      const errorText = `Не получилось удалить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
+      updateMessage(messageId, { text: errorText, status: 'error' });
+      logAssistant(errorText);
     }
   }
 
   function cancelDelete(messageId: string) {
     updateMessage(messageId, { text: 'Отменено.', pendingAction: null });
+    logAssistant('Отменено.');
   }
 
   function describeSuccess(result: VoiceParseResponse): string {

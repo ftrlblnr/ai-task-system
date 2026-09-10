@@ -33,6 +33,15 @@ interface ExtractionResult {
   draft: VoiceDraft;
 }
 
+// История диалога (аудит 10.09.2026, п. 2.9) — последние реплики этого же
+// пользователя, и его самого, и ассистента, в хронологическом порядке.
+// role здесь ровно то же, что и role в Anthropic messages API — не Role
+// (владелец/сотрудник) из остальной схемы.
+export interface VoiceHistoryItem {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
 // Сервер (Docker-контейнер) всегда работает в UTC, а компания — в Казахстане
 // (Asia/Almaty, UTC+5, без перехода на летнее время — фиксированное
 // смещение, без нужды в полноценной библиотеке часовых поясов). Раньше
@@ -281,7 +290,9 @@ function buildSystemPrompt(
     ? `\nПользователь сейчас смотрит саммари встречи «${meetingContext.title}»:\n${meetingContext.summary}\n\nЕсли голосовая заметка похожа на постановку задачи по мотивам этой встречи (например, ссылается на "эту задачу", человека или тему из саммари) — используй этот контекст, чтобы понять, о чём речь, и сформулировать title/description понятнее. Если заметка не связана со встречей — просто игнорируй этот раздел.\n`
     : '';
 
-  return `Ты — голосовой ассистент «Адъютант» в корпоративной системе задач для руководителя и сотрудников. Пользователь наговаривает голосовую заметку в приложении; ты слышишь только её транскрипт, без интонаций и контекста разговора. Вызови инструмент create_draft ровно один раз.
+  return `Ты — голосовой ассистент «Адъютант» в корпоративной системе задач для руководителя и сотрудников. Пользователь наговаривает голосовую заметку в приложении; ты слышишь только её транскрипт, без интонаций. Вызови инструмент create_draft ровно один раз.
+
+Выше в истории сообщений — предыдущие реплики этого же разговора (и пользователя, и твои), если они были; последнее сообщение user — это транскрипт, который нужно разобрать сейчас. Если он звучит как продолжение, уточнение или исправление того, что обсуждалось в предыдущих репликах ("не Ивану, а Петру", "перенеси на вторник", "да, именно так", "отмени это") — используй историю, чтобы понять, к чему это относится, вместо того чтобы разбирать заметку как отдельную самостоятельную мысль. Если истории нет или заметка явно не связана с ней — разбирай как обычно.
 ${meetingSection}
 
 ГЛАВНОЕ РЕШЕНИЕ — что перед тобой. Задачи и встречи — это draft.type = "task_action"/"event_action" с полем action = "create"/"update"/"delete":
@@ -319,6 +330,27 @@ ${eventRule}
 Для type = "task_action"/"event_action": если формулировка неоднозначна, но всё же похожа на попытку поставить/изменить/удалить задачу или событие — верни confidence = "LOW", clarificationNeeded = true и понятную clarificationReason, но не отказывайся от черновика. Для type = "chat" — confidence = "HIGH", clarificationNeeded = false, clarificationReason = null (уточнение теперь и есть сам ответ в reply).`;
 }
 
+// Anthropic messages API ожидает строгое чередование user/assistant.
+// history в норме уже чередуется (VoiceService пишет реплику пользователя
+// сама, фронтенд — финальный текст ассистента отдельным вызовом), но если
+// фронтенд не успел залогировать ответ ассистента до следующей заметки
+// (сеть, закрытая вкладка) — подряд могут оказаться две реплики user.
+// Склеиваем соседние реплики одной роли переносом строки вместо того, чтобы
+// упасть на валидации Anthropic.
+function toAnthropicMessages(history: VoiceHistoryItem[], transcript: string): Anthropic.MessageParam[] {
+  const items: VoiceHistoryItem[] = [...history, { role: 'user', text: transcript }];
+  const messages: Anthropic.MessageParam[] = [];
+  for (const item of items) {
+    const last = messages[messages.length - 1];
+    if (last && last.role === item.role && typeof last.content === 'string') {
+      last.content = `${last.content}\n${item.text}`;
+    } else {
+      messages.push({ role: item.role, content: item.text });
+    }
+  }
+  return messages;
+}
+
 // Каскад моделей вместо одной фиксированной: Haiku на порядок быстрее Opus
 // (структурированное извлечение по строгой schema — для неё тривиальная
 // задача в подавляющем большинстве случаев), поэтому типичная короткая
@@ -350,7 +382,7 @@ export class DraftExtractionService {
 
   private async callModel(
     model: string,
-    transcript: string,
+    messages: Anthropic.MessageParam[],
     tool: Anthropic.Tool,
     system: string,
   ): Promise<ExtractionResult> {
@@ -365,7 +397,7 @@ export class DraftExtractionService {
       system,
       tools: [tool],
       tool_choice: { type: 'tool', name: 'create_draft' },
-      messages: [{ role: 'user', content: transcript }],
+      messages,
     });
 
     const block = response.content.find(
@@ -385,13 +417,15 @@ export class DraftExtractionService {
     tasks: TaskContextItem[],
     events: EventContextItem[],
     meetingContext: MeetingVoiceContext | null = null,
+    history: VoiceHistoryItem[] = [],
   ): Promise<ExtractionResult> {
     const tool = buildDraftTool();
     const system = buildSystemPrompt(nowInLocalTimezone(), employees, role, tasks, events, meetingContext);
+    const messages = toAnthropicMessages(history, transcript);
 
-    let raw = await this.callModel(FAST_MODEL, transcript, tool, system);
+    let raw = await this.callModel(FAST_MODEL, messages, tool, system);
     if (raw.confidence === 'LOW' || raw.clarificationNeeded) {
-      raw = await this.callModel(STRONG_MODEL, transcript, tool, system);
+      raw = await this.callModel(STRONG_MODEL, messages, tool, system);
     }
 
     return { ...raw, draft: normalizeDraftDates(raw.draft) };

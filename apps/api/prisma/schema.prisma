@@ -68,9 +68,44 @@ model Employee {
   eventsCreated            Event[]
   googleCalendarConnection GoogleCalendarConnection?
   plaudConnection          PlaudConnection?
+  voiceMessages            VoiceMessage[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Роль реплики в истории голосового диалога — те же два значения, что
+// Anthropic messages API ('user'/'assistant'), не более общий Role
+// (владелец/сотрудник) — не путать друг с другом.
+enum VoiceMessageRole {
+  USER
+  ASSISTANT
+}
+
+// Память голосового диалога (аудит 10.09.2026, п. 2.9): раньше переписка
+// жила только в localStorage браузера и на сервер не возвращалась — ни
+// системный промпт, ни сама модель не видели, что говорилось раньше.
+// "Перенеси её на вторник", "нет, не Ивану, а Петру" были физически
+// невозможны — каждая заметка обрабатывалась в полном отрыве от предыдущей,
+// хотя промпт (buildSystemPrompt) уже обещал реакцию на "предыдущий ответ".
+// Строка на каждую реплику (и пользователя, и ассистента) — VoiceService.parse
+// пишет реплику пользователя сама (транскрипт уже есть на сервере), а
+// финальный текст ответа ассистента (chat-реплика, итог создания/
+// редактирования/удаления или текст ошибки) пишет фронтенд отдельным
+// вызовом POST /voice/messages в момент, когда этот текст становится
+// окончательным в чате — с тем чтобы не дублировать на бэкенде логику
+// форматирования (describeSuccess и т.п.), которая и так уже есть на
+// фронтенде для самого чат-пузыря.
+model VoiceMessage {
+  id         String           @id @default(cuid())
+  employeeId String
+  employee   Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  role       VoiceMessageRole
+  text       String
+
+  createdAt DateTime @default(now())
+
+  @@index([employeeId, createdAt])
 }
 
 // Одноразовая привязка Telegram-аккаунта к профилю сотрудника (раздел 14.2/

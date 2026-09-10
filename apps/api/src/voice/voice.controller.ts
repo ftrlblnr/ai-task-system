@@ -6,6 +6,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { VoiceService } from './voice.service';
 import { ParseVoiceDto } from './dto/parse-voice.dto';
+import { LogVoiceMessageDto } from './dto/log-voice-message.dto';
 
 // Без @Roles(...) — как TasksController: голосом можно надиктовать задачу
 // себе или коллеге, а это открыто любому сотруднику (раздел 5 ТЗ,
@@ -43,5 +44,13 @@ export class VoiceController {
     // audio может быть undefined (fileFilter отклонил формат) — проверка и
     // BadRequestException живут в VoiceService.parse, не дублируем здесь.
     return this.voice.parse(audio, user, dto.meetingId);
+  }
+
+  // Память диалога (аудит 10.09.2026, п. 2.9) — фронтенд зовёт это, когда
+  // текст чат-пузыря ассистента становится окончательным, см. комментарий у
+  // VoiceService.logAssistantMessage.
+  @Post('messages')
+  logAssistantMessage(@Body() dto: LogVoiceMessageDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.voice.logAssistantMessage(dto.text, user);
   }
 }
