@@ -10,7 +10,10 @@ import type {
   LogVoiceMessageInput,
   MeetingDetail,
   TaskDetail,
+  VoiceDraft,
+  VoiceEventActionDraft,
   VoiceParseResponse,
+  VoiceTaskActionDraft,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
@@ -246,40 +249,22 @@ function VoiceView() {
 
       pushMessage({ id: crypto.randomUUID(), role: 'user', text: result.transcript });
 
-      // Не всё сказанное — попытка поставить задачу/событие: вопрос,
-      // реплика, реакция на прошлый ответ. Раньше на это тоже создавалась
-      // задача-заглушка («Уточнить формулировку») — владелец 07.09.2026
-      // указал, что ожидал вместо этого живой ответ, а не мусор в списке
-      // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
-      if (result.draft.type === 'chat') {
-        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.draft.reply });
-        logAssistant(result.draft.reply);
-        return;
+      // drafts — массив, не одно действие (владелец 10.09.2026, найдено в
+      // проде: "удали встречу с Петром и создай новую на пятницу" в одной
+      // заметке — выполнилось только удаление, создание терялось). Каждый
+      // элемент — своя реплика ассистента, обрабатываем по очереди; сбой
+      // одного действия (см. try/catch внутри processDraft/confirmDraft)
+      // не должен блокировать остальные.
+      for (const draft of result.drafts) {
+        await processDraft(draft);
       }
 
-      // Удаление ничего не удаляет само по себе — только показывает
-      // кнопки подтверждения в баббле (владелец 09.09.2026, см. комментарий
-      // у ChatMessage.pendingAction).
-      if (result.draft.action === 'delete') {
-        const draft = result.draft;
-        const targetId = draft.type === 'task_action' ? draft.targetTaskId : draft.targetEventId;
-        pushMessage({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: `Удалить «${draft.targetTitle}»?`,
-          pendingAction: { kind: draft.type === 'task_action' ? 'task' : 'event', targetId, targetTitle: draft.targetTitle },
-        });
-        return;
+      // Общая оценка неуверенности на весь транскрипт целиком (не про
+      // конкретное действие — те уже объяснены каждое в своём баббле выше).
+      if (result.clarificationNeeded && result.clarificationReason) {
+        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.clarificationReason });
+        logAssistant(result.clarificationReason);
       }
-
-      const assistantId = crypto.randomUUID();
-      pushMessage({
-        id: assistantId,
-        role: 'assistant',
-        text: describeInFlight(result.draft.type, result.draft.action),
-        status: 'pending',
-      });
-      await confirmDraft(result, assistantId);
     } catch (err) {
       setPhase('error');
       const msg = err instanceof ApiError ? err.message : 'Не удалось обработать голосовое сообщение.';
@@ -288,11 +273,47 @@ function VoiceView() {
     }
   }
 
-  // action='delete' сюда не попадает — уходит отдельной веткой в handleStop
-  // (см. комментарий у ChatMessage.pendingAction).
-  async function confirmDraft(result: VoiceParseResponse, assistantId: string) {
+  // Один элемент result.drafts — своя реплика ассистента в чате.
+  async function processDraft(draft: VoiceDraft) {
+    // Не всё сказанное — попытка поставить задачу/событие: вопрос,
+    // реплика, реакция на прошлый ответ. Раньше на это тоже создавалась
+    // задача-заглушка («Уточнить формулировку») — владелец 07.09.2026
+    // указал, что ожидал вместо этого живой ответ, а не мусор в списке
+    // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
+    if (draft.type === 'chat') {
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: draft.reply });
+      logAssistant(draft.reply);
+      return;
+    }
+
+    // Удаление ничего не удаляет само по себе — только показывает кнопки
+    // подтверждения в баббле (владелец 09.09.2026, см. комментарий у
+    // ChatMessage.pendingAction).
+    if (draft.action === 'delete') {
+      const targetId = draft.type === 'task_action' ? draft.targetTaskId : draft.targetEventId;
+      pushMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        text: `Удалить «${draft.targetTitle}»?`,
+        pendingAction: { kind: draft.type === 'task_action' ? 'task' : 'event', targetId, targetTitle: draft.targetTitle },
+      });
+      return;
+    }
+
+    const assistantId = crypto.randomUUID();
+    pushMessage({
+      id: assistantId,
+      role: 'assistant',
+      text: describeInFlight(draft.type, draft.action),
+      status: 'pending',
+    });
+    await confirmDraft(draft, assistantId);
+  }
+
+  // action='delete' сюда не попадает — уходит отдельной веткой в
+  // processDraft (см. комментарий у ChatMessage.pendingAction).
+  async function confirmDraft(draft: VoiceTaskActionDraft | VoiceEventActionDraft, assistantId: string) {
     try {
-      const draft = result.draft;
       if (draft.type === 'task_action') {
         if (draft.action === 'create') {
           const payload: CreateTaskInput = {
@@ -344,7 +365,7 @@ function VoiceView() {
           }
         }
       }
-      const successText = describeSuccess(result);
+      const successText = describeSuccess(draft);
       updateMessage(assistantId, { text: successText, status: undefined });
       logAssistant(successText);
     } catch (err) {
@@ -382,8 +403,7 @@ function VoiceView() {
     logAssistant('Отменено.');
   }
 
-  function describeSuccess(result: VoiceParseResponse): string {
-    const { draft } = result;
+  function describeSuccess(draft: VoiceTaskActionDraft | VoiceEventActionDraft): string {
     let base: string;
     if (draft.type === 'task_action' && draft.action === 'create') {
       const parts = [`Создал задачу «${draft.title}».`];
@@ -406,11 +426,11 @@ function VoiceView() {
     } else {
       // describeSuccess вызывается только из confirmDraft, а тот — только
       // для action='create'/'update' (chat и action='delete' уходят
-      // отдельными ветками в handleStop) — сюда попасть не должны, но TS
-      // не знает об этом на уровне сигнатур.
+      // отдельными ветками в processDraft) — сюда попасть не должны, но TS
+      // не знает об этом на уровне сигнатур (action='delete' — валидное
+      // значение типа, просто недостижимое на практике здесь).
       base = '';
     }
-    if (result.clarificationReason) base += ` ${result.clarificationReason}`;
     return base;
   }
 

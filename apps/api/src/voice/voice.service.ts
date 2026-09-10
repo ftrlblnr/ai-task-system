@@ -125,48 +125,43 @@ export class VoiceService {
     await this.prisma.voiceMessage.create({
       data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript },
     });
-    // id больше не ограничены enum'ом в схеме инструмента (Anthropic
-    // отклоняет схему целиком, если она "слишком большая" — см. комментарий
-    // в draft-extraction.service.ts у NULLABLE_ID) — проверяем сами, что
-    // Claude не "придумала" несуществующий/невидимый id.
-    const validatedTarget = this.validateTarget(
-      result.draft,
-      new Set(taskContext.map((t) => t.id)),
-      new Set(eventContext.map((e) => e.id)),
-    );
-    const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
-    const validatedRefs = this.validateReferences(withCompleteEvent, new Set(employees.map((e) => e.id)));
-    const enrichedDraft = this.attachAssigneeName(validatedRefs, employees);
-    const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
-    const draft = this.enforceEventRbac(withMeeting, user.role);
+
+    const taskIds = new Set(taskContext.map((t) => t.id));
+    const eventIds = new Set(eventContext.map((e) => e.id));
+    const employeeIds = new Set(employees.map((e) => e.id));
+
+    // Один транскрипт — несколько самостоятельных команд (владелец
+    // 10.09.2026, найдено в проде: "удали встречу с Петром и создай новую
+    // на пятницу" в одной аудиозаписи — агент удалил встречу, а создание
+    // потерялось, потому что раньше схема инструмента физически могла
+    // вернуть только одно действие за раз). Каждый элемент result.drafts
+    // проходит ту же цепочку валидации независимо; flatMap — потому что
+    // enforceEventRbac может РАЗВЕРНУТЬ один элемент в два (даунгрейд
+    // событие→задача + отдельное чат-объяснение), см. её комментарий.
+    const drafts = result.drafts.flatMap((draft) => {
+      const validatedTarget = this.validateTarget(draft, taskIds, eventIds);
+      const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
+      const validatedRefs = this.validateReferences(withCompleteEvent, employeeIds);
+      const enrichedDraft = this.attachAssigneeName(validatedRefs, employees);
+      const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
+      return this.enforceEventRbac(withMeeting, user.role);
+    });
 
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам
     // факт транскрибации/разбора, не текст транскрипта. randomUUID(), а не
     // константа — черновик эфемерный, своего id в БД у него нет, но записи
     // аудита не должны схлопываться в одну неразличимую строку.
     await this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', randomUUID(), {
-      draftType: draft.type,
+      draftTypes: drafts.map((d) => d.type),
       confidence: result.confidence,
     });
-
-    // enforceEventRbac подменяет черновик двумя способами: event_action
-    // create -> task_action create (нужно уточнение формулировки) или
-    // event_action update/delete -> chat (объяснение уже в самом reply,
-    // доп. уточнение не нужно). Сравниваем типы/action явно, а не ссылки —
-    // validateReferences выше всегда создаёт новый объект через spread даже
-    // когда ничего не поменялось, так что draft !== result.draft больше не
-    // сигнализирует "было подменено".
-    const wasDowngradedToTask =
-      result.draft.type === 'event_action' && result.draft.action === 'create' && draft.type === 'task_action';
 
     return {
       transcript,
       confidence: result.confidence,
-      clarificationNeeded: wasDowngradedToTask || result.clarificationNeeded,
-      clarificationReason: wasDowngradedToTask
-        ? 'Похоже на событие календаря, но календарь доступен только руководителю — уточните формулировку задачи.'
-        : result.clarificationReason,
-      draft,
+      clarificationNeeded: result.clarificationNeeded,
+      clarificationReason: result.clarificationReason,
+      drafts,
     };
   }
 
@@ -289,11 +284,20 @@ export class VoiceService {
   // черновик события от кого угодно другого принудительно превращается в
   // черновик задачи (create) или в chat (update/delete — редактировать
   // чужой недоступный календарь всё равно нечем).
-  private enforceEventRbac(draft: VoiceDraft, role: Role): VoiceDraft {
-    if (role === Role.OWNER || draft.type !== 'event_action') return draft;
+  //
+  // Возвращает массив (владелец 10.09.2026, переход на drafts: VoiceDraft[]
+  // в parse() выше): даунгрейд create→task_action теряет возможность
+  // объяснить, ПОЧЕМУ вместо встречи создалась задача (у task_action нет
+  // поля reply) — раньше это объяснение шло отдельным полем
+  // clarificationReason на весь ответ целиком, что не масштабируется на
+  // несколько независимых черновиков в одном транскрипте. Теперь вместо
+  // этого — второй элемент массива: тот же task_action, плюс отдельная
+  // chat-реплика с объяснением сразу следом.
+  private enforceEventRbac(draft: VoiceDraft, role: Role): VoiceDraft[] {
+    if (role === Role.OWNER || draft.type !== 'event_action') return [draft];
 
     if (draft.action === 'create') {
-      return {
+      const taskDraft: VoiceDraft = {
         type: 'task_action',
         action: 'create',
         targetTaskId: '',
@@ -306,10 +310,17 @@ export class VoiceService {
         priority: null,
         sourceMeetingId: null,
       };
+      const explanation: VoiceDraft = {
+        type: 'chat',
+        reply: 'Похоже на событие календаря, но календарь доступен только руководителю — создал как задачу.',
+      };
+      return [taskDraft, explanation];
     }
-    return {
-      type: 'chat',
-      reply: 'Календарь доступен только руководителю — изменить или удалить встречу я не могу.',
-    };
+    return [
+      {
+        type: 'chat',
+        reply: 'Календарь доступен только руководителю — изменить или удалить встречу я не могу.',
+      },
+    ];
   }
 }

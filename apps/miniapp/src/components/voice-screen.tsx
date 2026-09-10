@@ -8,7 +8,10 @@ import type {
   CreateTaskInput,
   LogVoiceMessageInput,
   TaskDetail,
+  VoiceDraft,
+  VoiceEventActionDraft,
   VoiceParseResponse,
+  VoiceTaskActionDraft,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
@@ -265,39 +268,22 @@ export function VoiceScreen() {
 
       pushMessage({ id: crypto.randomUUID(), role: 'user', text: result.transcript });
 
-      // Не всё сказанное — попытка поставить задачу/событие: вопрос,
-      // реплика, реакция на прошлый ответ. Раньше на это тоже создавалась
-      // задача-заглушка («Уточнить формулировку») — владелец 07.09.2026
-      // указал, что ожидал вместо этого живой ответ, а не мусор в списке
-      // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
-      if (result.draft.type === 'chat') {
-        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.draft.reply });
-        logAssistant(result.draft.reply);
-        return;
+      // drafts — массив, не одно действие (владелец 10.09.2026, найдено в
+      // проде: "удали встречу с Петром и создай новую на пятницу" в одной
+      // заметке — выполнилось только удаление, создание терялось). Каждый
+      // элемент — своя реплика ассистента, обрабатываем по очереди; сбой
+      // одного действия не блокирует остальные (try/catch внутри
+      // confirmDraft/confirmDelete).
+      for (const draft of result.drafts) {
+        await processDraft(draft);
       }
 
-      // Удаление ничего не удаляет само по себе — только показывает
-      // кнопки подтверждения в баббле (владелец 09.09.2026).
-      if (result.draft.action === 'delete') {
-        const draft = result.draft;
-        const targetId = draft.type === 'task_action' ? draft.targetTaskId : draft.targetEventId;
-        pushMessage({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: `Удалить «${draft.targetTitle}»?`,
-          pendingAction: { kind: draft.type === 'task_action' ? 'task' : 'event', targetId, targetTitle: draft.targetTitle },
-        });
-        return;
+      // Общая оценка неуверенности на весь транскрипт целиком (не про
+      // конкретное действие — те уже объяснены каждое в своём баббле выше).
+      if (result.clarificationNeeded && result.clarificationReason) {
+        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.clarificationReason });
+        logAssistant(result.clarificationReason);
       }
-
-      const assistantId = crypto.randomUUID();
-      pushMessage({
-        id: assistantId,
-        role: 'assistant',
-        text: describeInFlight(result.draft.type, result.draft.action),
-        status: 'pending',
-      });
-      await confirmDraft(result, assistantId);
     } catch (err) {
       notificationHaptic('error');
       setPhase('error');
@@ -307,13 +293,48 @@ export function VoiceScreen() {
     }
   }
 
+  // Один элемент result.drafts — своя реплика ассистента в чате.
+  async function processDraft(draft: VoiceDraft) {
+    // Не всё сказанное — попытка поставить задачу/событие: вопрос,
+    // реплика, реакция на прошлый ответ. Раньше на это тоже создавалась
+    // задача-заглушка («Уточнить формулировку») — владелец 07.09.2026
+    // указал, что ожидал вместо этого живой ответ, а не мусор в списке
+    // задач. draft.type === 'chat' — просто реплика, ничего не создаём.
+    if (draft.type === 'chat') {
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: draft.reply });
+      logAssistant(draft.reply);
+      return;
+    }
+
+    // Удаление ничего не удаляет само по себе — только показывает кнопки
+    // подтверждения в баббле (владелец 09.09.2026).
+    if (draft.action === 'delete') {
+      const targetId = draft.type === 'task_action' ? draft.targetTaskId : draft.targetEventId;
+      pushMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        text: `Удалить «${draft.targetTitle}»?`,
+        pendingAction: { kind: draft.type === 'task_action' ? 'task' : 'event', targetId, targetTitle: draft.targetTitle },
+      });
+      return;
+    }
+
+    const assistantId = crypto.randomUUID();
+    pushMessage({
+      id: assistantId,
+      role: 'assistant',
+      text: describeInFlight(draft.type, draft.action),
+      status: 'pending',
+    });
+    await confirmDraft(draft, assistantId);
+  }
+
   // Создаёт/обновляет задачу/событие сразу, без экрана ревью (см.
   // комментарий над компонентом) — реплика ассистента в чате и есть
-  // подтверждение. Удаление — отдельная ветка (см. handleStop), сюда не
+  // подтверждение. Удаление — отдельная ветка (см. processDraft), сюда не
   // попадает: confirmDelete ниже вызывается только по клику в баббле.
-  async function confirmDraft(result: VoiceParseResponse, assistantId: string) {
+  async function confirmDraft(draft: VoiceTaskActionDraft | VoiceEventActionDraft, assistantId: string) {
     try {
-      const draft = result.draft;
       if (draft.type === 'task_action') {
         if (draft.action === 'create') {
           const payload: CreateTaskInput = {
@@ -364,7 +385,7 @@ export function VoiceScreen() {
           }
         }
       }
-      const successText = describeSuccess(result);
+      const successText = describeSuccess(draft);
       updateMessage(assistantId, { text: successText, status: undefined });
       logAssistant(successText);
       notificationHaptic('success');
@@ -406,8 +427,7 @@ export function VoiceScreen() {
     logAssistant('Отменено.');
   }
 
-  function describeSuccess(result: VoiceParseResponse): string {
-    const { draft } = result;
+  function describeSuccess(draft: VoiceTaskActionDraft | VoiceEventActionDraft): string {
     let base: string;
     if (draft.type === 'task_action' && draft.action === 'create') {
       // Имя сотрудника из БД нельзя корректно склонить программно
@@ -433,13 +453,11 @@ export function VoiceScreen() {
     } else {
       // describeSuccess вызывается только из confirmDraft, а тот — только
       // для action='create'/'update' (chat и action='delete' уходят
-      // отдельными ветками в handleStop) — сюда попасть не должны, но TS
-      // не знает об этом на уровне сигнатур.
+      // отдельными ветками в processDraft) — сюда попасть не должны, но TS
+      // не знает об этом на уровне сигнатур (action='delete' — валидное
+      // значение типа, просто недостижимое на практике здесь).
       base = '';
     }
-    // clarificationReason уже покрывает и низкую уверенность разбора, и
-    // RBAC-fallback событие→задача (см. VoiceService.parse) — единая ветка.
-    if (result.clarificationReason) base += ` ${result.clarificationReason}`;
     return base;
   }
 

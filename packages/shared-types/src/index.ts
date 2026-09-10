@@ -348,12 +348,20 @@ export interface VoiceChatReply {
 
 export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
+// drafts: массив, не одиночный draft (владелец 10.09.2026, найдено в
+// проде: "удали встречу с Петром и создай новую на пятницу" в одной
+// аудиозаписи — агент удалил встречу, а создание потерялось, потому что
+// схема инструмента физически могла вернуть только ОДНО действие за раз).
+// Один элемент на каждую самостоятельную команду в транскрипте, в порядке
+// произнесения — фронтенд выполняет их последовательно, сбой одного
+// действия не блокирует остальные. Для обычной однозадачной заметки —
+// массив из одного элемента, как раньше.
 export interface VoiceParseResponse {
   transcript: string;
   confidence: ConfidenceLevel;
   clarificationNeeded: boolean;
   clarificationReason: string | null;
-  draft: VoiceDraft;
+  drafts: VoiceDraft[];
 }
 
 // Память голосового диалога (аудит 10.09.2026, п. 2.9) — POST

@@ -30,7 +30,7 @@ interface ExtractionResult {
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   clarificationNeeded: boolean;
   clarificationReason: string | null;
-  draft: VoiceDraft;
+  drafts: VoiceDraft[];
 }
 
 // История диалога (аудит 10.09.2026, п. 2.9) — последние реплики этого же
@@ -130,11 +130,20 @@ const NULLABLE_PRIORITY = {
   anyOf: [{ type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] }, { type: 'null' }],
 } as const;
 
+// Верхний уровень схемы — массив drafts, не одиночный draft (владелец
+// 10.09.2026, см. подробный комментарий у VoiceParseResponse в
+// voice-draft-response.dto.ts): один транскрипт может содержать несколько
+// самостоятельных команд подряд ("удали встречу с Петром и создай новую на
+// пятницу"). maxItems — та же логика, что MAX_DURATION_MS у самой записи:
+// разумный потолок на патологический транскрипт, не ожидаемый случай (1-2
+// команды в норме).
+const MAX_DRAFTS_PER_NOTE = 5;
+
 function buildDraftTool(): Anthropic.Tool {
   return {
     name: 'create_draft',
     description:
-      'Разобрать транскрипт голосового сообщения: попытка поставить/отредактировать/удалить задачу или событие, вопрос, реплика или неразборчивая запись — вернуть соответствующий структурированный черновик ровно одного вида.',
+      'Разобрать транскрипт голосового сообщения на одну или несколько самостоятельных команд: попытка поставить/отредактировать/удалить задачу или событие, вопрос, реплика или неразборчивая запись — по одному структурированному черновику на каждую.',
     strict: true,
     input_schema: {
       type: 'object',
@@ -142,93 +151,98 @@ function buildDraftTool(): Anthropic.Tool {
         confidence: { type: 'string', enum: ['HIGH', 'MEDIUM', 'LOW'] },
         clarificationNeeded: { type: 'boolean' },
         clarificationReason: OPTIONAL_STRING,
-        draft: {
-          anyOf: [
-            {
-              // Создание/редактирование/удаление задачи — одна ветка,
-              // различаются полем action (владелец 09.09.2026, см.
-              // комментарий у buildDraftTool выше). targetTaskId — '' при
-              // action='create'; иначе id из таблицы задач в промпте
-              // (проверяется после ответа модели, не схемой).
-              type: 'object',
-              properties: {
-                type: { const: 'task_action' },
-                action: { type: 'string', enum: ['create', 'update', 'delete'] },
-                targetTaskId: { type: 'string' },
-                targetTitle: { type: 'string' },
-                title: { type: 'string' },
-                description: OPTIONAL_STRING,
-                assigneeId: NULLABLE_ID,
-                dueDate: NULLABLE_DATE_TIME,
-                priority: NULLABLE_PRIORITY,
+        drafts: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_DRAFTS_PER_NOTE,
+          items: {
+            anyOf: [
+              {
+                // Создание/редактирование/удаление задачи — одна ветка,
+                // различаются полем action (владелец 09.09.2026, см.
+                // комментарий у buildDraftTool выше). targetTaskId — '' при
+                // action='create'; иначе id из таблицы задач в промпте
+                // (проверяется после ответа модели, не схемой).
+                type: 'object',
+                properties: {
+                  type: { const: 'task_action' },
+                  action: { type: 'string', enum: ['create', 'update', 'delete'] },
+                  targetTaskId: { type: 'string' },
+                  targetTitle: { type: 'string' },
+                  title: { type: 'string' },
+                  description: OPTIONAL_STRING,
+                  assigneeId: NULLABLE_ID,
+                  dueDate: NULLABLE_DATE_TIME,
+                  priority: NULLABLE_PRIORITY,
+                },
+                required: [
+                  'type',
+                  'action',
+                  'targetTaskId',
+                  'targetTitle',
+                  'title',
+                  'description',
+                  'assigneeId',
+                  'dueDate',
+                  'priority',
+                ],
+                additionalProperties: false,
               },
-              required: [
-                'type',
-                'action',
-                'targetTaskId',
-                'targetTitle',
-                'title',
-                'description',
-                'assigneeId',
-                'dueDate',
-                'priority',
-              ],
-              additionalProperties: false,
-            },
-            {
-              type: 'object',
-              properties: {
-                type: { const: 'event_action' },
-                action: { type: 'string', enum: ['create', 'update', 'delete'] },
-                targetEventId: { type: 'string' },
-                targetTitle: { type: 'string' },
-                title: { type: 'string' },
-                description: OPTIONAL_STRING,
-                location: OPTIONAL_STRING,
-                startAt: NULLABLE_DATE_TIME,
-                endAt: NULLABLE_DATE_TIME,
-                allDay: NULLABLE_BOOLEAN,
-                // При action='create' — начальный список участников; при
-                // 'update' — кого добавить. removeParticipantIds имеет
-                // смысл только при 'update'.
-                addParticipantIds: ID_ARRAY,
-                removeParticipantIds: ID_ARRAY,
+              {
+                type: 'object',
+                properties: {
+                  type: { const: 'event_action' },
+                  action: { type: 'string', enum: ['create', 'update', 'delete'] },
+                  targetEventId: { type: 'string' },
+                  targetTitle: { type: 'string' },
+                  title: { type: 'string' },
+                  description: OPTIONAL_STRING,
+                  location: OPTIONAL_STRING,
+                  startAt: NULLABLE_DATE_TIME,
+                  endAt: NULLABLE_DATE_TIME,
+                  allDay: NULLABLE_BOOLEAN,
+                  // При action='create' — начальный список участников; при
+                  // 'update' — кого добавить. removeParticipantIds имеет
+                  // смысл только при 'update'.
+                  addParticipantIds: ID_ARRAY,
+                  removeParticipantIds: ID_ARRAY,
+                },
+                required: [
+                  'type',
+                  'action',
+                  'targetEventId',
+                  'targetTitle',
+                  'title',
+                  'description',
+                  'location',
+                  'startAt',
+                  'endAt',
+                  'allDay',
+                  'addParticipantIds',
+                  'removeParticipantIds',
+                ],
+                additionalProperties: false,
               },
-              required: [
-                'type',
-                'action',
-                'targetEventId',
-                'targetTitle',
-                'title',
-                'description',
-                'location',
-                'startAt',
-                'endAt',
-                'allDay',
-                'addParticipantIds',
-                'removeParticipantIds',
-              ],
-              additionalProperties: false,
-            },
-            {
-              // Не всё сказанное — попытка продиктовать задачу/событие:
-              // вопрос, реплика, реакция на предыдущий ответ, неразборчивая
-              // или пустая запись. Для этого — обычный текстовый ответ в
-              // чате, без создания чего-либо (раздел 10.3 ТЗ: не гадать —
-              // либо честно сделать то, что попросили, либо ответить, а не
-              // выдумывать задачу из непонятного).
-              type: 'object',
-              properties: {
-                type: { const: 'chat' },
-                reply: { type: 'string' },
+              {
+                // Не всё сказанное — попытка продиктовать задачу/событие:
+                // вопрос, реплика, реакция на предыдущий ответ, неразборчивая
+                // или пустая запись. Для этого — обычный текстовый ответ в
+                // чате, без создания чего-либо (раздел 10.3 ТЗ: не гадать —
+                // либо честно сделать то, что попросили, либо ответить, а не
+                // выдумывать задачу из непонятного).
+                type: 'object',
+                properties: {
+                  type: { const: 'chat' },
+                  reply: { type: 'string' },
+                },
+                required: ['type', 'reply'],
+                additionalProperties: false,
               },
-              required: ['type', 'reply'],
-              additionalProperties: false,
-            },
-          ],
+            ],
+          },
         },
       },
-      required: ['confidence', 'clarificationNeeded', 'clarificationReason', 'draft'],
+      required: ['confidence', 'clarificationNeeded', 'clarificationReason', 'drafts'],
       additionalProperties: false,
     },
   };
@@ -291,6 +305,8 @@ function buildSystemPrompt(
     : '';
 
   return `Ты — голосовой ассистент «Адъютант» в корпоративной системе задач для руководителя и сотрудников. Пользователь наговаривает голосовую заметку в приложении; ты слышишь только её транскрипт, без интонаций. Вызови инструмент create_draft ровно один раз.
+
+Транскрипт может содержать НЕСКОЛЬКО самостоятельных команд подряд — например, "удали встречу с Петром и создай новую на пятницу в 15:00" это ДВЕ команды, а не одна. Поле drafts — массив: один элемент на каждую самостоятельную команду, в том порядке, в котором они прозвучали. Обычная однозадачная заметка — массив из одного элемента, это норма, а не исключение. Не пытайся втиснуть две разные команды в один элемент и не игнорируй вторую — если распознал несколько, верни несколько элементов. Ниже "draft"/"этот элемент" — про один элемент массива drafts, правила одинаковы для каждого из них.
 
 Выше в истории сообщений — предыдущие реплики этого же разговора (и пользователя, и твои), если они были; последнее сообщение user — это транскрипт, который нужно разобрать сейчас. Если он звучит как продолжение, уточнение или исправление того, что обсуждалось в предыдущих репликах ("не Ивану, а Петру", "перенеси на вторник", "да, именно так", "отмени это") — используй историю, чтобы понять, к чему это относится, вместо того чтобы разбирать заметку как отдельную самостоятельную мысль. Если истории нет или заметка явно не связана с ней — разбирай как обычно.
 ${meetingSection}
@@ -388,7 +404,12 @@ export class DraftExtractionService {
   ): Promise<ExtractionResult> {
     const response = await this.getClient().messages.create({
       model,
-      max_tokens: 1024,
+      // 1024 хватало на один draft; с переходом на drafts: VoiceDraft[]
+      // (до MAX_DRAFTS_PER_NOTE=5, каждый — до 12 полей, включая массивы
+      // участников) ответ мог не влезть и оборваться на середине tool_use
+      // JSON (владелец 10.09.2026). 2048 — запас с кратным множителем, не
+      // впритык к худшему случаю.
+      max_tokens: 2048,
       // effort — параметр только для Opus; Haiku 4.5 на него отвечает 400
       // "This model does not support the effort parameter" (найдено в
       // проде 08.09.2026 — первый реальный вызов после переключения на
@@ -428,6 +449,6 @@ export class DraftExtractionService {
       raw = await this.callModel(STRONG_MODEL, messages, tool, system);
     }
 
-    return { ...raw, draft: normalizeDraftDates(raw.draft) };
+    return { ...raw, drafts: raw.drafts.map(normalizeDraftDates) };
   }
 }
