@@ -21,7 +21,6 @@ export function CalendarScreen({ active = true }: { active?: boolean }) {
   // вкладку, не только при первом монтировании Mini App.
   useEffect(() => {
     if (active) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
   // /events закрыт на Role.OWNER на бэкенде (CalendarController) — этот

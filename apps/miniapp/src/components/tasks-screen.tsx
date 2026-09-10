@@ -31,7 +31,6 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
   // голосом на соседней вкладке, не появится здесь без перезапуска Mini App.
   useEffect(() => {
     if (active) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
   const filteredTasks = tasks

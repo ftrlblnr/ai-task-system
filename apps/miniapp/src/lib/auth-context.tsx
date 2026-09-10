@@ -34,7 +34,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!initData) {
       // Не запущено из Telegram — обычный браузер (в т.ч. локальная
       // разработка без бота). Показываем форму email/пароль вместо
-      // бесконечной загрузки.
+      // бесконечной загрузки. Чтение Telegram WebApp SDK на монтировании —
+      // синхронизация с внешней системой, не подстройка под проп (react-
+      // hooks/set-state-in-effect, первый реальный прогон lint в CI, аудит
+      // 10.09.2026, п. 5.2 — ложное срабатывание, тот же случай, что в
+      // apps/web/src/lib/auth-context.tsx).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsTelegram(false);
       setLoading(false);
       return;
