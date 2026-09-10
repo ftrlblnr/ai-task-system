@@ -219,8 +219,11 @@ enum TaskStatus {
   IN_REVIEW // На проверке
   DONE // Выполнена
   RETURNED // Возвращена на доработку
-  OVERDUE // Просрочена (боковое состояние)
   CANCELLED // Отменена (боковое состояние)
+  // OVERDUE убран из схемы (аудит 10.09.2026, п. 2.1): хранимый статус
+  // конкурировал с изменением статуса самим сотрудником — крон каждые 30
+  // минут перетирал IN_PROGRESS обратно в OVERDUE. Просрочка теперь
+  // вычисляется на лету, см. isOverdue в TasksService.
 }
 
 enum TaskPriority {
@@ -255,6 +258,12 @@ model Task {
   status   TaskStatus   @default(DRAFT)
   dueDate  DateTime?
 
+  // Когда TasksOverdueCron последний раз уведомил о просрочке этой задачи
+  // (аудит 10.09.2026, п. 2.1) — не хранимый статус, только защита от
+  // повторного уведомления каждые 30 минут. Сбрасывается в null при любом
+  // изменении dueDate (см. TasksService.update).
+  overdueNotifiedAt DateTime?
+
   // Ручной порядок внутри колонки канбана (владелец 08.09.2026: "надо
   // сделать так чтобы задачи можно было переставлять вверх-вниз"). Общий
   // default 0 у всех — сортировка по (order asc, createdAt desc) при этом
@@ -285,8 +294,11 @@ model Task {
   // Не показываются как отдельные карточки в общем списке/канбане, только
   // внутри карточки родителя.
   parentTaskId String?
-  parentTask   Task?  @relation("TaskSubtasks", fields: [parentTaskId], references: [id])
-  subtasks     Task[] @relation("TaskSubtasks")
+  // onDelete: Cascade (аудит 10.09.2026, п. 2.2) — раньше был дефолт Prisma
+  // (SetNull): удаление родителя осиротевало подзадачи в общий список/
+  // канбан как самостоятельные задачи вместо их удаления.
+  parentTask Task?  @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks   Task[] @relation("TaskSubtasks")
 
   comments    TaskComment[]
   attachments TaskAttachment[]

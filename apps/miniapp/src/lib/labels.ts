@@ -10,7 +10,6 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
   IN_REVIEW: 'На проверке',
   DONE: 'Выполнена',
   RETURNED: 'Возвращена на доработку',
-  OVERDUE: 'Просрочена',
   CANCELLED: 'Отменена',
 };
 
@@ -33,7 +32,6 @@ export const TASK_SECTIONS: TaskStatus[] = [
   'IN_REVIEW',
   'DONE',
   'RETURNED',
-  'OVERDUE',
   'CANCELLED',
 ];
 
@@ -44,6 +42,5 @@ export const STATUS_DOT_COLOR: Record<TaskStatus, string> = {
   IN_REVIEW: 'var(--accent)',
   DONE: 'var(--ok)',
   RETURNED: 'var(--danger)',
-  OVERDUE: 'var(--danger)',
   CANCELLED: 'var(--ink-faint)',
 };

@@ -6,7 +6,7 @@ import type { CalendarEvent } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
 
-export function CalendarScreen() {
+export function CalendarScreen({ active = true }: { active?: boolean }) {
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,7 +17,12 @@ export function CalendarScreen() {
       .catch(() => setError('Не удалось загрузить календарь'));
   }
 
-  useEffect(load, []);
+  // active — см. комментарий в tasks-screen.tsx: рефетч при возвращении на
+  // вкладку, не только при первом монтировании Mini App.
+  useEffect(() => {
+    if (active) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   // /events закрыт на Role.OWNER на бэкенде (CalendarController) — этот
   // экран и так открыт только руководителю (см. page.tsx), поэтому

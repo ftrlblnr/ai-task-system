@@ -101,9 +101,21 @@ export const TASK_STATUS_RU: Record<TaskStatus, string> = {
   IN_REVIEW: 'На проверке',
   DONE: 'Выполнена',
   RETURNED: 'Возвращена на доработку',
-  OVERDUE: 'Просрочена',
   CANCELLED: 'Отменена',
 };
+
+// Просрочка — вычисляемый признак, не статус (аудит 10.09.2026, п. 2.1):
+// раньше отдельный TaskStatus.OVERDUE выставлял крон каждые 30 минут и тем
+// самым перетирал статус, который сотрудник только что сам сменил на
+// IN_PROGRESS. Используется в toListItem/findOne ниже — то же условие
+// (dueDate в прошлом, status не DONE/CANCELLED) TasksOverdueCron выражает
+// отдельно как Prisma where-фильтр (вызвать JS-функцию внутри SQL-запроса
+// нельзя), но по смыслу это одно и то же правило.
+export function isTaskOverdue(task: { dueDate: Date | null; status: TaskStatus }): boolean {
+  if (!task.dueDate) return false;
+  if (task.status === TaskStatus.DONE || task.status === TaskStatus.CANCELLED) return false;
+  return task.dueDate < new Date();
+}
 
 @Injectable()
 export class TasksService {
@@ -166,6 +178,7 @@ export class TasksService {
       subtaskCount: subtasks.length,
       subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
       watchers: watchers.map((w) => w.employee),
+      isOverdue: isTaskOverdue(task),
     };
   }
 
@@ -245,6 +258,11 @@ export class TasksService {
           // превращался в undefined и снять срок через редактирование было
           // невозможно (владелец 08.09.2026: "задачи нельзя редактировать").
           dueDate: dto.dueDate === undefined ? undefined : dto.dueDate ? new Date(dto.dueDate) : null,
+          // Срок поменялся — сбрасываем отметку об уведомлении о просрочке
+          // (аудит 10.09.2026, п. 2.1), иначе TasksOverdueCron решит, что уже
+          // уведомлял, и не пришлёт уведомление заново, если новый срок тоже
+          // окажется в прошлом или задача снова станет просроченной позже.
+          overdueNotifiedAt: dto.dueDate === undefined ? undefined : null,
         },
       }),
       ...changes.map((change) =>
@@ -387,12 +405,15 @@ export class TasksService {
   // Схлопывает сырой subtasks: {status}[] из TASK_LIST_SELECT в два числа —
   // список задач не должен раздувать JSON полным содержимым каждой
   // подзадачи, детали видны только на странице самой задачи (findOne).
-  private toListItem<T extends { subtasks: { status: TaskStatus }[] }>(task: T) {
+  private toListItem<T extends { subtasks: { status: TaskStatus }[]; dueDate: Date | null; status: TaskStatus }>(
+    task: T,
+  ) {
     const { subtasks, ...rest } = task;
     return {
       ...rest,
       subtaskCount: subtasks.length,
       subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
+      isOverdue: isTaskOverdue(task),
     };
   }
 

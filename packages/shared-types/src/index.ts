@@ -13,7 +13,6 @@ export type TaskStatus =
   | 'IN_REVIEW'
   | 'DONE'
   | 'RETURNED'
-  | 'OVERDUE'
   | 'CANCELLED';
 
 export type TaskPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -48,6 +47,11 @@ export interface TaskListItem {
   // список только в TaskDetail.subtasks.
   subtaskCount: number;
   subtaskDoneCount: number;
+  // Вычисляемый признак (аудит 10.09.2026, п. 2.1), не статус — dueDate в
+  // прошлом и status не DONE/CANCELLED. Раньше был отдельным хранимым
+  // TaskStatus.OVERDUE, который крон перетирал поверх статуса, только что
+  // выставленного сотрудником (IN_PROGRESS и т.п.).
+  isOverdue: boolean;
 }
 
 export interface TaskSubtaskSummary {

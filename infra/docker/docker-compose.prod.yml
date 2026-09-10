@@ -5,8 +5,16 @@
 # проксирует на них и сам управляет TLS через certbot — тем же способом,
 # что и остальные сайты на сервере.
 #
-# Запускать из этой директории:
-#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+# Образы api/web/miniapp больше не собираются здесь (владелец 10.09.2026):
+# сборка на этом же 2ГБ VPS регулярно уводила машину в своп (npm ci + tsc +
+# два билда Next разом с уже работающими контейнерами — билды по 15-20
+# минут, свободная RAM падала до 100-150МБ). Теперь сборка идёт в GitHub
+# Actions (.github/workflows/build-and-push.yml) при пуше в main, образы
+# публикуются в ghcr.io/ftrlblnr/ai-task-system-{api,web,miniapp}:latest.
+# Здесь, на проде, требуется только предварительный `docker login ghcr.io`
+# (токен с правом read:packages — репозиторий приватный) и дальше:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod pull
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 services:
   # mem_limit + NODE_OPTIONS на каждом сервисе (владелец 08.09.2026, по
@@ -38,9 +46,7 @@ services:
     # этого compose-проекта (сервис api резолвит хост "postgres").
 
   api:
-    build:
-      context: ../..
-      dockerfile: apps/api/Dockerfile
+    image: ghcr.io/ftrlblnr/ai-task-system-api:latest
     restart: unless-stopped
     # 320m оказалось мало на практике (владелец 08.09.2026, тот же день, что
     # и сам лимит завели): api прогрелся до ~271МБ уже в простое (Prisma
@@ -64,12 +70,10 @@ services:
       - "127.0.0.1:3021:3001"
 
   web:
-    build:
-      context: ../..
-      dockerfile: apps/web/Dockerfile
-      args:
-        # Запекается в клиентский бандл на сборке — см. комментарий в Dockerfile.
-        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL}
+    # NEXT_PUBLIC_API_URL запекается в клиентский бандл на этапе сборки в
+    # CI (см. .github/workflows/build-and-push.yml) — здесь его больше не
+    # передать, образ уже готов.
+    image: ghcr.io/ftrlblnr/ai-task-system-web:latest
     restart: unless-stopped
     mem_limit: 384m
     depends_on:
@@ -80,11 +84,7 @@ services:
       - "127.0.0.1:3022:3000"
 
   miniapp:
-    build:
-      context: ../..
-      dockerfile: apps/miniapp/Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL}
+    image: ghcr.io/ftrlblnr/ai-task-system-miniapp:latest
     restart: unless-stopped
     mem_limit: 256m
     depends_on:

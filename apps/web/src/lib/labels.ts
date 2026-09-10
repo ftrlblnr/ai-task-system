@@ -7,7 +7,6 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
   IN_REVIEW: 'На проверке',
   DONE: 'Выполнена',
   RETURNED: 'Возвращена на доработку',
-  OVERDUE: 'Просрочена',
   CANCELLED: 'Отменена',
 };
 
@@ -40,7 +39,11 @@ export const BOARD_COLUMNS: TaskStatus[] = [
   'DONE',
   'RETURNED',
 ];
-export const BOARD_SIDE_COLUMNS: TaskStatus[] = ['OVERDUE', 'CANCELLED'];
+// Просрочка (аудит 10.09.2026, п. 2.1) больше не отдельная колонка — это
+// вычисляемый признак (TaskListItem.isOverdue), показывается красным чипом
+// с датой прямо на карточке в её реальной колонке (см. kanban-board.tsx),
+// а не отдельным "статусом", в который можно перетащить карточку.
+export const BOARD_SIDE_COLUMNS: TaskStatus[] = ['CANCELLED'];
 
 export const PRIORITY_CLASS: Record<TaskPriority, string> = {
   LOW: 'priority-low',
@@ -59,6 +62,5 @@ export const STATUS_DOT_COLOR: Record<TaskStatus, string> = {
   IN_REVIEW: 'var(--accent)',
   DONE: 'var(--ok)',
   RETURNED: 'var(--danger)',
-  OVERDUE: 'var(--danger)',
   CANCELLED: 'var(--ink-faint)',
 };

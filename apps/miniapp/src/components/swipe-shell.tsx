@@ -1,6 +1,16 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { haptic } from '@/lib/telegram';
 
 export interface SwipeScreen {
@@ -242,9 +252,15 @@ export function SwipeShell({ screens }: { screens: SwipeScreen[] }) {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
         >
-          {screens.map((s) => (
+          {screens.map((s, i) => (
             <div key={s.key} className="swipe-screen" style={{ width: `${screenPercent}%` }}>
-              {s.content}
+              {/* Владелец 10.09.2026: экраны монтируются все сразу (см. комментарий
+                  в шапке файла) и раньше грузили данные один раз через useEffect(load, []),
+                  из-за чего, например, список задач не обновлялся после голосового
+                  создания задачи, пока не перезапустишь Mini App. active передаётся
+                  каждому экрану, чтобы он мог сам решить перезагрузить данные при
+                  возвращении на вкладку — не меняет монтирование/анимацию свайпа. */}
+              {isValidElement(s.content) ? cloneElement(s.content as ReactElement<{ active?: boolean }>, { active: i === activeIndex }) : s.content}
             </div>
           ))}
         </div>

@@ -42,13 +42,15 @@ export class DailyDigestCron {
         };
         const allTasks = await this.tasks.findAll(actor);
 
-        const overdue = allTasks.filter((t) => t.status === 'OVERDUE');
+        // Просрочка — вычисляемый признак (isOverdue от TasksService), не
+        // статус, см. аудит 10.09.2026 п. 2.1.
+        const overdue = allTasks.filter((t) => t.isOverdue);
         const today = new Date();
         const dueToday = allTasks.filter(
           (t) =>
+            !t.isOverdue &&
             t.status !== 'DONE' &&
             t.status !== 'CANCELLED' &&
-            t.status !== 'OVERDUE' &&
             t.dueDate &&
             new Date(t.dueDate).toDateString() === today.toDateString(),
         );

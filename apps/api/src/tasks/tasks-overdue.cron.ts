@@ -4,12 +4,13 @@ import { TaskStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 
-// Владелец 08.09.2026: статус OVERDUE есть в схеме и уже подключён во
-// фронтенде (отдельная колонка на канбане, красный цвет), но ничего в
-// бэкенде никогда не выставляло его — колонка была всегда пуста. По
-// образцу единственного существующего крона в проекте
-// (calendar-sync.cron.ts) — @Cron + Logger + for...of с try/catch на
-// запись, ни одна ошибка не прерывает остальной батч.
+// Аудит 10.09.2026, п. 2.1: раньше этот крон каждые 30 минут переводил
+// задачу в статус OVERDUE — включая те, что сотрудник только что взял в
+// работу (IN_PROGRESS/IN_REVIEW), перетирая его обратно при следующем
+// прогоне, плюс лишняя запись в TaskHistory каждый раз. Просрочка теперь не
+// хранимый статус, а вычисляемый признак (см. isTaskOverdue в
+// tasks.service.ts) — этот крон только уведомляет, один раз на факт
+// просрочки (overdueNotifiedAt), статус задачи не трогает вообще.
 @Injectable()
 export class TasksOverdueCron {
   private readonly logger = new Logger(TasksOverdueCron.name);
@@ -19,43 +20,30 @@ export class TasksOverdueCron {
     private readonly bot: TelegramBotService,
   ) {}
 
-  // Каждые 30 минут — то, что напрямую видно на доске, чаще, чем фоновый
-  // 15-минутный fallback-pull календаря, но не настолько часто, чтобы
-  // нагружать VPS.
   @Cron(CronExpression.EVERY_30_MINUTES)
-  async markOverdue() {
+  async notifyOverdue() {
     const tasks = await this.prisma.task.findMany({
       where: {
         dueDate: { lt: new Date() },
-        status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.OVERDUE] },
+        status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] },
+        overdueNotifiedAt: null,
       },
       select: {
         id: true,
         title: true,
-        status: true,
         assignee: { select: { telegramId: true } },
       },
     });
 
     for (const task of tasks) {
       try {
-        await this.prisma.$transaction([
-          this.prisma.task.update({ where: { id: task.id }, data: { status: TaskStatus.OVERDUE } }),
-          this.prisma.taskHistory.create({
-            data: {
-              taskId: task.id,
-              // changedById не указан — системное изменение, не от живого
-              // актора (TaskHistory.changedById специально сделан nullable
-              // ради этого случая).
-              field: 'status',
-              oldValue: task.status,
-              newValue: TaskStatus.OVERDUE,
-            },
-          }),
-        ]);
+        await this.prisma.task.update({
+          where: { id: task.id },
+          data: { overdueNotifiedAt: new Date() },
+        });
         void this.bot.sendMessage(task.assignee?.telegramId, `Задача «${task.title}» просрочена`);
       } catch (err) {
-        this.logger.warn(`Не удалось пометить задачу ${task.id} просроченной: ${err}`);
+        this.logger.warn(`Не удалось пометить задачу ${task.id} уведомлённой о просрочке: ${err}`);
       }
     }
   }

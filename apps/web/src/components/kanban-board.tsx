@@ -17,12 +17,6 @@ import {
   STATUS_LABELS,
 } from '@/lib/labels';
 
-function isOverdue(task: TaskListItem): boolean {
-  if (!task.dueDate) return false;
-  if (task.status === 'DONE' || task.status === 'CANCELLED') return false;
-  return new Date(task.dueDate) < new Date();
-}
-
 function TaskCard({
   task,
   draggable,
@@ -57,7 +51,7 @@ function TaskCard({
       <p className="kanban-card-title">{task.title}</p>
       {task.dueDate && (
         <div className="kanban-card-meta">
-          <span className={`chip ${isOverdue(task) ? 'chip-danger' : ''}`}>
+          <span className={`chip ${task.isOverdue ? 'chip-danger' : ''}`}>
             {new Date(task.dueDate).toLocaleDateString('ru-RU')}
           </span>
         </div>

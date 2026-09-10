@@ -9,13 +9,7 @@ import { TaskDetailOverlay } from './task-detail-overlay';
 import { TaskCreateOverlay } from './task-create-overlay';
 import { STATUS_LABELS, TASK_SECTIONS, STATUS_DOT_COLOR } from '@/lib/labels';
 
-function isOverdue(task: TaskListItem): boolean {
-  if (!task.dueDate) return false;
-  if (task.status === 'DONE' || task.status === 'CANCELLED') return false;
-  return new Date(task.dueDate) < new Date();
-}
-
-export function TasksScreen() {
+export function TasksScreen({ active = true }: { active?: boolean }) {
   const [tasks, setTasks] = useState<TaskListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -28,7 +22,14 @@ export function TasksScreen() {
       .catch(() => setError('Не удалось загрузить задачи'));
   }
 
-  useEffect(load, []);
+  // active приходит от SwipeShell (владелец 10.09.2026) — экран смонтирован
+  // всегда (см. swipe-shell.tsx), но данные грузим при каждом возвращении
+  // на вкладку, а не один раз за сессию: иначе задача, созданная/изменённая
+  // голосом на соседней вкладке, не появится здесь без перезапуска Mini App.
+  useEffect(() => {
+    if (active) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   const sections = tasks
     ? TASK_SECTIONS.map((status) => ({
@@ -85,7 +86,7 @@ export function TasksScreen() {
                   </>
                 )}
                 {task.dueDate && (
-                  <span className={`badge ${isOverdue(task) ? 'badge-danger' : 'badge-muted'}`}>
+                  <span className={`badge ${task.isOverdue ? 'badge-danger' : 'badge-muted'}`}>
                     {new Date(task.dueDate).toLocaleDateString('ru-RU')}
                   </span>
                 )}
