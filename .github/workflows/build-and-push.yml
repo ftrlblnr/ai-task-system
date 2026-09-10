@@ -41,7 +41,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run prisma:generate
-      - run: npx prisma validate --schema apps/api/prisma/schema.prisma
+      # prisma не поднят в корневой node_modules/.bin (та же причина, по
+      # которой Dockerfile вызывает его через прямой путь до модуля, а не
+      # `npx prisma` — npm workspaces его туда не хостит).
+      - run: node apps/api/node_modules/prisma/build/index.js validate --schema apps/api/prisma/schema.prisma
       - run: npm run lint --workspace=apps/api
       - run: npm run lint --workspace=apps/web
       - run: npm run lint --workspace=apps/miniapp
