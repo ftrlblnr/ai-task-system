@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ListChecks, Plus } from 'lucide-react';
+import { ListChecks, Plus, Search } from 'lucide-react';
 import type { TaskListItem } from '@ai-task-system/shared-types';
 import { api } from '@/lib/api';
 import { Avatar } from './avatar';
@@ -14,6 +14,9 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // Поиск (аудит 10.09.2026, п. 4.2) — раньше найти задачу можно было
+  // только скроллом, при сотне задач это ломается быстрее всего остального.
+  const [searchQuery, setSearchQuery] = useState('');
 
   function load() {
     api
@@ -31,10 +34,20 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  const sections = tasks
+  const filteredTasks = tasks
+    ? (() => {
+        const q = searchQuery.trim().toLowerCase();
+        if (!q) return tasks;
+        return tasks.filter(
+          (t) => t.title.toLowerCase().includes(q) || (t.assignee?.fullName.toLowerCase().includes(q) ?? false),
+        );
+      })()
+    : null;
+
+  const sections = filteredTasks
     ? TASK_SECTIONS.map((status) => ({
         status,
-        items: tasks.filter((t) => t.status === status),
+        items: filteredTasks.filter((t) => t.status === status),
       })).filter((s) => s.items.length > 0)
     : [];
 
@@ -60,6 +73,18 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
         </button>
       </div>
 
+      {tasks && tasks.length > 0 && (
+        <div className="mobile-search">
+          <Search size={15} strokeWidth={2} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Поиск по задачам…"
+          />
+        </div>
+      )}
+
       {error && <p className="error">{error}</p>}
       {!tasks && !error && <p className="hint">Загрузка…</p>}
 
@@ -67,6 +92,12 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
         <div className="empty-state">
           <strong>Задач пока нет</strong>
         </div>
+      )}
+
+      {filteredTasks && tasks && tasks.length > 0 && filteredTasks.length === 0 && (
+        <p className="hint" style={{ marginTop: 8 }}>
+          Ничего не найдено по запросу «{searchQuery}».
+        </p>
       )}
 
       {sections.map(({ status, items }) => (

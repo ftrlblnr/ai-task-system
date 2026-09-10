@@ -274,6 +274,24 @@ select {
 }
 
 /* ============ Task list ============ */
+/* Поиск по задачам (аудит 10.09.2026, п. 4.2). */
+.mobile-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-faint);
+}
+.mobile-search input {
+  flex: 1;
+  border: none;
+  padding: 10px 0;
+  width: auto;
+}
 .task-section {
   margin-top: 16px;
 }

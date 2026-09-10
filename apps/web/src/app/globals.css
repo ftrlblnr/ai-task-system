@@ -831,6 +831,37 @@ select {
 }
 
 /* ============ Kanban board ============ */
+/* Поиск/фильтр по доске (аудит 10.09.2026, п. 4.2). */
+.board-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.board-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  min-width: 200px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink-faint);
+}
+.board-search input {
+  flex: 1;
+  border: none;
+  padding: 9px 0;
+  background: transparent;
+}
+.board-search input:focus {
+  box-shadow: none;
+}
+.board-filters select {
+  flex: none;
+}
 .board-scroll {
   overflow-x: auto;
   padding-bottom: 12px;

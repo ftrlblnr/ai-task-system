@@ -33,6 +33,13 @@ jobs:
   # часовой пояс, проверка initData — см. *.spec.ts).
   gate:
     runs-on: ubuntu-latest
+    env:
+      # eslint (type-aware, @typescript-eslint) упирается в дефолтный
+      # V8 old-space (~2ГБ) на этом же раннере, где физической RAM в разы
+      # больше — тот же класс проблемы, что раньше был с tsc/eslint на
+      # 2ГБ проде, просто здесь упирается не в физический потолок, а в
+      # дефолт Node, который его тоже надо поднять явно.
+      NODE_OPTIONS: --max-old-space-size=6144
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

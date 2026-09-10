@@ -267,6 +267,28 @@ export function KanbanBoard() {
     <div>
       {error && <p className="error">{error}</p>}
 
+      <div className="board-filters">
+        <div className="board-search">
+          <Search size={15} strokeWidth={2} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Поиск по названию или исполнителю…"
+          />
+        </div>
+        {assigneeOptions.length > 0 && (
+          <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
+            <option value="">Все исполнители</option>
+            {assigneeOptions.map(([id, fullName]) => (
+              <option key={id} value={id}>
+                {fullName}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
       <div className="board-scroll">
         <div className="board">
           {BOARD_COLUMNS.map(renderColumn)}
