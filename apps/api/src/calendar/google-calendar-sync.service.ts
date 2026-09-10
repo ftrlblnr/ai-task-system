@@ -21,6 +21,17 @@ function addDays(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// googleapis ошибки — обычный Error с добавленным .code (HTTP-статус), но
+// без официального типа под это. `catch (err: any)` + err.code раньше
+// проходило мимо @typescript-eslint/no-unsafe-member-access тихо — аудит
+// 10.09.2026, п. 5.2, первый реальный прогон lint в CI, нашёл это.
+function googleErrorCode(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'number') {
+    return err.code;
+  }
+  return undefined;
+}
+
 // Раздел 14.2 ТЗ / Адъютант (28.08.2026): двусторонняя синхронизация.
 // Единственный писатель с обеих сторон — руководитель, поэтому конфликт-
 // резолюция упрощена до last-write-wins по времени последнего изменения,
@@ -99,9 +110,10 @@ export class GoogleCalendarSyncService {
     const calendar = await this.calendarClient(employeeId);
     try {
       await calendar.events.delete({ calendarId: connection.calendarId, eventId: googleEventId });
-    } catch (err: any) {
+    } catch (err) {
       // 410/404 — уже удалено на стороне Google, это не ошибка для нас.
-      if (err?.code !== 410 && err?.code !== 404) throw err;
+      const code = googleErrorCode(err);
+      if (code !== 410 && code !== 404) throw err;
     }
   }
 
@@ -139,8 +151,8 @@ export class GoogleCalendarSyncService {
         pageToken = response.data.nextPageToken ?? undefined;
         nextSyncToken = response.data.nextSyncToken ?? nextSyncToken;
       } while (pageToken);
-    } catch (err: any) {
-      if (err?.code === 410 && !retriedAfter410) {
+    } catch (err) {
+      if (googleErrorCode(err) === 410 && !retriedAfter410) {
         // syncToken протух — полный ресинк с нуля, но только одна попытка.
         await this.prisma.googleCalendarConnection.update({
           where: { employeeId },

@@ -32,4 +32,19 @@ export default tseslint.config(
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
+  {
+    // Тесты на приватные методы сервисов (аудит 10.09.2026, п. 5.1) идут
+    // через `(service as any).privateMethod(...)` — обычный, принятый в
+    // Nest-тестах приём (приватность — только на уровне TS, не рантайма),
+    // но он закономерно бьёт no-unsafe-* на каждом вызове. Ограничено
+    // *.spec.ts — остальной код по-прежнему под строгими правилами.
+    files: ['**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+    },
+  },
 );

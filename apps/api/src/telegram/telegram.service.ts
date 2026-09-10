@@ -2,7 +2,11 @@ import { ConflictException, Injectable, NotFoundException, UnauthorizedException
 import { ConfigService } from '@nestjs/config';
 import { randomBytes, createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { InvalidTelegramInitDataError, verifyTelegramInitData } from './telegram-init-data';
+import {
+  InvalidTelegramInitDataError,
+  verifyTelegramInitData,
+  type VerifiedTelegramInitData,
+} from './telegram-init-data';
 
 const INVITE_TTL_MINUTES = 30;
 
@@ -71,7 +75,11 @@ export class TelegramService {
       throw new UnauthorizedException('Вход через Telegram не настроен (TELEGRAM_BOT_TOKEN)');
     }
 
-    let verified;
+    // Тип указан явно (аудит 10.09.2026, п. 5.2) — `let verified;` без
+    // аннотации и без инициализатора TS выводит как any, из-за чего
+    // .user/.startParam ниже проходили мимо @typescript-eslint/no-unsafe-*
+    // незамеченными до первого реального прогона lint в CI.
+    let verified: VerifiedTelegramInitData;
     try {
       verified = verifyTelegramInitData(rawInitData, botToken);
     } catch (err) {

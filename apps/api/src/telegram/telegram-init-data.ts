@@ -53,7 +53,10 @@ export function verifyTelegramInitData(rawInitData: string, botToken: string): V
 
   let user: TelegramInitDataUser;
   try {
-    user = JSON.parse(userRaw);
+    // JSON.parse — any по определению; поле user приходит из initData,
+    // чья подпись уже проверена выше (это не даёт гарантии формы объекта,
+    // только подлинность источника — то же допущение, что было и раньше).
+    user = JSON.parse(userRaw) as TelegramInitDataUser;
   } catch {
     throw new InvalidTelegramInitDataError('Не удалось разобрать данные пользователя');
   }

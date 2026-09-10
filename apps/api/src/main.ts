@@ -23,7 +23,11 @@ async function bootstrap() {
     (origin): origin is string => Boolean(origin),
   );
   app.enableCors({
-    origin: (origin, callback) => {
+    // Параметры аннотированы явно (аудит 10.09.2026, п. 5.2) — без этого
+    // TS не выводит тип callback из объектного литерала enableCors(), и
+    // @typescript-eslint/no-unsafe-call (первый реальный прогон lint в CI)
+    // справедливо ругался на вызов callback(...) как на any.
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
       // callback(null, false), не callback(new Error(...)) — аудит
       // 10.09.2026, п. 2.13: передача Error превращает обычный CORS-отказ
       // в необработанное исключение (500 клиенту) вместо чистого "не
