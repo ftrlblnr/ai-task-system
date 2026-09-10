@@ -260,7 +260,10 @@ export class VoiceService {
         if (dto.title !== undefined) previous.title = before.title;
         if (dto.description !== undefined) previous.description = before.description ?? '';
         if (dto.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
-        if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
+        // before.dueDate — сырой Prisma Date (findOne вызван напрямую, не
+        // через HTTP — сериализация в строку, которую видит фронтенд
+        // обычно, происходит только на выходе из Nest-контроллера).
+        if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
         if (dto.priority !== undefined) previous.priority = before.priority;
 
         await this.tasks.update(draft.targetTaskId, dto, user);
