@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { ListChecks } from 'lucide-react';
+import { ListChecks, Search } from 'lucide-react';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -79,6 +79,11 @@ export function KanbanBoard() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
+  // Поиск/фильтр (аудит 10.09.2026, п. 4.2): раньше в списке задач не было
+  // вообще никакого способа найти нужную, кроме скролла — с сотней задач
+  // это ломается быстрее всего остального в приложении.
+  const [searchQuery, setSearchQuery] = useState('');
+  const [assigneeFilter, setAssigneeFilter] = useState('');
 
   useEffect(() => {
     api
@@ -87,9 +92,32 @@ export function KanbanBoard() {
       .catch(() => setError('Не удалось загрузить задачи'));
   }, []);
 
+  // Список исполнителей для фильтра — из уже загруженных задач, без
+  // отдельного запроса к /employees (доска и так знает всех, кто назначен
+  // хоть на одну задачу).
+  const assigneeOptions = useMemo(() => {
+    if (!tasks) return [];
+    const byId = new Map<string, string>();
+    for (const t of tasks) if (t.assignee) byId.set(t.assignee.id, t.assignee.fullName);
+    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
+  }, [tasks]);
+
+  // Фильтруем ДО построения колонок/drag-состояния — доска целиком (поиск
+  // по названию/имени исполнителя, счётчики в шапках колонок, drag-and-drop
+  // reorder) работает уже с видимым подмножеством, не с полным списком.
+  const visibleTasks = useMemo(() => {
+    if (!tasks) return null;
+    const q = searchQuery.trim().toLowerCase();
+    return tasks.filter((t) => {
+      if (assigneeFilter && t.assignee?.id !== assigneeFilter) return false;
+      if (!q) return true;
+      return t.title.toLowerCase().includes(q) || (t.assignee?.fullName.toLowerCase().includes(q) ?? false);
+    });
+  }, [tasks, searchQuery, assigneeFilter]);
+
   const draggedTask = useMemo(
-    () => tasks?.find((t) => t.id === draggedId) ?? null,
-    [tasks, draggedId],
+    () => visibleTasks?.find((t) => t.id === draggedId) ?? null,
+    [visibleTasks, draggedId],
   );
 
   // Раздел 5/10 ТЗ (скорректировано 28.08.2026): постановщик теперь тоже
@@ -162,9 +190,9 @@ export function KanbanBoard() {
   }
 
   if (error && !tasks) return <p className="error">{error}</p>;
-  if (!tasks) return <p className="hint">Загрузка…</p>;
+  if (!tasks || !visibleTasks) return <p className="hint">Загрузка…</p>;
 
-  const byStatus = (status: TaskStatus) => tasks.filter((t) => t.status === status);
+  const byStatus = (status: TaskStatus) => visibleTasks.filter((t) => t.status === status);
 
   const renderColumn = (status: TaskStatus) => {
     const columnTasks = byStatus(status);

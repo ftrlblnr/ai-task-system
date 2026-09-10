@@ -43,8 +43,12 @@ jobs:
       - run: npm run prisma:generate
       # prisma не поднят в корневой node_modules/.bin (та же причина, по
       # которой Dockerfile вызывает его через прямой путь до модуля, а не
-      # `npx prisma` — npm workspaces его туда не хостит).
+      # `npx prisma` — npm workspaces его туда не хостит). DATABASE_URL —
+      # `validate` реального подключения к БД не делает, но требует, чтобы
+      # переменная была хоть чем-то заполнена (иначе падает на env()).
       - run: node apps/api/node_modules/prisma/build/index.js validate --schema apps/api/prisma/schema.prisma
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
       - run: npm run lint --workspace=apps/api
       - run: npm run lint --workspace=apps/web
       - run: npm run lint --workspace=apps/miniapp
