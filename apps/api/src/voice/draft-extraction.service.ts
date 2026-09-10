@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { Role } from '@prisma/client';
@@ -351,6 +351,7 @@ const STRONG_MODEL = 'claude-opus-5';
 // один структурированный ответ, а не многошаговое выполнение инструментов.
 @Injectable()
 export class DraftExtractionService {
+  private readonly logger = new Logger(DraftExtractionService.name);
   private client: Anthropic | null = null;
 
   constructor(private readonly config: ConfigService) {}
@@ -414,10 +415,28 @@ export class DraftExtractionService {
     const system = buildSystemPrompt(nowInLocalTimezone(), employees, role, tasks, events, meetingContext);
     const messages = toAnthropicMessages(history, transcript);
 
+    // Замеры каскада (владелец 10.09.2026, по итогам анализа задержки
+    // голосового пути) — ключевая цифра здесь не столько время самой Haiku
+    // или Opus, сколько ЧАСТОТА эскалации: каскад последовательный (сначала
+    // Haiku целиком, потом, если не уверена, Opus целиком), то есть в
+    // худшем случае это СУММА времени обеих моделей, а не выбор одной.
+    // Если эскалация частая — узкое место не в конкретной модели, а в
+    // самом условии "LOW || clarificationNeeded" или в промпте Haiku.
+    const fastStart = Date.now();
     let raw = await this.callModel(FAST_MODEL, messages, tool, system);
-    if (raw.confidence === 'LOW' || raw.clarificationNeeded) {
+    const fastMs = Date.now() - fastStart;
+    const escalate = raw.confidence === 'LOW' || raw.clarificationNeeded;
+    let strongMs = 0;
+
+    if (escalate) {
+      const strongStart = Date.now();
       raw = await this.callModel(STRONG_MODEL, messages, tool, system);
+      strongMs = Date.now() - strongStart;
     }
+
+    this.logger.log(
+      `draft-extraction: fast=${fastMs}ms${escalate ? ` strong=${strongMs}ms` : ''} escalated=${escalate} confidence=${raw.confidence}`,
+    );
 
     return { ...raw, drafts: raw.drafts.map(normalizeDraftDates) };
   }

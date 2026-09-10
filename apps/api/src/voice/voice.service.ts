@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Role, VoiceMessageRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -56,6 +56,8 @@ const VOICE_HISTORY_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
 @Injectable()
 export class VoiceService {
+  private readonly logger = new Logger(VoiceService.name);
+
   constructor(
     private readonly whisper: WhisperService,
     private readonly extraction: DraftExtractionService,
@@ -77,34 +79,45 @@ export class VoiceService {
       throw new BadRequestException('Аудио не получено или формат файла не поддерживается');
     }
 
-    // Диктовка со страницы встречи (владелец 09.09.2026) — доступно только
-    // руководителю (сам /meetings и так открыт лишь ему), тот же принцип,
-    // что sourceMeetingId-проверка в TasksService.create(). Прямой prisma-
-    // запрос, а не MeetingsService.findOne() — тот пишет audit-log READ на
-    // каждый вызов, здесь это не нужный побочный эффект.
-    const meetingContext =
+    // Замеры по этапам (владелец 10.09.2026, по итогам анализа задержки
+    // голосового пути) — без них любая дальнейшая оптимизация промпта или
+    // модели была бы гаданием. contextMs — вся эта группа запросов ниже,
+    // выполняется параллельно с расшифровкой, а не после неё; llmMs — сам
+    // Claude (разбивку fast/strong логирует DraftExtractionService);
+    // execMs — реальные мутации в Task/Event.
+    const t0 = Date.now();
+
+    // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
+    // шли строго последовательно (расшифровка → сотрудники → задачи →
+    // события), хотя ни один из этих запросов не читает transcript.
+    // meetingContext/visibleEvents — Promise.resolve(...) в false-ветке,
+    // не голый []: раньше это и было причиной отказа от Promise.all
+    // (смешение Promise<Event[]> и []) схлопывало тип в never.
+    const [meetingContext, transcript, employees, visibleTasks, visibleEvents, history] = await Promise.all([
+      // Диктовка со страницы встречи (владелец 09.09.2026) — доступно
+      // только руководителю (сам /meetings и так открыт лишь ему), тот же
+      // принцип, что sourceMeetingId-проверка в TasksService.create().
+      // Прямой prisma-запрос, а не MeetingsService.findOne() — тот пишет
+      // audit-log READ на каждый вызов, здесь это не нужный побочный эффект.
       meetingId && user.role === Role.OWNER
-        ? await this.prisma.meeting.findUnique({
+        ? this.prisma.meeting.findUnique({
             where: { id: meetingId },
             select: { title: true, rawSummary: true, enhancedSummary: true },
           })
-        : null;
-
-    const transcript = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname);
-
-    const employees = await this.prisma.employee.findMany({
-      where: { status: 'ACTIVE' },
-      select: { id: true, fullName: true },
-    });
-
-    // Те же findAll, что отдают обычные списки задач/календаря в UI — те же
-    // правила видимости (сотрудник видит своё, руководитель — всё;
-    // календарь целиком закрыт на OWNER), без отдельной копии RBAC здесь.
-    // Без Promise.all — оба запроса быстрые (<50мс), а смешение типов
-    // (Event[] на одной ветке, [] на другой) через тернарник внутри
-    // Promise.all схлопывает элемент в never для TS.
-    const visibleTasks = await this.tasks.findAll(user);
-    const visibleEvents = user.role === Role.OWNER ? await this.events.findAll(user.id) : [];
+        : Promise.resolve(null),
+      this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname),
+      this.prisma.employee.findMany({
+        where: { status: 'ACTIVE' },
+        select: { id: true, fullName: true },
+      }),
+      // Те же findAll, что отдают обычные списки задач/календаря в UI — те
+      // же правила видимости (сотрудник видит своё, руководитель — всё;
+      // календарь целиком закрыт на OWNER), без отдельной копии RBAC здесь.
+      this.tasks.findAll(user),
+      user.role === Role.OWNER ? this.events.findAll(user.id) : Promise.resolve([]),
+      this.loadHistory(user.id),
+    ]);
+    const contextMs = Date.now() - t0;
 
     const taskContext = visibleTasks.slice(0, MAX_CONTEXT_TASKS).map((t) => ({
       id: t.id,
@@ -128,8 +141,7 @@ export class VoiceService {
         allDay: e.allDay,
       }));
 
-    const history = await this.loadHistory(user.id);
-
+    const t1 = Date.now();
     const result = await this.extraction.extract(
       transcript,
       employees,
@@ -141,16 +153,20 @@ export class VoiceService {
         : null,
       history,
     );
+    const llmMs = Date.now() - t1;
 
     // Реплику пользователя пишем сама — транскрипт уже есть на сервере.
     // Финальный текст ответа ассистента (chat-реплика, итог действия или
     // текст ошибки) пишет фронтенд отдельно, см. logAssistantMessage ниже —
     // он собирает его из VoiceActionResult, который возвращает этот метод
     // (действие уже выполнено на момент ответа, см. комментарий у
-    // VoiceParseResponse в dto).
-    await this.prisma.voiceMessage.create({
-      data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript },
-    });
+    // VoiceParseResponse в dto). Не await — запись истории не должна
+    // задерживать ответ пользователю (владелец 10.09.2026, по итогам
+    // анализа задержки), тот же fire-and-forget приём, что уже у
+    // notifyEmployee/notifyWatchers в TasksService.
+    void this.prisma.voiceMessage
+      .create({ data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript } })
+      .catch((err) => this.logger.warn(`Не удалось сохранить реплику пользователя в историю: ${err}`));
 
     const taskIds = new Set(taskContext.map((t) => t.id));
     const eventIds = new Set(eventContext.map((e) => e.id));
@@ -192,6 +208,7 @@ export class VoiceService {
     // записями, но естественно выполнить их в порядке произнесения), и
     // executeTaskAction/executeEventAction сами ловят свои ошибки — сбой
     // одного действия не должен прерывать остальные в этом же транскрипте.
+    const t2 = Date.now();
     const results: VoiceActionResult[] = [];
     for (const draft of drafts) {
       if (draft.type === 'chat') {
@@ -202,13 +219,21 @@ export class VoiceService {
         results.push(await this.executeEventAction(draft, user));
       }
     }
+    const execMs = Date.now() - t2;
+
+    this.logger.log(
+      `voice parse: context=${contextMs}ms llm=${llmMs}ms exec=${execMs}ms total=${Date.now() - t0}ms drafts=${drafts.length}`,
+    );
 
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам
     // факт транскрибации/разбора и её исход, не текст транскрипта.
     // randomUUID(), а не константа — черновик эфемерный, своего id в БД у
     // него нет, но записи аудита не должны схлопываться в одну
-    // неразличимую строку.
-    await this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', randomUUID(), {
+    // неразличимую строку. Не await (владелец 10.09.2026, по итогам анализа
+    // задержки) — запись аудита не должна задерживать ответ пользователю;
+    // AuditService.log сама глотает свои ошибки (см. её комментарий), не
+    // нужно перехватывать их здесь ещё раз.
+    void this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', randomUUID(), {
       draftTypes: drafts.map((d) => d.type),
       outcomes: results.map((r) => (r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error')),
       confidence: result.confidence,
