@@ -244,7 +244,9 @@ export class VoiceService {
       }
 
       if (draft.action === 'update') {
-        const dto: Partial<CreateTaskDto> = {};
+        // UpdateTaskDto — уже PartialType(...), все поля опциональны сами
+        // по себе, отдельный Partial<CreateTaskDto> + "as" не нужен.
+        const dto: UpdateTaskDto = {};
         if (draft.title !== '') dto.title = draft.title;
         if (draft.description !== '') dto.description = draft.description;
         if (draft.assigneeId !== null) dto.assigneeId = draft.assigneeId;
@@ -261,7 +263,7 @@ export class VoiceService {
         if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
         if (dto.priority !== undefined) previous.priority = before.priority;
 
-        await this.tasks.update(draft.targetTaskId, dto as UpdateTaskDto, user);
+        await this.tasks.update(draft.targetTaskId, dto, user);
         return { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous };
       }
 
@@ -298,7 +300,9 @@ export class VoiceService {
       }
 
       if (draft.action === 'update') {
-        const dto: Partial<CreateEventDto> = {};
+        // UpdateEventDto — уже PartialType(CreateEventDto), отдельный
+        // Partial<CreateEventDto> + "as" не нужен.
+        const dto: UpdateEventDto = {};
         if (draft.title !== '') dto.title = draft.title;
         if (draft.description !== '') dto.description = draft.description;
         if (draft.location !== '') dto.location = draft.location;
@@ -315,7 +319,7 @@ export class VoiceService {
           if (dto.startAt !== undefined) previous.startAt = before.startAt.toISOString();
           if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
           if (dto.allDay !== undefined) previous.allDay = before.allDay;
-          await this.events.update(draft.targetEventId, dto as UpdateEventDto, user.id);
+          await this.events.update(draft.targetEventId, dto, user.id);
         }
         for (const employeeId of draft.addParticipantIds) {
           await this.events.addParticipant(draft.targetEventId, employeeId).catch(() => {});
