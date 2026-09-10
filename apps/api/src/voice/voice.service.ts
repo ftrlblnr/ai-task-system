@@ -7,7 +7,12 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { WhisperService } from './whisper.service';
-import { DraftExtractionService, formatLocalDateTime, type VoiceHistoryItem } from './draft-extraction.service';
+import {
+  DraftExtractionService,
+  formatLocalDateTime,
+  MAX_DRAFTS_PER_NOTE,
+  type VoiceHistoryItem,
+} from './draft-extraction.service';
 import type { VoiceDraft, VoiceParseResponse } from './dto/voice-draft-response.dto';
 
 type MulterFile = Express.Multer.File;
@@ -138,7 +143,11 @@ export class VoiceService {
     // проходит ту же цепочку валидации независимо; flatMap — потому что
     // enforceEventRbac может РАЗВЕРНУТЬ один элемент в два (даунгрейд
     // событие→задача + отдельное чат-объяснение), см. её комментарий.
-    const drafts = result.drafts.flatMap((draft) => {
+    //
+    // slice(0, MAX_DRAFTS_PER_NOTE) — потолок задать в самой схеме нельзя
+    // (см. комментарий у MAX_DRAFTS_PER_NOTE в draft-extraction.service.ts),
+    // защита от патологического транскрипта здесь, постфактум.
+    const drafts = result.drafts.slice(0, MAX_DRAFTS_PER_NOTE).flatMap((draft) => {
       const validatedTarget = this.validateTarget(draft, taskIds, eventIds);
       const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
       const validatedRefs = this.validateReferences(withCompleteEvent, employeeIds);
@@ -146,6 +155,13 @@ export class VoiceService {
       const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
       return this.enforceEventRbac(withMeeting, user.role);
     });
+
+    // Без minItems в схеме (Anthropic его тоже не поддерживает, см. тот же
+    // комментарий) пустой drafts теоретически возможен — без этой защиты
+    // пользователь получил бы полную тишину в чате вместо какого-либо ответа.
+    if (drafts.length === 0) {
+      drafts.push({ type: 'chat', reply: 'Не расслышал — повторите, пожалуйста.' });
+    }
 
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам
     // факт транскрибации/разбора, не текст транскрипта. randomUUID(), а не

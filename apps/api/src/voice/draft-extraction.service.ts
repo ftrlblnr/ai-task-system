@@ -134,10 +134,14 @@ const NULLABLE_PRIORITY = {
 // 10.09.2026, см. подробный комментарий у VoiceParseResponse в
 // voice-draft-response.dto.ts): один транскрипт может содержать несколько
 // самостоятельных команд подряд ("удали встречу с Петром и создай новую на
-// пятницу"). maxItems — та же логика, что MAX_DURATION_MS у самой записи:
-// разумный потолок на патологический транскрипт, не ожидаемый случай (1-2
-// команды в норме).
-const MAX_DRAFTS_PER_NOTE = 5;
+// пятницу"). Потолок на число элементов — MAX_DRAFTS_PER_NOTE, экспортирован
+// и применяется постфактум в VoiceService (Anthropic отклоняет строгую схему
+// с "For 'array' type, property 'maxItems' is not supported" — найдено в
+// проде 10.09.2026 сразу же при первом реальном вызове после этого
+// изменения; тот же общий принцип, что и с enum'ами реальных id раньше —
+// ограничения, которые Anthropic не даёт выразить в самой схеме, проверяются
+// после ответа модели, не схемой).
+export const MAX_DRAFTS_PER_NOTE = 5;
 
 function buildDraftTool(): Anthropic.Tool {
   return {
@@ -152,9 +156,10 @@ function buildDraftTool(): Anthropic.Tool {
         clarificationNeeded: { type: 'boolean' },
         clarificationReason: OPTIONAL_STRING,
         drafts: {
+          // Ни minItems, ни maxItems сюда не добавлять — Anthropic отвечает
+          // 400 "For 'array' type, property 'maxItems' is not supported"
+          // на строгой схеме (см. комментарий у MAX_DRAFTS_PER_NOTE выше).
           type: 'array',
-          minItems: 1,
-          maxItems: MAX_DRAFTS_PER_NOTE,
           items: {
             anyOf: [
               {
