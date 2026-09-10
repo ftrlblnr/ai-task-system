@@ -1,0 +1,133 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
+import { TasksService } from '../tasks/tasks.service';
+import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import type { CreateTaskDto } from '../tasks/dto/create-task.dto';
+import { CreateMeetingDto } from './dto/create-meeting.dto';
+import { MeetingTaskExtractionService } from './meeting-task-extraction.service';
+import { SpeakerSubstitutionService } from './speaker-substitution.service';
+
+const LIST_SELECT = {
+  id: true,
+  title: true,
+  meetingDate: true,
+  createdBy: { select: { id: true, fullName: true } },
+  createdAt: true,
+  plaudRecordingId: true,
+} as const;
+
+@Injectable()
+export class MeetingsService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly tasks: TasksService,
+    private readonly extraction: MeetingTaskExtractionService,
+    private readonly speakerSubstitution: SpeakerSubstitutionService,
+  ) {}
+
+  findAll() {
+    return this.prisma.meeting.findMany({ select: LIST_SELECT, orderBy: { meetingDate: 'desc' } });
+  }
+
+  async findOne(id: string, viewerId: string) {
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id },
+      select: {
+        ...LIST_SELECT,
+        rawSummary: true,
+        enhancedSummary: true,
+        speakerNames: true,
+        audioUrl: true,
+        tasks: {
+          select: { id: true, title: true, status: true, sourceTimestamp: true },
+        },
+      },
+    });
+    if (!meeting) throw new NotFoundException('Встреча не найдена');
+
+    // Раздел 15 ТЗ: аудит обращений к протоколам встреч, отдельно от их
+    // содержимого.
+    await this.audit.log(viewerId, 'READ', 'Meeting', id);
+    return meeting;
+  }
+
+  create(dto: CreateMeetingDto, createdById: string) {
+    return this.prisma.meeting.create({
+      data: {
+        title: dto.title,
+        meetingDate: new Date(dto.meetingDate),
+        rawSummary: dto.rawSummary,
+        createdById,
+      },
+      select: LIST_SELECT,
+    });
+  }
+
+  // "Speaker N" -> реальное имя (владелец 09.09.2026). Замена — через Claude,
+  // не regex: наивная строковая подстановка ломает русские падежи ("по
+  // мнению Speaker 2" -> "по мнению Иван" вместо "Ивана", найдено владельцем
+  // при первой проверке) — модель понимает контекст предложения и склоняет
+  // корректно (см. SpeakerSubstitutionService). enhancedSummary и так уже
+  // показывается вместо rawSummary на экране встречи (findOne выше).
+  async updateSpeakers(id: string, speakerNames: Record<string, string>) {
+    const meeting = await this.prisma.meeting.findUnique({ where: { id }, select: { rawSummary: true } });
+    if (!meeting) throw new NotFoundException('Встреча не найдена');
+
+    const enhancedSummary = await this.speakerSubstitution.substitute(meeting.rawSummary, speakerNames);
+
+    return this.prisma.meeting.update({
+      where: { id },
+      data: { speakerNames, enhancedSummary },
+      select: LIST_SELECT,
+    });
+  }
+
+  // Черновики эфемерны — ничего не пишем в БД здесь, только возвращаем
+  // список (владелец 09.09.2026, тот же принцип, что VoiceService.parse).
+  async extractTasks(id: string, viewerId: string) {
+    const meeting = await this.prisma.meeting.findUnique({
+      where: { id },
+      select: { title: true, meetingDate: true, rawSummary: true, enhancedSummary: true },
+    });
+    if (!meeting) throw new NotFoundException('Встреча не найдена');
+
+    const employees = await this.prisma.employee.findMany({
+      where: { status: 'ACTIVE' },
+      select: { id: true, fullName: true },
+    });
+
+    const summary = meeting.enhancedSummary ?? meeting.rawSummary;
+    const drafts = await this.extraction.extract(
+      summary,
+      meeting.title,
+      meeting.meetingDate.toLocaleDateString('ru-RU'),
+      employees,
+    );
+
+    await this.audit.log(viewerId, 'AI_EXTRACT', 'Meeting', id, { draftCount: drafts.length });
+
+    return drafts.map((d) => ({
+      ...d,
+      assigneeName: d.assigneeId ? (employees.find((e) => e.id === d.assigneeId)?.fullName ?? null) : null,
+    }));
+  }
+
+  // Подтверждённые руководителем в модалке черновики -> реальные задачи
+  // (владелец 09.09.2026). sourceMeetingId — из :id в URL, а не из тела
+  // запроса (тот же принцип защиты, что уже есть в TasksService.create()).
+  // Переиспользуем create() целиком — RBAC/уведомления/проверки подзадач не
+  // дублируются. Без общей транзакции на пачку — тот же уровень строгости,
+  // что в tasks-overdue.cron.ts (по одному, без отката всех при ошибке одного).
+  async createTasksFromMeeting(id: string, items: CreateTaskDto[], actor: AuthenticatedUser) {
+    const exists = await this.prisma.meeting.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) throw new NotFoundException('Встреча не найдена');
+
+    const created: Awaited<ReturnType<TasksService['create']>>[] = [];
+    for (const item of items) {
+      created.push(await this.tasks.create({ ...item, sourceMeetingId: id }, actor));
+    }
+    return created;
+  }
+}

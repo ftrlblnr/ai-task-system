@@ -1,0 +1,16 @@
+{
+  "name": "ai-task-system",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:miniapp": "npm run dev --workspace=apps/miniapp -- -p 3005",
+    "build": "npm run build --workspaces --if-present",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/api"
+  }
+}

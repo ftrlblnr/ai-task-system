@@ -1,0 +1,54 @@
+# Продакшен-сервер: 85.202.193.118, домены adyutant.glb-engineering.kz /
+# api-adyutant.glb-engineering.kz / tg-adyutant.glb-engineering.kz.
+# Устанавливается как
+# /etc/nginx/sites-available/adyutant на сервере, где nginx уже обслуживает
+# другие проекты — поэтому здесь нет отдельного reverse-proxy контейнера
+# (см. комментарий в docker-compose.prod.yml), только ещё два server-блока
+# в уже существующем nginx. TLS выпускает certbot тем же способом, что и
+# для остальных доменов на этой машине (см. README «Деплой на продакшен»).
+#
+# До первого certbot --nginx оба server-блока слушают только :80 —
+# certbot сам допишет `listen 443 ssl` и redirect после успешного выпуска
+# сертификата (стандартный certbot --nginx workflow).
+
+server {
+    listen 80;
+    server_name adyutant.glb-engineering.kz;
+
+    location / {
+        proxy_pass http://127.0.0.1:3022;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+server {
+    listen 80;
+    server_name api-adyutant.glb-engineering.kz;
+
+    location / {
+        proxy_pass http://127.0.0.1:3021;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Google Calendar push-уведомления и OAuth-редирект идут сюда же —
+        # оба обычные POST/GET, отдельных особых заголовков не нужно.
+    }
+}
+
+server {
+    listen 80;
+    server_name tg-adyutant.glb-engineering.kz;
+
+    location / {
+        proxy_pass http://127.0.0.1:3023;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

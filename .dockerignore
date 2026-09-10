@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+coverage
+**/coverage
+*.log
+.env
+.env.local
+apps/api/.env
+apps/web/.env.local
+.git

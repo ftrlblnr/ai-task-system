@@ -1,0 +1,1446 @@
+:root {
+  --bg: #f5f7f8;
+  --surface: #ffffff;
+  --surface-2: #eef2f3;
+  --border: #e1e6e8;
+  --border-strong: #cbd3d6;
+  --ink: #171b1f;
+  --ink-soft: #565f66;
+  --ink-faint: #8a929a;
+
+  --accent: #1f6e80;
+  --accent-hover: #195a69;
+  --accent-soft: #dceef1;
+  --accent-soft-border: #b9dee3;
+  /* Текст/иконки поверх заливки --accent. В тёмной теме accent становится
+     светлым (для читаемости на тёмном фоне), поэтому текст поверх него
+     должен стать тёмным, а не остаться белым — иначе кнопки нечитаемы. */
+  --accent-contrast: #ffffff;
+  /* rgb-триплеты — для rgba() в свечении/тенях голосовой сферы (voice/page.tsx),
+     hex-токены выше для этого не годятся. */
+  --accent-rgb: 31, 110, 128;
+
+  --danger: #b0392f;
+  --danger-soft: #fbe4e1;
+  --danger-rgb: 176, 57, 47;
+  --warn: #a66a1e;
+  --warn-soft: #f5e7d0;
+  --ok: #2e7d4f;
+  --ok-soft: #dff1e5;
+
+  --priority-low: #8a95a1;
+  --priority-medium: var(--accent);
+  --priority-high: var(--warn);
+  --priority-critical: var(--danger);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 27, 0.05), 0 1px 1px rgba(15, 23, 27, 0.04);
+  --shadow-md: 0 10px 24px -8px rgba(15, 23, 27, 0.14), 0 2px 8px -2px rgba(15, 23, 27, 0.06);
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1215;
+    --surface: #171b1f;
+    --surface-2: #12151a;
+    --border: #262c31;
+    --border-strong: #343c42;
+    --ink: #edf0f2;
+    --ink-soft: #a7b0b6;
+    --ink-faint: #6d767c;
+
+    --accent: #5fc2d6;
+    --accent-hover: #7acfe0;
+    --accent-soft: #17323a;
+    --accent-soft-border: #26505a;
+    --accent-contrast: #0b1013;
+    --accent-rgb: 95, 194, 214;
+
+    --danger: #e2857a;
+    --danger-soft: #3a211f;
+    --danger-rgb: 226, 133, 122;
+    --warn: #dbae6e;
+    --warn-soft: #3a2e1b;
+    --ok: #7fcb9b;
+    --ok-soft: #1b3325;
+
+    --priority-low: #7e8890;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 10px 28px -8px rgba(0, 0, 0, 0.55), 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  color-scheme: light dark;
+}
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  min-height: 100%;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+  text-wrap: balance;
+}
+h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+p {
+  margin: 0 0 1em;
+}
+.mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============ App shell ============ */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+.app-main {
+  flex: 1;
+  min-width: 0;
+  padding: 36px 40px 72px;
+}
+
+/* ============ Sidebar (fixed dark chrome, independent of light/dark) ============ */
+.sidebar {
+  flex: none;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  background: #12161b;
+  border-right: 1px solid #20262c;
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 26px;
+  color: #f1f4f6 !important;
+  text-decoration: none !important;
+}
+.sidebar-brand-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(155deg, #5fc2d6, #1f6e80);
+  color: #0b1013;
+  font-weight: 800;
+  font-size: 0.74rem;
+  letter-spacing: -0.02em;
+  flex: none;
+}
+.sidebar-brand-name {
+  font-weight: 700;
+  font-size: 0.92rem;
+  letter-spacing: -0.01em;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  color: #aab3ba !important;
+  font-size: 0.87rem;
+  font-weight: 500;
+  text-decoration: none !important;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.sidebar-nav-item svg {
+  flex: none;
+  opacity: 0.85;
+}
+.sidebar-nav-item:hover {
+  background: #1a2027;
+  color: #f1f4f6 !important;
+}
+.sidebar-nav-item.active {
+  background: #1c333a;
+  color: #7fd8ea !important;
+}
+.sidebar-nav-item.active svg {
+  opacity: 1;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid #20262c;
+}
+.sidebar-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+  padding: 4px;
+}
+.sidebar-user-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.sidebar-user-name {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: #edf0f2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-user-role {
+  font-size: 0.72rem;
+  color: #7d868d;
+}
+.sidebar-logout {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid #262d33;
+  color: #9aa3aa;
+  cursor: pointer;
+  padding: 0;
+}
+.sidebar-logout:hover {
+  border-color: #3a444c;
+  color: #edf0f2;
+}
+
+/* ============ Avatar ============ */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  font-family: var(--font-sans);
+  flex: none;
+  line-height: 1;
+}
+
+/* ============ Back link / page subtitle ============ */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-soft) !important;
+  margin-bottom: 14px;
+}
+.back-link:hover {
+  color: var(--accent) !important;
+  text-decoration: none;
+}
+.page-subtitle {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  margin: 0 0 22px;
+  max-width: 60ch;
+}
+
+/* ============ Page header ============ */
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.page-header h1 {
+  margin: 0;
+}
+
+/* ============ Buttons ============ */
+.btn,
+button {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.87rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 9px 15px;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease, opacity 0.12s ease;
+}
+.btn:hover,
+button:not(:disabled):not(.btn-secondary):not(.status-pill):hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+.btn:active,
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+.btn-secondary {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  box-shadow: none;
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--surface);
+}
+.btn-small {
+  padding: 4px 10px;
+  font-size: 0.76rem;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+/* ============ Forms ============ */
+.form-card {
+  max-width: 500px;
+}
+.form-wide {
+  max-width: 760px;
+}
+.form-section-divider {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  margin: 4px 0 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border-strong);
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 15px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.checkbox-label input {
+  width: auto;
+}
+.input-row {
+  display: flex;
+  gap: 8px;
+}
+.input-row input {
+  flex: 1;
+  min-width: 0;
+}
+input,
+textarea,
+select {
+  font: inherit;
+  font-weight: 400;
+  font-size: 0.92rem;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-faint);
+}
+select {
+  cursor: pointer;
+}
+
+/* ============ Auth screen ============ */
+.auth-screen {
+  min-height: calc(100vh - 108px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  position: relative;
+}
+.auth-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(560px 360px at 50% 15%, var(--accent-soft), transparent 70%);
+  pointer-events: none;
+  opacity: 0.9;
+}
+.auth-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: linear-gradient(155deg, var(--accent), var(--accent-hover));
+  color: var(--accent-contrast);
+  font-weight: 800;
+  font-size: 1rem;
+  margin: 0 auto 18px;
+  box-shadow: var(--shadow-md);
+}
+.auth-card {
+  width: 100%;
+  max-width: 360px;
+  position: relative;
+  text-align: center;
+}
+.auth-card form {
+  text-align: left;
+}
+.auth-card h1 {
+  text-align: center;
+  margin-bottom: 6px;
+}
+.auth-subtitle {
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 0.87rem;
+  margin-bottom: 24px;
+}
+.auth-card button[type="submit"] {
+  width: 100%;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+/* ============ Card / surfaces ============ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 22px 24px;
+  margin-bottom: 20px;
+}
+
+.error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  padding: 9px 13px;
+  border-radius: var(--radius-md);
+  font-size: 0.86rem;
+  margin-bottom: 14px;
+}
+
+/* ============ Modal (первая на web, владелец 09.09.2026 — извлечение
+   задач из саммари встречи) ============ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  justify-content: center;
+  padding: 40px 16px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.modal-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 24px 28px;
+  max-width: 720px;
+  width: 100%;
+  height: fit-content;
+  margin: auto 0;
+}
+.draft-task-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  position: relative;
+}
+.draft-task-source {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  font-style: italic;
+  border-left: 2px solid var(--border-strong);
+  padding-left: 10px;
+  margin-top: 4px;
+}
+.hint {
+  color: var(--ink-soft);
+  font-size: 0.87rem;
+}
+
+/* ============ Table ============ */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.87rem;
+}
+.table th {
+  color: var(--ink-faint);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--surface-2);
+}
+.table tr:last-child td {
+  border-bottom: none;
+}
+.table tbody tr {
+  transition: background 0.1s ease;
+}
+.table tbody tr:hover {
+  background: var(--surface-2);
+}
+.table-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--ink) !important;
+}
+.table-person:hover {
+  color: var(--accent) !important;
+  text-decoration: none;
+}
+
+/* ============ Badges / pills / chips ============ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.badge-muted {
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-weight: 500;
+  border: 1px solid var(--border);
+}
+.status-done {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.status-returned,
+.status-overdue,
+.status-cancelled {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  border: 1px solid var(--border);
+}
+
+/* Инструкция настройки Google OAuth (calendar/page.tsx) — обычный <ol>,
+   но с отступами/интервалом в стиле остального приложения (нигде больше
+   нет голых списков, везде свои классы). */
+.setup-steps {
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.setup-steps a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.chip-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+/* ============ Employee profile head ============ */
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+/* ============ Task detail ============ */
+.task-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.task-description {
+  margin-bottom: 18px;
+  line-height: 1.65;
+  color: var(--ink);
+  max-width: 68ch;
+}
+.status-pill-group {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.status-pill {
+  background: var(--surface);
+  color: var(--ink-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding: 7px 14px;
+  box-shadow: none;
+}
+.status-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--surface);
+}
+.status-pill.current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  cursor: default;
+}
+.status-pill.current:hover {
+  background: var(--accent);
+}
+
+.source-card {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+.source-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.source-icon {
+  color: var(--accent);
+  margin-top: 2px;
+  flex: none;
+}
+
+.comment-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.comment-item {
+  display: flex;
+  gap: 10px;
+}
+.comment-body {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.comment-item:last-child .comment-body {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.comment-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.comment-author {
+  font-weight: 700;
+  font-size: 0.87rem;
+}
+.comment-time {
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+}
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ============ Plain lists (competencies etc.) ============ */
+.plain-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plain-list li {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+.plain-list li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.plain-list p {
+  margin: 2px 0 0;
+}
+.plain-list-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ============ Attach catalog item ============ */
+.attach-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--border-strong);
+}
+.attach-form button[type="submit"] {
+  align-self: flex-start;
+}
+
+/* ============ Telegram invite box ============ */
+.invite-box {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.invite-box input {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.82rem;
+}
+
+/* ============ Kanban board ============ */
+.board-scroll {
+  overflow-x: auto;
+  padding-bottom: 12px;
+  margin: 0 -4px;
+}
+.board {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  min-width: min-content;
+  padding: 0 4px;
+}
+.board-side-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border-strong);
+  flex: none;
+  margin: 4px 6px;
+}
+
+.kanban-column {
+  flex: none;
+  width: 268px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.kanban-column-drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.kanban-column-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 12px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.kanban-column-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.kanban-column-header .col-name {
+  flex: 1;
+}
+.kanban-column-count {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+.kanban-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 60px;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+}
+.kanban-empty {
+  margin: 0;
+  padding: 12px 6px;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.kanban-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--priority-medium);
+  border-radius: var(--radius-md);
+  padding: 11px 12px;
+  cursor: grab;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.12s ease, transform 0.12s ease;
+}
+/* Владелец 08.09.2026: перестановка задач внутри колонки — линия сверху
+   карточки, над которой сейчас находится перетаскиваемая задача, вместо
+   левого бордера (тот уже занят цветом приоритета). */
+.kanban-card-drop-target {
+  box-shadow: 0 -2px 0 0 var(--accent), var(--shadow-sm);
+}
+.kanban-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.kanban-card:active {
+  cursor: grabbing;
+}
+.kanban-card.priority-low {
+  border-left-color: var(--priority-low);
+}
+.kanban-card.priority-medium {
+  border-left-color: var(--priority-medium);
+}
+.kanban-card.priority-high {
+  border-left-color: var(--priority-high);
+}
+.kanban-card.priority-critical {
+  border-left-color: var(--priority-critical);
+}
+
+.kanban-card-title {
+  margin: 0 0 9px;
+  font-size: 0.87rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.kanban-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 9px;
+}
+.kanban-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.kanban-card-priority-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+.kanban-card-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kanban-card-subtasks {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-text {
+  line-height: 1.7;
+  font-size: 0.92rem;
+  color: var(--ink);
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+/* Саммари встречи рендерится через react-markdown (владелец 09.09.2026) —
+   базовая типографика для того, что реально встречается в саммари Plaud
+   (заголовки, абзацы, списки, выделение). */
+.reader-text h1,
+.reader-text h2,
+.reader-text h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 18px 0 8px;
+}
+.reader-text h1:first-child,
+.reader-text h2:first-child,
+.reader-text h3:first-child {
+  margin-top: 0;
+}
+.reader-text p {
+  margin: 0 0 10px;
+}
+.reader-text ul,
+.reader-text ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.reader-text li {
+  margin-bottom: 4px;
+}
+.reader-text strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+.reader-text mark {
+  background: var(--accent-soft);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+/* GFM чек-листы ("- [ ] задача") — без этого попадают под общий input-стиль
+   выше (граница/паддинг/фон) и выглядят как поле ввода, а не чекбокс. */
+.reader-text input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  margin-right: 6px;
+}
+.reader-text li:has(input[type='checkbox']) {
+  list-style: none;
+  margin-left: -22px;
+}
+/* ============ Empty state ============ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}
+.empty-state strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+/* ============ Voice mode (раздел 14.2 ТЗ / Адъютант) ============ */
+/* Веб-версия apps/miniapp/voice-screen.tsx: тот же визуальный язык
+   (сфера/кольца/чат-пузыри), центрирована в колонке ограниченной ширины.
+   height (не max-height/auto) + overflow:hidden — страница не растёт
+   вместе с чатом до бесконечности (владелец 07.09.2026: "страница тянется
+   в бесконечность" при длинной переписке); внутри скроллится только
+   .voice-chat, сфера в .voice-center остаётся на виду всегда. 108px —
+   верхний+нижний padding .app-main (36px + 72px, см. layout.tsx). */
+.voice-page {
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 108px);
+  overflow: hidden;
+}
+.voice-header {
+  flex: none;
+}
+/* flex:1 + min-height:0 — без min-height:0 flex-элемент по умолчанию не
+   сжимается меньше высоты своего контента, и overflow внутри него не
+   срабатывает — сообщения просто раздували бы контейнер вместо скролла. */
+.voice-chat {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+.voice-bubble {
+  max-width: 80%;
+  padding: 11px 15px;
+  border-radius: var(--radius-md);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.voice-bubble-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-bottom-right-radius: 4px;
+}
+.voice-bubble-assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-bottom-left-radius: 4px;
+}
+.voice-bubble-assistant.pending {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+.voice-bubble-assistant.error {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+/* Подтверждение удаления голосом (владелец 09.09.2026) — кнопками в
+   баббле, не второй голосовой репликой. */
+.voice-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Компактный размер (владелец 08.09.2026: "пол экрана занимает микрофон,
+   половину чат") — переписка доминирует, кнопка записи — компактный
+   элемент внизу, как в мессенджерах, а не хиро-визуал на четверть экрана. */
+.voice-center {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+}
+
+/* 104px, не 190px — пропорции core/ring/glow сохранены (масштаб ×0.547). */
+.voice-orb-wrap {
+  --orb-ring-color: rgba(var(--accent-rgb), 0.55);
+  --amp: 0;
+  position: relative;
+  width: 104px;
+  height: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  perspective: 800px;
+}
+.voice-orb-wrap.recording {
+  --orb-ring-color: rgba(var(--danger-rgb), 0.85);
+}
+.voice-orb-wrap.processing {
+  --orb-ring-color: rgba(var(--accent-rgb), 0.85);
+}
+.voice-orb-wrap.error {
+  --orb-ring-color: rgba(var(--danger-rgb), 0.3);
+}
+
+.voice-orb-glow {
+  position: absolute;
+  inset: -20px;
+  z-index: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(var(--accent-rgb), calc(0.28 + var(--amp) * 0.3)), transparent 70%);
+  filter: blur(18px);
+  transition: background 0.15s ease-out;
+}
+.voice-orb-wrap.recording .voice-orb-glow {
+  background: radial-gradient(circle, rgba(var(--danger-rgb), calc(0.32 + var(--amp) * 0.4)), transparent 70%);
+}
+.voice-orb-wrap.error .voice-orb-glow {
+  background: radial-gradient(circle, rgba(var(--danger-rgb), 0.14), transparent 70%);
+}
+
+.voice-orb-ring {
+  position: absolute;
+  inset: 3px;
+  z-index: 1;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0%,
+    var(--orb-ring-color) 12%,
+    transparent 28%,
+    transparent 72%,
+    var(--orb-ring-color) 88%,
+    transparent 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1.5px;
+}
+.voice-orb-ring-1 {
+  animation-name: voice-ring-spin-1;
+  animation-duration: 7s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.voice-orb-ring-2 {
+  inset: 9px;
+  opacity: 0.65;
+  animation-name: voice-ring-spin-2;
+  animation-duration: 9s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-direction: reverse;
+}
+.voice-orb-ring-3 {
+  inset: 14px;
+  opacity: 0.4;
+  animation-name: voice-ring-spin-3;
+  animation-duration: 11s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.voice-orb-wrap.recording .voice-orb-ring-1 {
+  animation-duration: 2.4s;
+}
+.voice-orb-wrap.recording .voice-orb-ring-2 {
+  animation-duration: 3s;
+}
+.voice-orb-wrap.recording .voice-orb-ring-3 {
+  animation-duration: 3.6s;
+}
+.voice-orb-wrap.processing .voice-orb-ring-1 {
+  animation-duration: 1.4s;
+}
+.voice-orb-wrap.processing .voice-orb-ring-2 {
+  animation-duration: 1.8s;
+}
+.voice-orb-wrap.processing .voice-orb-ring-3 {
+  animation-duration: 2.2s;
+}
+.voice-orb-wrap.error .voice-orb-ring {
+  animation-play-state: paused;
+}
+
+@keyframes voice-ring-spin-1 {
+  from {
+    transform: rotateX(72deg) rotateZ(0deg);
+  }
+  to {
+    transform: rotateX(72deg) rotateZ(360deg);
+  }
+}
+@keyframes voice-ring-spin-2 {
+  from {
+    transform: rotateX(64deg) rotateY(35deg) rotateZ(0deg) translateZ(-6px);
+  }
+  to {
+    transform: rotateX(64deg) rotateY(35deg) rotateZ(-360deg) translateZ(-6px);
+  }
+}
+@keyframes voice-ring-spin-3 {
+  from {
+    transform: rotateX(78deg) rotateY(-28deg) rotateZ(0deg) translateZ(-12px);
+  }
+  to {
+    transform: rotateX(78deg) rotateY(-28deg) rotateZ(360deg) translateZ(-12px);
+  }
+}
+
+.voice-orb-core {
+  position: relative;
+  z-index: 2;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-contrast);
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255, 255, 255, 0.6), transparent 45%),
+    radial-gradient(circle at 68% 80%, rgba(0, 0, 0, 0.28), transparent 55%),
+    radial-gradient(circle at 50% 45%, var(--accent-hover), var(--accent) 68%);
+  box-shadow:
+    0 0 0 1px rgba(var(--accent-rgb), 0.35),
+    0 20px 40px -14px rgba(var(--accent-rgb), calc(0.55 + var(--amp) * 0.3)),
+    inset 0 -10px 18px -6px rgba(0, 0, 0, 0.35),
+    inset 0 8px 14px -4px rgba(255, 255, 255, 0.35);
+  transform: scale(calc(1 + var(--amp) * 0.16));
+  animation: voice-orb-breathe 4.2s ease-in-out infinite;
+  transition: box-shadow 0.1s linear, transform 0.08s linear, background 0.2s ease;
+  cursor: pointer;
+}
+.voice-orb-core:active {
+  transform: scale(0.96);
+}
+.voice-orb-core:disabled {
+  cursor: default;
+}
+.voice-orb-wrap.recording .voice-orb-core {
+  animation: none;
+  transform: scale(calc(1 + var(--amp) * 0.32));
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255, 255, 255, 0.55), transparent 45%),
+    radial-gradient(circle at 68% 80%, rgba(0, 0, 0, 0.3), transparent 55%),
+    radial-gradient(circle at 50% 45%, var(--danger), var(--danger) 68%);
+  box-shadow:
+    0 0 0 1px rgba(var(--danger-rgb), 0.4),
+    0 0 calc(28px + var(--amp) * 46px) calc(2px + var(--amp) * 14px) rgba(var(--danger-rgb), calc(0.4 + var(--amp) * 0.45)),
+    inset 0 -10px 18px -6px rgba(0, 0, 0, 0.35),
+    inset 0 8px 14px -4px rgba(255, 255, 255, 0.3);
+}
+.voice-orb-wrap.processing .voice-orb-core {
+  animation: voice-orb-think 1.1s ease-in-out infinite;
+}
+.voice-orb-wrap.error .voice-orb-core {
+  animation: none;
+  transform: none;
+  opacity: 0.55;
+}
+
+@keyframes voice-orb-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.045);
+  }
+}
+@keyframes voice-orb-think {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-orb-ring,
+  .voice-orb-core {
+    animation: none !important;
+  }
+}
+
+/* ============ Responsive ============ */
+@media (max-width: 860px) {
+  .sidebar {
+    display: none;
+  }
+  .app-main {
+    padding: 20px 18px 48px;
+  }
+}
+
+/* ============ Наблюдатели/подзадачи (владелец 08.09.2026) ============ */
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+.btn-link:hover {
+  background: none;
+  color: var(--accent);
+}
+.watchers-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.watchers-avatars {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.watcher-chip {
+  position: relative;
+  display: inline-flex;
+}
+.watcher-remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-shadow: none;
+}
+.watcher-add-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.watcher-add-form select {
+  font-size: 0.8rem;
+  padding: 5px 8px;
+}
+
+.subtask-row {
+  cursor: pointer;
+}
+.subtask-row:hover .subtask-title-group {
+  color: var(--accent);
+}
+.subtask-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+.status-dot-inline {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.subtask-add-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-strong);
+}
+.subtask-add-form input {
+  flex: 1;
+}

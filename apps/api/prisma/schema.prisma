@@ -1,0 +1,515 @@
+// AI Task System — схема данных Этапа 1 (Core).
+// Сущности встреч/спикеров/AI-рекомендаций (раздел 18 ТЗ) добавляются
+// миграциями на Этапах 3–5, когда до них дойдёт очередь по дорожной карте.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Права доступа (раздел 5 ТЗ) -------------------------------------------
+
+enum Role {
+  OWNER // Руководитель — видит всё, подтверждает AI-назначения
+  EMPLOYEE // Подчинённый — видит только свои задачи и минимальный контекст
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// --- Профили (раздел 6 ТЗ) --------------------------------------------------
+
+model Position {
+  id        String     @id @default(cuid())
+  title     String
+  employees Employee[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Employee {
+  id             String         @id @default(cuid())
+  fullName       String
+  photoUrl       String?
+  email          String         @unique
+  passwordHash   String
+  telegramId     String?        @unique
+  status         EmployeeStatus @default(ACTIVE)
+  role           Role           @default(EMPLOYEE)
+  // Администратор профилей (раздел 6.3, 5): либо сам руководитель, либо
+  // один доверенный человек — флаг, а не отдельная роль.
+  isProfileAdmin Boolean        @default(false)
+
+  positionId String?
+  position   Position? @relation(fields: [positionId], references: [id])
+
+  competencies EmployeeCompetency[]
+
+  tasksAssigned Task[] @relation("TaskAssignee")
+  tasksCreated  Task[] @relation("TaskCreator")
+  taskWatching  TaskWatcher[]
+  eventParticipations EventParticipant[]
+
+  taskComments        TaskComment[]
+  taskAttachments     TaskAttachment[]
+  taskHistory         TaskHistory[]
+  auditLogs           AuditLog[]
+  telegramInvites     TelegramInvite[]
+  passwordResetTokens PasswordResetToken[]
+  meetingsCreated     Meeting[]
+
+  eventsCreated            Event[]
+  googleCalendarConnection GoogleCalendarConnection?
+  plaudConnection          PlaudConnection?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Одноразовая привязка Telegram-аккаунта к профилю сотрудника (раздел 14.2/
+// 14.3 ТЗ). Руководитель не знает numeric telegram id сотрудника заранее,
+// поэтому вместо ручного ввода id — приглашение: руководитель генерирует
+// токен, сотрудник переходит по deep-link в бота и подтверждает себя сам.
+// Хранится только хэш токена — сырой токен отдаётся один раз при создании.
+model TelegramInvite {
+  id         String    @id @default(cuid())
+  employeeId String
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([employeeId])
+}
+
+// Самостоятельный сброс пароля (владелец 08.09.2026: единственный путь
+// раньше — прямое вмешательство в БД). Тот же token/hash/TTL паттерн, что
+// у TelegramInvite выше — не отдельное изобретение, а копия уже
+// проверенного подхода: сырой токен отдаётся один раз, хранится только
+// его хэш, 30 минут жизни, одноразовый.
+model PasswordResetToken {
+  id         String    @id @default(cuid())
+  employeeId String
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([employeeId])
+}
+
+// Что сотрудник умеет — компетенции. Развёрнутое описание обязательно
+// (раздел 6.4: точность классификации зависит от содержательности профиля,
+// не от короткого тега).
+model Competency {
+  id          String @id @default(cuid())
+  name        String @unique
+  description String
+
+  employees    EmployeeCompetency[]
+  taskProfiles TaskProfileCompetency[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model EmployeeCompetency {
+  employeeId   String
+  employee     Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  competencyId String
+  competency   Competency @relation(fields: [competencyId], references: [id], onDelete: Cascade)
+  // Развёрнутое описание уровня/контекста владения компетенцией у ЭТОГО
+  // сотрудника, не просто факт наличия.
+  description  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([employeeId, competencyId])
+}
+
+// Встреча из Plaud (раздел 8 ТЗ). Этап 1 закрывает только ручную загрузку
+// и хранение (раздел 20 MVP: "Загрузка Transcript + Summary — ручная”).
+// Транскрипт сознательно не хранится (владелец 08.09.2026: Plaud уже
+// делает саммари сам, транскрипт полностью убран из проекта — было пусто
+// в проде на момент удаления, миграция безопасна). enhancedSummary —
+// замена "Speaker N" на реальные имена (владелец 09.09.2026): руководитель
+// сам сопоставляет метки с именами (speakerNames), бэкенд делает
+// подстановку без AI. Разбиение на MeetingTopic сознательно не заведено —
+// это результат AI-сегментации, отдельный будущий шаг, заводить пустую
+// сущность под него преждевременно.
+model Meeting {
+  id          String   @id @default(cuid())
+  title       String
+  meetingDate DateTime
+
+  // Заполнено только у автоматически импортированных из Plaud записей
+  // (владелец 08.09.2026) — null у вручную заведённых. Уникальность —
+  // идемпотентность синхронизации: повторный прогон крона не создаёт
+  // дубликат уже импортированной записи.
+  plaudRecordingId String? @unique
+
+  // Исходная версия — неизменна (раздел 8.1 ТЗ), чтобы всегда можно было
+  // сверить с обработанной.
+  rawSummary      String
+  enhancedSummary String?
+  // {"Speaker 1": "Иван Иванов", ...} — из чего пересчитывается
+  // enhancedSummary (владелец 09.09.2026). Null, пока имена не заданы.
+  speakerNames Json?
+
+  // Путь во внешнем объектном хранилище, не blob в БД (раздел 15 ТЗ).
+  audioUrl      String?
+  // Раздел 15 ТЗ: политика хранения — когда удалить аудио. Null — политика
+  // ещё не выбрана владельцем (раздел 23, открытый вопрос ТЗ).
+  audioDeleteAt DateTime?
+
+  createdById String
+  createdBy   Employee @relation(fields: [createdById], references: [id])
+
+  tasks Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Тип задачи: категория + требуемые компетенции (раздел 6.4).
+// AI сначала классифицирует задачу по этому профилю, и только потом
+// ищет исполнителя.
+model TaskProfile {
+  id          String @id @default(cuid())
+  category    String
+  type        String
+  description String
+
+  requiredCompetencies TaskProfileCompetency[]
+  tasks                Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, type])
+}
+
+model TaskProfileCompetency {
+  taskProfileId String
+  taskProfile   TaskProfile @relation(fields: [taskProfileId], references: [id], onDelete: Cascade)
+  competencyId  String
+  competency    Competency  @relation(fields: [competencyId], references: [id], onDelete: Cascade)
+
+  @@id([taskProfileId, competencyId])
+}
+
+// --- Задачи (раздел 13 ТЗ) --------------------------------------------------
+
+enum TaskStatus {
+  DRAFT // Черновик
+  NEW // Новая
+  IN_PROGRESS // В работе
+  IN_REVIEW // На проверке
+  DONE // Выполнена
+  RETURNED // Возвращена на доработку
+  OVERDUE // Просрочена (боковое состояние)
+  CANCELLED // Отменена (боковое состояние)
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// Уровни, а не проценты (раздел 12 ТЗ) — самооценка LLM плохо
+// откалибрована, показывать ложную точность не нужно.
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model Task {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+
+  taskProfileId String?
+  taskProfile   TaskProfile? @relation(fields: [taskProfileId], references: [id])
+
+  assigneeId String?
+  assignee   Employee? @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  creatorId  String
+  creator    Employee  @relation("TaskCreator", fields: [creatorId], references: [id])
+
+  priority TaskPriority @default(MEDIUM)
+  status   TaskStatus   @default(DRAFT)
+  dueDate  DateTime?
+
+  // Ручной порядок внутри колонки канбана (владелец 08.09.2026: "надо
+  // сделать так чтобы задачи можно было переставлять вверх-вниз"). Общий
+  // default 0 у всех — сортировка по (order asc, createdAt desc) при этом
+  // ведёт себя как раньше (просто "новые сверху"), пока никто ничего не
+  // перетащил внутри колонки. Порядок глобальный, не per-status: канбан
+  // фильтрует по status на фронте, относительный порядок внутри каждой
+  // колонки от этого не зависит.
+  order Int @default(0)
+
+  // Задача поставлена AI-маршрутизацией — заполняется на Этапе 5.
+  aiConfidence ConfidenceLevel?
+
+  // Источник задачи (раздел 9 ТЗ): ссылка на встречу + точный таймкод.
+  // sourceContext — краткий контекст происхождения ("почему возникла
+  // задача"), безопасный к показу исполнителю без доступа к самой
+  // встрече — раздел 5/9: минимальный контекст, не вся встреча целиком.
+  // При ручной постановке (не из встречи) sourceMeetingId пуст, а
+  // sourceContext используется как обычная заметка руководителя.
+  sourceMeetingId String?
+  sourceMeeting   Meeting? @relation(fields: [sourceMeetingId], references: [id])
+  sourceTimestamp String?
+  sourceContext   String?
+
+  // Подзадачи (владелец 08.09.2026, по образцу Linear/Asana/Jira):
+  // подзадача — обычная Task с parentTaskId, не отдельная лёгкая
+  // сущность. Один уровень вложенности — сервис (не схема) отклоняет
+  // попытку создать подзадачу у задачи, которая сама уже подзадача.
+  // Не показываются как отдельные карточки в общем списке/канбане, только
+  // внутри карточки родителя.
+  parentTaskId String?
+  parentTask   Task?  @relation("TaskSubtasks", fields: [parentTaskId], references: [id])
+  subtasks     Task[] @relation("TaskSubtasks")
+
+  comments    TaskComment[]
+  attachments TaskAttachment[]
+  history     TaskHistory[]
+  watchers    TaskWatcher[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([assigneeId, status])
+  @@index([parentTaskId])
+}
+
+// Наблюдатель задачи (владелец 08.09.2026, выбрана модель «один
+// ответственный + наблюдатели», как в Asana/Linear — не множественное
+// назначение с правом менять статус, как в ClickUp/Monday). Наблюдатель
+// видит задачу и получает уведомления, но не входит в RBAC-проверки
+// смены статуса — та логика (assigneeId/creatorId) не тронута.
+model TaskWatcher {
+  id         String   @id @default(cuid())
+  taskId     String
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([taskId, employeeId])
+  @@index([taskId])
+}
+
+model TaskComment {
+  id       String   @id @default(cuid())
+  taskId   String
+  task     Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  authorId String
+  author   Employee @relation(fields: [authorId], references: [id])
+  body     String
+
+  createdAt DateTime @default(now())
+}
+
+model TaskAttachment {
+  id           String   @id @default(cuid())
+  taskId       String
+  task         Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  fileName     String
+  fileUrl      String
+  uploadedById String
+  uploadedBy   Employee @relation(fields: [uploadedById], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// Кто и что поменял в задаче — статус, исполнитель, срок (раздел 13/15).
+// changedById — nullable (было обязательным): изменения от системы
+// (OVERDUE-крон переводит задачу по истечении dueDate) пишутся без живого
+// актора, а не от имени случайного сотрудника. Фронтенд эту историю пока
+// нигде не рендерит — смена безопасна и назад совместима.
+model TaskHistory {
+  id          String    @id @default(cuid())
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  changedById String?
+  changedBy   Employee? @relation(fields: [changedById], references: [id])
+  field       String
+  oldValue    String?
+  newValue    String?
+
+  createdAt DateTime @default(now())
+}
+
+// Аудит обращений к протоколам и задачам, отдельно от содержимого
+// самих встреч (раздел 15 ТЗ).
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actor      Employee @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+// --- Календарь руководителя (раздел 14.2/Адъютант, скорректировано --------
+// владельцем 28.08.2026) ------------------------------------------------------
+//
+// Внутренний календарь — источник правды в нашей системе, двусторонне
+// синхронизированный с Google Calendar руководителя. Единственный писатель
+// с обеих сторон — сам руководитель, поэтому конфликт-резолюция упрощена
+// до last-write-wins по updatedAt/googleUpdatedAt, без сложного merge
+// (в отличие от календаря с несколькими независимыми редакторами).
+
+enum EventStatus {
+  DRAFT // Черновик — например, из голосового AI-агента, ждёт подтверждения
+  CONFIRMED // Подтверждено, участвует в синхронизации с Google Calendar
+  CANCELLED
+}
+
+// Чья версия события правилась последней — нужно, чтобы pull-синхронизация
+// не затирала локальную правку, ещё не отправленную в Google, и наоборот.
+enum EventSource {
+  INTERNAL
+  GOOGLE
+}
+
+model Event {
+  id          String      @id @default(cuid())
+  title       String
+  description String?
+  location    String?
+  startAt     DateTime
+  endAt       DateTime
+  allDay      Boolean     @default(false)
+  status      EventStatus @default(CONFIRMED)
+
+  // Кто последним менял событие и с какой стороны — last-write-wins
+  // при двусторонней синхронизации (см. комментарий к блоку выше).
+  lastModifiedBy EventSource @default(INTERNAL)
+
+  // Null, пока событие не отправлено в Google (например, ещё DRAFT).
+  googleEventId String?   @unique
+  // Google возвращает etag на каждое изменение — используем, чтобы
+  // отличить "у нас просто устаревшая копия" от "реального конфликта".
+  googleEtag    String?
+  lastSyncedAt  DateTime?
+
+  createdById String
+  createdBy   Employee @relation(fields: [createdById], references: [id])
+
+  // Участники встречи (владелец 09.09.2026) — раньше у события не было
+  // структурного понятия "участники" вообще, только текст в title/description.
+  participants EventParticipant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([startAt])
+}
+
+// Тот же паттерн, что TaskWatcher у задач — участник видит встречу и
+// получает уведомление о добавлении, управляет только руководитель (весь
+// CalendarController закрыт на OWNER).
+model EventParticipant {
+  id         String   @id @default(cuid())
+  eventId    String
+  event      Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([eventId, employeeId])
+}
+
+// Один на сотрудника (на практике — только руководитель подключает свой
+// Google Calendar). Refresh-токен хранится зашифрованным (раздел 15 ТЗ —
+// AES-256), а не как есть — это первый секрет в системе, который нужно
+// не только проверить, но и реально использовать повторно.
+model GoogleCalendarConnection {
+  id         String   @id @default(cuid())
+  employeeId String   @unique
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  googleAccountEmail    String
+  refreshTokenEncrypted String
+  calendarId            String @default("primary")
+
+  // Токен инкрементальной синхронизации Google Calendar API — позволяет
+  // на pull запрашивать только изменения, а не весь календарь целиком.
+  syncToken String?
+
+  // Push-уведомления Google Calendar API (events.watch) — канал живёт
+  // ограниченное время и требует периодического продления кроном.
+  channelId         String?
+  channelResourceId String?
+  channelExpiresAt  DateTime?
+
+  connectedAt DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastSyncAt  DateTime?
+}
+
+// Единственная строка (id фиксирован как "singleton") — OAuth-клиент Google
+// Cloud Console, который владелец вводит сам из личного кабинета (раздел
+// 14.2 ТЗ), а не через .env/просьбу к разработчику на каждую смену.
+// clientSecret шифруется тем же SecretBoxService, что и refresh-токен
+// (раздел 15 ТЗ) — это тоже секрет, а не публичный идентификатор вроде
+// clientId. GOOGLE_REDIRECT_URI остаётся в .env: он завязан на домен
+// деплоя, а не на выбор владельца, и без пересборки не меняется всё равно.
+model GoogleOAuthAppConfig {
+  id                    String   @id @default("singleton")
+  clientId              String
+  clientSecretEncrypted String
+  updatedAt             DateTime @updatedAt
+}
+
+// --- Синхронизация встреч из Plaud (владелец 08.09.2026) --------------------
+// В отличие от Google Calendar выше, у Plaud нет self-service регистрации
+// OAuth-приложения (portal.plaud.ai — отдельный продукт, Plaud Embedded для
+// встраивания устройств в чужие приложения, не для доступа к своим же
+// записям). Вместо своего OAuth-клиента используем тот же публичный
+// клиент, что и официальные @plaud-ai/cli/mcp (см. PlaudOAuthService) —
+// без client_secret, PKCE вместо него. Access/refresh-токены хранятся
+// зашифрованными тем же SecretBoxService. У Plaud нет инкрементального
+// sync-токена (в отличие от Google Calendar API) — список записей просто
+// отдаёт новые первыми, поэтому курсор синхронизации — lastSyncedCreatedAt,
+// а не непрозрачный токен.
+model PlaudConnection {
+  id         String   @id @default(cuid())
+  employeeId String   @unique
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String
+  tokenExpiresAt        DateTime?
+
+  lastSyncedCreatedAt DateTime?
+
+  connectedAt DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastSyncAt  DateTime?
+}

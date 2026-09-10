@@ -1,0 +1,98 @@
+# Продакшен-деплой на VPS с уже существующим системным nginx (не в докере),
+# который обслуживает и другие проекты на этой же машине — поэтому здесь
+# нет caddy/reverse-proxy-контейнера: api/web публикуют порты только на
+# 127.0.0.1, а системный nginx (см. /etc/nginx/sites-available/adyutant)
+# проксирует на них и сам управляет TLS через certbot — тем же способом,
+# что и остальные сайты на сервере.
+#
+# Запускать из этой директории:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+
+services:
+  # mem_limit + NODE_OPTIONS на каждом сервисе (владелец 08.09.2026, по
+  # итогам анализа памяти) — раньше ни у одного контейнера не было потолка:
+  # при всплеске нагрузки/утечке ядро линукса убило бы непредсказуемо какой
+  # процесс на сервере (необязательно виновника), а не сам контейнер
+  # предсказуемо перезапустился бы через restart: unless-stopped. Цифры —
+  # с запасом от фактического потребления на момент анализа (web ~135МБ,
+  # api ~50МБ, miniapp ~11МБ, postgres ~8МБ), не режут по живому.
+  # --max-old-space-size — процентов 70 от mem_limit: V8 успевает агрессивно
+  # собрать мусор и получить контроль раньше, чем сработает жёсткий
+  # OOM-killer на уровне контейнера.
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Не публикуется наружу вовсе — доступен только внутри docker-сети
+    # этого compose-проекта (сервис api резолвит хост "postgres").
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    # 320m оказалось мало на практике (владелец 08.09.2026, тот же день, что
+    # и сам лимит завели): api прогрелся до ~271МБ уже в простое (Prisma
+    # query engine + весь модульный граф Nest — тяжелее, чем показывал
+    # снимок до добавления крон-джоб/watchers/подзадач/Telegram-бота) —
+    # 85% лимита без единого запроса, и старт заметно замедлился (V8
+    # тормозил у потолка кучи). 512m — с реальным запасом от наблюдаемых
+    # ~270МБ, а не от устаревшего снимка.
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../../apps/api/.env.production
+    environment:
+      # Внутри docker-сети база всегда на хосте "postgres" — переопределяет
+      # DATABASE_URL из .env.production (там localhost для локальной разработки).
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      NODE_OPTIONS: --max-old-space-size=360
+    ports:
+      - "127.0.0.1:3021:3001"
+
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Запекается в клиентский бандл на сборке — см. комментарий в Dockerfile.
+        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL}
+    restart: unless-stopped
+    mem_limit: 384m
+    depends_on:
+      - api
+    environment:
+      NODE_OPTIONS: --max-old-space-size=280
+    ports:
+      - "127.0.0.1:3022:3000"
+
+  miniapp:
+    build:
+      context: ../..
+      dockerfile: apps/miniapp/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL}
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      - api
+    environment:
+      NODE_OPTIONS: --max-old-space-size=180
+    ports:
+      - "127.0.0.1:3023:3000"
+
+volumes:
+  postgres_data:
