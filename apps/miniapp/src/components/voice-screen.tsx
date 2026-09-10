@@ -8,6 +8,7 @@ import type {
   CreateTaskInput,
   LogVoiceMessageInput,
   TaskDetail,
+  TaskPriority,
   VoiceDraft,
   VoiceEventActionDraft,
   VoiceParseResponse,
@@ -16,6 +17,7 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
 import { useAuth } from '@/lib/auth-context';
+import { TaskDetailOverlay } from './task-detail-overlay';
 
 type Phase = 'idle' | 'recording' | 'processing' | 'error';
 
@@ -28,7 +30,41 @@ interface ChatMessage {
   // чате, не второй голосовой репликой (ненадёжно как распознавание
   // поверх уже состоявшейся ошибки). Пока не null — ничего не удалено.
   pendingAction?: { kind: 'task' | 'event'; targetId: string; targetTitle: string } | null;
+  // Undo (аудит 10.09.2026, п. 4.2) — та же логика, что apps/web/src/app/
+  // voice/page.tsx, см. комментарии там. Активно ~30 секунд после действия.
+  undo?: UndoInfo | null;
 }
+
+interface TaskRevertPayload {
+  title?: string;
+  description?: string;
+  assigneeId?: string | null;
+  dueDate?: string | null;
+  priority?: TaskPriority;
+}
+interface EventRevertPayload {
+  title?: string;
+  description?: string;
+  location?: string;
+  startAt?: string;
+  endAt?: string;
+  allDay?: boolean;
+}
+
+type UndoInfo =
+  | { kind: 'task'; action: 'create'; id: string }
+  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
+  | { kind: 'event'; action: 'create'; id: string }
+  | {
+      kind: 'event';
+      action: 'update';
+      id: string;
+      previous: EventRevertPayload;
+      addedParticipantIds: string[];
+      removedParticipantIds: string[];
+    };
+
+const UNDO_WINDOW_MS = 30_000;
 
 // Держит переписку в localStorage, а не только в React-стейте — Mini App
 // переоткрывается из Telegram заново при каждом запуске (тот же комментарий,
@@ -102,6 +138,11 @@ export function VoiceScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadStoredMessages(userId));
+  // "Открыть" для задачи (аудит 10.09.2026, п. 4.2) — здесь нет роутинга по
+  // страницам (см. tasks-screen.tsx), задача открывается тем же оверлеем.
+  // Для событий такого оверлея нет нигде в приложении — кнопки "Открыть"
+  // undo.kind==='event' сознательно не показывает.
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -335,6 +376,8 @@ export function VoiceScreen() {
   // попадает: confirmDelete ниже вызывается только по клику в баббле.
   async function confirmDraft(draft: VoiceTaskActionDraft | VoiceEventActionDraft, assistantId: string) {
     try {
+      let undo: UndoInfo | null = null;
+
       if (draft.type === 'task_action') {
         if (draft.action === 'create') {
           const payload: CreateTaskInput = {
@@ -344,7 +387,8 @@ export function VoiceScreen() {
             priority: draft.priority || undefined,
             dueDate: draft.dueDate || undefined,
           };
-          await api.post<TaskDetail>('/tasks', payload);
+          const created = await api.post<TaskDetail>('/tasks', payload);
+          undo = { kind: 'task', action: 'create', id: created.id };
         } else {
           const payload: Partial<CreateTaskInput> = {};
           if (draft.title !== '') payload.title = draft.title;
@@ -352,7 +396,15 @@ export function VoiceScreen() {
           if (draft.assigneeId !== null) payload.assigneeId = draft.assigneeId;
           if (draft.dueDate !== null) payload.dueDate = draft.dueDate;
           if (draft.priority !== null) payload.priority = draft.priority;
+          const before = await api.get<TaskDetail>(`/tasks/${draft.targetTaskId}`);
+          const previous: TaskRevertPayload = {};
+          if (payload.title !== undefined) previous.title = before.title;
+          if (payload.description !== undefined) previous.description = before.description ?? '';
+          if (payload.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
+          if (payload.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
+          if (payload.priority !== undefined) previous.priority = before.priority;
           await api.patch(`/tasks/${draft.targetTaskId}`, payload);
+          undo = { kind: 'task', action: 'update', id: draft.targetTaskId, previous };
         }
       } else if (draft.type === 'event_action') {
         if (draft.action === 'create') {
@@ -368,6 +420,7 @@ export function VoiceScreen() {
           for (const employeeId of draft.addParticipantIds) {
             await api.post(`/events/${created.id}/participants`, { employeeId }).catch(() => {});
           }
+          undo = { kind: 'event', action: 'create', id: created.id };
         } else {
           const payload: Partial<CreateEventInput> = {};
           if (draft.title !== '') payload.title = draft.title;
@@ -376,24 +429,79 @@ export function VoiceScreen() {
           if (draft.startAt !== null) payload.startAt = draft.startAt;
           if (draft.endAt !== null) payload.endAt = draft.endAt;
           if (draft.allDay !== null) payload.allDay = draft.allDay;
-          if (Object.keys(payload).length > 0) await api.patch(`/events/${draft.targetEventId}`, payload);
+          const previous: EventRevertPayload = {};
+          if (Object.keys(payload).length > 0) {
+            const before = await api.get<CalendarEvent>(`/events/${draft.targetEventId}`).catch(() => null);
+            if (before) {
+              if (payload.title !== undefined) previous.title = before.title;
+              if (payload.description !== undefined) previous.description = before.description ?? '';
+              if (payload.location !== undefined) previous.location = before.location ?? '';
+              if (payload.startAt !== undefined) previous.startAt = before.startAt;
+              if (payload.endAt !== undefined) previous.endAt = before.endAt;
+              if (payload.allDay !== undefined) previous.allDay = before.allDay;
+            }
+            await api.patch(`/events/${draft.targetEventId}`, payload);
+          }
           for (const employeeId of draft.addParticipantIds) {
             await api.post(`/events/${draft.targetEventId}/participants`, { employeeId }).catch(() => {});
           }
           for (const employeeId of draft.removeParticipantIds) {
             await api.delete(`/events/${draft.targetEventId}/participants/${employeeId}`).catch(() => {});
           }
+          undo = {
+            kind: 'event',
+            action: 'update',
+            id: draft.targetEventId,
+            previous,
+            addedParticipantIds: draft.addParticipantIds,
+            removedParticipantIds: draft.removeParticipantIds,
+          };
         }
       }
+
       const successText = describeSuccess(draft);
-      updateMessage(assistantId, { text: successText, status: undefined });
+      updateMessage(assistantId, { text: successText, status: undefined, undo });
       logAssistant(successText);
       notificationHaptic('success');
+      if (undo) {
+        setTimeout(() => updateMessage(assistantId, { undo: null }), UNDO_WINDOW_MS);
+      }
     } catch (err) {
       notificationHaptic('error');
       const errorText = `Не получилось сохранить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
       updateMessage(assistantId, { text: errorText, status: 'error' });
       logAssistant(errorText);
+    }
+  }
+
+  async function performUndo(messageId: string, undo: UndoInfo) {
+    updateMessage(messageId, { undo: null });
+    try {
+      if (undo.kind === 'task') {
+        if (undo.action === 'create') await api.delete(`/tasks/${undo.id}`);
+        else await api.patch(`/tasks/${undo.id}`, undo.previous);
+      } else {
+        if (undo.action === 'create') {
+          await api.delete(`/events/${undo.id}`);
+        } else {
+          if (Object.keys(undo.previous).length > 0) await api.patch(`/events/${undo.id}`, undo.previous);
+          for (const employeeId of undo.addedParticipantIds) {
+            await api.delete(`/events/${undo.id}/participants/${employeeId}`).catch(() => {});
+          }
+          for (const employeeId of undo.removedParticipantIds) {
+            await api.post(`/events/${undo.id}/participants`, { employeeId }).catch(() => {});
+          }
+        }
+      }
+      const text = 'Отменено.';
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text });
+      logAssistant(text);
+      notificationHaptic('success');
+    } catch (err) {
+      notificationHaptic('error');
+      const text = `Не получилось отменить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text, status: 'error' });
+      logAssistant(text);
     }
   }
 
@@ -494,9 +602,23 @@ export function VoiceScreen() {
                 </button>
               </div>
             )}
+            {m.undo && (
+              <div className="voice-confirm-actions">
+                {m.undo.kind === 'task' && (
+                  <button type="button" className="btn-secondary btn-small" onClick={() => setOpenTaskId(m.undo!.id)}>
+                    Открыть
+                  </button>
+                )}
+                <button type="button" className="btn-secondary btn-small" onClick={() => performUndo(m.id, m.undo!)}>
+                  Отменить
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {openTaskId && <TaskDetailOverlay taskId={openTaskId} onClose={() => setOpenTaskId(null)} />}
 
       <div className="voice-center">
         <div ref={orbRef} className={`voice-orb-wrap ${phase}`}>

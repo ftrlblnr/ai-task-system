@@ -22,7 +22,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
+    // Чтение localStorage на монтировании — как раз тот случай, для
+    // которого эффекты существуют (синхронизация с внешней системой, не
+    // React-состоянием), а не "подстройка состояния под изменившийся
+    // проп" — правило react-hooks/set-state-in-effect (первый реальный
+    // прогон lint в CI, аудит 10.09.2026, п. 5.2) не различает эти два
+    // случая эвристически, здесь ложное срабатывание.
     const stored = localStorage.getItem('user');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (stored) setUser(JSON.parse(stored));
     setLoading(false);
   }, []);

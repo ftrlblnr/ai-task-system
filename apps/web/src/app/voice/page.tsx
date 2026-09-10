@@ -10,6 +10,7 @@ import type {
   LogVoiceMessageInput,
   MeetingDetail,
   TaskDetail,
+  TaskPriority,
   VoiceDraft,
   VoiceEventActionDraft,
   VoiceParseResponse,
@@ -32,7 +33,55 @@ interface ChatMessage {
   // распознавания поверх уже состоявшейся). Пока не null — ничего не
   // удалено, DELETE вызывается только по клику "Удалить".
   pendingAction?: { kind: 'task' | 'event'; targetId: string; targetTitle: string } | null;
+  // Undo (аудит 10.09.2026, п. 4.2) — после голосового создания/правки
+  // сообщение "Создал задачу «X»" раньше было тупиком: нет ссылки, нет
+  // отмены. Активно ~30 секунд после действия (см. UNDO_WINDOW_MS), потом
+  // само гаснет — таймер в confirmDraft. Для удаления не заводится: там
+  // уже есть pendingAction (подтверждение ДО, а не отмена ПОСЛЕ).
+  undo?: UndoInfo | null;
 }
+
+// previous — старые значения ТОЛЬКО тех полей, что реально поменялись
+// (снимок через GET непосредственно перед PATCH, см. confirmDraft) —
+// откат применяет их обратно тем же PATCH-эндпоинтом, каким было применено
+// изменение. Для события отдельно addedParticipantIds/removedParticipantIds
+// — не снимок, а сами draft.addParticipantIds/removeParticipantIds:
+// отменить "добавил X" значит просто убрать X, инвертировать нечего
+// снимать заранее.
+// Не Partial<CreateTaskInput/CreateEventInput> — те типизируют assigneeId/
+// dueDate как string | undefined (нет null), а PATCH-эндпоинты трактуют
+// null как "снять значение" (см. TasksService.update: dueDate === null
+// значит явно снят срок) — снимку до патча нужно уметь выразить именно это.
+interface TaskRevertPayload {
+  title?: string;
+  description?: string;
+  assigneeId?: string | null;
+  dueDate?: string | null;
+  priority?: TaskPriority;
+}
+interface EventRevertPayload {
+  title?: string;
+  description?: string;
+  location?: string;
+  startAt?: string;
+  endAt?: string;
+  allDay?: boolean;
+}
+
+type UndoInfo =
+  | { kind: 'task'; action: 'create'; id: string }
+  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
+  | { kind: 'event'; action: 'create'; id: string }
+  | {
+      kind: 'event';
+      action: 'update';
+      id: string;
+      previous: EventRevertPayload;
+      addedParticipantIds: string[];
+      removedParticipantIds: string[];
+    };
+
+const UNDO_WINDOW_MS = 30_000;
 
 // Ограничивает худший случай по стоимости/задержке Whisper+Claude на одну
 // голосовую заметку — то же значение, что в apps/miniapp/voice-screen.tsx.
@@ -81,6 +130,7 @@ function persistMessages(userId: string, messages: ChatMessage[]) {
 function VoiceView() {
   const { user } = useAuth();
   const userId = user!.id;
+  const router = useRouter();
   // Диктовка со страницы встречи (владелец 09.09.2026, /voice?meetingId=...)
   // — саммари этой встречи передаётся Claude как контекст, а созданная
   // задача получает sourceMeetingId (см. confirmDraft ниже).
@@ -314,6 +364,8 @@ function VoiceView() {
   // processDraft (см. комментарий у ChatMessage.pendingAction).
   async function confirmDraft(draft: VoiceTaskActionDraft | VoiceEventActionDraft, assistantId: string) {
     try {
+      let undo: UndoInfo | null = null;
+
       if (draft.type === 'task_action') {
         if (draft.action === 'create') {
           const payload: CreateTaskInput = {
@@ -324,7 +376,8 @@ function VoiceView() {
             dueDate: draft.dueDate || undefined,
             sourceMeetingId: draft.sourceMeetingId || undefined,
           };
-          await api.post<TaskDetail>('/tasks', payload);
+          const created = await api.post<TaskDetail>('/tasks', payload);
+          undo = { kind: 'task', action: 'create', id: created.id };
         } else {
           const payload: Partial<CreateTaskInput> = {};
           if (draft.title !== '') payload.title = draft.title;
@@ -332,7 +385,17 @@ function VoiceView() {
           if (draft.assigneeId !== null) payload.assigneeId = draft.assigneeId;
           if (draft.dueDate !== null) payload.dueDate = draft.dueDate;
           if (draft.priority !== null) payload.priority = draft.priority;
+          // Снимок ДО патча — только он даёт старые значения тех полей,
+          // что мы сейчас поменяем (черновик несёт только новые).
+          const before = await api.get<TaskDetail>(`/tasks/${draft.targetTaskId}`);
+          const previous: TaskRevertPayload = {};
+          if (payload.title !== undefined) previous.title = before.title;
+          if (payload.description !== undefined) previous.description = before.description ?? '';
+          if (payload.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
+          if (payload.dueDate !== undefined) previous.dueDate = before.dueDate ?? null;
+          if (payload.priority !== undefined) previous.priority = before.priority;
           await api.patch(`/tasks/${draft.targetTaskId}`, payload);
+          undo = { kind: 'task', action: 'update', id: draft.targetTaskId, previous };
         }
       } else if (draft.type === 'event_action') {
         if (draft.action === 'create') {
@@ -348,6 +411,7 @@ function VoiceView() {
           for (const employeeId of draft.addParticipantIds) {
             await api.post(`/events/${created.id}/participants`, { employeeId }).catch(() => {});
           }
+          undo = { kind: 'event', action: 'create', id: created.id };
         } else {
           const payload: Partial<CreateEventInput> = {};
           if (draft.title !== '') payload.title = draft.title;
@@ -356,22 +420,78 @@ function VoiceView() {
           if (draft.startAt !== null) payload.startAt = draft.startAt;
           if (draft.endAt !== null) payload.endAt = draft.endAt;
           if (draft.allDay !== null) payload.allDay = draft.allDay;
-          if (Object.keys(payload).length > 0) await api.patch(`/events/${draft.targetEventId}`, payload);
+          const previous: Partial<CreateEventInput> = {};
+          if (Object.keys(payload).length > 0) {
+            const before = await api.get<CalendarEvent>(`/events/${draft.targetEventId}`).catch(() => null);
+            if (before) {
+              if (payload.title !== undefined) previous.title = before.title;
+              if (payload.description !== undefined) previous.description = before.description ?? '';
+              if (payload.location !== undefined) previous.location = before.location ?? '';
+              if (payload.startAt !== undefined) previous.startAt = before.startAt;
+              if (payload.endAt !== undefined) previous.endAt = before.endAt;
+              if (payload.allDay !== undefined) previous.allDay = before.allDay;
+            }
+            await api.patch(`/events/${draft.targetEventId}`, payload);
+          }
           for (const employeeId of draft.addParticipantIds) {
             await api.post(`/events/${draft.targetEventId}/participants`, { employeeId }).catch(() => {});
           }
           for (const employeeId of draft.removeParticipantIds) {
             await api.delete(`/events/${draft.targetEventId}/participants/${employeeId}`).catch(() => {});
           }
+          undo = {
+            kind: 'event',
+            action: 'update',
+            id: draft.targetEventId,
+            previous,
+            addedParticipantIds: draft.addParticipantIds,
+            removedParticipantIds: draft.removeParticipantIds,
+          };
         }
       }
+
       const successText = describeSuccess(draft);
-      updateMessage(assistantId, { text: successText, status: undefined });
+      updateMessage(assistantId, { text: successText, status: undefined, undo });
       logAssistant(successText);
+      if (undo) {
+        setTimeout(() => updateMessage(assistantId, { undo: null }), UNDO_WINDOW_MS);
+      }
     } catch (err) {
       const errorText = `Не получилось сохранить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
       updateMessage(assistantId, { text: errorText, status: 'error' });
       logAssistant(errorText);
+    }
+  }
+
+  // "Отменить" в баббле (аудит 10.09.2026, п. 4.2). create — просто удаляет
+  // только что созданное; update — откатывает снятые в confirmDraft
+  // значения тем же PATCH-эндпоинтом плюс инвертирует изменения участников.
+  async function performUndo(messageId: string, undo: UndoInfo) {
+    updateMessage(messageId, { undo: null });
+    try {
+      if (undo.kind === 'task') {
+        if (undo.action === 'create') await api.delete(`/tasks/${undo.id}`);
+        else await api.patch(`/tasks/${undo.id}`, undo.previous);
+      } else {
+        if (undo.action === 'create') {
+          await api.delete(`/events/${undo.id}`);
+        } else {
+          if (Object.keys(undo.previous).length > 0) await api.patch(`/events/${undo.id}`, undo.previous);
+          for (const employeeId of undo.addedParticipantIds) {
+            await api.delete(`/events/${undo.id}/participants/${employeeId}`).catch(() => {});
+          }
+          for (const employeeId of undo.removedParticipantIds) {
+            await api.post(`/events/${undo.id}/participants`, { employeeId }).catch(() => {});
+          }
+        }
+      }
+      const text = 'Отменено.';
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text });
+      logAssistant(text);
+    } catch (err) {
+      const text = `Не получилось отменить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
+      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text, status: 'error' });
+      logAssistant(text);
     }
   }
 
@@ -470,6 +590,18 @@ function VoiceView() {
                 </button>
                 <button type="button" className="btn-secondary btn-small" onClick={() => cancelDelete(m.id)}>
                   Отмена
+                </button>
+              </div>
+            )}
+            {m.undo && (
+              <div className="voice-confirm-actions">
+                {m.undo.kind === 'task' && (
+                  <button type="button" className="btn-secondary btn-small" onClick={() => router.push(`/tasks/${m.undo!.id}`)}>
+                    Открыть
+                  </button>
+                )}
+                <button type="button" className="btn-secondary btn-small" onClick={() => performUndo(m.id, m.undo!)}>
+                  Отменить
                 </button>
               </div>
             )}

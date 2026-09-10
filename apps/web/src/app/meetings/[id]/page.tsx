@@ -25,7 +25,17 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => setNames(meeting.speakerNames ?? {}), [meeting.speakerNames]);
+  // Подстройка state под изменившийся проп (сохранение имён вызывает
+  // onSaved → родитель перезагружает meeting) — по рекомендованному React-
+  // паттерну (react.dev/learn/you-might-not-need-an-effect#adjusting-some-
+  // state-when-a-prop-changes) делается прямо в рендере, не в useEffect
+  // (аудит 10.09.2026, п. 5.2, первый реальный прогон lint в CI: react-
+  // hooks/set-state-in-effect на прежнем useEffect(() => setNames(...))).
+  const [syncedSpeakerNames, setSyncedSpeakerNames] = useState(meeting.speakerNames);
+  if (meeting.speakerNames !== syncedSpeakerNames) {
+    setSyncedSpeakerNames(meeting.speakerNames);
+    setNames(meeting.speakerNames ?? {});
+  }
 
   if (labels.length === 0) return null;
 
