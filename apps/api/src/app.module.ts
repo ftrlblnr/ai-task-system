@@ -16,6 +16,7 @@ import { TelegramModule } from './telegram/telegram.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { PlaudModule } from './plaud/plaud.module';
 import { VoiceModule } from './voice/voice.module';
+import { AssistantModule } from './assistant/assistant.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { VoiceModule } from './voice/voice.module';
     CalendarModule,
     PlaudModule,
     VoiceModule,
+    AssistantModule,
   ],
   controllers: [AppController],
 })

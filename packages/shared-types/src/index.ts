@@ -436,6 +436,67 @@ export interface LogVoiceMessageInput {
   text: string;
 }
 
+// --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
+// Полноценный AI-чат (GET/POST /assistant/conversations[...]) — отдельная
+// от voice-пути (VoiceParseResponse выше) история, объединение — отдельный,
+// более поздний этап. Phase B backend реально отдаёт части только типов
+// 'markdown'/'error' — остальные 4 уже описаны здесь по спеке Stage 2 §5,
+// чтобы не было churn типов, когда Phase C добавит их реальных producer'ов
+// (tool-calling для карточек, upload/generation для файла).
+export type MessagePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
+
+export interface MarkdownPartData {
+  content: string;
+}
+
+export interface ErrorPartData {
+  message: string;
+}
+
+export interface MessagePart {
+  id: string;
+  type: MessagePartType;
+  order: number;
+  // task_card/event_card/file/tool_activity data пока не описаны — нет ни
+  // одного producer'а этих типов до Phase C/F.
+  data: MarkdownPartData | ErrorPartData;
+}
+
+export type AssistantMessageRole = 'user' | 'assistant';
+export type AssistantMessageStatus = 'pending' | 'streaming' | 'completed' | 'failed';
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  role: AssistantMessageRole;
+  status: AssistantMessageStatus;
+  clientRequestId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  parts: MessagePart[];
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+// POST /assistant/conversations/:id/messages. clientRequestId — идемпотентность
+// (Stage 2 §29): один и тот же id в повторной отправке (плохой интернет,
+// двойной tap) не создаёт вторую пару сообщений на сервере.
+export interface SendAssistantMessageInput {
+  text: string;
+  clientRequestId?: string;
+}
+
+export interface SendAssistantMessageResponse {
+  userMessage: ConversationMessage;
+  assistantMessage: ConversationMessage;
+}
+
 export interface GoogleCalendarStatus {
   connected: boolean;
   // Настроен ли OAuth-клиент (GoogleOAuthAppConfig, вводится владельцем в
