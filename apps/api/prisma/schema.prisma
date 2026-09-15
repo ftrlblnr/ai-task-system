@@ -69,6 +69,8 @@ model Employee {
   googleCalendarConnection GoogleCalendarConnection?
   plaudConnection          PlaudConnection?
   voiceMessages            VoiceMessage[]
+  conversations            Conversation[]
+  fileArtifacts            FileArtifact[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -104,6 +106,133 @@ model VoiceMessage {
   text       String
 
   createdAt DateTime @default(now())
+
+  @@index([employeeId, createdAt])
+}
+
+// --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
+// Полноценный AI-чат поверх текущего voice-only пути (VoiceMessage/
+// /voice/parse выше — не трогается этим блоком, продолжает работать как
+// раньше; объединение — отдельный, более поздний этап). Conversation/
+// Message/MessagePart — структурированная история с частями разных типов
+// (markdown/карточки задачи-события/файл/статус инструмента/ошибка), а не
+// один текстовый столбец, как у VoiceMessage — чтобы ответ ассистента мог
+// содержать больше одного текстового пузыря. FileArtifact заведена в этой
+// же миграции (нужна модели Message/Conversation для связи), но своей
+// логики (хранилище, upload/download) пока не имеет — это отдельный этап.
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+// STREAMING пока не используется (нет streaming-этапа), заведён сразу,
+// чтобы не потребовалась отдельная миграция только ради значения enum'а.
+enum MessageStatus {
+  PENDING
+  STREAMING
+  COMPLETED
+  FAILED
+}
+
+model Conversation {
+  id         String    @id @default(cuid())
+  employeeId String
+  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  title      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  messages      Message[]
+  fileArtifacts FileArtifact[]
+
+  @@index([employeeId, updatedAt])
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  status         MessageStatus @default(COMPLETED)
+  // Идемпотентность повторной отправки (плохой интернет, двойной tap,
+  // reconnect) — клиент генерирует один раз, сервер игнорирует повтор той
+  // же пары (conversationId, clientRequestId). У сообщений ассистента
+  // всегда null — Postgres не считает несколько NULL в уникальном индексе
+  // конфликтующими, так что это не мешает.
+  clientRequestId String?
+  // Correlation id вызова ассистента, породившего это сообщение (тот же
+  // принцип, что requestId в voice-пайплайне) — для логов, не для UI.
+  requestId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parts         MessagePart[]
+  fileArtifacts FileArtifact[]
+
+  @@index([conversationId, createdAt])
+  @@unique([conversationId, clientRequestId])
+}
+
+// Только эти 6 типов на первом этапе (см. план этапа) — markdown/error уже
+// используются, остальные три ждут своего producer'а (tool-calling для
+// карточек, upload/generation для файла).
+enum MessagePartType {
+  MARKDOWN
+  TASK_CARD
+  EVENT_CARD
+  FILE
+  TOOL_ACTIVITY
+  ERROR
+}
+
+// data — Json, не отдельные колонки на каждый тип: тот же приём, что
+// AuditLog.metadata, состав полей зависит от MessagePartType и валидируется
+// в коде, а не схемой БД. HTML/markdown от LLM здесь не хранится как HTML —
+// только markdown-текст в MarkdownPart.data.content, санитизация — на
+// фронтенде при рендере.
+model MessagePart {
+  id        String          @id @default(cuid())
+  messageId String
+  message   Message         @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  type      MessagePartType
+  order     Int
+  data      Json
+
+  @@index([messageId, order])
+}
+
+enum FileArtifactSource {
+  UPLOADED
+  GENERATED
+  INTERNAL
+}
+
+// storageProvider/storageKey — абстракция на будущий FileStorageService
+// (локальный диск в разработке, S3/MinIO/Blob позже) — ничего в этой
+// модели не завязано на конкретный провайдер. conversationId/messageId
+// опциональны и SetNull при удалении переписки/сообщения — сам файл может
+// пережить сообщение (например, если понадобится ссылка на него из аудита).
+model FileArtifact {
+  id             String        @id @default(cuid())
+  employeeId     String
+  employee       Employee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  messageId      String?
+  message        Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  name            String
+  mimeType        String
+  size            Int
+  storageProvider String
+  storageKey      String
+  source          FileArtifactSource
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
 
   @@index([employeeId, createdAt])
 }
