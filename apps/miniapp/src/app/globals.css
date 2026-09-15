@@ -796,6 +796,255 @@ select {
   margin-bottom: 14px;
 }
 
+/* ============ Assistant chat (Stage 2, Phase D, владелец 15.09.2026) ======
+   Отдельная вкладка от «Голос» (микрофон переезжает сюда только в Phase H)
+   — тот же layout-каркас, что .voice-screen/.voice-chat (calc(100dvh-120px),
+   flex+min-height:0 для скролла), но вывод ассистента — почти обычный
+   текстовый поток (спека §23), не одинаковые bubble для обеих сторон. */
+.assistant-screen {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 120px);
+  overflow: hidden;
+}
+.assistant-chat {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 6px 2px 10px;
+  position: relative;
+}
+.assistant-user-bubble {
+  align-self: flex-end;
+  max-width: 84%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-bottom-right-radius: 4px;
+  font-size: 0.88rem;
+  line-height: 1.42;
+  white-space: pre-wrap;
+}
+.assistant-response {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-self: stretch;
+}
+.assistant-pending {
+  align-self: flex-start;
+  color: var(--ink-faint);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+/* Markdown — sanitize через отсутствие rehype-raw в react-markdown
+   (спека §22: raw HTML от модели запрещён), эти стили только про
+   типографику/переносимость, не про безопасность. */
+.assistant-markdown {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.assistant-markdown > *:first-child {
+  margin-top: 0;
+}
+.assistant-markdown > *:last-child {
+  margin-bottom: 0;
+}
+.assistant-markdown p,
+.assistant-markdown ul,
+.assistant-markdown ol,
+.assistant-markdown blockquote {
+  margin: 0 0 8px;
+}
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-left: 20px;
+}
+.assistant-markdown h1,
+.assistant-markdown h2,
+.assistant-markdown h3 {
+  margin: 14px 0 6px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.assistant-markdown blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 10px;
+  color: var(--ink-soft);
+}
+.assistant-markdown code {
+  font-size: 0.85em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.assistant-markdown pre {
+  overflow-x: auto;
+  background: var(--surface-2);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  margin: 0 0 8px;
+}
+.assistant-markdown pre code {
+  background: none;
+  padding: 0;
+}
+.assistant-markdown-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+.assistant-markdown table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.assistant-markdown th,
+.assistant-markdown td {
+  border: 1px solid var(--border);
+  padding: 5px 9px;
+  text-align: left;
+}
+.assistant-copy-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  width: auto;
+  padding: 0;
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+}
+
+.assistant-tool-activity {
+  align-self: flex-start;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  background: var(--surface-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.assistant-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 92%;
+}
+.assistant-card-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+.assistant-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+.assistant-card-open {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: transparent;
+  font-size: 0.82rem;
+  width: auto;
+}
+.assistant-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.assistant-chip {
+  display: inline-flex;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.76rem;
+}
+
+.assistant-error {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 0.86rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.assistant-scroll-down {
+  position: sticky;
+  bottom: 6px;
+  align-self: center;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  box-shadow: var(--shadow-sm);
+  width: auto;
+}
+
+.assistant-composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 2px calc(10px + var(--tg-safe-bottom));
+  border-top: 1px solid var(--border);
+}
+.assistant-composer textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.9rem;
+  max-height: 140px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.assistant-send-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  padding: 0;
+}
+.assistant-send-btn:disabled {
+  opacity: 0.5;
+}
+
 /* ============ Наблюдатели/подзадачи (владелец 08.09.2026) ============ */
 .btn-link {
   display: inline-flex;

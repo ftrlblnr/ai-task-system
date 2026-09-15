@@ -6,6 +6,7 @@ import { SwipeShell, type SwipeScreen } from '@/components/swipe-shell';
 import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { VoiceScreen } from '@/components/voice-screen';
+import { AssistantScreen } from '@/components/assistant-screen';
 
 export default function Home() {
   const { user, loading, error, isTelegram } = useAuth();
@@ -41,6 +42,12 @@ export default function Home() {
   // 28.08.2026): черновик-событие для не-OWNER бэкенд сам превращает в
   // черновик задачи (см. VoiceService.enforceEventRbac), поэтому вкладка не
   // требует условия на роль здесь.
+  //
+  // Ассистент (Stage 2, Phase D, владелец 15.09.2026) — новый rich text-чат
+  // поверх /assistant/*, отдельная вкладка от «Голос» сознательно: перенос
+  // микрофона в общий composer — отдельная, более поздняя Phase H, здесь
+  // голос не трогается вовсе. Доступен всем, как и «Голос» — контроллер без
+  // @Roles(...).
   const screens: SwipeScreen[] = [
     { key: 'tasks', label: 'Задачи', content: <TasksScreen /> },
     { key: 'voice', label: 'Голос', content: <VoiceScreen /> },
@@ -48,6 +55,7 @@ export default function Home() {
   if (user.role === 'OWNER') {
     screens.push({ key: 'calendar', label: 'Календарь', content: <CalendarScreen /> });
   }
+  screens.push({ key: 'assistant', label: 'Ассистент', content: <AssistantScreen /> });
 
   return <SwipeShell screens={screens} />;
 }
