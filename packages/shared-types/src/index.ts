@@ -441,18 +441,11 @@ export interface LogVoiceMessageInput {
 // от voice-пути (VoiceParseResponse выше) история, объединение — отдельный,
 // более поздний этап. task_card/event_card/tool_activity получили реальных
 // producer'ов в Phase C (tool-calling); file по-прежнему без формы данных —
-// ждёт Phase F (upload/generation).
-//
-// ВАЖНО (известный пробел, Phase D должен учесть): бэкенд
-// (AssistantChatController) сейчас отдаёт role/status/type как есть из
-// Prisma — ЗАГЛАВНЫМИ буквами ('MARKDOWN', 'USER', 'COMPLETED' и т.п.), а
-// не в виде строк ниже ('markdown', 'user', 'completed'). Эти типы — целевой
-// публичный контракт, но маппинг Prisma-enum → него на бэкенде ещё не
-// написан (сознательно не стал трогать в Phase C — это задело бы уже
-// сданные Phase B тесты; фронтенд всё равно ещё не подключен). Phase D
-// должен либо добавить этот маппинг на бэкенде перед тем, как строить UI на
-// этих типах, либо явно матчить на заглавные значения — не полагаться на
-// то, что API уже отдаёт ровно то, что описано ниже.
+// ждёт Phase F (upload/generation). role/status/type — строчные строки;
+// AssistantChatController переводит Prisma-enum'ы (заглавные) в них на
+// границе HTTP (apps/api/src/assistant/assistant-response.mapper.ts) —
+// AssistantChatService работает с Prisma-представлением, эти типы видит
+// только клиент.
 export type MessagePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
 
 export interface MarkdownPartData {
