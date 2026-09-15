@@ -34,6 +34,20 @@ interface ExtractionResult {
   drafts: VoiceDraft[];
 }
 
+// Обёртка над ExtractionResult, а не расширение самого интерфейса —
+// ExtractionResult также используется как тип «сырого» ответа модели в
+// callModel() (block.input as ExtractionResult), у которого этих полей
+// не будет. timing/escalation добавлены только на выходе extract()
+// (observability-этап, владелец 15.09.2026, раздел 4 ТЗ этапа) — Haiku→Opus
+// логика ниже не изменилась ни на строку, только то, что о ней логируется.
+export interface ExtractionOutcome extends ExtractionResult {
+  fastModel: string;
+  strongModel: string | null;
+  timing: { fastMs: number; strongMs: number };
+  escalatedToStrongModel: boolean;
+  escalationReason: 'LOW_CONFIDENCE' | 'CLARIFICATION_NEEDED' | 'BOTH' | null;
+}
+
 // История диалога (аудит 10.09.2026, п. 2.9) — последние реплики этого же
 // пользователя, и его самого, и ассистента, в хронологическом порядке.
 // role здесь ровно то же, что и role в Anthropic messages API — не Role
@@ -402,6 +416,11 @@ export class DraftExtractionService {
     return block.input as ExtractionResult;
   }
 
+  // requestId — тот же correlation id, что VoiceService.parse() ставит на
+  // весь запрос (observability-этап, владелец 15.09.2026, раздел 3 ТЗ
+  // этапа): единственная цель параметра — чтобы эта лог-строка и итоговая
+  // строка voice parse в VoiceService были грепаемы вместе по одному id.
+  // На саму логику каскада requestId не влияет.
   async extract(
     transcript: string,
     employees: EmployeeOption[],
@@ -410,7 +429,8 @@ export class DraftExtractionService {
     events: EventContextItem[],
     meetingContext: MeetingVoiceContext | null = null,
     history: VoiceHistoryItem[] = [],
-  ): Promise<ExtractionResult> {
+    requestId?: string,
+  ): Promise<ExtractionOutcome> {
     const tool = buildDraftTool();
     const system = buildSystemPrompt(nowInLocalTimezone(), employees, role, tasks, events, meetingContext);
     const messages = toAnthropicMessages(history, transcript);
@@ -434,10 +454,31 @@ export class DraftExtractionService {
       strongMs = Date.now() - strongStart;
     }
 
+    // Причина эскалации — не отдельное поле модели, а то же условие,
+    // которое уже решает, эскалировать ли (см. escalate выше); здесь просто
+    // разложено на составляющие для лога, ничего не решает заново.
+    const escalationReason: ExtractionOutcome['escalationReason'] = !escalate
+      ? null
+      : raw.confidence === 'LOW' && raw.clarificationNeeded
+        ? 'BOTH'
+        : raw.confidence === 'LOW'
+          ? 'LOW_CONFIDENCE'
+          : 'CLARIFICATION_NEEDED';
+
     this.logger.log(
-      `draft-extraction: fast=${fastMs}ms${escalate ? ` strong=${strongMs}ms` : ''} escalated=${escalate} confidence=${raw.confidence}`,
+      `draft-extraction reqId=${requestId ?? 'n/a'} fastModel=${FAST_MODEL} fastMs=${fastMs} escalated=${escalate}` +
+        (escalate ? ` strongModel=${STRONG_MODEL} strongMs=${strongMs} reason=${escalationReason}` : '') +
+        ` confidence=${raw.confidence}`,
     );
 
-    return { ...raw, drafts: raw.drafts.map(normalizeDraftDates) };
+    return {
+      ...raw,
+      drafts: raw.drafts.map(normalizeDraftDates),
+      fastModel: FAST_MODEL,
+      strongModel: escalate ? STRONG_MODEL : null,
+      timing: { fastMs, strongMs },
+      escalatedToStrongModel: escalate,
+      escalationReason,
+    };
   }
 }

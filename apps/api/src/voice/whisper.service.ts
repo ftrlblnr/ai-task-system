@@ -2,6 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI, { toFile } from 'openai';
 
+// Результат transcribe() (владелец 15.09.2026, observability-этап
+// голосового пайплайна) — text остаётся обязательным полем, durationMs
+// добавлен рядом, а не заменил старый string-контракт, чтобы не менять
+// вызывающий код больше, чем нужно для метрики audioDurationMs.
+export interface TranscriptionResult {
+  text: string;
+  durationMs: number | null;
+}
+
 // STT для голосового режима Mini App (раздел 14.2 ТЗ / «Адъютант»).
 // language: 'ru' зафиксирован сознательно, не авто-детект — весь проект
 // русскоязычный (UI, ТЗ, комментарии), фиксированный язык даёт Whisper
@@ -24,14 +33,22 @@ export class WhisperService {
     return this.client;
   }
 
-  async transcribe(buffer: Buffer, mimetype: string, originalName: string): Promise<string> {
+  // response_format: 'verbose_json' вместо дефолтного 'json' — единственная
+  // причина: доступ к result.duration (секунды исходного аудио) для метрики
+  // audioDurationMs (observability-этап, владелец 15.09.2026, раздел 2 ТЗ
+  // этапа). Whisper-модель и язык распознавания не меняются.
+  async transcribe(buffer: Buffer, mimetype: string, originalName: string): Promise<TranscriptionResult> {
     const ext = mimetype.split('/')[1]?.split(';')[0] || 'webm';
     const file = await toFile(buffer, originalName || `voice.${ext}`, { type: mimetype });
     const result = await this.getClient().audio.transcriptions.create({
       file,
       model: 'whisper-1',
       language: 'ru',
+      response_format: 'verbose_json',
     });
-    return result.text;
+    return {
+      text: result.text,
+      durationMs: typeof result.duration === 'number' ? Math.round(result.duration * 1000) : null,
+    };
   }
 }

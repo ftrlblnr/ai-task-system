@@ -80,44 +80,67 @@ export class VoiceService {
     }
 
     // Замеры по этапам (владелец 10.09.2026, по итогам анализа задержки
-    // голосового пути) — без них любая дальнейшая оптимизация промпта или
-    // модели была бы гаданием. contextMs — вся эта группа запросов ниже,
-    // выполняется параллельно с расшифровкой, а не после неё; llmMs — сам
-    // Claude (разбивку fast/strong логирует DraftExtractionService);
-    // execMs — реальные мутации в Task/Event.
+    // голосового пути; расширено 15.09.2026, observability-этап — раздел 2
+    // ТЗ этапа) — без них любая дальнейшая оптимизация промпта или модели
+    // была бы гаданием. requestId — единственный correlation id на весь
+    // voice request, им помечены обе лог-строки этого запроса (эта и
+    // draft-extraction ниже) — по нему грепается весь путь одной записи.
     const t0 = Date.now();
+    const requestId = randomUUID();
+    const audioBytes = audio.buffer.length;
 
     // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
     // шли строго последовательно (расшифровка → сотрудники → задачи →
-    // события), хотя ни один из этих запросов не читает transcript.
-    // meetingContext/visibleEvents — Promise.resolve(...) в false-ветке,
-    // не голый []: раньше это и было причиной отказа от Promise.all
-    // (смешение Promise<Event[]> и []) схлопывало тип в never.
-    const [meetingContext, transcript, employees, visibleTasks, visibleEvents, history] = await Promise.all([
-      // Диктовка со страницы встречи (владелец 09.09.2026) — доступно
-      // только руководителю (сам /meetings и так открыт лишь ему), тот же
-      // принцип, что sourceMeetingId-проверка в TasksService.create().
-      // Прямой prisma-запрос, а не MeetingsService.findOne() — тот пишет
-      // audit-log READ на каждый вызов, здесь это не нужный побочный эффект.
-      meetingId && user.role === Role.OWNER
-        ? this.prisma.meeting.findUnique({
-            where: { id: meetingId },
-            select: { title: true, rawSummary: true, enhancedSummary: true },
-          })
-        : Promise.resolve(null),
-      this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname),
-      this.prisma.employee.findMany({
-        where: { status: 'ACTIVE' },
-        select: { id: true, fullName: true },
-      }),
-      // Те же findAll, что отдают обычные списки задач/календаря в UI — те
-      // же правила видимости (сотрудник видит своё, руководитель — всё;
-      // календарь целиком закрыт на OWNER), без отдельной копии RBAC здесь.
-      this.tasks.findAll(user),
-      user.role === Role.OWNER ? this.events.findAll(user.id) : Promise.resolve([]),
-      this.loadHistory(user.id),
-    ]);
-    const contextMs = Date.now() - t0;
+    // события), хотя ни один из этих запросов не читает transcript. Раньше
+    // они были в одном плоском Promise.all и мерялись одной цифрой
+    // (contextMs); теперь каждая ветка обёрнута в свой IIFE с собственным
+    // таймером, а внешний Promise.all по-прежнему держит их конкурентными —
+    // раздел 2 ТЗ этапа явно требует не превращать параллельные операции в
+    // последовательные ради измерения. meetingContext/visibleEvents —
+    // Promise.resolve(...) в false-ветке, не голый []: раньше это и было
+    // причиной отказа от Promise.all (смешение Promise<Event[]> и [])
+    // схлопывало тип в never.
+    let sttMs = 0;
+    let contextDbMs = 0;
+    const [{ text: transcript, durationMs: audioDurationMs }, [meetingContext, employees, visibleTasks, visibleEvents, history]] =
+      await Promise.all([
+        (async () => {
+          const start = Date.now();
+          const result = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname);
+          sttMs = Date.now() - start;
+          return result;
+        })(),
+        (async () => {
+          const start = Date.now();
+          const result = await Promise.all([
+            // Диктовка со страницы встречи (владелец 09.09.2026) — доступно
+            // только руководителю (сам /meetings и так открыт лишь ему),
+            // тот же принцип, что sourceMeetingId-проверка в
+            // TasksService.create(). Прямой prisma-запрос, а не
+            // MeetingsService.findOne() — тот пишет audit-log READ на
+            // каждый вызов, здесь это не нужный побочный эффект.
+            meetingId && user.role === Role.OWNER
+              ? this.prisma.meeting.findUnique({
+                  where: { id: meetingId },
+                  select: { title: true, rawSummary: true, enhancedSummary: true },
+                })
+              : Promise.resolve(null),
+            this.prisma.employee.findMany({
+              where: { status: 'ACTIVE' },
+              select: { id: true, fullName: true },
+            }),
+            // Те же findAll, что отдают обычные списки задач/календаря в UI
+            // — те же правила видимости (сотрудник видит своё, руководитель
+            // — всё; календарь целиком закрыт на OWNER), без отдельной
+            // копии RBAC здесь.
+            this.tasks.findAll(user),
+            user.role === Role.OWNER ? this.events.findAll(user.id) : Promise.resolve([]),
+            this.loadHistory(user.id),
+          ]);
+          contextDbMs = Date.now() - start;
+          return result;
+        })(),
+      ]);
 
     const taskContext = visibleTasks.slice(0, MAX_CONTEXT_TASKS).map((t) => ({
       id: t.id,
@@ -141,7 +164,6 @@ export class VoiceService {
         allDay: e.allDay,
       }));
 
-    const t1 = Date.now();
     const result = await this.extraction.extract(
       transcript,
       employees,
@@ -152,8 +174,8 @@ export class VoiceService {
         ? { title: meetingContext.title, summary: meetingContext.enhancedSummary ?? meetingContext.rawSummary }
         : null,
       history,
+      requestId,
     );
-    const llmMs = Date.now() - t1;
 
     // Реплику пользователя пишем сама — транскрипт уже есть на сервере.
     // Финальный текст ответа ассистента (chat-реплика, итог действия или
@@ -219,21 +241,32 @@ export class VoiceService {
         results.push(await this.executeEventAction(draft, user));
       }
     }
-    const execMs = Date.now() - t2;
+    const executionMs = Date.now() - t2;
+    const totalMs = Date.now() - t0;
 
+    // Единая сводная строка на весь voice request (observability-этап,
+    // владелец 15.09.2026, раздел 2-3 ТЗ этапа) — reqId тот же, что в
+    // логе draft-extraction выше, оба грепаются вместе одним id. Только
+    // технические метрики: транскрипт/контент чата сюда намеренно не
+    // попадают (раздел 3 ТЗ этапа — запрет на transcript/raw audio/секреты
+    // в performance-логах).
     this.logger.log(
-      `voice parse: context=${contextMs}ms llm=${llmMs}ms exec=${execMs}ms total=${Date.now() - t0}ms drafts=${drafts.length}`,
+      `voice parse reqId=${requestId} audioBytes=${audioBytes} audioDurationMs=${audioDurationMs ?? 'n/a'} ` +
+        `sttMs=${sttMs} contextDbMs=${contextDbMs} llmFastMs=${result.timing.fastMs} ` +
+        `llmStrongMs=${result.timing.strongMs} escalatedToStrongModel=${result.escalatedToStrongModel} ` +
+        `executionMs=${executionMs} totalMs=${totalMs} draftsCount=${drafts.length}`,
     );
 
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам
     // факт транскрибации/разбора и её исход, не текст транскрипта.
-    // randomUUID(), а не константа — черновик эфемерный, своего id в БД у
-    // него нет, но записи аудита не должны схлопываться в одну
-    // неразличимую строку. Не await (владелец 10.09.2026, по итогам анализа
-    // задержки) — запись аудита не должна задерживать ответ пользователю;
-    // AuditService.log сама глотает свои ошибки (см. её комментарий), не
-    // нужно перехватывать их здесь ещё раз.
-    void this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', randomUUID(), {
+    // entityId = requestId (не отдельный randomUUID()) — черновик эфемерный,
+    // своего id в БД у него нет, но теперь запись аудита ищется по тому же
+    // id, что и лог-строки этого запроса (observability-этап, 15.09.2026).
+    // Не await (владелец 10.09.2026, по итогам анализа задержки) — запись
+    // аудита не должна задерживать ответ пользователю; AuditService.log
+    // сама глотает свои ошибки (см. её комментарий), не нужно перехватывать
+    // их здесь ещё раз.
+    void this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', requestId, {
       draftTypes: drafts.map((d) => d.type),
       outcomes: results.map((r) => (r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error')),
       confidence: result.confidence,
