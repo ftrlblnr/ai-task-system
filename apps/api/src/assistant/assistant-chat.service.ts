@@ -4,6 +4,7 @@ import { Conversation, Message, MessagePart, MessageRole, MessageStatus, Message
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AssistantReplyService } from './assistant-reply.service';
+import { buildAssistantParts } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
@@ -123,8 +124,9 @@ export class AssistantChatService {
     });
 
     let assistantMessage: MessageWithParts;
+    let toolNames: string[] = [];
     try {
-      const replyText = await this.reply.reply(
+      const result = await this.reply.reply(
         dto.text,
         history
           .reverse()
@@ -133,14 +135,16 @@ export class AssistantChatService {
             text: (m.parts[0]?.data as { content?: string } | undefined)?.content ?? '',
           }))
           .filter((h) => h.text),
+        user,
       );
+      toolNames = result.toolCalls.map((c) => c.name);
       assistantMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: MessageRole.ASSISTANT,
           status: MessageStatus.COMPLETED,
           requestId,
-          parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: replyText } }] },
+          parts: { create: buildAssistantParts(result) },
         },
         include: { parts: { orderBy: { order: 'asc' } } },
       });
@@ -163,7 +167,8 @@ export class AssistantChatService {
     await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
 
     this.logger.log(
-      `assistant chat reqId=${requestId} conversationId=${conversationId} status=${assistantMessage.status} totalMs=${Date.now() - t0}`,
+      `assistant chat reqId=${requestId} conversationId=${conversationId} status=${assistantMessage.status} ` +
+        `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} totalMs=${Date.now() - t0}`,
     );
 
     return { userMessage, assistantMessage };

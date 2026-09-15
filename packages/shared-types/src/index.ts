@@ -439,10 +439,20 @@ export interface LogVoiceMessageInput {
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
 // Полноценный AI-чат (GET/POST /assistant/conversations[...]) — отдельная
 // от voice-пути (VoiceParseResponse выше) история, объединение — отдельный,
-// более поздний этап. Phase B backend реально отдаёт части только типов
-// 'markdown'/'error' — остальные 4 уже описаны здесь по спеке Stage 2 §5,
-// чтобы не было churn типов, когда Phase C добавит их реальных producer'ов
-// (tool-calling для карточек, upload/generation для файла).
+// более поздний этап. task_card/event_card/tool_activity получили реальных
+// producer'ов в Phase C (tool-calling); file по-прежнему без формы данных —
+// ждёт Phase F (upload/generation).
+//
+// ВАЖНО (известный пробел, Phase D должен учесть): бэкенд
+// (AssistantChatController) сейчас отдаёт role/status/type как есть из
+// Prisma — ЗАГЛАВНЫМИ буквами ('MARKDOWN', 'USER', 'COMPLETED' и т.п.), а
+// не в виде строк ниже ('markdown', 'user', 'completed'). Эти типы — целевой
+// публичный контракт, но маппинг Prisma-enum → него на бэкенде ещё не
+// написан (сознательно не стал трогать в Phase C — это задело бы уже
+// сданные Phase B тесты; фронтенд всё равно ещё не подключен). Phase D
+// должен либо добавить этот маппинг на бэкенде перед тем, как строить UI на
+// этих типах, либо явно матчить на заглавные значения — не полагаться на
+// то, что API уже отдаёт ровно то, что описано ниже.
 export type MessagePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
 
 export interface MarkdownPartData {
@@ -453,13 +463,33 @@ export interface ErrorPartData {
   message: string;
 }
 
+export interface TaskCardData {
+  taskId: string;
+  title: string;
+  status: string;
+  dueDate: string | null;
+  assignee: { id: string; name: string } | null;
+}
+
+export interface EventCardData {
+  eventId: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  location: string | null;
+  participants: { id: string; name: string }[];
+}
+
+export interface ToolActivityData {
+  label: string;
+}
+
 export interface MessagePart {
   id: string;
   type: MessagePartType;
   order: number;
-  // task_card/event_card/file/tool_activity data пока не описаны — нет ни
-  // одного producer'а этих типов до Phase C/F.
-  data: MarkdownPartData | ErrorPartData;
+  // file data пока не описана — нет producer'а до Phase F.
+  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData;
 }
 
 export type AssistantMessageRole = 'user' | 'assistant';

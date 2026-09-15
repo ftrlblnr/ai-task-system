@@ -60,7 +60,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     const conversation = { id: 'c1', employeeId: 'u1' };
     const userMessage = { id: 'm1', role: Role.EMPLOYEE, createdAt: new Date(), parts: [] };
     const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
-    const replySpy = jest.fn().mockResolvedValue('привет!');
+    const replySpy = jest.fn().mockResolvedValue({ text: 'привет!', toolCalls: [] });
     const prisma = {
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
