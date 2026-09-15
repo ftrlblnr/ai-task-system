@@ -61,18 +61,22 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string } | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
 
-  async function load() {
-    try {
-      const conversations = await api.get<ConversationSummary[]>('/assistant/conversations');
-      const id = conversations[0]?.id;
-      if (!id) return;
-      setConversationId(id);
-      const history = await api.get<ConversationMessage[]>(`/assistant/conversations/${id}/messages`);
-      setMessages(history);
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить переписку');
-    }
+  // .then()-цепочка, не async/await — тот же стиль, что tasks-screen.tsx
+  // (тоже вызывается из useEffect по active): react-hooks/set-state-in-effect
+  // не всегда прослеживает setState через await до конца цепочки внутри
+  // async-функции, вызванной из эффекта, и ложно считает это "синхронным"
+  // вызовом setState прямо в эффекте.
+  function load() {
+    api
+      .get<ConversationSummary[]>('/assistant/conversations')
+      .then((conversations) => {
+        const id = conversations[0]?.id;
+        if (!id) return undefined;
+        setConversationId(id);
+        return api.get<ConversationMessage[]>(`/assistant/conversations/${id}/messages`).then(setMessages);
+      })
+      .then(() => setLoadError(null))
+      .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить переписку'));
   }
 
   // active приходит от SwipeShell (тот же приём, что tasks-screen.tsx) —
