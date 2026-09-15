@@ -61,20 +61,6 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string } | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!active) return;
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
-
-  useEffect(() => {
-    // chat.scrollTo(), не scrollIntoView() — SwipeShell держит все экраны
-    // смонтированными одновременно (см. комментарий в swipe-shell.tsx про
-    // баг 08.09.2026: scrollIntoView() внутри неактивного экрана ломало
-    // позиционирование свайп-трека через паразитный scrollLeft предка).
-    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
-
   async function load() {
     try {
       const conversations = await api.get<ConversationSummary[]>('/assistant/conversations');
@@ -88,6 +74,23 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить переписку');
     }
   }
+
+  // active приходит от SwipeShell (тот же приём, что tasks-screen.tsx) —
+  // экран смонтирован всегда (см. swipe-shell.tsx), но историю грузим при
+  // каждом возвращении на вкладку, не один раз за сессию: это же покрывает
+  // "второе устройство"/восстановление после долгого отсутствия (спека
+  // Stage 2 §27) без отдельного механизма.
+  useEffect(() => {
+    if (active) load();
+  }, [active]);
+
+  useEffect(() => {
+    // chat.scrollTo(), не scrollIntoView() — SwipeShell держит все экраны
+    // смонтированными одновременно (см. комментарий в swipe-shell.tsx про
+    // баг 08.09.2026: scrollIntoView() внутри неактивного экрана ломало
+    // позиционирование свайп-трека через паразитный scrollLeft предка).
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
 
   async function send(overrideText?: string, overrideClientRequestId?: string) {
     const isRetry = Boolean(overrideClientRequestId);
