@@ -520,6 +520,24 @@ export interface SendAssistantMessageResponse {
   assistantMessage: ConversationMessage;
 }
 
+// POST /assistant/conversations/:id/messages/stream (Stage 2 §14, Phase E)
+// — внутренний, стабильный событийный контракт, не сырые события
+// Anthropic/провайдера (спека: "позволит позже менять AI provider без
+// переписывания UI"). message.completed несёт ПОЛНОЕ финальное сообщение —
+// клиент на этом событии просто заменяет черновик авторитетным объектом,
+// не сводит дельты вручную. Повторный part.started с тем же partId — сброс
+// накопленного текста для него (редкий случай: модель начала отвечать
+// текстом, потом решила вызвать инструмент).
+export type StreamEvent =
+  | { event: 'message.started'; messageId: string }
+  | { event: 'part.started'; messageId: string; partId: string }
+  | { event: 'part.delta'; messageId: string; partId: string; delta: string }
+  | { event: 'part.completed'; messageId: string; partId: string; part: MessagePart }
+  | { event: 'tool.started'; messageId: string; tool: string }
+  | { event: 'tool.completed'; messageId: string; tool: string; label: string }
+  | { event: 'message.completed'; messageId: string; message: ConversationMessage }
+  | { event: 'message.failed'; messageId: string; error: string };
+
 export interface GoogleCalendarStatus {
   connected: boolean;
   // Настроен ли OAuth-клиент (GoogleOAuthAppConfig, вводится владельцем в

@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { MessageStatus, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AssistantChatService } from './assistant-chat.service';
 
@@ -33,10 +33,10 @@ describe('AssistantChatService.findOwnedConversation (Stage 2 §30 — conversat
 });
 
 describe('AssistantChatService.sendMessage идемпотентность (Stage 2 §29 — повторная отправка с тем же clientRequestId не создаёт вторую пару сообщений)', () => {
-  it('находит уже сохранённую пару и не вызывает ассистента и prisma.message.create повторно', async () => {
+  it('COMPLETED-пара — короткое замыкание, ассистент и prisma.message.create не вызываются', async () => {
     const conversation = { id: 'c1', employeeId: 'u1' };
     const existingUserMessage = { id: 'm1', createdAt: new Date('2026-01-01T00:00:00Z'), parts: [] };
-    const existingAssistantMessage = { id: 'm2', createdAt: new Date('2026-01-01T00:00:01Z'), parts: [] };
+    const existingAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date('2026-01-01T00:00:01Z'), parts: [] };
     const replySpy = jest.fn();
     const prisma = {
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
@@ -45,6 +45,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
         findFirst: jest.fn().mockResolvedValue(existingAssistantMessage),
         findMany: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
       },
     };
     const service = new AssistantChatService(prisma as any, { reply: replySpy } as any);
@@ -54,6 +55,35 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     expect(result).toEqual({ userMessage: existingUserMessage, assistantMessage: existingAssistantMessage });
     expect(replySpy).not.toHaveBeenCalled();
     expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).not.toHaveBeenCalled();
+  });
+
+  it('FAILED-пара — не короткое замыкание, реально повторяет попытку через update той же строки, не create', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const existingUserMessage = { id: 'm1', createdAt: new Date('2026-01-01T00:00:00Z'), parts: [] };
+    const existingFailedAssistantMessage = { id: 'm2', status: MessageStatus.FAILED, createdAt: new Date('2026-01-01T00:00:01Z'), parts: [] };
+    const updatedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, parts: [] };
+    const replySpy = jest.fn().mockResolvedValue({ text: 'теперь получилось', toolCalls: [] });
+    const prisma = {
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(existingUserMessage),
+        findFirst: jest.fn().mockResolvedValue(existingFailedAssistantMessage),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn(),
+        update: jest.fn().mockResolvedValue(updatedAssistantMessage),
+      },
+    };
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any);
+
+    const result = await service.sendMessage(user(), 'c1', { text: 'привет', clientRequestId: 'req-1' });
+
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.message.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'm2' }, data: expect.objectContaining({ status: MessageStatus.COMPLETED }) }),
+    );
+    expect(result).toEqual({ userMessage: existingUserMessage, assistantMessage: updatedAssistantMessage });
   });
 
   it('без clientRequestId всегда создаёт новую пару сообщений (не ищет по идемпотентности)', async () => {

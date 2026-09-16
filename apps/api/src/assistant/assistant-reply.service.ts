@@ -10,9 +10,13 @@ import { AssistantToolsService, type ToolExecutionResult } from './assistant-too
 // assistant-render.ts) — НЕ рекурсивный agentic loop (спека §33 запрещает
 // multi-agent на этом этапе): если после результата инструмента модель
 // снова просит инструмент, второй раунд не выполняется, берём текст как
-// есть. Модель здесь сознательно НЕ каскад Haiku→Opus, как в voice — это
-// отдельный, независимый путь использования Anthropic, draft-extraction.
-// service.ts (голос) не трогается и не участвует.
+// есть. Phase E: тот же tool loop, но через messages.stream() вместо
+// messages.create() — runReply() отдаёт прогресс через необязательный
+// onEvent, reply()/streamReply() — тонкие обёртки над одной и той же
+// логикой (не дублировать tool loop в двух местах). Модель здесь
+// сознательно НЕ каскад Haiku→Opus, как в voice — это отдельный,
+// независимый путь использования Anthropic, draft-extraction.service.ts
+// (голос) не трогается и не участвует.
 const REPLY_MODEL = 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Ты — ассистент корпоративной системы задач «Адъютант».
@@ -37,6 +41,21 @@ export interface AssistantReplyResult {
   toolCalls: { name: string; result: ToolExecutionResult }[];
 }
 
+// Прогресс streamReply() — только текст/инструменты, ничего про
+// messageId/partId (это знает вызывающий AssistantChatService, не этот
+// сервис). text-reset — сигнал "начинается новый раунд текста, накопленное
+// раньше нужно отбросить": редкий случай, когда модель до вызова
+// инструмента успела начать отвечать текстом (см. план Phase E) — этот же
+// сигнал шлётся и перед самым первым раундом, вызывающий код просто
+// сбрасывает накопитель в обоих случаях одинаково.
+export type ReplyStreamEvent =
+  | { type: 'text-reset' }
+  | { type: 'text-delta'; delta: string }
+  | { type: 'tool-started'; name: string }
+  | { type: 'tool-completed'; name: string; result: ToolExecutionResult };
+
+export type ReplyStreamListener = (event: ReplyStreamEvent) => void;
+
 @Injectable()
 export class AssistantReplyService {
   private readonly logger = new Logger(AssistantReplyService.name);
@@ -58,20 +77,37 @@ export class AssistantReplyService {
   }
 
   async reply(text: string, history: ReplyHistoryItem[], user: AuthenticatedUser): Promise<AssistantReplyResult> {
+    return this.runReply(text, history, user);
+  }
+
+  // signal — обрыв соединения с клиентом (AssistantChatService слушает
+  // res.on('close')) должен прервать реальный HTTP-запрос к Anthropic, а не
+  // продолжать платить за токены, которые уже некому показать.
+  async streamReply(
+    text: string,
+    history: ReplyHistoryItem[],
+    user: AuthenticatedUser,
+    onEvent: ReplyStreamListener,
+    signal?: AbortSignal,
+  ): Promise<AssistantReplyResult> {
+    return this.runReply(text, history, user, onEvent, signal);
+  }
+
+  private async runReply(
+    text: string,
+    history: ReplyHistoryItem[],
+    user: AuthenticatedUser,
+    onEvent?: ReplyStreamListener,
+    signal?: AbortSignal,
+  ): Promise<AssistantReplyResult> {
     const messages: Anthropic.MessageParam[] = [
       ...history.map((h) => ({ role: h.role, content: h.text })),
       { role: 'user' as const, content: text },
     ];
     const tools = this.tools.buildTools(user);
 
-    const first = await this.getClient().messages.create({
-      model: REPLY_MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      tools,
-      tool_choice: { type: 'auto' },
-      messages,
-    });
+    onEvent?.({ type: 'text-reset' });
+    const first = await this.streamOnce(messages, tools, onEvent, signal);
 
     const toolUseBlocks = first.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
     if (toolUseBlocks.length === 0) {
@@ -81,8 +117,10 @@ export class AssistantReplyService {
     const toolCalls: { name: string; result: ToolExecutionResult }[] = [];
     const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
+      onEvent?.({ type: 'tool-started', name: block.name });
       const result = await this.tools.execute(block.name, block.input, user);
       toolCalls.push({ name: block.name, result });
+      onEvent?.({ type: 'tool-completed', name: block.name, result });
       toolResultBlocks.push({
         type: 'tool_result',
         tool_use_id: block.id,
@@ -91,13 +129,17 @@ export class AssistantReplyService {
       });
     }
 
-    const second = await this.getClient().messages.create({
-      model: REPLY_MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+    // Раунд 1 не мог быть финальным ответом (были tool_use) — сбрасываем
+    // то, что могло успеть настримиться текстом до/вперемешку с tool_use,
+    // и начинаем текст раунда 2 с чистого накопителя (см. комментарий у
+    // ReplyStreamEvent выше).
+    onEvent?.({ type: 'text-reset' });
+    const second = await this.streamOnce(
+      [...messages, { role: 'assistant', content: first.content }, { role: 'user', content: toolResultBlocks }],
       tools,
-      messages: [...messages, { role: 'assistant', content: first.content }, { role: 'user', content: toolResultBlocks }],
-    });
+      onEvent,
+      signal,
+    );
 
     // Один раунд tool use — сознательно не зацикливаемся, если модель
     // просит инструмент повторно (см. комментарий у класса выше).
@@ -106,6 +148,29 @@ export class AssistantReplyService {
     }
 
     return { text: this.extractText(second.content), toolCalls };
+  }
+
+  private async streamOnce(
+    messages: Anthropic.MessageParam[],
+    tools: Anthropic.Tool[],
+    onEvent: ReplyStreamListener | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<Anthropic.Message> {
+    const stream = this.getClient().messages.stream(
+      {
+        model: REPLY_MODEL,
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        tools,
+        tool_choice: { type: 'auto' },
+        messages,
+      },
+      { signal },
+    );
+    if (onEvent) {
+      stream.on('text', (delta) => onEvent({ type: 'text-delta', delta }));
+    }
+    return stream.finalMessage();
   }
 
   private extractText(content: Anthropic.ContentBlock[]): string {

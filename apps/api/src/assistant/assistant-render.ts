@@ -23,7 +23,7 @@ function toJson<T>(value: T): Prisma.InputJsonValue {
 // имена вроде "get_tasks()". totalCount, а не items.length — чтобы честно
 // сказать "найдено 37", даже если в карточках показаны только первые 10
 // (см. MAX_TOOL_ITEMS в assistant-tools.service.ts).
-function toolActivityLabel(result: ToolExecutionResult): ToolActivityData {
+export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData {
   if ('error' in result) {
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };

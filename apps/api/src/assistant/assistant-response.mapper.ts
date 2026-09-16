@@ -54,6 +54,18 @@ export interface ResponseConversation {
   archivedAt: string | null;
 }
 
+// Экспортирован отдельно от toResponseMessage — Phase E (streaming)
+// маппит части по одной, по мере готовности (part.completed), не только
+// целым сообщением сразу, как в non-streaming ответе.
+export function toResponseMessagePart(part: MessagePart): ResponseMessagePart {
+  return {
+    id: part.id,
+    type: PART_TYPE_MAP[part.type],
+    order: part.order,
+    data: part.data as unknown as ResponseMessagePart['data'],
+  };
+}
+
 export function toResponseMessage(message: Message & { parts: MessagePart[] }): ResponseMessage {
   return {
     id: message.id,
@@ -63,12 +75,7 @@ export function toResponseMessage(message: Message & { parts: MessagePart[] }): 
     clientRequestId: message.clientRequestId,
     createdAt: message.createdAt.toISOString(),
     updatedAt: message.updatedAt.toISOString(),
-    parts: message.parts.map((p) => ({
-      id: p.id,
-      type: PART_TYPE_MAP[p.type],
-      order: p.order,
-      data: p.data as unknown as ResponseMessagePart['data'],
-    })),
+    parts: message.parts.map(toResponseMessagePart),
   };
 }
 
