@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { Send } from 'lucide-react';
-import type { ConversationMessage, ConversationSummary, MessagePart, StreamEvent } from '@ai-task-system/shared-types';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { Paperclip, Send, X } from 'lucide-react';
+import type {
+  ConversationMessage,
+  ConversationSummary,
+  FilePartData,
+  MessagePart,
+  StreamEvent,
+  UploadedFileInfo,
+} from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
-import { MessagePartRenderer } from './assistant-message-part';
+import { MessagePartRenderer, FilePartView } from './assistant-message-part';
 
 const MAX_TEXTAREA_HEIGHT = 140;
 
@@ -13,7 +20,21 @@ function newClientRequestId(): string {
   return `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function optimisticUserMessage(conversationId: string, clientRequestId: string, text: string): ConversationMessage {
+function optimisticUserMessage(
+  conversationId: string,
+  clientRequestId: string,
+  text: string,
+  attachments: UploadedFileInfo[],
+): ConversationMessage {
+  const parts: MessagePart[] = [{ id: 'optimistic-text', type: 'markdown', order: 0, data: { content: text } }];
+  attachments.forEach((a, i) =>
+    parts.push({
+      id: `optimistic-file-${i}`,
+      type: 'file',
+      order: i + 1,
+      data: { fileId: a.fileId, name: a.name, mimeType: a.mimeType, size: a.size },
+    }),
+  );
   return {
     id: `optimistic-user-${clientRequestId}`,
     conversationId,
@@ -22,7 +43,7 @@ function optimisticUserMessage(conversationId: string, clientRequestId: string, 
     clientRequestId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    parts: [{ id: 'optimistic', type: 'markdown', order: 0, data: { content: text } }],
+    parts,
   };
 }
 
@@ -77,8 +98,40 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   // удаляется, кнопка «Повторить» шлёт тот же clientRequestId,
   // идемпотентность (Phase B, уточнена в Phase E — см. backend) не даёт
   // дубля и реально повторяет попытку, если предыдущая не удалась.
-  const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string } | null>(null);
+  const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string; attachments: UploadedFileInfo[] } | null>(
+    null,
+  );
   const chatRef = useRef<HTMLDivElement>(null);
+
+  // Phase F — вложения, уже загруженные (POST /files/upload прошёл), но
+  // ещё не отправленные вместе с сообщением — чипы над composer'ом,
+  // можно снять до отправки.
+  const [pendingAttachments, setPendingAttachments] = useState<UploadedFileInfo[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // даёт выбрать тот же файл повторно позже
+    if (!file) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const info = await api.postForm<UploadedFileInfo>('/files/upload', formData);
+      setPendingAttachments((prev) => [...prev, info]);
+    } catch (err) {
+      setUploadError(err instanceof ApiError ? err.message : 'Не удалось загрузить файл');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removePendingAttachment(fileId: string) {
+    setPendingAttachments((prev) => prev.filter((a) => a.fileId !== fileId));
+  }
 
   // .then()-цепочка, не async/await — тот же стиль, что tasks-screen.tsx
   // (тоже вызывается из useEffect по active): react-hooks/set-state-in-effect
@@ -115,21 +168,25 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
-  async function send(overrideText?: string, overrideClientRequestId?: string) {
+  async function send(overrideText?: string, overrideClientRequestId?: string, overrideAttachments?: UploadedFileInfo[]) {
     const isRetry = Boolean(overrideClientRequestId);
     const value = (overrideText ?? text).trim();
     if (!value || sending || !conversationId) return;
 
+    const attachments = overrideAttachments ?? pendingAttachments;
     const clientRequestId = overrideClientRequestId ?? newClientRequestId();
     const assistantPlaceholderId = `optimistic-assistant-${clientRequestId}`;
 
     setSending(true);
     setFailedSend(null);
-    if (!isRetry) setText('');
+    if (!isRetry) {
+      setText('');
+      setPendingAttachments([]);
+    }
 
     setMessages((prev) => {
       const base = prev ?? [];
-      const withUser = isRetry ? base : [...base, optimisticUserMessage(conversationId, clientRequestId, value)];
+      const withUser = isRetry ? base : [...base, optimisticUserMessage(conversationId, clientRequestId, value, attachments)];
       return [...withUser, optimisticAssistantMessage(conversationId, clientRequestId)];
     });
 
@@ -175,7 +232,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         case 'message.failed':
           terminal = true;
           setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-          setFailedSend({ clientRequestId, text: value });
+          setFailedSend({ clientRequestId, text: value, attachments });
           break;
         case 'message.started':
           break;
@@ -186,6 +243,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       const response = await api.postStream(`/assistant/conversations/${conversationId}/messages/stream`, {
         text: value,
         clientRequestId,
+        attachmentIds: attachments.map((a) => a.fileId),
       });
       const reader = response.body?.getReader();
       if (!reader) throw new Error('Поток ответа недоступен');
@@ -211,11 +269,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       // тот же "Повторить"-путь, что и обычный сетевой сбой.
       if (!terminal) {
         setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-        setFailedSend({ clientRequestId, text: value });
+        setFailedSend({ clientRequestId, text: value, attachments });
       }
     } catch {
       setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-      setFailedSend({ clientRequestId, text: value });
+      setFailedSend({ clientRequestId, text: value, attachments });
     } finally {
       setSending(false);
     }
@@ -249,6 +307,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           m.role === 'user' ? (
             <div key={m.id} className="assistant-user-bubble">
               {userBubbleText(m)}
+              {m.parts
+                .filter((p) => p.type === 'file')
+                .map((p) => (
+                  <FilePartView key={p.id} data={p.data as FilePartData} />
+                ))}
             </div>
           ) : (
             <div key={m.id} className="assistant-response">
@@ -263,13 +326,41 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         {failedSend && (
           <div className="assistant-error">
             Ответ был прерван.
-            <button type="button" className="assistant-card-open" onClick={() => send(failedSend.text, failedSend.clientRequestId)}>
+            <button
+              type="button"
+              className="assistant-card-open"
+              onClick={() => send(failedSend.text, failedSend.clientRequestId, failedSend.attachments)}
+            >
               Повторить
             </button>
           </div>
         )}
       </div>
+      {(pendingAttachments.length > 0 || uploading || uploadError) && (
+        <div className="assistant-pending-attachments">
+          {pendingAttachments.map((a) => (
+            <span key={a.fileId} className="assistant-chip assistant-pending-attachment">
+              {a.name}
+              <button type="button" onClick={() => removePendingAttachment(a.fileId)} aria-label="Убрать вложение">
+                <X size={11} strokeWidth={2.5} />
+              </button>
+            </span>
+          ))}
+          {uploading && <span className="hint">Загрузка файла…</span>}
+          {uploadError && <span className="error">{uploadError}</span>}
+        </div>
+      )}
       <div className="assistant-composer">
+        <input ref={fileInputRef} type="file" hidden onChange={onFileSelected} />
+        <button
+          type="button"
+          className="assistant-attach-btn"
+          disabled={sending || uploading}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Прикрепить файл"
+        >
+          <Paperclip size={18} strokeWidth={2} />
+        </button>
         <textarea
           rows={1}
           placeholder="Спросите что-нибудь…"

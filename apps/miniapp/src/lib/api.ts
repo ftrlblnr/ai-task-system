@@ -93,12 +93,32 @@ async function requestStream(path: string, body: unknown): Promise<Response> {
   return res;
 }
 
+// Скачивание файла (Stage 2 §8, Phase F) — не простая <a href>: скачивание
+// защищено Bearer-токеном, не куки/сессией, обычная ссылка его не пошлёт.
+// Отдаёт Blob, вызывающий код (assistant-message-part.tsx) сам делает
+// временный <a download> с URL.createObjectURL.
+async function downloadBlob(path: string): Promise<Blob> {
+  const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) handleUnauthorized();
+    throw new ApiError(`Ошибка запроса (${res.status})`, res.status);
+  }
+
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
   postStream: (path: string, body: unknown) => requestStream(path, body),
+  downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),

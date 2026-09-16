@@ -3,7 +3,7 @@
 import { useState, type AnchorHTMLAttributes } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, ExternalLink } from 'lucide-react';
+import { Copy, Download, ExternalLink, File, FileSpreadsheet, FileText, Image as ImageIcon } from 'lucide-react';
 import type {
   MessagePart as MessagePartData,
   MarkdownPartData,
@@ -11,8 +11,10 @@ import type {
   TaskCardData,
   EventCardData,
   ToolActivityData,
+  FilePartData,
 } from '@ai-task-system/shared-types';
 import { STATUS_LABELS } from '@/lib/labels';
+import { api } from '@/lib/api';
 import { TaskDetailOverlay } from './task-detail-overlay';
 
 // Реестр компонентов по типу части (спека Stage 2 §21) — новый тип части
@@ -33,10 +35,11 @@ export function MessagePartRenderer({ part }: { part: MessagePartData }) {
       return <ToolActivityView data={part.data as ToolActivityData} />;
     case 'error':
       return <ErrorPartView data={part.data as ErrorPartData} />;
+    case 'file':
+      return <FilePartView data={part.data as FilePartData} />;
     default:
-      // 'file' — форма данных появится в Phase F (upload/generation).
-      // Тихий fallback вместо падения — часть ответа просто не отрисуется,
-      // остальные части сообщения по-прежнему видны.
+      // Задел на будущий тип части, который этот интерфейс ещё не знает —
+      // тихий fallback вместо падения, остальные части сообщения по-прежнему видны.
       return <p className="hint">Часть сообщения пока не поддерживается в этом интерфейсе.</p>;
   }
 }
@@ -136,4 +139,71 @@ function ToolActivityView({ data }: { data: ToolActivityData }) {
 
 function ErrorPartView({ data }: { data: ErrorPartData }) {
   return <div className="assistant-error">{data.message}</div>;
+}
+
+// Отдельный компонент, а не функция, возвращающая ссылку на компонент
+// (react-hooks/static-components — "Cannot create components during
+// render": выбор ссылки на компонент прямо в теле рендера FilePartView
+// не считается объявлением компонента "снаружи", даже если сами варианты
+// статичны) — так однозначно нет динамически выбираемого JSX-тега.
+function FileIcon({ mimeType, size, strokeWidth }: { mimeType: string; size: number; strokeWidth: number }) {
+  if (mimeType.startsWith('image/')) return <ImageIcon size={size} strokeWidth={strokeWidth} />;
+  if (mimeType.includes('spreadsheet') || mimeType === 'text/csv') return <FileSpreadsheet size={size} strokeWidth={strokeWidth} />;
+  if (mimeType === 'application/pdf' || mimeType.includes('wordprocessing') || mimeType === 'text/plain') {
+    return <FileText size={size} strokeWidth={strokeWidth} />;
+  }
+  return <File size={size} strokeWidth={strokeWidth} />;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+// Не простая <a href> — скачивание требует Authorization-заголовка
+// (JWT), которую обычная ссылка не отправит; авторизованный fetch →
+// Blob → временный <a download> — стандартный обходной путь для скачки
+// файла, защищённого не куки/сессией, а Bearer-токеном.
+// Экспортирован — assistant-screen.tsx переиспользует его напрямую для
+// показа вложений пользователя внутри его собственного bubble (реестр
+// MessagePartRenderer выше рассчитан на document-flow вывод ассистента,
+// не на компактный вид внутри цветного bubble).
+export function FilePartView({ data }: { data: FilePartData }) {
+  const [downloading, setDownloading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function download() {
+    setDownloading(true);
+    setFailed(false);
+    try {
+      const blob = await api.downloadBlob(`/files/${data.fileId}/download`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = data.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setFailed(true);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <div className="assistant-file-part">
+      <FileIcon mimeType={data.mimeType} size={22} strokeWidth={1.7} />
+      <div className="assistant-file-info">
+        <div className="assistant-file-name">{data.name}</div>
+        <div className="assistant-file-size">{formatFileSize(data.size)}</div>
+      </div>
+      <button type="button" className="assistant-file-download" onClick={download} disabled={downloading} aria-label="Скачать">
+        <Download size={16} strokeWidth={2} />
+      </button>
+      {failed && <span className="hint">Не удалось скачать</span>}
+    </div>
+  );
 }

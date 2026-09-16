@@ -1044,6 +1044,100 @@ select {
 .assistant-send-btn:disabled {
   opacity: 0.5;
 }
+.assistant-attach-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  padding: 0;
+}
+.assistant-attach-btn:disabled {
+  opacity: 0.5;
+}
+
+/* Вложения — Stage 2, Phase F */
+.assistant-pending-attachments {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 6px;
+}
+.assistant-pending-attachment {
+  gap: 6px;
+}
+.assistant-pending-attachment button {
+  display: inline-flex;
+  background: none;
+  border: none;
+  box-shadow: none;
+  width: auto;
+  padding: 0;
+  color: inherit;
+}
+.assistant-file-part {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  padding: 10px 12px;
+  max-width: 92%;
+  margin-top: 8px;
+}
+.assistant-file-info {
+  flex: 1;
+  min-width: 0;
+}
+.assistant-file-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-file-size {
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+}
+.assistant-file-download {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  padding: 0;
+}
+.assistant-file-download:disabled {
+  opacity: 0.5;
+}
+/* Внутри цветного user-bubble (Stage 2, Phase F) — светлая полупрозрачная
+   карточка вместо непрозрачного --surface, чтобы не выбиваться из акцентного фона. */
+.assistant-user-bubble .assistant-file-part {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: var(--accent-contrast);
+}
+.assistant-user-bubble .assistant-file-size {
+  color: rgba(255, 255, 255, 0.75);
+}
+.assistant-user-bubble .assistant-file-download {
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--accent-contrast);
+}
 
 /* ============ Наблюдатели/подзадачи (владелец 08.09.2026) ============ */
 .btn-link {
