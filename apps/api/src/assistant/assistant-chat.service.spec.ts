@@ -14,20 +14,20 @@ function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
 describe('AssistantChatService.findOwnedConversation (Stage 2 §30 — conversationId одного пользователя не должен открывать чужой диалог)', () => {
   it('бросает NotFoundException для диалога другого сотрудника', async () => {
     const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'someone-else' }) } };
-    const service = new AssistantChatService(prisma as any, {} as any) as any;
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
     await expect(service.findOwnedConversation(user(), 'c1')).rejects.toThrow(NotFoundException);
   });
 
   it('бросает NotFoundException для несуществующего диалога (не 403 — не подтверждаем чужому пользователю сам факт существования)', async () => {
     const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue(null) } };
-    const service = new AssistantChatService(prisma as any, {} as any) as any;
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
     await expect(service.findOwnedConversation(user(), 'ghost')).rejects.toThrow(NotFoundException);
   });
 
   it('возвращает диалог его владельцу', async () => {
     const conversation = { id: 'c1', employeeId: 'u1' };
     const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue(conversation) } };
-    const service = new AssistantChatService(prisma as any, {} as any) as any;
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
     await expect(service.findOwnedConversation(user(), 'c1')).resolves.toBe(conversation);
   });
 });
@@ -48,7 +48,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
         update: jest.fn(),
       },
     };
-    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any);
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any);
 
     const result = await service.sendMessage(user(), 'c1', { text: 'привет', clientRequestId: 'req-1' });
 
@@ -74,7 +74,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
         update: jest.fn().mockResolvedValue(updatedAssistantMessage),
       },
     };
-    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any);
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any);
 
     const result = await service.sendMessage(user(), 'c1', { text: 'привет', clientRequestId: 'req-1' });
 
@@ -100,7 +100,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
         create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
       },
     };
-    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any);
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any);
 
     const result = await service.sendMessage(user(), 'c1', { text: 'привет' });
 

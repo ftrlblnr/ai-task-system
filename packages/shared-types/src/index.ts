@@ -477,12 +477,21 @@ export interface ToolActivityData {
   label: string;
 }
 
+// Phase F — вложение (upload через POST /files/upload). Скачивание —
+// GET /files/:id/download (владение проверяется на бэкенде, fileId в руках
+// клиента сам по себе не даёт права на файл).
+export interface FilePartData {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface MessagePart {
   id: string;
   type: MessagePartType;
   order: number;
-  // file data пока не описана — нет producer'а до Phase F.
-  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData;
+  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData;
 }
 
 export type AssistantMessageRole = 'user' | 'assistant';
@@ -513,6 +522,17 @@ export interface ConversationSummary {
 export interface SendAssistantMessageInput {
   text: string;
   clientRequestId?: string;
+  // Phase F — id уже загруженных через POST /files/upload FileArtifact.
+  attachmentIds?: string[];
+}
+
+// POST /files/upload — multipart, тело не описано здесь (сам файл, не
+// JSON); это форма ответа.
+export interface UploadedFileInfo {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
 }
 
 export interface SendAssistantMessageResponse {

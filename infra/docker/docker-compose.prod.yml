@@ -66,6 +66,13 @@ services:
       # DATABASE_URL из .env.production (там localhost для локальной разработки).
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       NODE_OPTIONS: --max-old-space-size=360
+      # Stage 2, Phase F — вложения чата (apps/api/src/files/). Именованный
+      # volume, не слой контейнера: без него файлы терялись бы при каждом
+      # pull+up при следующем деплое (контейнер api пересоздаётся, слой —
+      # эфемерный).
+      FILE_UPLOAD_DIR: /data/uploads
+    volumes:
+      - file_uploads_data:/data/uploads
     ports:
       - "127.0.0.1:3021:3001"
 
@@ -96,3 +103,4 @@ services:
 
 volumes:
   postgres_data:
+  file_uploads_data:

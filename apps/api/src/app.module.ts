@@ -17,6 +17,7 @@ import { CalendarModule } from './calendar/calendar.module';
 import { PlaudModule } from './plaud/plaud.module';
 import { VoiceModule } from './voice/voice.module';
 import { AssistantModule } from './assistant/assistant.module';
+import { FilesModule } from './files/files.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { AssistantModule } from './assistant/assistant.module';
     PlaudModule,
     VoiceModule,
     AssistantModule,
+    FilesModule,
   ],
   controllers: [AppController],
 })

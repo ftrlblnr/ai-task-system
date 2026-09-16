@@ -1,10 +1,11 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Conversation, Message, MessagePart, MessageRole, MessageStatus, MessagePartType } from '@prisma/client';
+import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageStatus, MessagePartType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { FilesService } from '../files/files.service';
 import { AssistantReplyService } from './assistant-reply.service';
-import { buildAssistantParts, toolActivityLabel } from './assistant-render';
+import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
@@ -48,6 +49,7 @@ export class AssistantChatService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reply: AssistantReplyService,
+    private readonly files: FilesService,
   ) {}
 
   // MVP (Stage 2 §4.1): у каждого сотрудника должен быть хотя бы один
@@ -139,6 +141,48 @@ export class AssistantChatService {
       .filter((h) => h.text);
   }
 
+  // Phase F — вложения. Невалидный/чужой id внутри attachmentIds не роняет
+  // отправку сообщения целиком (тот же fail-safe принцип, что невалидный
+  // assigneeId в voice.service.ts) — просто не попадает в результат.
+  // Владение проверяется здесь, не полагаемся на то, что клиент прислал
+  // только свои же id (спека Stage 2 §30).
+  private async resolveAttachments(user: AuthenticatedUser, attachmentIds: string[] | undefined): Promise<FileArtifact[]> {
+    if (!attachmentIds?.length) return [];
+    const resolved: FileArtifact[] = [];
+    for (const id of attachmentIds) {
+      try {
+        resolved.push(await this.files.assertOwnedFile(user, id));
+      } catch {
+        // чужой/несуществующий id — тихо пропускаем
+      }
+    }
+    return resolved;
+  }
+
+  private buildUserMessagePartsInput(text: string, attachments: FileArtifact[]): MessagePartInput[] {
+    const parts: MessagePartInput[] = [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: text } }];
+    attachments.forEach((f, i) => {
+      parts.push({
+        type: MessagePartType.FILE,
+        order: i + 1,
+        data: { fileId: f.id, name: f.name, mimeType: f.mimeType, size: f.size },
+      });
+    });
+    return parts;
+  }
+
+  // Файл существует и уже принадлежит сотруднику (source: UPLOADED) с
+  // момента POST /files/upload — здесь он только привязывается к
+  // конкретному сообщению/разговору постфактум (conversationId/messageId
+  // были null до этого момента).
+  private async linkAttachments(conversationId: string, messageId: string, attachments: FileArtifact[]): Promise<void> {
+    if (!attachments.length) return;
+    await this.prisma.fileArtifact.updateMany({
+      where: { id: { in: attachments.map((f) => f.id) } },
+      data: { conversationId, messageId },
+    });
+  }
+
   async sendMessage(
     user: AuthenticatedUser,
     conversationId: string,
@@ -161,18 +205,23 @@ export class AssistantChatService {
     const t0 = Date.now();
     const history = await this.loadHistory(conversationId);
 
-    const userMessage =
-      existing?.userMessage ??
-      (await this.prisma.message.create({
+    let userMessage: MessageWithParts;
+    if (existing?.userMessage) {
+      userMessage = existing.userMessage;
+    } else {
+      const attachments = await this.resolveAttachments(user, dto.attachmentIds);
+      userMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: MessageRole.USER,
           status: MessageStatus.COMPLETED,
           clientRequestId: dto.clientRequestId || null,
-          parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: dto.text } }] },
+          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
         },
         include: { parts: { orderBy: { order: 'asc' } } },
-      }));
+      });
+      await this.linkAttachments(conversationId, userMessage.id, attachments);
+    }
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
@@ -246,15 +295,17 @@ export class AssistantChatService {
     // оптимистично) — но персистить его всё равно нужно, если это не
     // повтор уже существующей пары.
     if (!existing?.userMessage) {
-      await this.prisma.message.create({
+      const attachments = await this.resolveAttachments(user, dto.attachmentIds);
+      const createdUserMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: MessageRole.USER,
           status: MessageStatus.COMPLETED,
           clientRequestId: dto.clientRequestId || null,
-          parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: dto.text } }] },
+          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
         },
       });
+      await this.linkAttachments(conversationId, createdUserMessage.id, attachments);
     }
 
     const assistantMessage =

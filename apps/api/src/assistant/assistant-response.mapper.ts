@@ -1,5 +1,5 @@
 import { Conversation, Message, MessagePart, MessagePartType, MessageRole, MessageStatus } from '@prisma/client';
-import type { MarkdownPartData, ErrorPartData, TaskCardData, EventCardData, ToolActivityData } from './dto/message-part-data.dto';
+import type { MarkdownPartData, ErrorPartData, TaskCardData, EventCardData, ToolActivityData, FilePartData } from './dto/message-part-data.dto';
 
 // Публичный HTTP-контракт (packages/shared-types) объявляет role/status/
 // type строчными строками ('user'/'completed'/'markdown'), а Prisma-enum'ы
@@ -32,7 +32,7 @@ export interface ResponseMessagePart {
   id: string;
   type: 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
   order: number;
-  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData;
+  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData;
 }
 
 export interface ResponseMessage {

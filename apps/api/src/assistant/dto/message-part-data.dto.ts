@@ -31,3 +31,14 @@ export interface EventCardData {
 export interface ToolActivityData {
   label: string;
 }
+
+// Phase F — вложение (upload), см. apps/api/src/files/. fileId — реальный
+// FileArtifact.id, скачивание идёт через GET /files/:id/download (проверка
+// владения там же, а не полагается на то, что fileId сюда мог попасть
+// только легитимно).
+export interface FilePartData {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
