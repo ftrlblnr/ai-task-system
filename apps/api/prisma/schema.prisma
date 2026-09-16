@@ -166,6 +166,17 @@ model Message {
   // принцип, что requestId в voice-пайплайне) — для логов, не для UI.
   requestId String?
 
+  // Phase F.1 (стабилизация, аудит 16.09.2026) — раньше пара user↔assistant
+  // определялась по "первое assistant-сообщение с createdAt позже, чем у
+  // user-сообщения" — на двух устройствах, отправляющих сообщения почти
+  // одновременно, это могло связать ответ B с сообщением A. Явная ссылка
+  // однозначна независимо от порядка времени. У user-сообщений всегда null
+  // (они ни на что не отвечают), у assistant — id того user-сообщения,
+  // ответом на которое оно является.
+  replyToMessageId String?
+  replyToMessage   Message?  @relation("MessageReply", fields: [replyToMessageId], references: [id])
+  replies          Message[] @relation("MessageReply")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

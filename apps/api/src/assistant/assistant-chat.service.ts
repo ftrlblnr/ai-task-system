@@ -4,9 +4,10 @@ import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageS
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
-import { AssistantReplyService } from './assistant-reply.service';
+import { AssistantReplyService, type ReplyHistoryItem } from './assistant-reply.service';
 import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
+import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
 // же порядок величины, что VOICE_HISTORY_LIMIT в voice.service.ts, здесь не
@@ -35,13 +36,50 @@ export type InternalStreamEvent =
 const ASSISTANT_TEXT_PART_ID = 'assistant-text';
 const GENERIC_FAILURE_MESSAGE = 'Не удалось получить ответ ассистента. Попробуйте ещё раз.';
 
+// Phase F.1 (стабилизация, аудит 16.09.2026) — раньше история для модели
+// собиралась только из MARKDOWN-частей: карточки задач/событий/файлы,
+// показанные пользователю, физически не попадали в следующий контекст —
+// "расскажи подробнее про первую [задачу из карточек]" модель не могла
+// связать ни с чем. Компактное текстовое представление, не сырой JSON
+// MessagePart.data целиком — модель получает id/title/статус, не весь
+// внутренний объект. tool_activity/error намеренно пропускаются — статус
+// "проверяю задачи" или текст ошибки не несут содержательного контекста
+// для следующего вопроса пользователя.
+function serializeMessageForModelContext(parts: MessagePart[]): string {
+  return parts
+    .map((p) => {
+      switch (p.type) {
+        case MessagePartType.MARKDOWN:
+          return (p.data as MarkdownPartData).content;
+        case MessagePartType.TASK_CARD: {
+          const d = p.data as TaskCardData;
+          return `[shown_task]\nid=${d.taskId}\ntitle=${d.title}\nstatus=${d.status}`;
+        }
+        case MessagePartType.EVENT_CARD: {
+          const d = p.data as EventCardData;
+          return `[shown_event]\nid=${d.eventId}\ntitle=${d.title}\nstartAt=${d.startAt}`;
+        }
+        case MessagePartType.FILE: {
+          const d = p.data as FilePartData;
+          return `[file]\nid=${d.fileId}\nname=${d.name}\nmimeType=${d.mimeType}`;
+        }
+        default:
+          return null;
+      }
+    })
+    .filter((s): s is string => Boolean(s))
+    .join('\n');
+}
+
 // Stage 2. Phase B — персист + один обычный (без tool use) ответ. Phase C
 // — tool-calling (get_tasks/get_events, см. assistant-tools.service.ts).
 // Phase E — то же самое, но с прогрессом по мере готовности (streamMessage),
 // поверх ОДНОГО и того же AssistantReplyService.runReply — никакой
 // отдельной бизнес-логики для стриминга, только другой способ её показать.
-// Существующий voice-путь (VoiceService, /voice/parse) не переиспользует
-// эти таблицы и не изменяется этим сервисом.
+// Phase F.1 — стабилизация (см. комментарии у replyToMessageId/loadHistory/
+// serializeMessageForModelContext ниже). Существующий voice-путь
+// (VoiceService, /voice/parse) не переиспользует эти таблицы и не
+// изменяется этим сервисом.
 @Injectable()
 export class AssistantChatService {
   private readonly logger = new Logger(AssistantChatService.name);
@@ -107,6 +145,12 @@ export class AssistantChatService {
   // COMPLETED — эта функция лишь ищет пару, решение "повторять или нет"
   // принимает вызывающий (см. комментарий у sendMessage ниже про
   // FAILED-ответы).
+  //
+  // Phase F.1 (аудит 16.09.2026) — пара ищется через явный
+  // replyToMessageId, не через "первое assistant-сообщение с createdAt
+  // позже user-сообщения": на двух устройствах, отправляющих сообщения
+  // почти одновременно, время не гарантирует правильное сопоставление —
+  // ответ B физически мог прийти раньше ответа на A.
   private async findExistingPair(
     conversationId: string,
     clientRequestId: string | undefined,
@@ -118,25 +162,31 @@ export class AssistantChatService {
     });
     if (!userMessage) return null;
     const assistantMessage = await this.prisma.message.findFirst({
-      where: { conversationId, role: MessageRole.ASSISTANT, createdAt: { gt: userMessage.createdAt } },
-      orderBy: { createdAt: 'asc' },
+      where: { replyToMessageId: userMessage.id },
       include: { parts: { orderBy: { order: 'asc' } } },
     });
     return { userMessage, assistantMessage };
   }
 
-  private async loadHistory(conversationId: string): Promise<{ role: 'user' | 'assistant'; text: string }[]> {
+  // excludeMessageId — Phase F.1 (аудит 16.09.2026): раньше history
+  // грузилась ПОСЛЕ того, как user-сообщение уже было в БД (в т.ч. при
+  // retry — то же сообщение, что мы сейчас же и обрабатываем), поэтому
+  // текущий вопрос попадал в historyForModel, а затем runReply ещё раз
+  // добавлял dto.text отдельным элементом — модель получала вопрос
+  // дважды. Явное исключение убирает дубль, не завязываясь на то, вызван
+  // ли loadHistory до или после создания строки.
+  private async loadHistory(conversationId: string, excludeMessageId: string): Promise<ReplyHistoryItem[]> {
     const history = await this.prisma.message.findMany({
-      where: { conversationId },
+      where: { conversationId, id: { not: excludeMessageId } },
       orderBy: { createdAt: 'desc' },
       take: HISTORY_LIMIT,
-      include: { parts: { where: { type: MessagePartType.MARKDOWN }, orderBy: { order: 'asc' }, take: 1 } },
+      include: { parts: { orderBy: { order: 'asc' } } },
     });
     return history
       .reverse()
       .map((m) => ({
         role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
-        text: (m.parts[0]?.data as { content?: string } | undefined)?.content ?? '',
+        text: serializeMessageForModelContext(m.parts),
       }))
       .filter((h) => h.text);
   }
@@ -183,6 +233,10 @@ export class AssistantChatService {
     });
   }
 
+  private sumToolExecutionMs(toolCalls: { durationMs: number }[]): number {
+    return toolCalls.reduce((sum, c) => sum + c.durationMs, 0);
+  }
+
   async sendMessage(
     user: AuthenticatedUser,
     conversationId: string,
@@ -203,7 +257,6 @@ export class AssistantChatService {
 
     const requestId = randomUUID();
     const t0 = Date.now();
-    const history = await this.loadHistory(conversationId);
 
     let userMessage: MessageWithParts;
     if (existing?.userMessage) {
@@ -223,20 +276,31 @@ export class AssistantChatService {
       await this.linkAttachments(conversationId, userMessage.id, attachments);
     }
 
+    const history = await this.loadHistory(conversationId, userMessage.id);
+
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
+    let toolExecutionMs = 0;
     try {
       const result = await this.reply.reply(dto.text, history, user);
       toolNames = result.toolCalls.map((c) => c.name);
+      toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
       assistantMessage = existing?.assistantMessage
         ? await this.prisma.message.update({
             where: { id: existing.assistantMessage.id },
-            data: { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: partsInput } },
+            data: { status: MessageStatus.COMPLETED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: partsInput } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
         : await this.prisma.message.create({
-            data: { conversationId, role: MessageRole.ASSISTANT, status: MessageStatus.COMPLETED, requestId, parts: { create: partsInput } },
+            data: {
+              conversationId,
+              role: MessageRole.ASSISTANT,
+              status: MessageStatus.COMPLETED,
+              requestId,
+              replyToMessageId: userMessage.id,
+              parts: { create: partsInput },
+            },
             include: { parts: { orderBy: { order: 'asc' } } },
           });
     } catch (err) {
@@ -247,11 +311,18 @@ export class AssistantChatService {
       assistantMessage = existing?.assistantMessage
         ? await this.prisma.message.update({
             where: { id: existing.assistantMessage.id },
-            data: { status: MessageStatus.FAILED, requestId, parts: { deleteMany: {}, create: errorPart } },
+            data: { status: MessageStatus.FAILED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: errorPart } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
         : await this.prisma.message.create({
-            data: { conversationId, role: MessageRole.ASSISTANT, status: MessageStatus.FAILED, requestId, parts: { create: errorPart } },
+            data: {
+              conversationId,
+              role: MessageRole.ASSISTANT,
+              status: MessageStatus.FAILED,
+              requestId,
+              replyToMessageId: userMessage.id,
+              parts: { create: errorPart },
+            },
             include: { parts: { orderBy: { order: 'asc' } } },
           });
     }
@@ -260,7 +331,8 @@ export class AssistantChatService {
 
     this.logger.log(
       `assistant chat reqId=${requestId} conversationId=${conversationId} status=${assistantMessage.status} ` +
-        `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} totalMs=${Date.now() - t0}`,
+        `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} toolExecutionMs=${toolExecutionMs} ` +
+        `chatRequestMs=${Date.now() - t0}`,
     );
 
     return { userMessage, assistantMessage };
@@ -288,13 +360,15 @@ export class AssistantChatService {
 
     const requestId = randomUUID();
     const t0 = Date.now();
-    const history = await this.loadHistory(conversationId);
 
     // В отличие от sendMessage, здесь сам объект пользовательского
     // сообщения стриминговым событиям не нужен (клиент уже показал его
     // оптимистично) — но персистить его всё равно нужно, если это не
     // повтор уже существующей пары.
-    if (!existing?.userMessage) {
+    let userMessageId: string;
+    if (existing?.userMessage) {
+      userMessageId = existing.userMessage.id;
+    } else {
       const attachments = await this.resolveAttachments(user, dto.attachmentIds);
       const createdUserMessage = await this.prisma.message.create({
         data: {
@@ -305,13 +379,23 @@ export class AssistantChatService {
           parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
         },
       });
-      await this.linkAttachments(conversationId, createdUserMessage.id, attachments);
+      userMessageId = createdUserMessage.id;
+      await this.linkAttachments(conversationId, userMessageId, attachments);
     }
+
+    const history = await this.loadHistory(conversationId, userMessageId);
 
     const assistantMessage =
       existing?.assistantMessage ??
       (await this.prisma.message.create({
-        data: { conversationId, role: MessageRole.ASSISTANT, status: MessageStatus.STREAMING, requestId, parts: { create: [] } },
+        data: {
+          conversationId,
+          role: MessageRole.ASSISTANT,
+          status: MessageStatus.STREAMING,
+          requestId,
+          replyToMessageId: userMessageId,
+          parts: { create: [] },
+        },
         include: { parts: { orderBy: { order: 'asc' } } },
       }));
 
@@ -319,6 +403,7 @@ export class AssistantChatService {
     emit({ event: 'part.started', messageId: assistantMessage.id, partId: ASSISTANT_TEXT_PART_ID });
 
     const toolNames: string[] = [];
+    let firstTokenAt: number | null = null;
     try {
       const result = await this.reply.streamReply(
         dto.text,
@@ -328,6 +413,7 @@ export class AssistantChatService {
           if (e.type === 'text-reset') {
             emit({ event: 'part.started', messageId: assistantMessage.id, partId: ASSISTANT_TEXT_PART_ID });
           } else if (e.type === 'text-delta') {
+            if (firstTokenAt === null) firstTokenAt = Date.now();
             emit({ event: 'part.delta', messageId: assistantMessage.id, partId: ASSISTANT_TEXT_PART_ID, delta: e.delta });
           } else if (e.type === 'tool-started') {
             emit({ event: 'tool.started', messageId: assistantMessage.id, tool: e.name });
@@ -339,6 +425,7 @@ export class AssistantChatService {
         abortSignal,
       );
 
+      const toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
       const updated = await this.prisma.message.update({
         where: { id: assistantMessage.id },
@@ -353,7 +440,8 @@ export class AssistantChatService {
       await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
       this.logger.log(
         `assistant chat reqId=${requestId} conversationId=${conversationId} status=COMPLETED ` +
-          `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} streaming=true totalMs=${Date.now() - t0}`,
+          `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} toolExecutionMs=${toolExecutionMs} ` +
+          `timeToFirstTokenMs=${firstTokenAt !== null ? firstTokenAt - t0 : 'n/a'} chatRequestMs=${Date.now() - t0}`,
       );
     } catch (err) {
       this.logger.error(`assistant reply reqId=${requestId} failed (streaming): ${err instanceof Error ? err.message : err}`);
@@ -367,7 +455,9 @@ export class AssistantChatService {
       });
       emit({ event: 'message.failed', messageId: assistantMessage.id, error: GENERIC_FAILURE_MESSAGE });
       await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
-      this.logger.log(`assistant chat reqId=${requestId} conversationId=${conversationId} status=FAILED streaming=true totalMs=${Date.now() - t0}`);
+      this.logger.log(
+        `assistant chat reqId=${requestId} conversationId=${conversationId} status=FAILED streaming=true chatRequestMs=${Date.now() - t0}`,
+      );
     }
   }
 }

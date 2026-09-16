@@ -12,3 +12,5 @@ coverage
 apps/api/.env
 apps/web/.env.local
 .git
+.uploads
+**/.uploads

@@ -9,3 +9,7 @@ coverage/
 .env.production
 infra/docker/.env.prod
 .DS_Store
+# Локальное файловое хранилище чата (apps/api/src/files/,
+# LocalFileStorageService), когда FILE_UPLOAD_DIR не задан явно — реальные
+# документы пользователей не должны попасть в git (аудит 16.09.2026).
+.uploads/

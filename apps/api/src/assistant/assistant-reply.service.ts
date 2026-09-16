@@ -38,7 +38,12 @@ export interface ReplyHistoryItem {
 
 export interface AssistantReplyResult {
   text: string;
-  toolCalls: { name: string; result: ToolExecutionResult }[];
+  // durationMs — Phase F.1 (observability, аудит 16.09.2026): позволяет
+  // AssistantChatService посчитать toolExecutionMs без отдельного канала
+  // передачи тайминга через onEvent — итоговый AssistantReplyResult уже
+  // несёт всё нужное, для sendMessage (без колбэка вообще) это единственный
+  // способ узнать время инструментов.
+  toolCalls: { name: string; result: ToolExecutionResult; durationMs: number }[];
 }
 
 // Прогресс streamReply() — только текст/инструменты, ничего про
@@ -114,12 +119,14 @@ export class AssistantReplyService {
       return { text: this.extractText(first.content), toolCalls: [] };
     }
 
-    const toolCalls: { name: string; result: ToolExecutionResult }[] = [];
+    const toolCalls: AssistantReplyResult['toolCalls'] = [];
     const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
     for (const block of toolUseBlocks) {
       onEvent?.({ type: 'tool-started', name: block.name });
+      const toolStart = Date.now();
       const result = await this.tools.execute(block.name, block.input, user);
-      toolCalls.push({ name: block.name, result });
+      const durationMs = Date.now() - toolStart;
+      toolCalls.push({ name: block.name, result, durationMs });
       onEvent?.({ type: 'tool-completed', name: block.name, result });
       toolResultBlocks.push({
         type: 'tool_result',
