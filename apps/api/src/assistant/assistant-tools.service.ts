@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 import { EventStatus, Role } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
@@ -29,6 +29,8 @@ export type ToolExecutionResult =
 // что уже в VoiceService.parse для видимости календаря.
 @Injectable()
 export class AssistantToolsService {
+  private readonly logger = new Logger(AssistantToolsService.name);
+
   constructor(
     private readonly tasks: TasksService,
     private readonly events: EventsService,
@@ -77,10 +79,17 @@ export class AssistantToolsService {
       if (name === 'get_events') return await this.getEvents(user);
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
+      const tool = name === 'get_events' ? 'get_events' : 'get_tasks';
+      // Полная ошибка (может содержать детали БД/инфраструктуры) — только в
+      // серверный лог. Модели (и через неё — пользователю) уходит только
+      // безопасный код + короткая фраза, без err.message (аудит 16.09.2026,
+      // находка про утечку сырых ошибок в tool_result).
+      const err2 = err instanceof Error ? err : new Error(String(err));
+      this.logger.error(`tool=${name} failed: ${err2.message}`, err2.stack);
       return {
-        tool: name === 'get_events' ? 'get_events' : 'get_tasks',
+        tool,
         error: true,
-        message: err instanceof Error ? err.message : 'Не удалось выполнить запрос',
+        message: tool === 'get_events' ? 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря' : 'TASK_LOOKUP_FAILED: не удалось получить список задач',
       };
     }
   }

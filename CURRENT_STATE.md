@@ -1,4 +1,4 @@
-# CURRENT_STATE — фактическое состояние системы (15.09.2026)
+# CURRENT_STATE — фактическое состояние системы (16.09.2026)
 
 Этот файл описывает, что в системе реально реализовано и как оно работает
 сейчас, а не то, что запланировано (см. README для истории решений и планов).
@@ -188,6 +188,102 @@ fullName}` — этого достаточно, чтобы выбрать исп
   (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) читаются лениво при первом вызове
   сервиса, а не в конструкторе — отсутствие ключа роняет только конкретную
   функцию, не весь процесс.
+
+## Assistant Chat (Stage 2, Phases A–F.1) — текстовый AI-чат
+
+Отдельный путь от голосового пайплайна выше (`VoiceService`/
+`/voice/parse`) — не переиспользует его код и не изменяет его. Отдельная
+вкладка «Ассистент» в `apps/miniapp` (владелец 15.09.2026: объединение с
+голосом — Phase H, отдельным заходом, не сделано).
+
+**Модель данных** (`apps/api/prisma/schema.prisma`): `Conversation` (один
+на сотрудника — MVP лениво создаёт первый при первом обращении,
+`AssistantChatService.listConversations`) → `Message` (`role`: USER/
+ASSISTANT, `status`: PENDING/STREAMING/COMPLETED/FAILED,
+`clientRequestId` уникален в паре с `conversationId` — идемпотентность
+повторной отправки) → `MessagePart` (MARKDOWN/TASK_CARD/EVENT_CARD/FILE/
+TOOL_ACTIVITY/ERROR, упорядочены `order`). `Message.replyToMessageId` —
+явная self-relation FK на исходное user-сообщение (добавлено Phase F.1,
+16.09.2026 — раньше пара user↔assistant искалась по `createdAt`, что не
+гарантировало правильное сопоставление при почти одновременных запросах
+с разных устройств).
+
+**Backend** (`apps/api/src/assistant/`):
+- `AssistantChatService.sendMessage`/`streamMessage` — одна и та же
+  бизнес-логика (`AssistantReplyService.runReply`) поверх Anthropic,
+  просто разный способ показать прогресс. `streamMessage` — SSE поверх
+  POST (не `EventSource`, ему нужен GET без тела) с событиями
+  `message.started`/`part.started`/`part.delta`/`tool.started`/
+  `tool.completed`/`part.completed`/`message.completed`/`message.failed`
+  (`dto/stream-event.dto.ts` — публичный контракт с lowercase-строками,
+  мапится из внутреннего `InternalStreamEvent` на границе контроллера, тот
+  же приём, что `assistant-response.mapper.ts` для non-streaming ответа).
+  Обрыв клиентского соединения (`res.on('close')`) реально прерывает
+  запрос к Anthropic через `AbortController`.
+- Идемпотентность — тот же `clientRequestId` в том же `Conversation`
+  находит существующую пару (`findExistingPair`, ищет через
+  `replyToMessageId`) и коротко замыкает **только** на `COMPLETED`; при
+  `FAILED` реально повторяет попытку через `update` той же строки, не
+  создаёт вторую пару.
+- История для модели (`loadHistory`) явно исключает само текущее
+  user-сообщение (Phase F.1 — раньше при retry текущий вопрос уже был в
+  БД к моменту загрузки истории и попадал в неё, а `runReply` добавлял
+  тот же текст ещё раз отдельным элементом — модель видела вопрос дважды)
+  и сериализует **все** типы частей, не только MARKDOWN
+  (`serializeMessageForModelContext`) — карточки задач/событий и файлы,
+  показанные пользователю, видны модели в следующих репликах компактным
+  текстом (`[shown_task]\nid=...\ntitle=...\nstatus=...` и т.п.), не сырым
+  JSON `MessagePart.data`.
+- Tool-calling (`AssistantToolsService`) — только чтение (`get_tasks`,
+  `get_events`), RBAC на уровне видимости инструмента (`get_events` не
+  предлагается модели не-OWNER, а не отклоняется постфактум). Ошибки
+  инструмента логируются полностью на сервере, наружу (в `tool_result`
+  для Anthropic) уходит только безопасный код (`TASK_LOOKUP_FAILED`/
+  `CALENDAR_LOOKUP_FAILED`) без `err.message` (Phase F.1, 16.09.2026).
+- Наблюдаемость — лог-строка `AssistantChatService` на каждый запрос:
+  `chatRequestMs` (полное время), `toolExecutionMs` (сумма времени всех
+  вызовов инструментов), `timeToFirstTokenMs` (только streaming — время
+  до первого `text-delta`).
+
+**Файлы/вложения** (`apps/api/src/files/`, Phase F/F.1): загрузка через
+`POST /files/upload`, allowlist MIME-типов (`upload-file.dto.ts`), лимит
+20MB. Реальные байты файла сверяются с заявленным MIME по сигнатуре
+(`file-signature.ts` — без внешних зависимостей: PDF/PNG/JPEG/GIF/WEBP по
+позитивной сигнатуре, DOCX/XLSX только как «это ZIP-контейнер», без
+глубокого разбора OOXML-структуры — осознанное ограничение; TXT/CSV без
+надёжной сигнатуры отклоняются, только если байты похожи на исполняемый
+файл Windows PE/Linux ELF). Хранилище — за интерфейсом `FileStorage`
+(DI-токен `FILE_STORAGE`, сейчас единственная реализация —
+`LocalFileStorageService`, локальная файловая система, путь из
+`FILE_UPLOAD_DIR`). Загруженный, но так и не отправленный в сообщении
+файл (`messageId === null`) можно снять вручную (`DELETE /files/:id`,
+только для не прикреплённых своих файлов) или он удалится сам —
+`FilesCleanupCron` (`@Cron(EVERY_HOUR)`) чистит такие осиротевшие
+загрузки старше 24 часов с диска и из БД.
+
+**Frontend** (`apps/miniapp/src/components/assistant-screen.tsx`) —
+история подгружается с сервера при каждом возврате на вкладку (не
+localStorage — второе устройство/долгое отсутствие видят ту же
+переписку). Автоскролл при новых сообщениях подавляется, если
+пользователь сам пролистал историю вверх во время долгого стрима
+(`isNearBottomRef`), в этом случае показывается кнопка «↓ Новые
+сообщения». Рендер живого текста стрима троттлится через
+`requestAnimationFrame` (не на каждый `text-delta`-чанк). Фронтенд
+зеркалит бэкенд-лимиты (`MAX_ATTACHMENTS = 10`, `MAX_TEXT_LENGTH = 4000`)
+и `accept` на `<input type=file>` — подсказка UI, не замена серверной
+проверке.
+
+**Известные ограничения этого этапа** (сознательно не сделано в Phase
+F.1, см. план стабилизации от 16.09.2026):
+- Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
+  `apps/web` не используют jest/vitest/Testing Library — только
+  `apps/api`) — заведение такой инфраструктуры отложено как отдельное
+  архитектурное решение, не строчка в стабилизационном патче.
+- DOCX/XLSX-валидация загруженных файлов ограничена проверкой «это ZIP»,
+  не полноценным разбором OOXML.
+- Phase G (генерация файлов, например выгрузка задач в XLSX) и Phase H
+  (объединение голосового и текстового путей в один разговор) — не
+  начаты.
 
 ## Telegram Mini App authentication
 

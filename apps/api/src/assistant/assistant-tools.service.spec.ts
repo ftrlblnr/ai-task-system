@@ -50,11 +50,13 @@ describe('AssistantToolsService.execute get_tasks (Stage 2 §5.2/§16 — тол
     expect('items' in result && result.items).toHaveLength(10);
   });
 
-  it('сбой TasksService.findAll превращается в {error:true}, не бросает исключение наружу', async () => {
-    const tasksStub = { findAll: jest.fn().mockRejectedValue(new Error('db down')) };
+  it('сбой TasksService.findAll превращается в {error:true} с безопасным кодом, не пробрасывает err.message наружу (аудит 16.09.2026)', async () => {
+    const tasksStub = { findAll: jest.fn().mockRejectedValue(new Error('db down: password=secret')) };
     const service = new AssistantToolsService(tasksStub as any, {} as any);
     const result = await service.execute('get_tasks', { filter: 'all' }, user());
-    expect(result).toEqual({ tool: 'get_tasks', error: true, message: 'db down' });
+    expect(result).toMatchObject({ tool: 'get_tasks', error: true });
+    expect('message' in result && result.message).not.toContain('db down');
+    expect('message' in result && result.message).toContain('TASK_LOOKUP_FAILED');
   });
 });
 
