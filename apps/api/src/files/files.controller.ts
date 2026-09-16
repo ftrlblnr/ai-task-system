@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Param, Post, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Controller, Delete, Get, Param, Post, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -60,5 +60,16 @@ export class FilesController {
   async download(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
     const { stream, file } = await this.files.getDownloadStream(user, id);
     return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
+  }
+
+  // Phase F.1 (аудит 16.09.2026, находка #10) — снятие вложения в
+  // composer'е (Mini App) до этого только убирало его из локального
+  // React state, физический файл и запись оставались навсегда ("orphan
+  // upload"). Владение и "ещё не прикреплён" проверяются в
+  // FilesService.deleteUnattached.
+  @Delete(':id')
+  async remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<{ ok: true }> {
+    await this.files.deleteUnattached(user, id);
+    return { ok: true };
   }
 }

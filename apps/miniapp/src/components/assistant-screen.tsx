@@ -14,6 +14,23 @@ import { api, ApiError } from '@/lib/api';
 import { MessagePartRenderer, FilePartView } from './assistant-message-part';
 
 const MAX_TEXTAREA_HEIGHT = 140;
+// Зеркало бэкенд-лимитов (аудит 16.09.2026, находка про рассинхрон
+// фронт/бэк) — SendMessageDto.text (@MaxLength(4000)) и attachmentIds
+// (@ArrayMaxSize(10)) в apps/api/src/assistant/dto/send-message.dto.ts.
+// Дублирование чисел, а не общий пакет ради двух констант — тот же
+// компромисс, что уже принят для ALLOWED_UPLOAD_MIME_TYPES ниже.
+const MAX_ATTACHMENTS = 10;
+const MAX_TEXT_LENGTH = 4000;
+// Зеркало apps/api/src/files/dto/upload-file.dto.ts — accept на <input
+// type=file> лишь подсказка браузеру (не замена серверной проверке
+// fileFilter/magic-byte, см. file-signature.ts), но избавляет пользователя
+// от очевидно бессмысленного выбора файла не из списка.
+const ACCEPTED_UPLOAD_MIME_TYPES =
+  'application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain,image/png,image/jpeg,image/webp,image/gif';
+// Порог "у низа" — тот же порядок величины, что визуально ощущается как
+// "почти внизу", не точный 0 (иначе любой суб-пиксельный скролл во время
+// стрима считался бы "ушёл вверх").
+const NEAR_BOTTOM_THRESHOLD_PX = 80;
 
 function newClientRequestId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -102,6 +119,15 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     null,
   );
   const chatRef = useRef<HTMLDivElement>(null);
+  // P1.5 (аудит 16.09.2026, находка про автоскролл во время стрима) — в
+  // ref, не state: значение читается только внутри эффекта на [messages] и
+  // внутри scheduleRender(), пересчитывать его на каждый пиксель скролла в
+  // state означало бы ре-рендер экрана на каждое scroll-событие.
+  // showJumpButton — отдельный, редко меняющийся state только для того,
+  // чтобы показать/скрыть кнопку ↓ (меняется только при пересечении
+  // порога, не на каждый пиксель).
+  const isNearBottomRef = useRef(true);
+  const [showJumpButton, setShowJumpButton] = useState(false);
 
   // Phase F — вложения, уже загруженные (POST /files/upload прошёл), но
   // ещё не отправленные вместе с сообщением — чипы над composer'ом,
@@ -115,6 +141,10 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     const file = e.target.files?.[0];
     e.target.value = ''; // даёт выбрать тот же файл повторно позже
     if (!file) return;
+    if (pendingAttachments.length >= MAX_ATTACHMENTS) {
+      setUploadError(`Нельзя прикрепить больше ${MAX_ATTACHMENTS} файлов к одному сообщению`);
+      return;
+    }
     setUploading(true);
     setUploadError(null);
     try {
@@ -129,8 +159,16 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     }
   }
 
+  // P1.3 (аудит 16.09.2026, находка #10 — orphan uploads) — раньше снятие
+  // вложения крестиком только чистило локальный state, физический файл и
+  // запись FileArtifact оставались в БД/на диске навсегда. Fire-and-forget:
+  // composer уже не показывает вложение независимо от результата запроса
+  // (тот же fail-safe принцип, что и молчаливый пропуск чужого/несуществу-
+  // ющего attachmentId на бэкенде) — если DELETE не удался, файл всё равно
+  // рано или поздно уберёт FilesCleanupCron.
   function removePendingAttachment(fileId: string) {
     setPendingAttachments((prev) => prev.filter((a) => a.fileId !== fileId));
+    api.delete(`/files/${fileId}`).catch(() => undefined);
   }
 
   // .then()-цепочка, не async/await — тот же стиль, что tasks-screen.tsx
@@ -160,13 +198,40 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     if (active) load();
   }, [active]);
 
+  // P1.5 (аудит 16.09.2026) — слушатель скролла живёт всё время монтирования
+  // экрана (не только во время стрима): пользователь может пролистать
+  // историю вверх и вне стрима, кнопка ↓ должна появляться и в этом случае.
+  useEffect(() => {
+    const el = chatRef.current;
+    if (!el) return;
+    function onScroll() {
+      if (!el) return;
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD_PX;
+      isNearBottomRef.current = nearBottom;
+      setShowJumpButton((prev) => (prev === !nearBottom ? prev : !nearBottom));
+    }
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
   useEffect(() => {
     // chat.scrollTo(), не scrollIntoView() — SwipeShell держит все экраны
     // смонтированными одновременно (см. комментарий в swipe-shell.tsx про
     // баг 08.09.2026: scrollIntoView() внутри неактивного экрана ломало
     // позиционирование свайп-трека через паразитный scrollLeft предка).
+    // isNearBottomRef — не дёргаем вниз, если пользователь специально
+    // пролистал историю вверх во время долгого стрима (та же находка
+    // аудита, что и кнопка ↓ ниже).
+    if (!isNearBottomRef.current) return;
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
+
+  function scrollToBottom() {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
+    isNearBottomRef.current = true;
+    setShowJumpButton(false);
+  }
 
   async function send(overrideText?: string, overrideClientRequestId?: string, overrideAttachments?: UploadedFileInfo[]) {
     const isRetry = Boolean(overrideClientRequestId);
@@ -205,24 +270,40 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       );
     }
 
+    // P1.7 (аудит 16.09.2026) — text-delta приходит от Anthropic по
+    // несколько раз в секунду на каждый маленький токен; setMessages на
+    // каждый chunk означал лишний ре-рендер всего списка сообщений чаще,
+    // чем экран физически успевает перерисоваться. Копим дельты в liveText
+    // (обычная переменная выше), реально вызываем setMessages не чаще
+    // одного раза за кадр — сам SSE-транспорт и бэкенд не меняются.
+    let renderScheduled = false;
+    function scheduleRender() {
+      if (renderScheduled) return;
+      renderScheduled = true;
+      requestAnimationFrame(() => {
+        renderScheduled = false;
+        renderLive();
+      });
+    }
+
     function handleEvent(event: StreamEvent) {
       switch (event.event) {
         case 'part.started':
           liveText = '';
-          renderLive();
+          scheduleRender();
           break;
         case 'part.delta':
           liveText += event.delta;
-          renderLive();
+          scheduleRender();
           break;
         case 'tool.started':
           toolStates.push({ name: event.tool, label: null });
-          renderLive();
+          scheduleRender();
           break;
         case 'tool.completed': {
           const pending = toolStates.find((t) => t.name === event.tool && t.label === null);
           if (pending) pending.label = event.label;
-          renderLive();
+          scheduleRender();
           break;
         }
         case 'message.completed':
@@ -335,6 +416,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
             </button>
           </div>
         )}
+        {showJumpButton && (
+          <button type="button" className="assistant-scroll-down" onClick={scrollToBottom}>
+            ↓ Новые сообщения
+          </button>
+        )}
       </div>
       {(pendingAttachments.length > 0 || uploading || uploadError) && (
         <div className="assistant-pending-attachments">
@@ -351,11 +437,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         </div>
       )}
       <div className="assistant-composer">
-        <input ref={fileInputRef} type="file" hidden onChange={onFileSelected} />
+        <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
         <button
           type="button"
           className="assistant-attach-btn"
-          disabled={sending || uploading}
+          disabled={sending || uploading || pendingAttachments.length >= MAX_ATTACHMENTS}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Прикрепить файл"
         >
@@ -366,10 +452,16 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           placeholder="Спросите что-нибудь…"
           value={text}
           disabled={sending}
+          maxLength={MAX_TEXT_LENGTH}
           onChange={(e) => setText(e.target.value)}
           onInput={onTextareaInput}
           onKeyDown={onComposerKeyDown}
         />
+        {text.length > MAX_TEXT_LENGTH - 200 && (
+          <span className="hint assistant-char-counter">
+            {text.length}/{MAX_TEXT_LENGTH}
+          </span>
+        )}
         <button type="button" className="assistant-send-btn" disabled={sending || !text.trim()} onClick={() => send()}>
           <Send size={18} strokeWidth={2.2} />
         </button>

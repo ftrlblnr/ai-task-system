@@ -1,9 +1,10 @@
 import type { ReadStream } from 'fs';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { FileArtifact, FileArtifactSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { LocalFileStorageService } from './file-storage.service';
+import { FILE_STORAGE, type FileStorage } from './file-storage.service';
+import { isSuspiciousUpload } from './file-signature';
 
 const STORAGE_PROVIDER = 'local';
 
@@ -29,15 +30,23 @@ function sanitizeFileName(name: string): string {
 
 // Stage 2, Phase F — вложения в чат. FileArtifact заведён ещё в Phase A
 // (задел под эту фазу и будущую Phase G — генерируемые файлы), здесь
-// впервые появляется код, который её реально наполняет.
+// впервые появляется код, который её реально наполняет. Phase F.1
+// (аудит 16.09.2026) — magic-byte проверка + DELETE для непривязанных
+// файлов + инъекция через FILE_STORAGE-токен (не конкретный класс).
 @Injectable()
 export class FilesService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storage: LocalFileStorageService,
+    @Inject(FILE_STORAGE) private readonly storage: FileStorage,
   ) {}
 
   async upload(user: AuthenticatedUser, buffer: Buffer, originalName: string, mimeType: string): Promise<FileArtifact> {
+    // Client-declared MIME (уже прошедший allowlist в fileFilter
+    // контроллера) сверяется с реальными байтами — see file-signature.ts
+    // про то, что именно и почему проверяется/не проверяется.
+    if (isSuspiciousUpload(buffer, mimeType)) {
+      throw new BadRequestException('Файл не прошёл проверку типа — содержимое не соответствует заявленному формату');
+    }
     const storageKey = await this.storage.save(buffer);
     return this.prisma.fileArtifact.create({
       data: {
@@ -73,5 +82,22 @@ export class FilesService {
     const file = await this.assertOwnedFile(user, fileId);
     const stream = await this.storage.getStream(file.storageKey);
     return { stream, file };
+  }
+
+  // Phase F.1 (аудит 16.09.2026, находка #10 "orphan uploads") — раньше
+  // снятие вложения крестиком в composer'е убирало его только из
+  // локального React state, физический файл и FileArtifact оставались
+  // навсегда. messageId === null — "прикреплён" однозначно кодируется
+  // самим этим полем (не заводим отдельную колонку status ради того же
+  // факта, который уже виден). Прикреплённый файл удалить нельзя — он уже
+  // виден в отправленном сообщении, удаление задним числом сломало бы
+  // историю переписки.
+  async deleteUnattached(user: AuthenticatedUser, fileId: string): Promise<void> {
+    const file = await this.assertOwnedFile(user, fileId);
+    if (file.messageId) {
+      throw new BadRequestException('Нельзя удалить файл, уже прикреплённый к отправленному сообщению');
+    }
+    await this.storage.delete(file.storageKey);
+    await this.prisma.fileArtifact.delete({ where: { id: file.id } });
   }
 }

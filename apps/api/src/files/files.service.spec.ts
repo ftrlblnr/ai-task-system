@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from './files.service';
@@ -52,5 +52,66 @@ describe('FilesService.getDownloadStream', () => {
 
     await expect(service.getDownloadStream(user(), 'f1')).rejects.toThrow(NotFoundException);
     expect(storage.getStream).not.toHaveBeenCalled();
+  });
+});
+
+describe('FilesService.upload (Stage 2 Phase F.1 — magic-byte проверка)', () => {
+  it('отклоняет файл, чьи байты не совпадают с заявленным MIME (spoofed)', async () => {
+    const prisma = { fileArtifact: { create: jest.fn() } };
+    const storage = { save: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any);
+    const pdfBytesDeclaredAsPng = Buffer.from('%PDF-1.4\n...');
+
+    await expect(service.upload(user(), pdfBytesDeclaredAsPng, 'x.png', 'image/png')).rejects.toThrow(BadRequestException);
+    expect(storage.save).not.toHaveBeenCalled();
+    expect(prisma.fileArtifact.create).not.toHaveBeenCalled();
+  });
+
+  it('сохраняет файл, чьи байты соответствуют заявленному MIME', async () => {
+    const created = { id: 'f1' };
+    const prisma = { fileArtifact: { create: jest.fn().mockResolvedValue(created) } };
+    const storage = { save: jest.fn().mockResolvedValue('key-1') };
+    const service = new FilesService(prisma as any, storage as any);
+    const realPdf = Buffer.from('%PDF-1.4\n...');
+
+    const result = await service.upload(user(), realPdf, 'x.pdf', 'application/pdf');
+
+    expect(storage.save).toHaveBeenCalledWith(realPdf);
+    expect(result).toBe(created);
+  });
+});
+
+describe('FilesService.deleteUnattached (Stage 2 Phase F.1, аудит находка #10 — orphan uploads)', () => {
+  it('удаляет непривязанный файл владельца — с диска и из БД', async () => {
+    const file = { id: 'f1', employeeId: 'u1', messageId: null, storageKey: 'key-1' };
+    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() } };
+    const storage = { delete: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any);
+
+    await service.deleteUnattached(user(), 'f1');
+
+    expect(storage.delete).toHaveBeenCalledWith('key-1');
+    expect(prisma.fileArtifact.delete).toHaveBeenCalledWith({ where: { id: 'f1' } });
+  });
+
+  it('отказывает в удалении уже прикреплённого файла', async () => {
+    const file = { id: 'f1', employeeId: 'u1', messageId: 'm1', storageKey: 'key-1' };
+    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() } };
+    const storage = { delete: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any);
+
+    await expect(service.deleteUnattached(user(), 'f1')).rejects.toThrow(BadRequestException);
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(prisma.fileArtifact.delete).not.toHaveBeenCalled();
+  });
+
+  it('чужой файл — NotFoundException, ничего не удаляется', async () => {
+    const file = { id: 'f1', employeeId: 'someone-else', messageId: null, storageKey: 'key-1' };
+    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() } };
+    const storage = { delete: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any);
+
+    await expect(service.deleteUnattached(user(), 'f1')).rejects.toThrow(NotFoundException);
+    expect(storage.delete).not.toHaveBeenCalled();
   });
 });

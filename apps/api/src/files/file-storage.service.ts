@@ -5,15 +5,26 @@ import * as path from 'path';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+// Phase F.1 (аудит 16.09.2026) — FilesService зависел напрямую от
+// конкретного класса LocalFileStorageService, не от интерфейса: замена на
+// S3/MinIO потребовала бы трогать FilesService, а не только этот файл.
+// Токен + интерфейс — FilesService/крон инжектят FILE_STORAGE, реализация
+// подставляется в files.module.ts, сам контракт не изменился.
+export const FILE_STORAGE = Symbol('FILE_STORAGE');
+
+export interface FileStorage {
+  save(buffer: Buffer): Promise<string>;
+  getStream(storageKey: string): Promise<fs.ReadStream>;
+  delete(storageKey: string): Promise<void>;
+}
+
 // Единственная реализация на этом этапе — локальный диск (спека Stage 2
-// §7 явно это допускает для MVP), но контроллер/FilesService видят только
-// save/getStream/delete — замена на S3/MinIO/Azure Blob позже не потребует
-// трогать вызывающий код, только этот файл. storageKey — всегда
-// randomUUID(), никогда не производное от имени файла пользователя: путь
-// на диске не зависит от пользовательского ввода вообще, а не просто
-// "проверен" — защита от path traversal по конструкции.
+// §7 явно это допускает для MVP). storageKey — всегда randomUUID(),
+// никогда не производное от имени файла пользователя: путь на диске не
+// зависит от пользовательского ввода вообще, а не просто "проверен" —
+// защита от path traversal по конструкции.
 @Injectable()
-export class LocalFileStorageService {
+export class LocalFileStorageService implements FileStorage {
   private readonly logger = new Logger(LocalFileStorageService.name);
   private ready: Promise<void> | null = null;
 

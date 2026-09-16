@@ -1010,11 +1010,22 @@ select {
 
 .assistant-composer {
   flex: none;
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 8px;
   padding: 10px 2px calc(10px + var(--tg-safe-bottom));
   border-top: 1px solid var(--border);
+}
+/* P1.6 (аудит 16.09.2026) — счётчик символов, только когда близко к
+   MAX_TEXT_LENGTH (см. assistant-screen.tsx) — не занимает место в потоке
+   composer'а (сам composer — flex-строка из кнопки/textarea/кнопки),
+   поэтому позиционируется поверх, у верхнего края textarea. */
+.assistant-char-counter {
+  position: absolute;
+  top: -2px;
+  right: 52px;
+  font-size: 0.7rem;
 }
 .assistant-composer textarea {
   flex: 1;
