@@ -122,7 +122,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const completedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, parts: [] };
 
     const events: unknown[] = [];
-    const streamReplySpy = jest.fn().mockImplementation(async (_text, _history, _user, onEvent) => {
+    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _user, onEvent) => {
       // К моменту вызова streamReply message.started/part.started уже должны
       // быть эмитированы вызывающим кодом.
       expect(events).toEqual([

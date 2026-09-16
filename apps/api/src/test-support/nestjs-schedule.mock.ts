@@ -6,9 +6,7 @@
 // поэтому безопасно подменить пакет лёгким CJS-мок в jest.moduleNameMapper
 // (см. package.json) вместо того, чтобы городить ESM-транспиляцию всего
 // node_modules ради одного пакета.
-export function Cron(..._args: unknown[]) {
-  return () => undefined;
-}
+export const Cron: (...args: unknown[]) => MethodDecorator = () => () => undefined;
 
 export const CronExpression = {
   EVERY_HOUR: '0 * * * *',
