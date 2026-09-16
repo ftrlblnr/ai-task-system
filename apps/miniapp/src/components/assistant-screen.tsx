@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Send } from 'lucide-react';
-import type { ConversationMessage, ConversationSummary } from '@ai-task-system/shared-types';
+import type { ConversationMessage, ConversationSummary, MessagePart, StreamEvent } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { MessagePartRenderer } from './assistant-message-part';
 
@@ -44,20 +44,39 @@ function userBubbleText(m: ConversationMessage): string {
   return part?.content ?? '';
 }
 
-// Текстовый AI-чат поверх /assistant/* (Stage 2, Phase D) — отдельная
-// вкладка от «Голос» (владелец 15.09.2026: голос трогать не обязательно в
-// этой фазе, объединение — Phase H). История — с сервера (Phase B), не
-// localStorage: refresh/другое устройство видят ту же переписку (спека §27).
+// "Живые" части ответа, пока стрим ещё идёт (Stage 2, Phase E) — статусы
+// инструментов в порядке вызова, затем накопленный на данный момент текст.
+// Карточки задач/событий здесь не появляются: они не стримятся токен за
+// токеном, а приходят готовыми в message.completed вместе с остальным
+// финальным сообщением (спека не требует стримить карточки по частям).
+function buildLiveParts(toolStates: { name: string; label: string | null }[], liveText: string): MessagePart[] {
+  const parts: MessagePart[] = toolStates.map((t, i) => ({
+    id: `live-tool-${i}`,
+    type: 'tool_activity',
+    order: i,
+    data: { label: t.label ?? 'Проверяю…' },
+  }));
+  parts.push({ id: 'live-text', type: 'markdown', order: toolStates.length, data: { content: liveText } });
+  return parts;
+}
+
+// Текстовый AI-чат поверх /assistant/* (Stage 2, Phase D — базовый чат;
+// Phase E — streaming) — отдельная вкладка от «Голос» (владелец
+// 15.09.2026: голос трогать не обязательно в этой фазе, объединение —
+// Phase H). История — с сервера (Phase B), не localStorage: refresh/
+// другое устройство видят ту же переписку (спека §27).
 export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  // Сетевой сбой самой отправки (обрыв/таймаут — не серверная ошибка,
-  // которая уже пришла бы как обычный FAILED assistant-message с ErrorPart)
-  // — спека §28: сообщение пользователя не удаляется, кнопка «Повторить»
-  // шлёт тот же clientRequestId, идемпотентность (Phase B) не даёт дубля.
+  // Сетевой сбой самой отправки/обрыв стрима (не серверная ошибка внутри
+  // уже полученного сообщения — та пришла бы как обычный FAILED
+  // assistant-message с ErrorPart) — спека §28: сообщение пользователя не
+  // удаляется, кнопка «Повторить» шлёт тот же clientRequestId,
+  // идемпотентность (Phase B, уточнена в Phase E — см. backend) не даёт
+  // дубля и реально повторяет попытку, если предыдущая не удалась.
   const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string } | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
 
@@ -114,16 +133,86 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       return [...withUser, optimisticAssistantMessage(conversationId, clientRequestId)];
     });
 
-    try {
-      const result = await api.post<{ userMessage: ConversationMessage; assistantMessage: ConversationMessage }>(
-        `/assistant/conversations/${conversationId}/messages`,
-        { text: value, clientRequestId },
-      );
+    // Живое состояние на время стрима — обычные переменные, не React state:
+    // React state нужен только для того, что реально рендерится
+    // (parts текущего "живого" сообщения), сам накопитель — просто буфер.
+    let liveText = '';
+    const toolStates: { name: string; label: string | null }[] = [];
+    let terminal = false;
+
+    function renderLive() {
       setMessages((prev) =>
-        (prev ?? [])
-          .filter((m) => m.id !== `optimistic-user-${clientRequestId}` && m.id !== assistantPlaceholderId)
-          .concat(result.userMessage, result.assistantMessage),
+        (prev ?? []).map((m) =>
+          m.id === assistantPlaceholderId ? { ...m, status: 'streaming', parts: buildLiveParts(toolStates, liveText) } : m,
+        ),
       );
+    }
+
+    function handleEvent(event: StreamEvent) {
+      switch (event.event) {
+        case 'part.started':
+          liveText = '';
+          renderLive();
+          break;
+        case 'part.delta':
+          liveText += event.delta;
+          renderLive();
+          break;
+        case 'tool.started':
+          toolStates.push({ name: event.tool, label: null });
+          renderLive();
+          break;
+        case 'tool.completed': {
+          const pending = toolStates.find((t) => t.name === event.tool && t.label === null);
+          if (pending) pending.label = event.label;
+          renderLive();
+          break;
+        }
+        case 'message.completed':
+          terminal = true;
+          setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId).concat(event.message));
+          break;
+        case 'message.failed':
+          terminal = true;
+          setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
+          setFailedSend({ clientRequestId, text: value });
+          break;
+        case 'message.started':
+          break;
+      }
+    }
+
+    try {
+      const response = await api.postStream(`/assistant/conversations/${conversationId}/messages/stream`, {
+        text: value,
+        clientRequestId,
+      });
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Поток ответа недоступен');
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      for (;;) {
+        const { done, value: chunk } = await reader.read();
+        if (chunk) buffer += decoder.decode(chunk, { stream: true });
+        let frameEnd: number;
+        while ((frameEnd = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, frameEnd);
+          buffer = buffer.slice(frameEnd + 2);
+          const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+          if (!dataLine) continue;
+          handleEvent(JSON.parse(dataLine.slice(5).trim()) as StreamEvent);
+        }
+        if (done) break;
+      }
+
+      // Соединение закрылось, не дойдя ни до message.completed, ни до
+      // message.failed (обрыв сети, сервер упал до финального события) —
+      // тот же "Повторить"-путь, что и обычный сетевой сбой.
+      if (!terminal) {
+        setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
+        setFailedSend({ clientRequestId, text: value });
+      }
     } catch {
       setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
       setFailedSend({ clientRequestId, text: value });

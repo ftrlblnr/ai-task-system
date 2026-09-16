@@ -67,11 +67,38 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// text/event-stream-ответ (Stage 2 §14, Phase E) — EventSource браузера
+// сюда не годится (только GET, без тела/заголовков), поэтому это обычный
+// fetch() с потоковым телом; парсинг SSE-фреймов — задача вызывающего кода
+// (assistant-screen.tsx), здесь только транспорт (тот же auth/401-паттерн,
+// что request()/requestForm()), отдаёт сырой Response для чтения потока.
+async function requestStream(path: string, body: unknown): Promise<Response> {
+  const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const respBody = await res.json().catch(() => ({}));
+    if (res.status === 401) handleUnauthorized();
+    throw new ApiError(respBody.message ?? `Ошибка запроса (${res.status})`, res.status);
+  }
+
+  return res;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
+  postStream: (path: string, body: unknown) => requestStream(path, body),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
