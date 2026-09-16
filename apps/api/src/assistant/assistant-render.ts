@@ -25,11 +25,16 @@ function toJson<T>(value: T): Prisma.InputJsonValue {
 // (см. MAX_TOOL_ITEMS в assistant-tools.service.ts).
 export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData {
   if ('error' in result) {
+    // export_tasks_xlsx — отдельная формулировка (Stage 2, Phase G):
+    // "Не удалось проверить файл" вводила бы в заблуждение, инструмент не
+    // проверяет файл, а формирует его.
+    if (result.tool === 'export_tasks_xlsx') return { label: 'Не удалось сформировать файл' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
   if (result.tool === 'get_tasks') return { label: `Проверил задачи: найдено ${result.totalCount}` };
-  return { label: `Проверил календарь: найдено ${result.totalCount}` };
+  if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
+  return { label: `Сформировал файл: ${result.file.name}` };
 }
 
 // Бэкенд-рендерер (спека §16) — LLM решает вызвать инструмент, инструмент
@@ -53,10 +58,16 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
       for (const item of call.result.items) {
         parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(item) });
       }
-    } else {
+    } else if (call.result.tool === 'get_events') {
       for (const item of call.result.items) {
         parts.push({ type: MessagePartType.EVENT_CARD, order: order++, data: toJson(item) });
       }
+    } else {
+      // export_tasks_xlsx — один сгенерированный файл, не список карточек
+      // (Stage 2, Phase G). Тот же FILE-тип части, что и пользовательские
+      // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
+      // и скачать без каких-либо изменений.
+      parts.push({ type: MessagePartType.FILE, order: order++, data: toJson(call.result.file) });
     }
   }
 

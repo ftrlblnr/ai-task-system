@@ -61,6 +61,27 @@ export class FilesService {
     });
   }
 
+  // Stage 2, Phase G — файл, сформированный самим сервером (например,
+  // export_tasks_xlsx, apps/api/src/assistant/task-export.ts), а не
+  // присланный пользователем. isSuspiciousUpload здесь намеренно не
+  // вызывается — та проверка защищает от байтов, присланных пользователем
+  // и не совпадающих с заявленным типом; здесь байты формирует сам сервер
+  // (exceljs), сверять их с собой же нет смысла.
+  async createGenerated(user: AuthenticatedUser, buffer: Buffer, name: string, mimeType: string): Promise<FileArtifact> {
+    const storageKey = await this.storage.save(buffer);
+    return this.prisma.fileArtifact.create({
+      data: {
+        employeeId: user.id,
+        name: sanitizeFileName(name),
+        mimeType,
+        size: buffer.length,
+        storageProvider: STORAGE_PROVIDER,
+        storageKey,
+        source: FileArtifactSource.GENERATED,
+      },
+    });
+  }
+
   // 404, не 403 — тот же принцип, что AssistantChatService.
   // findOwnedConversation: чужому сотруднику не подтверждаем даже факт
   // существования чужого файла (спека §30 — fileId в руках клиента не

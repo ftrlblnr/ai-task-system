@@ -4,7 +4,7 @@ import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageS
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
-import { AssistantReplyService, type ReplyHistoryItem } from './assistant-reply.service';
+import { AssistantReplyService, type ReplyHistoryItem, type AssistantReplyResult } from './assistant-reply.service';
 import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
 import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
@@ -221,16 +221,35 @@ export class AssistantChatService {
     return parts;
   }
 
-  // Файл существует и уже принадлежит сотруднику (source: UPLOADED) с
-  // момента POST /files/upload — здесь он только привязывается к
-  // конкретному сообщению/разговору постфактум (conversationId/messageId
-  // были null до этого момента).
-  private async linkAttachments(conversationId: string, messageId: string, attachments: FileArtifact[]): Promise<void> {
-    if (!attachments.length) return;
+  // Файл существует и уже принадлежит сотруднику — здесь он только
+  // привязывается к конкретному сообщению/разговору постфактум
+  // (conversationId/messageId были null до этого момента). Общий как для
+  // пользовательских вложений (source: UPLOADED, с момента POST
+  // /files/upload), так и для файлов, сгенерированных инструментом
+  // (source: GENERATED, Stage 2 Phase G, см. generatedFileIdsFrom ниже) —
+  // сам факт линковки не зависит от происхождения файла.
+  private async linkAttachments(conversationId: string, messageId: string, fileIds: string[]): Promise<void> {
+    if (!fileIds.length) return;
     await this.prisma.fileArtifact.updateMany({
-      where: { id: { in: attachments.map((f) => f.id) } },
+      where: { id: { in: fileIds } },
       data: { conversationId, messageId },
     });
+  }
+
+  // Stage 2, Phase G — export_tasks_xlsx создаёт FileArtifact ещё внутри
+  // tool loop (AssistantReplyService), до того как готов сам финальный
+  // ответ. Если reply()/streamReply() упадёт уже после этого — файл
+  // останется с messageId: null и будет удалён существующим
+  // FilesCleanupCron (Phase F.1) как обычный orphan upload, тем же путём,
+  // ничего отдельно на этот случай не пишем.
+  private generatedFileIdsFrom(toolCalls: AssistantReplyResult['toolCalls']): string[] {
+    const ids: string[] = [];
+    for (const c of toolCalls) {
+      if (!('error' in c.result) && c.result.tool === 'export_tasks_xlsx') {
+        ids.push(c.result.file.fileId);
+      }
+    }
+    return ids;
   }
 
   private sumToolExecutionMs(toolCalls: { durationMs: number }[]): number {
@@ -273,7 +292,11 @@ export class AssistantChatService {
         },
         include: { parts: { orderBy: { order: 'asc' } } },
       });
-      await this.linkAttachments(conversationId, userMessage.id, attachments);
+      await this.linkAttachments(
+        conversationId,
+        userMessage.id,
+        attachments.map((f) => f.id),
+      );
     }
 
     const history = await this.loadHistory(conversationId, userMessage.id);
@@ -303,6 +326,7 @@ export class AssistantChatService {
             },
             include: { parts: { orderBy: { order: 'asc' } } },
           });
+      await this.linkAttachments(conversationId, assistantMessage.id, this.generatedFileIdsFrom(result.toolCalls));
     } catch (err) {
       // Техническая ошибка — только в логи (Stage 2 §5.6/§32); пользователю
       // уходит безопасный текст через ErrorPart.
@@ -380,7 +404,11 @@ export class AssistantChatService {
         },
       });
       userMessageId = createdUserMessage.id;
-      await this.linkAttachments(conversationId, userMessageId, attachments);
+      await this.linkAttachments(
+        conversationId,
+        userMessageId,
+        attachments.map((f) => f.id),
+      );
     }
 
     const history = await this.loadHistory(conversationId, userMessageId);
@@ -432,6 +460,7 @@ export class AssistantChatService {
         data: { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: partsInput } },
         include: { parts: { orderBy: { order: 'asc' } } },
       });
+      await this.linkAttachments(conversationId, assistantMessage.id, this.generatedFileIdsFrom(result.toolCalls));
       for (const part of updated.parts) {
         emit({ event: 'part.completed', messageId: assistantMessage.id, partId: part.id, part });
       }

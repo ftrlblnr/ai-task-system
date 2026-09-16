@@ -79,4 +79,35 @@ describe('buildAssistantParts (Stage 2 Phase C — бэкенд-рендерер
     expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN, MessagePartType.EVENT_CARD]);
     expect(parts[2].data).toMatchObject({ eventId: 'e1', participants: [{ id: 'emp1', name: 'Азамат' }] });
   });
+
+  it('export_tasks_xlsx (Stage 2, Phase G) — один FILE-part вместо карточек', () => {
+    const result: AssistantReplyResult = {
+      text: 'Вот файл с задачами.',
+      toolCalls: [
+        {
+          name: 'export_tasks_xlsx',
+          durationMs: 42,
+          result: {
+            tool: 'export_tasks_xlsx',
+            totalCount: 15,
+            file: { fileId: 'f1', name: 'Задачи (все) 2026-09-16.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 4096 },
+          },
+        },
+      ],
+    };
+    const parts = buildAssistantParts(result);
+    expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN, MessagePartType.FILE]);
+    expect(parts[0].data).toEqual({ label: 'Сформировал файл: Задачи (все) 2026-09-16.xlsx' });
+    expect(parts[2].data).toEqual({ fileId: 'f1', name: 'Задачи (все) 2026-09-16.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 4096 });
+  });
+
+  it('export_tasks_xlsx — ошибка получает свою формулировку, не переиспользует "Не удалось проверить задачи"', () => {
+    const result: AssistantReplyResult = {
+      text: 'Не удалось сформировать файл.',
+      toolCalls: [{ name: 'export_tasks_xlsx', durationMs: 10, result: { tool: 'export_tasks_xlsx', error: true, message: 'EXPORT_FAILED: не удалось сформировать файл' } }],
+    };
+    const parts = buildAssistantParts(result);
+    expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN]);
+    expect(parts[0].data).toEqual({ label: 'Не удалось сформировать файл' });
+  });
 });

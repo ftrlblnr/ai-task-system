@@ -11,7 +11,10 @@ import { AssistantToolsService } from './assistant-tools.service';
   // TasksModule/CalendarModule — AssistantToolsService читает через
   // TasksService/EventsService, тот же приём, что VoiceModule. FilesModule
   // (Phase F) — AssistantChatService проверяет владение вложениями через
-  // FilesService.assertOwnedFile при отправке сообщения.
+  // FilesService.assertOwnedFile при отправке сообщения; AssistantToolsService
+  // (Phase G) тем же FilesService создаёт сгенерированные файлы
+  // (createGenerated) — отдельного импорта не требуется, FilesModule уже
+  // экспортирует FilesService.
   imports: [TasksModule, CalendarModule, FilesModule],
   controllers: [AssistantChatController],
   providers: [AssistantChatService, AssistantReplyService, AssistantToolsService],

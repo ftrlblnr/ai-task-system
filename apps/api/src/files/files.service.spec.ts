@@ -81,6 +81,28 @@ describe('FilesService.upload (Stage 2 Phase F.1 — magic-byte проверка
   });
 });
 
+describe('FilesService.createGenerated (Stage 2, Phase G — файлы, сформированные инструментом, не пользователем)', () => {
+  it('сохраняет файл с source: GENERATED, без magic-byte проверки', async () => {
+    const created = { id: 'f1', name: 'Задачи (все) 2026-09-16.xlsx' };
+    const prisma = { fileArtifact: { create: jest.fn().mockResolvedValue(created) } };
+    const storage = { save: jest.fn().mockResolvedValue('key-1') };
+    const service = new FilesService(prisma as any, storage as any);
+    // Настоящие .xlsx-байты не начинаются с сигнатуры, которую file-signature.ts
+    // проверял бы как "похоже на исполняемый файл" — если бы magic-byte
+    // проверка здесь ошибочно вызывалась, эти байты (не PK\x03\x04) её бы
+    // не прошли, и upload() отклонил бы их (см. isSuspiciousUpload).
+    const buffer = Buffer.from('не zip и не exe, просто байты');
+
+    const result = await service.createGenerated(user(), buffer, 'Задачи (все) 2026-09-16.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+    expect(storage.save).toHaveBeenCalledWith(buffer);
+    expect(prisma.fileArtifact.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ source: 'GENERATED', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }) }),
+    );
+    expect(result).toBe(created);
+  });
+});
+
 describe('FilesService.deleteUnattached (Stage 2 Phase F.1, аудит находка #10 — orphan uploads)', () => {
   it('удаляет непривязанный файл владельца — с диска и из БД', async () => {
     const file = { id: 'f1', employeeId: 'u1', messageId: null, storageKey: 'key-1' };
