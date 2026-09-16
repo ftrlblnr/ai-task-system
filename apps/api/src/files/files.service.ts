@@ -1,3 +1,4 @@
+import type { ReadStream } from 'fs';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { FileArtifact, FileArtifactSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -63,7 +64,12 @@ export class FilesService {
     return file;
   }
 
-  async getDownloadStream(user: AuthenticatedUser, fileId: string): Promise<{ stream: NodeJS.ReadableStream; file: FileArtifact }> {
+  // fs.ReadStream, не общий NodeJS.ReadableStream — StreamableFile
+  // (@nestjs/common) принимает конкретно Readable/Uint8Array, а не любой
+  // объект с методом read(); генерализация здесь стоила настоящей ошибки
+  // компиляции (TS2769, поймано в CI, локальный nest build на этой сессии
+  // не успевал прогнаться до конца из-за памяти VPS).
+  async getDownloadStream(user: AuthenticatedUser, fileId: string): Promise<{ stream: ReadStream; file: FileArtifact }> {
     const file = await this.assertOwnedFile(user, fileId);
     const stream = await this.storage.getStream(file.storageKey);
     return { stream, file };
