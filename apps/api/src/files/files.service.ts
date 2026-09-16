@@ -12,7 +12,17 @@ const STORAGE_PROVIDER = 'local';
 // разумный потолок длины, не защита от path traversal (та уже есть по
 // конструкции).
 function sanitizeFileName(name: string): string {
-  const cleaned = name.replace(/[\x00-\x1f\x7f]/g, '').trim();
+  // Фильтр по code point, не регэксп с литеральными управляющими символами
+  // (\x00-\x1f) — эта же чистка регэкспом ловит no-control-regex, хотя
+  // намерение здесь ровно то, на что жалуется правило: реальный фильтр
+  // управляющих символов, не случайная опечатка.
+  const cleaned = Array.from(name)
+    .filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code > 0x1f && code !== 0x7f;
+    })
+    .join('')
+    .trim();
   return cleaned.slice(0, 200) || 'file';
 }
 

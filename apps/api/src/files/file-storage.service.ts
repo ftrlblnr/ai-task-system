@@ -41,8 +41,13 @@ export class LocalFileStorageService {
     return storageKey;
   }
 
-  async getStream(storageKey: string): Promise<fs.ReadStream> {
-    return fs.createReadStream(path.join(this.uploadDir(), storageKey));
+  // Не async — fs.createReadStream синхронно возвращает поток (сам файл
+  // читается лениво по мере потребления), await внутри не нужен. Promise-
+  // обёртка в сигнатуре остаётся: будущая замена на S3/MinIO здесь
+  // реально обратится по сети, а вызывающий код (FilesService) уже готов
+  // к асинхронному интерфейсу.
+  getStream(storageKey: string): Promise<fs.ReadStream> {
+    return Promise.resolve(fs.createReadStream(path.join(this.uploadDir(), storageKey)));
   }
 
   // Best-effort — тот же принцип, что AuditService.log/
