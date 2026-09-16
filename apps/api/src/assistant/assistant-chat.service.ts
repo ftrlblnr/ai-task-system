@@ -50,17 +50,17 @@ function serializeMessageForModelContext(parts: MessagePart[]): string {
     .map((p) => {
       switch (p.type) {
         case MessagePartType.MARKDOWN:
-          return (p.data as MarkdownPartData).content;
+          return (p.data as unknown as MarkdownPartData).content;
         case MessagePartType.TASK_CARD: {
-          const d = p.data as TaskCardData;
+          const d = p.data as unknown as TaskCardData;
           return `[shown_task]\nid=${d.taskId}\ntitle=${d.title}\nstatus=${d.status}`;
         }
         case MessagePartType.EVENT_CARD: {
-          const d = p.data as EventCardData;
+          const d = p.data as unknown as EventCardData;
           return `[shown_event]\nid=${d.eventId}\ntitle=${d.title}\nstartAt=${d.startAt}`;
         }
         case MessagePartType.FILE: {
-          const d = p.data as FilePartData;
+          const d = p.data as unknown as FilePartData;
           return `[file]\nid=${d.fileId}\nname=${d.name}\nmimeType=${d.mimeType}`;
         }
         default:
