@@ -44,5 +44,15 @@ export async function buildTasksWorkbookBuffer(tasks: TaskExportItem[]): Promise
     });
   }
 
-  return workbook.xlsx.writeBuffer();
+  // exceljs объявляет собственный ambient `interface Buffer extends
+  // ArrayBuffer {}` (не подключает @types/node) — writeBuffer() формально
+  // возвращает этот несовместимый тип-заглушку, не настоящий Node Buffer
+  // (TS2769/TS2740, поймано в nest build, не в ts-jest — тот же
+  // повторяющийся паттерн, что уже был с TS2352 в Phase F.1). Buffer.from
+  // на границе — реальный рантайм-объект и там, и там один и тот же (это
+  // чисто расхождение в типах, не в поведении), явное преобразование
+  // просто согласовывает объявленный тип с тем, что дальше по цепочке
+  // (FilesService.createGenerated) ожидает настоящий Buffer.
+  const raw = await workbook.xlsx.writeBuffer();
+  return Buffer.from(raw as unknown as ArrayBuffer);
 }
