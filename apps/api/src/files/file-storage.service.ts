@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import type { Readable } from 'stream';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
@@ -10,11 +11,21 @@ import { ConfigService } from '@nestjs/config';
 // S3/MinIO потребовала бы трогать FilesService, а не только этот файл.
 // Токен + интерфейс — FilesService/крон инжектят FILE_STORAGE, реализация
 // подставляется в files.module.ts, сам контракт не изменился.
+//
+// Phase F.2 (аудит 17.09.2026) — интерфейс был не provider-neutral:
+// getStream() возвращал конкретно fs.ReadStream (протекающая деталь
+// локальной реализации — S3/MinIO вернули бы не его), а строка провайдера
+// "local" была захардкожена в FilesService, а не в самой реализации.
+// Readable — базовый класс, которому fs.ReadStream уже и так наследует, и
+// в который будущий S3/MinIO-клиент вернёт свой собственный поток без
+// изменений в FilesService/FilesCleanupCron. provider — свойство самой
+// реализации, FilesService только читает storage.provider.
 export const FILE_STORAGE = Symbol('FILE_STORAGE');
 
 export interface FileStorage {
+  readonly provider: string;
   save(buffer: Buffer): Promise<string>;
-  getStream(storageKey: string): Promise<fs.ReadStream>;
+  getStream(storageKey: string): Promise<Readable>;
   delete(storageKey: string): Promise<void>;
 }
 
@@ -27,6 +38,7 @@ export interface FileStorage {
 export class LocalFileStorageService implements FileStorage {
   private readonly logger = new Logger(LocalFileStorageService.name);
   private ready: Promise<void> | null = null;
+  readonly provider = 'local';
 
   constructor(private readonly config: ConfigService) {}
 
@@ -57,7 +69,7 @@ export class LocalFileStorageService implements FileStorage {
   // обёртка в сигнатуре остаётся: будущая замена на S3/MinIO здесь
   // реально обратится по сети, а вызывающий код (FilesService) уже готов
   // к асинхронному интерфейсу.
-  getStream(storageKey: string): Promise<fs.ReadStream> {
+  getStream(storageKey: string): Promise<Readable> {
     return Promise.resolve(fs.createReadStream(path.join(this.uploadDir(), storageKey)));
   }
 

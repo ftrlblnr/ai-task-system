@@ -1,12 +1,11 @@
-import type { ReadStream } from 'fs';
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import type { Readable } from 'stream';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { FileArtifact, FileArtifactSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FILE_STORAGE, type FileStorage } from './file-storage.service';
-import { isSuspiciousUpload } from './file-signature';
-
-const STORAGE_PROVIDER = 'local';
+import { isSuspiciousUpload, extensionMatchesMimeType } from './file-signature';
+import { ALLOWED_UPLOAD_MIME_TYPES, MAX_UPLOAD_FILE_SIZE } from './dto/upload-file.dto';
 
 // Только для отображения (FileArtifact.name) — путь на диске никогда не
 // зависит от имени файла пользователя (см. file-storage.service.ts,
@@ -33,32 +32,38 @@ function sanitizeFileName(name: string): string {
 // впервые появляется код, который её реально наполняет. Phase F.1
 // (аудит 16.09.2026) — magic-byte проверка + DELETE для непривязанных
 // файлов + инъекция через FILE_STORAGE-токен (не конкретный класс).
+// Phase F.2 (аудит 17.09.2026) — size/MIME-allowlist раньше проверялись
+// только на уровне FileInterceptor в контроллере (limits/fileFilter):
+// прямой вызов upload() в обход HTTP мог обойти обе проверки. Сервис
+// теперь сам гарантирует size/MIME/extension↔MIME/MIME↔сигнатура —
+// controller-проверка остаётся как быстрый first-pass фильтр до чтения
+// буфера в память, не единственная линия защиты.
 @Injectable()
 export class FilesService {
+  private readonly logger = new Logger(FilesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(FILE_STORAGE) private readonly storage: FileStorage,
   ) {}
 
   async upload(user: AuthenticatedUser, buffer: Buffer, originalName: string, mimeType: string): Promise<FileArtifact> {
-    // Client-declared MIME (уже прошедший allowlist в fileFilter
-    // контроллера) сверяется с реальными байтами — see file-signature.ts
-    // про то, что именно и почему проверяется/не проверяется.
+    if (buffer.length > MAX_UPLOAD_FILE_SIZE) {
+      throw new BadRequestException('Файл превышает допустимый размер');
+    }
+    if (!ALLOWED_UPLOAD_MIME_TYPES.includes(mimeType)) {
+      throw new BadRequestException('Недопустимый тип файла');
+    }
+    if (!extensionMatchesMimeType(originalName, mimeType)) {
+      throw new BadRequestException('Расширение файла не соответствует заявленному типу');
+    }
+    // Client-declared MIME (уже прошедший allowlist выше) сверяется с
+    // реальными байтами — see file-signature.ts про то, что именно и
+    // почему проверяется/не проверяется.
     if (isSuspiciousUpload(buffer, mimeType)) {
       throw new BadRequestException('Файл не прошёл проверку типа — содержимое не соответствует заявленному формату');
     }
-    const storageKey = await this.storage.save(buffer);
-    return this.prisma.fileArtifact.create({
-      data: {
-        employeeId: user.id,
-        name: sanitizeFileName(originalName),
-        mimeType,
-        size: buffer.length,
-        storageProvider: STORAGE_PROVIDER,
-        storageKey,
-        source: FileArtifactSource.UPLOADED,
-      },
-    });
+    return this.persist(user, buffer, sanitizeFileName(originalName), mimeType, FileArtifactSource.UPLOADED);
   }
 
   // Stage 2, Phase G — файл, сформированный самим сервером (например,
@@ -68,18 +73,47 @@ export class FilesService {
   // и не совпадающих с заявленным типом; здесь байты формирует сам сервер
   // (exceljs), сверять их с собой же нет смысла.
   async createGenerated(user: AuthenticatedUser, buffer: Buffer, name: string, mimeType: string): Promise<FileArtifact> {
+    return this.persist(user, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.GENERATED);
+  }
+
+  // Phase F.2 (аудит 17.09.2026, P0 — storage/DB consistency) — раньше
+  // storage.save() и prisma.fileArtifact.create() не были ничем связаны:
+  // сбой БД после успешной записи на диск оставлял физический файл без
+  // единой ссылающейся на него записи, cleanup cron его не видит (он
+  // ищет orphan-записи в БД, не orphan-файлы на диске). Компенсирующее
+  // удаление при сбое create() возвращает систему в состояние "как будто
+  // upload не начинался". Если само компенсирующее удаление тоже падает —
+  // обе ошибки логируются, наружу уходит исходная ошибка операции (сбой
+  // БД важнее для вызывающего кода, чем то, что чистка не удалась).
+  private async persist(
+    user: AuthenticatedUser,
+    buffer: Buffer,
+    name: string,
+    mimeType: string,
+    source: FileArtifactSource,
+  ): Promise<FileArtifact> {
     const storageKey = await this.storage.save(buffer);
-    return this.prisma.fileArtifact.create({
-      data: {
-        employeeId: user.id,
-        name: sanitizeFileName(name),
-        mimeType,
-        size: buffer.length,
-        storageProvider: STORAGE_PROVIDER,
-        storageKey,
-        source: FileArtifactSource.GENERATED,
-      },
-    });
+    try {
+      return await this.prisma.fileArtifact.create({
+        data: {
+          employeeId: user.id,
+          name,
+          mimeType,
+          size: buffer.length,
+          storageProvider: this.storage.provider,
+          storageKey,
+          source,
+        },
+      });
+    } catch (err) {
+      this.logger.error(`fileArtifact.create failed after storage.save (storageKey=${storageKey}): ${err instanceof Error ? err.message : err}`);
+      try {
+        await this.storage.delete(storageKey);
+      } catch (cleanupErr) {
+        this.logger.error(`compensation delete failed for storageKey=${storageKey}: ${cleanupErr instanceof Error ? cleanupErr.message : cleanupErr}`);
+      }
+      throw err;
+    }
   }
 
   // 404, не 403 — тот же принцип, что AssistantChatService.
@@ -94,12 +128,13 @@ export class FilesService {
     return file;
   }
 
-  // fs.ReadStream, не общий NodeJS.ReadableStream — StreamableFile
+  // Readable, не общий NodeJS.ReadableStream — StreamableFile
   // (@nestjs/common) принимает конкретно Readable/Uint8Array, а не любой
-  // объект с методом read(); генерализация здесь стоила настоящей ошибки
-  // компиляции (TS2769, поймано в CI, локальный nest build на этой сессии
-  // не успевал прогнаться до конца из-за памяти VPS).
-  async getDownloadStream(user: AuthenticatedUser, fileId: string): Promise<{ stream: ReadStream; file: FileArtifact }> {
+  // объект с методом read(); генерализация до NodeJS.ReadableStream стоила
+  // настоящей ошибки компиляции (TS2769, поймано в CI). Readable — тот же
+  // базовый класс, которому уже наследует fs.ReadStream, поэтому
+  // LocalFileStorageService.getStream не меняется.
+  async getDownloadStream(user: AuthenticatedUser, fileId: string): Promise<{ stream: Readable; file: FileArtifact }> {
     const file = await this.assertOwnedFile(user, fileId);
     const stream = await this.storage.getStream(file.storageKey);
     return { stream, file };
