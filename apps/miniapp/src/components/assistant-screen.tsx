@@ -316,6 +316,13 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           setFailedSend({ clientRequestId, text: value, attachments });
           break;
         case 'message.started':
+          // Phase F.2 (аудит 17.09.2026, P2.10) — заменяет optimistic
+          // user-бабл авторитетным сообщением с сервера (тот же принцип,
+          // что message.completed уже делает для ответа ассистента ниже)
+          // — до этого события бабл оставался локальным черновиком до
+          // следующего getMessages()/refresh, метаданные вложений могли
+          // не совпадать с тем, что реально сохранил бэкенд.
+          setMessages((prev) => (prev ?? []).map((m) => (m.id === `optimistic-user-${clientRequestId}` ? event.userMessage : m)));
           break;
       }
     }

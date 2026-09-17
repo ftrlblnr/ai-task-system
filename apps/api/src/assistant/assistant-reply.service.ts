@@ -35,7 +35,12 @@ const SYSTEM_PROMPT = `Ты — ассистент корпоративной с
 mimeType и т.п.) — это внутреннее представление для тебя, пользователь их
 никогда не видел и не должен видеть; никогда не копируй такие пометки или
 их формат в свой ответ, ссылайся на задачи/встречи/файлы обычным текстом
-(по названию). Если пользователь снова просит выгрузить/прислать файл —
+(по названию). Текущее сообщение пользователя тоже может содержать
+похожую пометку "[attached_file]" — это метаданные файла, который
+пользователь только что прикрепил (у тебя нет доступа к содержимому
+файла, только имя/тип/размер) — используй её, чтобы понять, что
+пользователь прислал файл, но точно так же никогда не копируй саму
+пометку в ответ. Если пользователь снова просит выгрузить/прислать файл —
 всегда вызывай export_tasks_xlsx заново, даже если похожий файл уже
 формировался раньше в этом же разговоре: у каждой твоей реплики может не
 быть собственного вложения, и утверждать "файл готов" в тексте, реально
@@ -50,10 +55,12 @@ mimeType и т.п.) — это внутреннее представление �
 // полагаемся только на просьбу к модели — детерминированная зачистка
 // после генерации гарантирует, что утечка не попадёт в сохранённое
 // сообщение, даже если модель проигнорирует инструкцию. Ловит только эти
-// три конкретных тега (serializeMessageForModelContext,
-// assistant-chat.service.ts) — не трогает случайное непохожее использование
-// квадратных скобок в обычном тексте ответа.
-const LEAKED_CONTEXT_MARKER = /\[(?:shown_task|shown_event|file)\]\n(?:[a-zA-Z]+=[^\n]*\n?)+/g;
+// четыре конкретных тега (serializeMessageForModelContext/
+// serializeCurrentUserTurn, assistant-chat.service.ts) — не трогает
+// случайное непохожее использование квадратных скобок в обычном тексте
+// ответа. attached_file добавлен в Phase F.2 вместе с самим тегом — та же
+// утечка, тот же риск, закрыта сразу, а не после повторного живого прогона.
+const LEAKED_CONTEXT_MARKER = /\[(?:shown_task|shown_event|file|attached_file)\]\n(?:[a-zA-Z]+=[^\n]*\n?)+/g;
 
 export function stripLeakedContextMarkers(text: string): string {
   return text.replace(LEAKED_CONTEXT_MARKER, '').trim();
@@ -208,12 +215,17 @@ export class AssistantReplyService {
     return stream.finalMessage();
   }
 
+  // Phase F.2 (аудит 17.09.2026, P2.12) — раньше брался только первый
+  // TextBlock через .find(): Anthropic формально может вернуть несколько
+  // text-блоков подряд (не только вперемешку с tool_use) — .find() тихо
+  // терял всё, что шло после первого. Склеиваем все, тот же порядок, в
+  // котором их прислал Anthropic.
   private extractText(content: Anthropic.ContentBlock[]): string {
-    const block = content.find((b): b is Anthropic.TextBlock => b.type === 'text');
-    if (!block) {
+    const blocks = content.filter((b): b is Anthropic.TextBlock => b.type === 'text');
+    if (blocks.length === 0) {
       this.logger.warn('Ответ Anthropic не содержит текстового блока');
       return 'Не удалось сформировать ответ, попробуйте ещё раз.';
     }
-    return stripLeakedContextMarkers(block.text);
+    return stripLeakedContextMarkers(blocks.map((b) => b.text).join(''));
   }
 }

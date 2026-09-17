@@ -7,7 +7,10 @@
 import type { ResponseMessage, ResponseMessagePart } from '../assistant-response.mapper';
 
 export type StreamEvent =
-  | { event: 'message.started'; messageId: string }
+  // userMessage (Phase F.2, аудит 17.09.2026, P2.10) — авторитетное
+  // user-сообщение с сервера: фронтенд заменяет им свой optimistic-бабл
+  // сразу на этом событии, а не ждёт message.completed/полный refresh.
+  | { event: 'message.started'; messageId: string; userMessage: ResponseMessage }
   | { event: 'part.started'; messageId: string; partId: string }
   | { event: 'part.delta'; messageId: string; partId: string; delta: string }
   | { event: 'part.completed'; messageId: string; partId: string; part: ResponseMessagePart }

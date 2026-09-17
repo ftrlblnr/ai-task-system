@@ -1,6 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageStatus, MessagePartType } from '@prisma/client';
+import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageStatus, MessagePartType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
@@ -22,9 +22,12 @@ export type MessageWithParts = Message & { parts: MessagePart[] };
 // AssistantChatController переводит его в публичный StreamEvent
 // (dto/stream-event.dto.ts) на границе, тем же приёмом, что
 // toResponseMessage для non-streaming ответа (assistant-response.mapper.ts)
-// — сервис не должен знать формат HTTP-ответа.
+// — сервис не должен знать формат HTTP-ответа. userMessage на
+// message.started (Phase F.2, аудит 17.09.2026) — авторитетное
+// user-сообщение с сервера: до этого фронтенд ничем не заменял свой
+// optimistic-бабл до самого следующего getMessages()/refresh.
 export type InternalStreamEvent =
-  | { event: 'message.started'; messageId: string }
+  | { event: 'message.started'; messageId: string; userMessage: MessageWithParts }
   | { event: 'part.started'; messageId: string; partId: string }
   | { event: 'part.delta'; messageId: string; partId: string; delta: string }
   | { event: 'part.completed'; messageId: string; partId: string; part: MessagePart }
@@ -35,6 +38,18 @@ export type InternalStreamEvent =
 
 const ASSISTANT_TEXT_PART_ID = 'assistant-text';
 const GENERIC_FAILURE_MESSAGE = 'Не удалось получить ответ ассистента. Попробуйте ещё раз.';
+const ATTACHMENT_UNAVAILABLE_MESSAGE = 'Один из прикреплённых файлов больше недоступен. Прикрепите файл заново.';
+
+// Phase F.2 (аудит 17.09.2026, P1.8) — два одновременных запроса с одним
+// clientRequestId оба проходят findExistingPair → "не найдено", затем оба
+// пытаются prisma.message.create() — ровно один упадёт на unique
+// constraint (conversationId_clientRequestId для user-сообщения,
+// replyToMessageId для assistant-сообщения после P1.7). Без recovery это
+// была бы 500-ошибка для "проигравшего" запроса вместо идемпотентного
+// ответа.
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
 
 // Phase F.1 (стабилизация, аудит 16.09.2026) — раньше история для модели
 // собиралась только из MARKDOWN-частей: карточки задач/событий/файлы,
@@ -71,13 +86,33 @@ function serializeMessageForModelContext(parts: MessagePart[]): string {
     .join('\n');
 }
 
+// Phase F.2 (аудит 17.09.2026, P0.1) — раньше текущее сообщение уходило
+// модели как dto.text без единого упоминания только что прикреплённых
+// файлов: "посмотри этот документ" + report.pdf модель видела буквально
+// как "посмотри этот документ", без имени/типа файла. Отдельный тег
+// [attached_file] (не [file] из истории, см. serializeMessageForModelContext
+// выше) — чтобы не путать "показано в истории" с "прикреплено только что
+// в этом же сообщении". Только метаданные — содержимое файла не читается
+// и не передаётся, это осознанно вне рамок этого шага.
+function serializeCurrentUserTurn(text: string, attachments: FilePartData[]): string {
+  if (!attachments.length) return text;
+  const blocks = attachments.map((a) => `[attached_file]\nid=${a.fileId}\nname=${a.name}\nmimeType=${a.mimeType}\nsize=${a.size}`);
+  return [text, ...blocks].join('\n\n');
+}
+
+function attachmentPartsOf(parts: MessagePart[]): FilePartData[] {
+  return parts.filter((p) => p.type === MessagePartType.FILE).map((p) => p.data as unknown as FilePartData);
+}
+
 // Stage 2. Phase B — персист + один обычный (без tool use) ответ. Phase C
 // — tool-calling (get_tasks/get_events, см. assistant-tools.service.ts).
 // Phase E — то же самое, но с прогрессом по мере готовности (streamMessage),
 // поверх ОДНОГО и того же AssistantReplyService.runReply — никакой
 // отдельной бизнес-логики для стриминга, только другой способ её показать.
 // Phase F.1 — стабилизация (см. комментарии у replyToMessageId/loadHistory/
-// serializeMessageForModelContext ниже). Существующий voice-путь
+// serializeMessageForModelContext ниже). Phase F.2 — current-turn
+// attachments, идемпотентность под гонкой, provider-neutral storage (см.
+// files/), явные ошибки на недоступные вложения. Существующий voice-путь
 // (VoiceService, /voice/parse) не переиспользует эти таблицы и не
 // изменяется этим сервисом.
 @Injectable()
@@ -127,6 +162,17 @@ export class AssistantChatService {
   // JSON-ответом, а не потерялся бы внутри уже открытого text/event-stream.
   async assertOwnedConversation(user: AuthenticatedUser, conversationId: string): Promise<void> {
     await this.findOwnedConversation(user, conversationId);
+  }
+
+  // Публичный тонкий алиас — тот же приём, что assertOwnedConversation:
+  // AssistantChatController зовёт его ДО открытия SSE-потока (Phase F.2,
+  // аудит 17.09.2026, P2.11), чтобы ошибка на недоступное вложение пришла
+  // обычным JSON-ответом, а не потерялась бы внутри уже открытого потока.
+  // resolveAttachments всё равно вызывается второй раз внутри streamMessage
+  // (узкое TOCTOU-окно между этой проверкой и самой отправкой не устраняется
+  // полностью — тот же уровень гарантий, что уже есть у owner-проверки).
+  async assertAttachmentsAvailable(user: AuthenticatedUser, attachmentIds: string[] | undefined): Promise<void> {
+    await this.resolveAttachments(user, attachmentIds);
   }
 
   async getMessages(user: AuthenticatedUser, conversationId: string): Promise<MessageWithParts[]> {
@@ -191,11 +237,13 @@ export class AssistantChatService {
       .filter((h) => h.text);
   }
 
-  // Phase F — вложения. Невалидный/чужой id внутри attachmentIds не роняет
-  // отправку сообщения целиком (тот же fail-safe принцип, что невалидный
-  // assigneeId в voice.service.ts) — просто не попадает в результат.
-  // Владение проверяется здесь, не полагаемся на то, что клиент прислал
-  // только свои же id (спека Stage 2 §30).
+  // Phase F — вложения. Phase F.2 (аудит 17.09.2026, P2.11) — раньше
+  // невалидный/чужой id молча пропускался (тот же fail-safe принцип, что
+  // невалидный assigneeId в voice.service.ts) — пользователь никак не
+  // узнавал, что вложение не попало в сообщение. Явная ошибка теперь,
+  // один и тот же безопасный текст для "не существует"/"чужой"/"удалён"
+  // (не раскрываем, какой из случаев — спека §30, тот же принцип, что
+  // 404 без подтверждения существования чужого ресурса).
   private async resolveAttachments(user: AuthenticatedUser, attachmentIds: string[] | undefined): Promise<FileArtifact[]> {
     if (!attachmentIds?.length) return [];
     const resolved: FileArtifact[] = [];
@@ -203,7 +251,7 @@ export class AssistantChatService {
       try {
         resolved.push(await this.files.assertOwnedFile(user, id));
       } catch {
-        // чужой/несуществующий id — тихо пропускаем
+        throw new BadRequestException(ATTACHMENT_UNAVAILABLE_MESSAGE);
       }
     }
     return resolved;
@@ -234,6 +282,68 @@ export class AssistantChatService {
       where: { id: { in: fileIds } },
       data: { conversationId, messageId },
     });
+  }
+
+  // Phase F.2 (аудит 17.09.2026, P1.8) — общий путь создания user-сообщения
+  // для sendMessage/streamMessage (раньше был продублирован в обоих).
+  // Recovery на P2002: если два одновременных запроса с одним
+  // clientRequestId оба прошли findExistingPair → null, ровно один упадёт
+  // на unique(conversationId, clientRequestId) — "проигравший" не получает
+  // 500, а переиспользует строку победителя (тот же результат, что и
+  // обычный idempotent-повтор).
+  private async createUserMessageIdempotent(conversationId: string, dto: SendMessageDto, attachments: FileArtifact[]): Promise<MessageWithParts> {
+    try {
+      const created = await this.prisma.message.create({
+        data: {
+          conversationId,
+          role: MessageRole.USER,
+          status: MessageStatus.COMPLETED,
+          clientRequestId: dto.clientRequestId || null,
+          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
+        },
+        include: { parts: { orderBy: { order: 'asc' } } },
+      });
+      await this.linkAttachments(
+        conversationId,
+        created.id,
+        attachments.map((f) => f.id),
+      );
+      return created;
+    } catch (err) {
+      if (isUniqueConstraintError(err) && dto.clientRequestId) {
+        const winner = await this.prisma.message.findUnique({
+          where: { conversationId_clientRequestId: { conversationId, clientRequestId: dto.clientRequestId } },
+          include: { parts: { orderBy: { order: 'asc' } } },
+        });
+        if (winner) return winner;
+      }
+      throw err;
+    }
+  }
+
+  private async resolveOrCreateUserMessage(user: AuthenticatedUser, conversationId: string, dto: SendMessageDto, existingUserMessage: MessageWithParts | undefined): Promise<MessageWithParts> {
+    if (existingUserMessage) return existingUserMessage;
+    const attachments = await this.resolveAttachments(user, dto.attachmentIds);
+    return this.createUserMessageIdempotent(conversationId, dto, attachments);
+  }
+
+  // Тот же приём, что createUserMessageIdempotent — после P1.7
+  // (replyToMessageId стал @unique) два одновременных запроса могут оба
+  // пройти "assistant-сообщения ещё нет" и оба попытаться его создать;
+  // "проигравший" переиспользует строку победителя вместо 500.
+  private async createAssistantMessageIdempotent(userMessageId: string, data: Prisma.MessageUncheckedCreateInput): Promise<MessageWithParts> {
+    try {
+      return await this.prisma.message.create({ data, include: { parts: { orderBy: { order: 'asc' } } } });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        const winner = await this.prisma.message.findFirst({
+          where: { replyToMessageId: userMessageId },
+          include: { parts: { orderBy: { order: 'asc' } } },
+        });
+        if (winner) return winner;
+      }
+      throw err;
+    }
   }
 
   // Stage 2, Phase G — export_tasks_xlsx создаёт FileArtifact ещё внутри
@@ -277,35 +387,15 @@ export class AssistantChatService {
     const requestId = randomUUID();
     const t0 = Date.now();
 
-    let userMessage: MessageWithParts;
-    if (existing?.userMessage) {
-      userMessage = existing.userMessage;
-    } else {
-      const attachments = await this.resolveAttachments(user, dto.attachmentIds);
-      userMessage = await this.prisma.message.create({
-        data: {
-          conversationId,
-          role: MessageRole.USER,
-          status: MessageStatus.COMPLETED,
-          clientRequestId: dto.clientRequestId || null,
-          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
-        },
-        include: { parts: { orderBy: { order: 'asc' } } },
-      });
-      await this.linkAttachments(
-        conversationId,
-        userMessage.id,
-        attachments.map((f) => f.id),
-      );
-    }
-
+    const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
     const history = await this.loadHistory(conversationId, userMessage.id);
+    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
     let toolExecutionMs = 0;
     try {
-      const result = await this.reply.reply(dto.text, history, user);
+      const result = await this.reply.reply(currentTurnText, history, user);
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
@@ -315,16 +405,13 @@ export class AssistantChatService {
             data: { status: MessageStatus.COMPLETED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: partsInput } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
-        : await this.prisma.message.create({
-            data: {
-              conversationId,
-              role: MessageRole.ASSISTANT,
-              status: MessageStatus.COMPLETED,
-              requestId,
-              replyToMessageId: userMessage.id,
-              parts: { create: partsInput },
-            },
-            include: { parts: { orderBy: { order: 'asc' } } },
+        : await this.createAssistantMessageIdempotent(userMessage.id, {
+            conversationId,
+            role: MessageRole.ASSISTANT,
+            status: MessageStatus.COMPLETED,
+            requestId,
+            replyToMessageId: userMessage.id,
+            parts: { create: partsInput },
           });
       await this.linkAttachments(conversationId, assistantMessage.id, this.generatedFileIdsFrom(result.toolCalls));
     } catch (err) {
@@ -338,16 +425,13 @@ export class AssistantChatService {
             data: { status: MessageStatus.FAILED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: errorPart } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
-        : await this.prisma.message.create({
-            data: {
-              conversationId,
-              role: MessageRole.ASSISTANT,
-              status: MessageStatus.FAILED,
-              requestId,
-              replyToMessageId: userMessage.id,
-              parts: { create: errorPart },
-            },
-            include: { parts: { orderBy: { order: 'asc' } } },
+        : await this.createAssistantMessageIdempotent(userMessage.id, {
+            conversationId,
+            role: MessageRole.ASSISTANT,
+            status: MessageStatus.FAILED,
+            requestId,
+            replyToMessageId: userMessage.id,
+            parts: { create: errorPart },
           });
     }
 
@@ -377,7 +461,7 @@ export class AssistantChatService {
 
     const existing = await this.findExistingPair(conversationId, dto.clientRequestId);
     if (existing?.assistantMessage?.status === MessageStatus.COMPLETED) {
-      emit({ event: 'message.started', messageId: existing.assistantMessage.id });
+      emit({ event: 'message.started', messageId: existing.assistantMessage.id, userMessage: existing.userMessage });
       emit({ event: 'message.completed', messageId: existing.assistantMessage.id, message: existing.assistantMessage });
       return;
     }
@@ -385,56 +469,59 @@ export class AssistantChatService {
     const requestId = randomUUID();
     const t0 = Date.now();
 
-    // В отличие от sendMessage, здесь сам объект пользовательского
-    // сообщения стриминговым событиям не нужен (клиент уже показал его
-    // оптимистично) — но персистить его всё равно нужно, если это не
-    // повтор уже существующей пары.
-    let userMessageId: string;
-    if (existing?.userMessage) {
-      userMessageId = existing.userMessage.id;
-    } else {
-      const attachments = await this.resolveAttachments(user, dto.attachmentIds);
-      const createdUserMessage = await this.prisma.message.create({
-        data: {
-          conversationId,
-          role: MessageRole.USER,
-          status: MessageStatus.COMPLETED,
-          clientRequestId: dto.clientRequestId || null,
-          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
-        },
-      });
-      userMessageId = createdUserMessage.id;
-      await this.linkAttachments(
-        conversationId,
-        userMessageId,
-        attachments.map((f) => f.id),
-      );
-    }
+    // Phase F.2 (аудит 17.09.2026, P2.10) — раньше здесь хранился только
+    // userMessageId (строка): стриминговым событиям хватало id, полный
+    // объект был не нужен. Теперь message.started несёт полное
+    // авторитетное user-сообщение (нужно и для этого, и для
+    // serializeCurrentUserTurn ниже) — тот же общий путь создания, что и
+    // sendMessage (resolveOrCreateUserMessage).
+    const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
+    const history = await this.loadHistory(conversationId, userMessage.id);
+    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
-    const history = await this.loadHistory(conversationId, userMessageId);
-
-    const assistantMessage =
-      existing?.assistantMessage ??
-      (await this.prisma.message.create({
-        data: {
+    let assistantMessage: MessageWithParts;
+    try {
+      assistantMessage =
+        existing?.assistantMessage ??
+        (await this.createAssistantMessageIdempotent(userMessage.id, {
           conversationId,
           role: MessageRole.ASSISTANT,
           status: MessageStatus.STREAMING,
           requestId,
-          replyToMessageId: userMessageId,
+          replyToMessageId: userMessage.id,
           parts: { create: [] },
-        },
-        include: { parts: { orderBy: { order: 'asc' } } },
-      }));
+        }));
+    } catch (err) {
+      // isUniqueConstraintError-путь внутри createAssistantMessageIdempotent
+      // уже пытался восстановиться — если дошло сюда, восстановиться не
+      // удалось (или ошибка не про гонку). Тот же безопасный failure-путь,
+      // что и ниже.
+      this.logger.error(`assistant reply reqId=${requestId} failed to create assistant message: ${err instanceof Error ? err.message : err}`);
+      emit({ event: 'message.started', messageId: userMessage.id, userMessage });
+      emit({ event: 'message.failed', messageId: userMessage.id, error: GENERIC_FAILURE_MESSAGE });
+      return;
+    }
 
-    emit({ event: 'message.started', messageId: assistantMessage.id });
+    // Узкий вырожденный случай (Phase F.2, P1.8) — recovery нашёл чужую
+    // (уже существующую) assistant-строку не в статусе STREAMING/этого же
+    // запроса: это значит, что параллельный запрос с тем же
+    // clientRequestId уже её создал/обновил. Не запускаем второй
+    // параллельный вызов Anthropic на ту же пару — отдаём то, что уже
+    // есть, тем же способом, что и обычный idempotent-повтор.
+    if (assistantMessage.status === MessageStatus.COMPLETED) {
+      emit({ event: 'message.started', messageId: assistantMessage.id, userMessage });
+      emit({ event: 'message.completed', messageId: assistantMessage.id, message: assistantMessage });
+      return;
+    }
+
+    emit({ event: 'message.started', messageId: assistantMessage.id, userMessage });
     emit({ event: 'part.started', messageId: assistantMessage.id, partId: ASSISTANT_TEXT_PART_ID });
 
     const toolNames: string[] = [];
     let firstTokenAt: number | null = null;
     try {
       const result = await this.reply.streamReply(
-        dto.text,
+        currentTurnText,
         history,
         user,
         (e) => {

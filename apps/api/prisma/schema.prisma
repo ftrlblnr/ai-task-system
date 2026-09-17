@@ -172,8 +172,12 @@ model Message {
   // одновременно, это могло связать ответ B с сообщением A. Явная ссылка
   // однозначна независимо от порядка времени. У user-сообщений всегда null
   // (они ни на что не отвечают), у assistant — id того user-сообщения,
-  // ответом на которое оно является.
-  replyToMessageId String?
+  // ответом на которое оно является. @unique (Phase F.2, аудит 17.09.2026,
+  // P1.7) — бизнес-правило "один основной assistant-ответ на одно
+  // user-сообщение" теперь гарантирует сама БД, а не только код;
+  // AssistantChatService.createAssistantMessageIdempotent ловит гонку
+  // (P2002) двух одновременных запросов с одним clientRequestId.
+  replyToMessageId String? @unique
   replyToMessage   Message?  @relation("MessageReply", fields: [replyToMessageId], references: [id])
   replies          Message[] @relation("MessageReply")
 

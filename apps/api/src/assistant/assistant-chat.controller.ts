@@ -52,7 +52,10 @@ export class AssistantChatController {
   // готовности, не одним блокирующим JSON-ответом. Владение разговором
   // проверяется ДО открытия потока (assertOwnedConversation) — иначе 404
   // на чужой conversationId потерялся бы внутри уже открытого SSE-потока
-  // вместо обычного JSON-ответа с кодом ошибки.
+  // вместо обычного JSON-ответа с кодом ошибки. assertAttachmentsAvailable
+  // (Phase F.2, аудит 17.09.2026, P2.11) — та же причина: 400 на
+  // недоступное вложение должен прийти обычным JSON-ответом, а не
+  // потеряться внутри уже открытого потока.
   @Post('conversations/:id/messages/stream')
   async streamMessage(
     @Param('id') id: string,
@@ -61,6 +64,7 @@ export class AssistantChatController {
     @Res() res: Response,
   ): Promise<void> {
     await this.chat.assertOwnedConversation(user, id);
+    await this.chat.assertAttachmentsAvailable(user, dto.attachmentIds);
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -89,6 +93,8 @@ export class AssistantChatController {
 
 function toWireEvent(event: InternalStreamEvent): StreamEvent {
   switch (event.event) {
+    case 'message.started':
+      return { event: 'message.started', messageId: event.messageId, userMessage: toResponseMessage(event.userMessage) };
     case 'part.completed':
       return { event: 'part.completed', messageId: event.messageId, partId: event.partId, part: toResponseMessagePart(event.part) };
     case 'message.completed':

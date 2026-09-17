@@ -32,4 +32,12 @@ describe('stripLeakedContextMarkers (Stage 2, Phase G — защита от ут
     const text = stripLeakedContextMarkers('В параметре [file] нужно указать путь.');
     expect(text).toBe('В параметре [file] нужно указать путь.');
   });
+
+  // Stage 2, Phase F.2 (17.09.2026) — [attached_file] заведён вместе с
+  // serializeCurrentUserTurn — та же утечка теоретически возможна и для
+  // него, закрыта сразу, не после повторной живой находки.
+  it('убирает просочившийся блок [attached_file]', () => {
+    const text = stripLeakedContextMarkers('Вижу файл.\n[attached_file]\nid=f1\nname=report.pdf\nmimeType=application/pdf\nsize=248134');
+    expect(text).toBe('Вижу файл.');
+  });
 });

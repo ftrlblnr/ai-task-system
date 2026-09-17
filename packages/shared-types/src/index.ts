@@ -549,7 +549,11 @@ export interface SendAssistantMessageResponse {
 // накопленного текста для него (редкий случай: модель начала отвечать
 // текстом, потом решила вызвать инструмент).
 export type StreamEvent =
-  | { event: 'message.started'; messageId: string }
+  // userMessage (Phase F.2, 17.09.2026) — авторитетное user-сообщение с
+  // сервера: клиент заменяет им свой optimistic-бабл сразу на этом
+  // событии, тем же принципом, что message.completed уже делает для
+  // ассистента (см. комментарий выше).
+  | { event: 'message.started'; messageId: string; userMessage: ConversationMessage }
   | { event: 'part.started'; messageId: string; partId: string }
   | { event: 'part.delta'; messageId: string; partId: string; delta: string }
   | { event: 'part.completed'; messageId: string; partId: string; part: MessagePart }
