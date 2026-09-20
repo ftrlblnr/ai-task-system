@@ -417,3 +417,99 @@ describe('AssistantChatService — идемпотентность под гон�
     expect(result.assistantMessage).toBe(winnerAssistantMessage);
   });
 });
+
+// P0 (внешний аудит 20.09.2026) — идемпотентность выше защищает СТРОКИ в
+// БД от дублей, но раньше не мешала двум конкурентным запросам с одним
+// clientRequestId ОБА реально вызвать this.reply.reply()/streamReply() до
+// того, как первый успевал записать assistant-строку. Тесты ниже — именно
+// acceptance-тест, который предлагал сам аудит: Promise.all с двумя
+// одновременными вызовами одного и того же логического запроса, проверка
+// reply.reply()/streamReply() called === 1. Раньше такого теста не было —
+// существовавшие P2002-тесты выше проверяют только recovery ПОСЛЕ того,
+// как реальный вызов ассистента уже случился (или не случился) — не сам
+// факт однократности вызова.
+describe('AssistantChatService — exactly-once execution под конкурентными запросами (Phase F.3, P0, аудит 20.09.2026)', () => {
+  it('sendMessage: два одновременных вызова с одним clientRequestId вызывают reply.reply() ровно один раз и возвращают одно и то же assistantMessage', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const userMessage = { id: 'm1', createdAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [] };
+    const replySpy = jest.fn().mockResolvedValue({ text: 'ответ', toolCalls: [] });
+    const prisma = {
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        // Оба конкурентных вызова "не находят" существующую пару — оба
+        // считают, что это первая попытка (реалистичный момент гонки: ни
+        // один ещё не успел записать строку).
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        // Оба вызова resolveOrCreateUserMessage получают один и тот же
+        // userMessage (в реальной БД это гарантирует unique(conversationId,
+        // clientRequestId) + P2002-recovery, уже покрыто отдельным тестом
+        // выше — здесь достаточно смоделировать итог, а не сам механизм
+        // recovery, раз именно эта часть проверяется в другом месте).
+        // create() для assistant-сообщения не должен быть вызван больше
+        // одного раза, если exactly-once работает — mockResolvedValueOnce
+        // после первых двух (user message) даёт третьему вызову
+        // единственный валидный ответ; лишний четвёртый вызов (если бы
+        // второй конкурентный запрос тоже дошёл до create) получил бы
+        // undefined и тест упал бы на структуре результата, а не только
+        // на счётчике reply.reply.
+        create: jest
+          .fn()
+          .mockResolvedValueOnce(userMessage)
+          .mockResolvedValueOnce(userMessage)
+          .mockResolvedValueOnce(assistantMessage),
+      },
+    };
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any);
+
+    const dto = { text: 'привет', clientRequestId: 'req-1' };
+    const [resultA, resultB] = await Promise.all([service.sendMessage(user(), 'c1', dto), service.sendMessage(user(), 'c1', dto)]);
+
+    expect(replySpy).toHaveBeenCalledTimes(1);
+    expect(resultA.assistantMessage).toBe(assistantMessage);
+    expect(resultB.assistantMessage).toBe(assistantMessage);
+  });
+
+  it('streamMessage: два одновременных вызова с одним clientRequestId вызывают streamReply() ровно один раз; проигравший получает message.completed без повторного стрима', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const userMessage = { id: 'm1', createdAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', status: MessageStatus.STREAMING, createdAt: new Date(), parts: [] };
+    const completedMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'ответ' } }] };
+    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _u, onEvent) => {
+      onEvent({ type: 'text-delta', delta: 'ответ' });
+      return Promise.resolve({ text: 'ответ', toolCalls: [] });
+    });
+    const prisma = {
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+        update: jest.fn().mockResolvedValue(completedMessage),
+      },
+    };
+    const service = new AssistantChatService(prisma as any, { streamReply: streamReplySpy } as any, {} as any);
+
+    const dto = { text: 'привет', clientRequestId: 'req-1' };
+    const eventsA: any[] = [];
+    const eventsB: any[] = [];
+    await Promise.all([
+      service.streamMessage(user(), 'c1', dto, (e) => eventsA.push(e), new AbortController().signal),
+      service.streamMessage(user(), 'c1', dto, (e) => eventsB.push(e), new AbortController().signal),
+    ]);
+
+    expect(streamReplySpy).toHaveBeenCalledTimes(1);
+    // Победитель — полноценные события, включая живую дельту.
+    const winnerEvents = eventsA.some((e) => e.event === 'part.delta') ? eventsA : eventsB;
+    const loserEvents = winnerEvents === eventsA ? eventsB : eventsA;
+    expect(winnerEvents.some((e) => e.event === 'part.delta')).toBe(true);
+    expect(winnerEvents.at(-1)).toMatchObject({ event: 'message.completed', message: completedMessage });
+    // Проигравший — без живых дельт (streamReply не вызывался второй раз
+    // ради него), но получает тот же финальный результат.
+    expect(loserEvents.some((e) => e.event === 'part.delta')).toBe(false);
+    expect(loserEvents.at(-1)).toMatchObject({ event: 'message.completed', message: completedMessage });
+  });
+});

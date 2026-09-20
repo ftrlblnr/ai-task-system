@@ -380,6 +380,57 @@ export class AssistantChatService {
     return toolCalls.reduce((sum, c) => sum + c.durationMs, 0);
   }
 
+  // P0 (внешний аудит 20.09.2026) — идемпотентность выше (unique
+  // constraint + P2002-recovery) защищает СТРОКИ в БД от дублей, но не
+  // мешает двум конкурентным запросам с одним clientRequestId ОБА пройти
+  // findExistingPair до того, как первый успеет записать assistant-строку,
+  // и оба реально вызвать this.reply.reply()/streamReply() — сегодня это
+  // лишний вызов Anthropic + дубль сгенерированного файла
+  // (export_tasks_xlsx), после появления мутирующих write-tools
+  // (create_task/send_email и т.п.) — дублирующееся реальное действие.
+  //
+  // In-memory Map, а не БД compare-and-set/распределённая блокировка —
+  // API работает одним процессом (тот же принцип, что уже принят для
+  // cron-задач, см. комментарий в FilesCleanupCron/других крон-сервисах:
+  // "на одном инстансе это не проблема"). Ключ — userMessage.id, не
+  // clientRequestId/conversationId: к моменту вызова claimOrJoin оба
+  // конкурентных запроса УЖЕ сошлись на одном и том же id через
+  // resolveOrCreateUserMessage (unique constraint ниже по стеку),
+  // единственный надёжный ключ дедупликации, включая ретрай уже
+  // существующего FAILED-сообщения (клиент шлёт тот же clientRequestId —
+  // тот же userMessage.id).
+  //
+  // Корректность в один процесс: между чтением карты (`.get`) и записью в
+  // неё (`.set`) ниже нет ни одного `await` — Node не может прервать
+  // синхронный участок кода на середине ради другого таска, поэтому даже
+  // два "по-настоящему одновременных" вызова (их await'ы выше по стеку
+  // могут разрешиться в любом порядке) обязательно обрабатываются друг за
+  // другом, не вперемешку: чей бы continuation ни исполнился первым, он
+  // успеет полностью пройти чтение+запись карты до того, как второй начнёт
+  // свой. Если API когда-нибудь станет многопроцессным — этот механизм
+  // перестанет координировать между процессами и потребуется настоящая
+  // распределённая блокировка (Postgres advisory lock и т.п.).
+  private readonly inFlightAssistantReplies = new Map<string, Promise<MessageWithParts>>();
+
+  private claimOrJoin(
+    userMessage: MessageWithParts,
+    run: () => Promise<MessageWithParts>,
+  ): { result: Promise<MessageWithParts>; claimed: boolean } {
+    const existing = this.inFlightAssistantReplies.get(userMessage.id);
+    if (existing) return { result: existing, claimed: false };
+
+    const promise = run().finally(() => {
+      // Снимаем только свою запись — если под тем же id уже успела
+      // появиться чья-то ещё (в норме невозможно, но не полагаемся на это
+      // без страховки), не затираем её.
+      if (this.inFlightAssistantReplies.get(userMessage.id) === promise) {
+        this.inFlightAssistantReplies.delete(userMessage.id);
+      }
+    });
+    this.inFlightAssistantReplies.set(userMessage.id, promise);
+    return { result: promise, claimed: true };
+  }
+
   async sendMessage(
     user: AuthenticatedUser,
     conversationId: string,
@@ -398,10 +449,33 @@ export class AssistantChatService {
       return { userMessage: existing.userMessage, assistantMessage: existing.assistantMessage };
     }
 
+    const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
+
+    // claimOrJoin (см. комментарий там) — если конкурентный запрос с тем
+    // же clientRequestId уже выполняет реальный вызов ассистента для этого
+    // же userMessage, присоединяемся к его результату вместо повторного
+    // вызова Anthropic/tools.
+    const { result } = this.claimOrJoin(userMessage, () =>
+      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage, dto),
+    );
+    const assistantMessage = await result;
+
+    return { userMessage, assistantMessage };
+  }
+
+  // Тело реального вызова ассистента — выполняется не более одного раза на
+  // userMessage одновременно, см. claimOrJoin. Извлечено из sendMessage
+  // (Phase F.3, P0) без изменения самой логики создания/обновления строки.
+  private async runNonStreamingReply(
+    user: AuthenticatedUser,
+    conversationId: string,
+    userMessage: MessageWithParts,
+    existingAssistantMessage: MessageWithParts | undefined,
+    dto: SendMessageDto,
+  ): Promise<MessageWithParts> {
     const requestId = randomUUID();
     const t0 = Date.now();
 
-    const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
     const history = await this.loadHistory(conversationId, userMessage.id);
     const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
@@ -413,9 +487,9 @@ export class AssistantChatService {
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
-      assistantMessage = existing?.assistantMessage
+      assistantMessage = existingAssistantMessage
         ? await this.prisma.message.update({
-            where: { id: existing.assistantMessage.id },
+            where: { id: existingAssistantMessage.id },
             data: { status: MessageStatus.COMPLETED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: partsInput } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
@@ -433,9 +507,9 @@ export class AssistantChatService {
       // уходит безопасный текст через ErrorPart.
       this.logger.error(`assistant reply reqId=${requestId} failed: ${err instanceof Error ? err.message : err}`);
       const errorPart = [{ type: MessagePartType.ERROR, order: 0, data: { message: GENERIC_FAILURE_MESSAGE } }];
-      assistantMessage = existing?.assistantMessage
+      assistantMessage = existingAssistantMessage
         ? await this.prisma.message.update({
-            where: { id: existing.assistantMessage.id },
+            where: { id: existingAssistantMessage.id },
             data: { status: MessageStatus.FAILED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: errorPart } },
             include: { parts: { orderBy: { order: 'asc' } } },
           })
@@ -457,13 +531,20 @@ export class AssistantChatService {
         `chatRequestMs=${Date.now() - t0}`,
     );
 
-    return { userMessage, assistantMessage };
+    return assistantMessage;
   }
 
   // Phase E — тот же поток, что sendMessage, но прогресс отдаётся через
   // emit() по мере готовности вместо одного блокирующего ответа. abortSignal
   // — обрыв соединения с клиентом (AssistantChatController слушает
   // res.on('close')) прерывает реальный HTTP-запрос к Anthropic.
+  //
+  // P0 (внешний аудит 20.09.2026, см. комментарий у claimOrJoin) — раньше
+  // recovery через createAssistantMessageIdempotent корректно находил
+  // чужую STREAMING-строку, но код это никак не использовал: короткое
+  // замыкание проверяло только status === COMPLETED, поэтому "проигравший"
+  // запрос всё равно шёл в this.reply.streamReply() второй раз. Теперь
+  // claimOrJoin решает, кто реально стримит, ДО создания строки.
   async streamMessage(
     user: AuthenticatedUser,
     conversationId: string,
@@ -480,9 +561,6 @@ export class AssistantChatService {
       return;
     }
 
-    const requestId = randomUUID();
-    const t0 = Date.now();
-
     // Phase F.2 (аудит 17.09.2026, P2.10) — раньше здесь хранился только
     // userMessageId (строка): стриминговым событиям хватало id, полный
     // объект был не нужен. Теперь message.started несёт полное
@@ -490,13 +568,64 @@ export class AssistantChatService {
     // serializeCurrentUserTurn ниже) — тот же общий путь создания, что и
     // sendMessage (resolveOrCreateUserMessage).
     const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
+
+    const { result, claimed } = this.claimOrJoin(userMessage, () =>
+      this.runStreamingReply(user, conversationId, userMessage, existing?.assistantMessage, dto, emit, abortSignal),
+    );
+
+    if (claimed) {
+      // Победитель — runStreamingReply сам эмитит все события по мере
+      // готовности, здесь просто дожидаемся его завершения (ошибку он уже
+      // обработал и отэмитил сам, см. её catch).
+      await result.catch(() => undefined);
+      return;
+    }
+
+    // Проигравший гонку (Phase F.3, P0) — конкурентный запрос с тем же
+    // clientRequestId уже реально стримит у Anthropic. Не открываем второй
+    // параллельный вызов на ту же пару: подхватываем результат победителя
+    // без live-дельт (их некуда было бы врезать в уже пройденную историю
+    // этого запроса) — клиент всё равно получает корректный финальный
+    // ответ вместо дубля исполнения.
+    emit({ event: 'message.started', messageId: userMessage.id, userMessage });
+    try {
+      const finalMessage = await result;
+      if (finalMessage.status === MessageStatus.FAILED) {
+        emit({ event: 'message.failed', messageId: finalMessage.id, error: GENERIC_FAILURE_MESSAGE });
+      } else {
+        emit({ event: 'message.completed', messageId: finalMessage.id, message: finalMessage });
+      }
+    } catch {
+      // runStreamingReply бросает только в вырожденном случае, когда не
+      // удалось даже создать assistant-строку (см. её комментарий) — тогда
+      // делиться победителю нечем.
+      emit({ event: 'message.failed', messageId: userMessage.id, error: GENERIC_FAILURE_MESSAGE });
+    }
+  }
+
+  // Тело реального стрима — выполняется не более одного раза на
+  // userMessage одновременно, см. claimOrJoin. Извлечено из streamMessage
+  // (Phase F.3, P0) без изменения самой логики создания/обновления строки
+  // и порядка emit()-событий для победителя.
+  private async runStreamingReply(
+    user: AuthenticatedUser,
+    conversationId: string,
+    userMessage: MessageWithParts,
+    existingAssistantMessage: MessageWithParts | undefined,
+    dto: SendMessageDto,
+    emit: (event: InternalStreamEvent) => void,
+    abortSignal: AbortSignal,
+  ): Promise<MessageWithParts> {
+    const requestId = randomUUID();
+    const t0 = Date.now();
+
     const history = await this.loadHistory(conversationId, userMessage.id);
     const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
     try {
       assistantMessage =
-        existing?.assistantMessage ??
+        existingAssistantMessage ??
         (await this.createAssistantMessageIdempotent(userMessage.id, {
           conversationId,
           role: MessageRole.ASSISTANT,
@@ -508,24 +637,30 @@ export class AssistantChatService {
     } catch (err) {
       // isUniqueConstraintError-путь внутри createAssistantMessageIdempotent
       // уже пытался восстановиться — если дошло сюда, восстановиться не
-      // удалось (или ошибка не про гонку). Тот же безопасный failure-путь,
-      // что и ниже.
+      // удалось (или ошибка не про гонку). claimOrJoin уже гарантирует, что
+      // это единственный вызов на userMessage в этом процессе — P2002 сюда
+      // в норме не долетит, оставлено как страховка. Делиться с
+      // "проигравшими" нечем (строка не создана вовсе) — пробрасываем, их
+      // catch в streamMessage отэмитит свой message.failed.
       this.logger.error(`assistant reply reqId=${requestId} failed to create assistant message: ${err instanceof Error ? err.message : err}`);
       emit({ event: 'message.started', messageId: userMessage.id, userMessage });
       emit({ event: 'message.failed', messageId: userMessage.id, error: GENERIC_FAILURE_MESSAGE });
-      return;
+      throw err;
     }
 
     // Узкий вырожденный случай (Phase F.2, P1.8) — recovery нашёл чужую
     // (уже существующую) assistant-строку не в статусе STREAMING/этого же
     // запроса: это значит, что параллельный запрос с тем же
-    // clientRequestId уже её создал/обновил. Не запускаем второй
-    // параллельный вызов Anthropic на ту же пару — отдаём то, что уже
-    // есть, тем же способом, что и обычный idempotent-повтор.
+    // clientRequestId уже её создал/обновил в прошлый раз (например,
+    // COMPLETED из давно завершённой отдельной попытки, найденной уже
+    // после того, как findExistingPair в streamMessage её почему-то не
+    // поймал). claimOrJoin уже не даёт сюда попасть двум одновременным
+    // вызовам — эта проверка осталась как страховка на случай, если
+    // recovery когда-нибудь всё же сработает.
     if (assistantMessage.status === MessageStatus.COMPLETED) {
       emit({ event: 'message.started', messageId: assistantMessage.id, userMessage });
       emit({ event: 'message.completed', messageId: assistantMessage.id, message: assistantMessage });
-      return;
+      return assistantMessage;
     }
 
     emit({ event: 'message.started', messageId: assistantMessage.id, userMessage });
@@ -573,21 +708,24 @@ export class AssistantChatService {
           `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} toolExecutionMs=${toolExecutionMs} ` +
           `timeToFirstTokenMs=${firstTokenAt !== null ? firstTokenAt - t0 : 'n/a'} chatRequestMs=${Date.now() - t0}`,
       );
+      return updated;
     } catch (err) {
       this.logger.error(`assistant reply reqId=${requestId} failed (streaming): ${err instanceof Error ? err.message : err}`);
-      await this.prisma.message.update({
+      const failed = await this.prisma.message.update({
         where: { id: assistantMessage.id },
         data: {
           status: MessageStatus.FAILED,
           requestId,
           parts: { deleteMany: {}, create: [{ type: MessagePartType.ERROR, order: 0, data: { message: GENERIC_FAILURE_MESSAGE } }] },
         },
+        include: { parts: { orderBy: { order: 'asc' } } },
       });
       emit({ event: 'message.failed', messageId: assistantMessage.id, error: GENERIC_FAILURE_MESSAGE });
       await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
       this.logger.log(
         `assistant chat reqId=${requestId} conversationId=${conversationId} status=FAILED streaming=true chatRequestMs=${Date.now() - t0}`,
       );
+      return failed;
     }
   }
 }
