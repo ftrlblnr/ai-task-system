@@ -437,11 +437,18 @@ workspaces при таком масштабе проекта.
    current attachments, валидация файлов, идемпотентность под гонкой,
    provider-neutral storage) сделана 17.09.2026, Phase H (объединение
    голосового и текстового путей в один разговор, `apps/miniapp` only)
-   сделана 20.09.2026 — Phase A–H закрыты. Внешний аудит от 20.09.2026
-   нашёл три находки; exactly-once execution под конкурентными запросами
-   (P0, `AssistantChatService.claimOrJoin`) закрыта тем же днём — до
-   подключения мутирующих write-tools (`create_task`/`update_task`/
-   `send_email` и т.п.) остаются два P1 из Phase F.3: транзакционная
-   линковка Message+FileArtifact, корректная семантика `storage.delete()`
-   — не глотать ошибки кроме ENOENT. Подробности — раздел "Assistant Chat"
-   в `CURRENT_STATE.md`.
+   сделана 20.09.2026 — Phase A–H закрыты. Два внешних аудита от 20.09.2026
+   (второй — уже после Phase H, специально проверял, что unified-лента не
+   открыла новых рисков) нашли в сумме шесть находок; четыре закрыты тем
+   же днём: exactly-once execution под конкурентными text-запросами (P0,
+   `AssistantChatService.claimOrJoin`), `POST /voice/messages` заменён на
+   `POST /voice/undo` (P0/P1 — раньше клиент мог писать в общую ленту
+   произвольный текст с ролью ASSISTANT), дублирующее логирование в
+   `apps/web/voice/page.tsx` убрано (P0/P1), идемпотентность
+   `/voice/parse` + graceful degradation при сбое персистентности после
+   уже выполненных действий (P0/P1). До подключения мутирующих write-tools
+   (`create_task`/`update_task`/`send_email` и т.п.) остаются два P1 из
+   Phase F.3, не связанных с голосом: транзакционная линковка
+   Message+FileArtifact, корректная семантика `storage.delete()` — не
+   глотать ошибки кроме ENOENT. Подробности — раздел "Assistant Chat" в
+   `CURRENT_STATE.md`.
