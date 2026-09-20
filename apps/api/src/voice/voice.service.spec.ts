@@ -298,3 +298,183 @@ describe('VoiceService.loadHistory (Stage 2, Phase H — читает Message/Me
     ]);
   });
 });
+
+// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P0/P1) — заменяет прежний
+// POST /voice/messages (клиент мог записать в общую ленту произвольный
+// текст с ролью ASSISTANT). undo() выполняет откат сам, теми же
+// TasksService/EventsService, что и executeTaskAction/executeEventAction
+// — тестируем и сам откат, и то, что текст подтверждения решает сервер
+// (logAssistantMessage вызывается с фиксированным/безопасным текстом, не
+// с чем-то, что мог бы продиктовать клиент).
+describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST /voice/messages)', () => {
+  function makeAssistantChat(conversationId = 'c1') {
+    return { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: conversationId }) };
+  }
+
+  it('task create — откатывает через tasks.remove, пишет "Отменено."', async () => {
+    const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
+
+    const result = await service.undo({ kind: 'task', action: 'create', id: 't1' }, makeUser());
+
+    expect(tasks.remove).toHaveBeenCalledWith('t1', expect.objectContaining({ id: 'u1' }));
+    expect(result).toEqual({ ok: true, error: null });
+    expect(prisma.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } }] } }) }),
+    );
+  });
+
+  it('task update — собирает патч из previous поштучно, не спредом (лишние поля previous не всплывают в вызове)', async () => {
+    const tasks = { update: jest.fn().mockResolvedValue({}) };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
+
+    const previous = { title: 'Старое название', assigneeId: null, unexpectedField: 'should be ignored' };
+    await service.undo({ kind: 'task', action: 'update', id: 't1', previous }, makeUser());
+
+    expect(tasks.update).toHaveBeenCalledWith('t1', { title: 'Старое название', assigneeId: null }, expect.objectContaining({ id: 'u1' }));
+  });
+
+  it('event create — не-OWNER получает отказ ДО вызова events.remove (защитная RBAC-проверка)', async () => {
+    const events = { remove: jest.fn() };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, assistantChat as any) as any;
+
+    const result = await service.undo({ kind: 'event', action: 'create', id: 'e1' }, makeUser({ role: Role.EMPLOYEE }));
+
+    expect(events.remove).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('руководителю');
+  });
+
+  it('event update — инвертирует участников (добавленные снимает, снятые возвращает)', async () => {
+    const events = {
+      update: jest.fn().mockResolvedValue({}),
+      addParticipant: jest.fn().mockResolvedValue(undefined),
+      removeParticipant: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, assistantChat as any) as any;
+
+    await service.undo(
+      {
+        kind: 'event',
+        action: 'update',
+        id: 'e1',
+        previous: {},
+        addedParticipantIds: ['emp1'],
+        removedParticipantIds: ['emp2'],
+      },
+      makeUser({ role: Role.OWNER }),
+    );
+
+    expect(events.removeParticipant).toHaveBeenCalledWith('e1', 'emp1');
+    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp2');
+    expect(events.update).not.toHaveBeenCalled(); // previous пуст — нечего обновлять полями
+  });
+
+  it('ошибка отката — ok=false, безопасный текст (toErrorMessage), тоже логируется', async () => {
+    const tasks = { remove: jest.fn().mockRejectedValue(new Error('Удалить задачу может только её постановщик или руководитель')) };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
+
+    const result = await service.undo({ kind: 'task', action: 'create', id: 't1' }, makeUser());
+
+    expect(result).toEqual({ ok: false, error: 'Удалить задачу может только её постановщик или руководитель' });
+    expect(prisma.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Не получилось отменить: Удалить задачу может только её постановщик или руководитель' } }] },
+        }),
+      }),
+    );
+  });
+});
+
+// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P0) — раньше /voice/parse
+// не имел идемпотентности вовсе: сеть могла оборваться ПОСЛЕ того, как
+// реальная мутация уже случилась, но ДО того, как ответ дошёл до клиента.
+// findCachedParseResponse — короткое замыкание на полную (user+assistant)
+// пару, без повторного Whisper/Claude/исполнения действий.
+describe('VoiceService.findCachedParseResponse (Stage 2, Phase H.1, P0 — идемпотентность /voice/parse)', () => {
+  it('нет существующего user-сообщения — null, продолжаем как обычную новую попытку', async () => {
+    const prisma = { message: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+
+    const cached = await service.findCachedParseResponse('c1', 'req-1');
+
+    expect(cached).toBeNull();
+  });
+
+  it('полная пара уже есть — возвращает готовый ответ, без results (не восстановить из MessagePart)', async () => {
+    const userMessage = {
+      id: 'm1',
+      conversationId: 'c1',
+      role: MessageRole.USER,
+      status: 'COMPLETED',
+      clientRequestId: 'req-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'Создай задачу купить билеты' } }],
+    };
+    const assistantMessage = {
+      id: 'm2',
+      conversationId: 'c1',
+      role: MessageRole.ASSISTANT,
+      status: 'COMPLETED',
+      clientRequestId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      parts: [{ id: 'p2', type: 'TASK_CARD', order: 0, data: { taskId: 't1', title: 'Купить билеты', status: 'NEW', dueDate: null, assignee: null } }],
+    };
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue(userMessage),
+        findFirst: jest.fn().mockResolvedValue(assistantMessage),
+      },
+    };
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+
+    const cached = await service.findCachedParseResponse('c1', 'req-1');
+
+    expect(cached).toMatchObject({
+      transcript: 'Создай задачу купить билеты',
+      results: [],
+      conversationId: 'c1',
+    });
+    expect(cached.userMessage.id).toBe('m1');
+    expect(cached.assistantMessage.id).toBe('m2');
+  });
+
+  it('найден только user без ответа (прошлая попытка умерла посередине) — удаляет незавершённую строку, возвращает null', async () => {
+    const userMessage = {
+      id: 'm1',
+      conversationId: 'c1',
+      role: MessageRole.USER,
+      status: 'COMPLETED',
+      clientRequestId: 'req-1',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'Создай задачу' } }],
+    };
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue(userMessage),
+        findFirst: jest.fn().mockResolvedValue(null),
+        delete: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+
+    const cached = await service.findCachedParseResponse('c1', 'req-1');
+
+    expect(cached).toBeNull();
+    expect(prisma.message.delete).toHaveBeenCalledWith({ where: { id: 'm1' } });
+  });
+});

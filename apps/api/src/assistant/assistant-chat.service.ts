@@ -47,7 +47,7 @@ const ATTACHMENT_UNAVAILABLE_MESSAGE = 'Один из прикреплённых
 // replyToMessageId для assistant-сообщения после P1.7). Без recovery это
 // была бы 500-ошибка для "проигравшего" запроса вместо идемпотентного
 // ответа.
-function isUniqueConstraintError(err: unknown): boolean {
+export function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 }
 

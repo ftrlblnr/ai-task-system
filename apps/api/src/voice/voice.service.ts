@@ -11,7 +11,7 @@ import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
 import type { CreateEventDto } from '../calendar/dto/create-event.dto';
 import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { formatLocalDateTime } from '../common/timezone';
-import { AssistantChatService, serializeMessageForModelContext } from '../assistant/assistant-chat.service';
+import { AssistantChatService, isUniqueConstraintError, serializeMessageForModelContext, type MessageWithParts } from '../assistant/assistant-chat.service';
 import { stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
 import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
@@ -28,6 +28,7 @@ import type {
   VoiceTaskActionDraft,
   VoiceTaskActionResult,
 } from './dto/voice-draft-response.dto';
+import type { VoiceUndoDto } from './dto/voice-undo.dto';
 
 // Минимальные структурные формы, нужные toTaskCardData/toEventCardData
 // (assistant-tools.service.ts) — TasksService.create/update и
@@ -106,6 +107,7 @@ export class VoiceService {
     audio: MulterFile | undefined,
     user: AuthenticatedUser,
     meetingId?: string,
+    clientRequestId?: string,
   ): Promise<VoiceParseResponse> {
     // fileFilter в FileInterceptor отклоняет неподдерживаемый mime через
     // cb(null, false) — файл молча не попадает в запрос, а не кидает ошибку,
@@ -131,6 +133,32 @@ export class VoiceService {
     // Whisper/контекста операция, не стоит искусственно распараллеливать её
     // с loadHistory, которому нужен уже готовый conversation.id.
     const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
+
+    // Идемпотентность (Stage 2, Phase H.1, внешний аудит 20.09.2026, P0) —
+    // до этого /voice/parse не имел вообще никакой защиты от повторной
+    // отправки: сеть оборвалась ПОСЛЕ того, как реальная мутация
+    // (создание/правка/удаление задачи или события) уже случилась, но ДО
+    // того, как ответ дошёл до клиента — повторная отправка того же уже
+    // записанного аудио (например, автоматическим повтором на нестабильной
+    // сети, не обязательно новой надиктовкой) выполнила бы действие ещё
+    // раз. Короткое замыкание — только на пару, где ОБА сообщения уже
+    // сохранены (т.е. прошлая попытка полностью успела дойти до конца, см.
+    // персистентность ниже) — если найдена только user-строка без
+    // ответной (прошлая попытка умерла где-то посередине), безопасной
+    // информации о том, выполнились ли уже действия, нет: продолжаем как
+    // обычную новую попытку (см. cleanupOrphanUserMessage ниже), а не
+    // рискуем пропустить реально не выполненное действие.
+    //
+    // Результат на попадании в кэш — намеренно БЕЗ results (нет способа
+    // восстановить исходные VoiceActionResult из уже сохранённых
+    // MessagePart без потери полей вроде taskId/previous, нужных фронтенду
+    // для undo) — но с настоящими userMessage/assistantMessage: дубль всё
+    // равно не создаёт лишней записи в истории и не тратит Whisper/Claude
+    // повторно, просто без кнопки "Отменить" на повторном показе.
+    if (clientRequestId) {
+      const cached = await this.findCachedParseResponse(conversation.id, clientRequestId);
+      if (cached) return cached;
+    }
 
     // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
     // шли строго последовательно (расшифровка → сотрудники → задачи →
@@ -230,15 +258,32 @@ export class VoiceService {
     // assistantMessage (следующий Phase H-экран рендерит голосовую реплику
     // тем же MessagePartRenderer, что и текст) — полностью fire-and-forget,
     // как раньше, здесь уже не получится.
-    const userMessagePromise = this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: MessageRole.USER,
-        status: MessageStatus.COMPLETED,
-        parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
-      },
-      include: { parts: { orderBy: { order: 'asc' } } },
-    });
+    const userMessagePromise = this.prisma.message
+      .create({
+        data: {
+          conversationId: conversation.id,
+          role: MessageRole.USER,
+          status: MessageStatus.COMPLETED,
+          clientRequestId: clientRequestId || null,
+          parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
+        },
+        include: { parts: { orderBy: { order: 'asc' } } },
+      })
+      .catch(async (err) => {
+        // Гонка (Stage 2, Phase H.1) — два по-настоящему одновременных
+        // запроса с одним clientRequestId (findCachedParseResponse выше не
+        // мог увидеть строку победителя — её ещё не было на момент
+        // проверки). Тот же приём, что уже в
+        // AssistantChatService.createUserMessageIdempotent.
+        if (isUniqueConstraintError(err) && clientRequestId) {
+          const winner = await this.prisma.message.findUnique({
+            where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
+            include: { parts: { orderBy: { order: 'asc' } } },
+          });
+          if (winner) return winner;
+        }
+        throw err;
+      });
 
     const taskIds = new Set(taskContext.map((t) => t.id));
     const eventIds = new Set(eventContext.map((e) => e.id));
@@ -303,18 +348,41 @@ export class VoiceService {
     // [shown_task]/[file]-меток в одном месте, см. комментарий там (живой
     // прогон 20.09.2026 поймал лишний пузырь "null" без этого гейта).
     const clarificationReason = resolveClarificationReason(result.clarificationNeeded, result.clarificationReason);
-    const userMessage = await userMessagePromise;
-    const assistantMessage = await this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: MessageRole.ASSISTANT,
-        status: MessageStatus.COMPLETED,
-        replyToMessageId: userMessage.id,
-        parts: { create: buildVoiceAssistantParts(execResults, clarificationReason) },
-      },
-      include: { parts: { orderBy: { order: 'asc' } } },
-    });
-    await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+
+    // Stage 2, Phase H.1 (внешний аудит 20.09.2026, P1) — действия выше
+    // (executeTaskAction/executeEventAction) УЖЕ выполнены к этому моменту.
+    // Раньше `await userMessagePromise` без try/catch означал, что сбой
+    // ЗДЕСЬ (сохранение истории переписки) валил весь запрос 500-й
+    // ошибкой, хотя реальная мутация уже случилась и никуда не делась —
+    // пользователь видел "не удалось", хотя задача/событие уже
+    // созданы/изменены/удалены. Теперь сбой персистентности не выдаёт себя
+    // за отменённое действие: results (реальный исход) уходят клиенту как
+    // обычно, userMessage/assistantMessage — null (фронтенд просто не
+    // добавляет голосовую реплику в общую ленту в этом редком случае),
+    // сбой явно и подробно логируется — диагностируем, не тонет молча в
+    // общем 500.
+    let userMessage: MessageWithParts | null = null;
+    let assistantMessage: MessageWithParts | null = null;
+    try {
+      userMessage = await userMessagePromise;
+      assistantMessage = await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: MessageRole.ASSISTANT,
+          status: MessageStatus.COMPLETED,
+          replyToMessageId: userMessage.id,
+          parts: { create: buildVoiceAssistantParts(execResults, clarificationReason) },
+        },
+        include: { parts: { orderBy: { order: 'asc' } } },
+      });
+      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+    } catch (err) {
+      this.logger.error(
+        `voice parse reqId=${requestId} persistence failed AFTER actions already executed ` +
+          `(draftsCount=${drafts.length}, outcomes=${results.map((r) => (r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error')).join(',')}): ` +
+          `${err instanceof Error ? err.message : err}`,
+      );
+    }
 
     // Единая сводная строка на весь voice request (observability-этап,
     // владелец 15.09.2026, раздел 2-3 ТЗ этапа) — reqId тот же, что в
@@ -350,9 +418,54 @@ export class VoiceService {
       clarificationNeeded: result.clarificationNeeded,
       clarificationReason,
       results,
-      conversationId: conversation.id,
-      userMessage: toResponseMessage(userMessage),
-      assistantMessage: toResponseMessage(assistantMessage),
+      conversationId: userMessage ? conversation.id : null,
+      userMessage: userMessage ? toResponseMessage(userMessage) : null,
+      assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
+    };
+  }
+
+  // Идемпотентность (Stage 2, Phase H.1, см. комментарий в parse() выше).
+  // Полная пара (user+assistant) уже сохранена — безопасный short-circuit,
+  // возвращаем её как есть, без повторного Whisper/Claude/исполнения
+  // действий. Найден только user без ответа (прошлая попытка умерла
+  // где-то между сохранением реплики и сохранением ответа) — удаляем эту
+  // незавершённую строку и возвращаем null, чтобы вызывающий код создал
+  // чистую пару заново: переиспользовать её было бы нельзя (её транскрипт
+  // — от ПРОШЛОЙ попытки распознавания речи, а новые results — от этой,
+  // возможно другой), а оставить её как есть с тем же clientRequestId
+  // означало бы падение нового prisma.message.create() на unique
+  // constraint при следующей же попытке.
+  private async findCachedParseResponse(conversationId: string, clientRequestId: string): Promise<VoiceParseResponse | null> {
+    const existingUserMessage = await this.prisma.message.findUnique({
+      where: { conversationId_clientRequestId: { conversationId, clientRequestId } },
+      include: { parts: { orderBy: { order: 'asc' } } },
+    });
+    if (!existingUserMessage) return null;
+
+    const existingAssistantMessage = await this.prisma.message.findFirst({
+      where: { replyToMessageId: existingUserMessage.id },
+      include: { parts: { orderBy: { order: 'asc' } } },
+    });
+    if (!existingAssistantMessage) {
+      await this.prisma.message.delete({ where: { id: existingUserMessage.id } }).catch(() => {});
+      return null;
+    }
+
+    const transcriptPart = existingUserMessage.parts[0]?.data as { content?: string } | undefined;
+    return {
+      transcript: transcriptPart?.content ?? '',
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: null,
+      // Нет способа восстановить исходные VoiceActionResult (taskId/
+      // previous и т.п.) из уже сохранённых MessagePart без потери полей,
+      // нужных фронтенду для undo — дубль всё равно не создаёт лишней
+      // записи и не тратит Whisper/Claude повторно, просто без кнопки
+      // "Отменить" на повторном показе.
+      results: [],
+      conversationId,
+      userMessage: toResponseMessage(existingUserMessage),
+      assistantMessage: toResponseMessage(existingAssistantMessage),
     };
   }
 
@@ -540,15 +653,14 @@ export class VoiceService {
       .filter((h) => h.text);
   }
 
-  // Вызывается фронтендом (POST /voice/messages) в момент, когда текст в
-  // чат-пузыре ассистента становится окончательным — итог отдельного
-  // действия пользователя (сейчас: подтверждение отмены, см. performUndo на
-  // фронте), не часть исходного ответа parse() (тот уже пишет свой
-  // assistantMessage сам, см. выше). Stage 2, Phase H — отдельное
-  // ("standalone") assistant-сообщение без replyToMessageId (ни на какое
-  // user-сообщение не отвечает) в той же ленте, что и всё остальное; раньше
-  // писало в отдельную VoiceMessage.
-  async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
+  // Отдельное ("standalone") assistant-сообщение без replyToMessageId (ни
+  // на какое user-сообщение не отвечает) в общей ленте — сейчас единственный
+  // вызывающий это undo() ниже. Stage 2, Phase H.1 (аудит 20.09.2026,
+  // P0/P1) — раньше был отдельным публичным эндпоинтом POST /voice/messages
+  // с произвольным текстом от клиента (conversation-history poisoning —
+  // см. комментарий у VoiceUndoDto); текст теперь всегда решает сервер, не
+  // клиент, поэтому метод стал private.
+  private async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
     const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
     await this.prisma.message.create({
       data: {
@@ -558,6 +670,71 @@ export class VoiceService {
         parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: text } }] },
       },
     });
+  }
+
+  // POST /voice/undo (Stage 2, Phase H.1) — заменяет прежний паттерн
+  // "фронтенд сам откатывает через PATCH/DELETE, потом просит сервер
+  // записать придуманный текст" (POST /voice/messages, см. комментарий у
+  // VoiceUndoDto). Сам откат — теми же TasksService/EventsService, что и
+  // executeTaskAction/executeEventAction выше (та же RBAC-проверка, не
+  // задвоена: TasksService.update/remove сами проверяют
+  // постановщика/руководителя, EventsService — по факту, что модуль
+  // целиком закрыт на OWNER, см. проверку ниже). Событие — явная,
+  // защитная проверка роли: кнопка "Отменить" для события в принципе не
+  // показывается не-OWNER на фронте, но это не граница безопасности сама
+  // по себе (тот же принцип, что и у enforceEventRbac).
+  async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null }> {
+    if (dto.kind === 'event' && user.role !== Role.OWNER) {
+      const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
+      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
+      return { ok: false, error };
+    }
+
+    try {
+      if (dto.kind === 'task') {
+        if (dto.action === 'create') {
+          await this.tasks.remove(dto.id, user);
+        } else {
+          const previous = (dto.previous ?? {}) as TaskRevertPayload;
+          const patch: UpdateTaskDto = {};
+          if (previous.title !== undefined) patch.title = previous.title;
+          if (previous.description !== undefined) patch.description = previous.description;
+          if (previous.assigneeId !== undefined) patch.assigneeId = previous.assigneeId;
+          if (previous.dueDate !== undefined) patch.dueDate = previous.dueDate;
+          if (previous.priority !== undefined) patch.priority = previous.priority;
+          await this.tasks.update(dto.id, patch, user);
+        }
+      } else {
+        if (dto.action === 'create') {
+          await this.events.remove(dto.id, user.id);
+        } else {
+          const previous = (dto.previous ?? {}) as EventRevertPayload;
+          const patch: UpdateEventDto = {};
+          if (previous.title !== undefined) patch.title = previous.title;
+          if (previous.description !== undefined) patch.description = previous.description;
+          if (previous.location !== undefined) patch.location = previous.location;
+          if (previous.startAt !== undefined) patch.startAt = previous.startAt;
+          if (previous.endAt !== undefined) patch.endAt = previous.endAt;
+          if (previous.allDay !== undefined) patch.allDay = previous.allDay;
+          if (Object.keys(patch).length > 0) await this.events.update(dto.id, patch, user.id);
+          // Инверсия: то, что исходное действие ДОБАВИЛО, undo СНИМАЕТ, и
+          // наоборот — тот же смысл, что уже был в прежнем клиентском
+          // performUndo (обеих фронтендов), просто выполняется здесь.
+          for (const employeeId of dto.addedParticipantIds ?? []) {
+            await this.events.removeParticipant(dto.id, employeeId).catch(() => {});
+          }
+          for (const employeeId of dto.removedParticipantIds ?? []) {
+            await this.events.addParticipant(dto.id, employeeId).catch(() => {});
+          }
+        }
+      }
+      await this.logAssistantMessage('Отменено.', user);
+      return { ok: true, error: null };
+    } catch (err) {
+      const error = toErrorMessage(err);
+      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
+      return { ok: false, error };
+    }
   }
 
   // id-поля в схеме инструмента больше не enum (см. комментарий у

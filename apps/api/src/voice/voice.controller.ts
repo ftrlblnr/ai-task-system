@@ -6,7 +6,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { VoiceService } from './voice.service';
 import { ParseVoiceDto } from './dto/parse-voice.dto';
-import { LogVoiceMessageDto } from './dto/log-voice-message.dto';
+import { VoiceUndoDto } from './dto/voice-undo.dto';
 
 // Без @Roles(...) — как TasksController: голосом можно надиктовать задачу
 // себе или коллеге, а это открыто любому сотруднику (раздел 5 ТЗ,
@@ -43,14 +43,17 @@ export class VoiceController {
   ) {
     // audio может быть undefined (fileFilter отклонил формат) — проверка и
     // BadRequestException живут в VoiceService.parse, не дублируем здесь.
-    return this.voice.parse(audio, user, dto.meetingId);
+    return this.voice.parse(audio, user, dto.meetingId, dto.clientRequestId);
   }
 
-  // Память диалога (аудит 10.09.2026, п. 2.9) — фронтенд зовёт это, когда
-  // текст чат-пузыря ассистента становится окончательным, см. комментарий у
-  // VoiceService.logAssistantMessage.
-  @Post('messages')
-  logAssistantMessage(@Body() dto: LogVoiceMessageDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.voice.logAssistantMessage(dto.text, user);
+  // Stage 2, Phase H.1 (аудит 20.09.2026, P0/P1) — заменяет прежний
+  // POST /voice/messages, который принимал от клиента произвольный текст
+  // и записывал его в общую ленту с ролью ASSISTANT (conversation-history
+  // poisoning, см. комментарий у VoiceUndoDto). Теперь клиент присылает
+  // только структурированное описание того, что откатить — сам откат и
+  // текст подтверждения решает сервер, см. VoiceService.undo.
+  @Post('undo')
+  undo(@Body() dto: VoiceUndoDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.voice.undo(dto, user);
   }
 }

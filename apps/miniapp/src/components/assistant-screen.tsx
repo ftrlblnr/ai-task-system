@@ -5,14 +5,14 @@ import { Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
-  EventRevertPayload,
   FilePartData,
   MessagePart,
   StreamEvent,
-  TaskRevertPayload,
   UploadedFileInfo,
   VoiceActionResult,
   VoiceParseResponse,
+  VoiceUndoInput,
+  VoiceUndoResponse,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
@@ -57,19 +57,6 @@ function pickVoiceMimeType(): string | undefined {
   return VOICE_MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m));
 }
 
-type VoiceUndoInfo =
-  | { kind: 'task'; action: 'create'; id: string }
-  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
-  | { kind: 'event'; action: 'create'; id: string }
-  | {
-      kind: 'event';
-      action: 'update';
-      id: string;
-      previous: EventRevertPayload;
-      addedParticipantIds: string[];
-      removedParticipantIds: string[];
-    };
-
 // Undo привязан к конкретной части конкретного assistant-сообщения (не ко
 // всему сообщению) — один голосовой ответ может содержать несколько
 // независимых действий в одном транскрипте ("удали встречу с Петром и
@@ -78,13 +65,13 @@ type VoiceUndoInfo =
 interface VoiceUndoEntry {
   messageId: string;
   partId: string;
-  undo: VoiceUndoInfo;
+  undo: VoiceUndoInput;
 }
 
 // Портировано из voice-screen.tsx без изменений — create/update дают
 // undo, delete — нет (сущности уже нет, откатывать нечего); ok=false и
 // type='chat' тоже не дают undo.
-function buildVoiceUndo(item: VoiceActionResult): VoiceUndoInfo | null {
+function buildVoiceUndo(item: VoiceActionResult): VoiceUndoInput | null {
   if (item.type === 'chat') return null;
   if (item.type === 'task_action') {
     if (!item.ok) return null;
@@ -289,7 +276,10 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   // и assistantMessage.parts[i] идут в одном порядке (см.
   // buildVoiceAssistantParts на бэкенде) — зипуем по индексу, чтобы прицепить
   // временную (не персистентную — как и раньше) кнопку "Отменить" к нужной
-  // части.
+  // части. clientRequestId (Stage 2, Phase H.1, аудит 20.09.2026, P0) —
+  // защита от повторного выполнения действия, если сеть оборвалась после
+  // того, как сервер уже выполнил мутацию, но до того, как ответ дошёл
+  // сюда (см. VoiceService.parse).
   async function handleVoiceStop() {
     setVoicePhase('processing');
     haptic('light');
@@ -299,23 +289,32 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       const ext = actualMimeType.includes('mp4') ? 'm4a' : actualMimeType.includes('ogg') ? 'ogg' : 'webm';
       const formData = new FormData();
       formData.append('audio', blob, `voice.${ext}`);
+      formData.append('clientRequestId', newClientRequestId());
 
       const response = await api.postForm<VoiceParseResponse>('/voice/parse', formData);
 
-      setMessages((prev) => [...(prev ?? []), response.userMessage, response.assistantMessage]);
-      if (!conversationId) setConversationId(response.conversationId);
+      // userMessage/assistantMessage — null только при редком сбое
+      // сохранения истории ПОСЛЕ того, как действие уже выполнено (Phase
+      // H.1, P1) — само действие всё равно случилось, просто голосовая
+      // реплика в этот раз не попадёт в общую ленту; результат пользователь
+      // всё равно узнаёт по haptic-фидбэку ниже.
+      if (response.userMessage && response.assistantMessage) {
+        const { userMessage, assistantMessage } = response;
+        setMessages((prev) => [...(prev ?? []), userMessage, assistantMessage]);
+        if (!conversationId && response.conversationId) setConversationId(response.conversationId);
 
-      const newUndos: VoiceUndoEntry[] = [];
-      response.results.forEach((item, i) => {
-        const undo = buildVoiceUndo(item);
-        const part = response.assistantMessage.parts[i];
-        if (undo && part) newUndos.push({ messageId: response.assistantMessage.id, partId: part.id, undo });
-      });
-      if (newUndos.length > 0) {
-        setVoiceUndos((prev) => [...prev, ...newUndos]);
-        setTimeout(() => {
-          setVoiceUndos((prev) => prev.filter((u) => !newUndos.includes(u)));
-        }, VOICE_UNDO_WINDOW_MS);
+        const newUndos: VoiceUndoEntry[] = [];
+        response.results.forEach((item, i) => {
+          const undo = buildVoiceUndo(item);
+          const part = assistantMessage.parts[i];
+          if (undo && part) newUndos.push({ messageId: assistantMessage.id, partId: part.id, undo });
+        });
+        if (newUndos.length > 0) {
+          setVoiceUndos((prev) => [...prev, ...newUndos]);
+          setTimeout(() => {
+            setVoiceUndos((prev) => prev.filter((u) => !newUndos.includes(u)));
+          }, VOICE_UNDO_WINDOW_MS);
+        }
       }
       notificationHaptic(response.results.every((r) => r.type === 'chat' || r.ok) ? 'success' : 'error');
     } catch (err) {
@@ -326,31 +325,23 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     }
   }
 
+  // Stage 2, Phase H.1 (аудит 20.09.2026, P0/P1) — раньше фронтенд сам
+  // откатывал через PATCH/DELETE, потом отдельно просил сервер записать
+  // придуманный им самим текст подтверждения через POST /voice/messages
+  // (произвольный текст от клиента с ролью ASSISTANT — conversation-history
+  // poisoning, особенно опасно после того, как эта лента стала общим
+  // AI-контекстом). Теперь один вызов POST /voice/undo: сервер сам
+  // выполняет откат и сам решает текст подтверждения — клиент только
+  // получает {ok, error} для мгновенной локальной обратной связи.
+  // Итоговая (полная, с текстом от сервера) запись появится в истории при
+  // следующей загрузке — load() ниже её подтягивает.
   async function performVoiceUndo(entry: VoiceUndoEntry) {
     setVoiceUndos((prev) => prev.filter((u) => u !== entry));
-    const { undo } = entry;
     try {
-      if (undo.kind === 'task') {
-        if (undo.action === 'create') await api.delete(`/tasks/${undo.id}`);
-        else await api.patch(`/tasks/${undo.id}`, undo.previous);
-      } else {
-        if (undo.action === 'create') {
-          await api.delete(`/events/${undo.id}`);
-        } else {
-          if (Object.keys(undo.previous).length > 0) await api.patch(`/events/${undo.id}`, undo.previous);
-          for (const employeeId of undo.addedParticipantIds) {
-            await api.delete(`/events/${undo.id}/participants/${employeeId}`).catch(() => {});
-          }
-          for (const employeeId of undo.removedParticipantIds) {
-            await api.post(`/events/${undo.id}/participants`, { employeeId }).catch(() => {});
-          }
-        }
-      }
-      await api.post('/voice/messages', { text: 'Отменено.' });
-      notificationHaptic('success');
-    } catch (err) {
+      const response = await api.post<VoiceUndoResponse>('/voice/undo', entry.undo);
+      notificationHaptic(response.ok ? 'success' : 'error');
+    } catch {
       notificationHaptic('error');
-      await api.post('/voice/messages', { text: `Не получилось отменить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}` }).catch(() => {});
     } finally {
       load();
     }

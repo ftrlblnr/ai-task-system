@@ -4,14 +4,13 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Mic, Square } from 'lucide-react';
 import type {
-  EventRevertPayload,
-  LogVoiceMessageInput,
   MeetingDetail,
-  TaskRevertPayload,
   VoiceActionResult,
   VoiceEventActionDraft,
   VoiceParseResponse,
   VoiceTaskActionDraft,
+  VoiceUndoInput,
+  VoiceUndoResponse,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
@@ -31,21 +30,8 @@ interface ChatMessage {
   // buildUndo ниже) — откат удаления означал бы полное восстановление
   // задачи/встречи со всеми комментариями/подзадачами/участниками, это
   // отдельная, более тяжёлая фича, не часть этого захода.
-  undo?: UndoInfo | null;
+  undo?: VoiceUndoInput | null;
 }
-
-type UndoInfo =
-  | { kind: 'task'; action: 'create'; id: string }
-  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
-  | { kind: 'event'; action: 'create'; id: string }
-  | {
-      kind: 'event';
-      action: 'update';
-      id: string;
-      previous: EventRevertPayload;
-      addedParticipantIds: string[];
-      removedParticipantIds: string[];
-    };
 
 const UNDO_WINDOW_MS = 30_000;
 
@@ -238,15 +224,6 @@ function VoiceView() {
     streamRef.current?.getTracks().forEach((t) => t.stop());
   }
 
-  // Память диалога (аудит 10.09.2026, п. 2.9) — сервер сам пишет реплику
-  // пользователя (транскрипт) в VoiceService.parse; финальный текст ответа
-  // ассистента пишем здесь, в момент, когда он становится окончательным.
-  // Fire-and-forget — сбой логирования истории не должен мешать самому чату.
-  function logAssistant(text: string) {
-    const payload: LogVoiceMessageInput = { text };
-    api.post('/voice/messages', payload).catch(() => {});
-  }
-
   function pushMessage(msg: ChatMessage) {
     setMessages((prev) => [...prev, msg]);
   }
@@ -263,6 +240,11 @@ function VoiceView() {
       const formData = new FormData();
       formData.append('audio', blob, `voice.${ext}`);
       if (meetingId) formData.append('meetingId', meetingId);
+      // Stage 2, Phase H.1 (аудит 20.09.2026, P0) — защита от повторного
+      // выполнения действия, если сеть оборвалась после того, как сервер
+      // уже выполнил мутацию, но до того, как ответ дошёл сюда (см.
+      // VoiceService.parse).
+      formData.append('clientRequestId', crypto.randomUUID());
 
       // Сервер уже выполнил все действия к моменту ответа (аудит
       // 10.09.2026, п. 2.11 — раньше /voice/parse только возвращал
@@ -284,9 +266,14 @@ function VoiceView() {
 
       // Общая оценка неуверенности на весь транскрипт целиком (не про
       // конкретное действие — те уже объяснены каждое в своём баббле выше).
+      // Локальный рендер only — сервер (VoiceService.parse) уже сохранил
+      // тот же текст отдельной частью своего assistantMessage (Stage 2,
+      // Phase H.1, аудит 20.09.2026): раньше этот компонент ещё и сам
+      // логировал его через POST /voice/messages, что после Phase H стало
+      // чистым дублем в общей истории (эта страница не читает историю с
+      // сервера, только пишет свою локальную копию в localStorage).
       if (result.clarificationNeeded && result.clarificationReason) {
         pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: result.clarificationReason });
-        logAssistant(result.clarificationReason);
       }
     } catch (err) {
       setPhase('error');
@@ -298,11 +285,12 @@ function VoiceView() {
 
   // Один элемент result.results → одна реплика ассистента в чате. Действие
   // (если это не chat) сервер уже выполнил — здесь только текст, undo и
-  // необязательное "Открыть".
+  // необязательное "Открыть". Локальный рендер only (см. комментарий выше
+  // про clarificationReason) — POST /voice/messages для этих же текстов
+  // больше не вызывается, сервер их уже сохранил сам.
   function renderResult(item: VoiceActionResult) {
     if (item.type === 'chat') {
       pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: item.reply });
-      logAssistant(item.reply);
       return;
     }
 
@@ -311,14 +299,13 @@ function VoiceView() {
     const messageId = crypto.randomUUID();
 
     pushMessage({ id: messageId, role: 'assistant', text, status: item.ok ? undefined : 'error', undo });
-    logAssistant(text);
     if (undo) {
       setTimeout(() => updateMessage(messageId, { undo: null }), UNDO_WINDOW_MS);
     }
   }
 
   // create/update дают undo; delete — нет (см. комментарий у ChatMessage.undo).
-  function buildUndo(item: VoiceActionResult): UndoInfo | null {
+  function buildUndo(item: VoiceActionResult): VoiceUndoInput | null {
     if (item.type === 'chat') return null;
     if (item.type === 'task_action') {
       if (item.draft.action === 'create' && item.taskId) return { kind: 'task', action: 'create', id: item.taskId };
@@ -345,32 +332,29 @@ function VoiceView() {
   // только что созданное; update — откатывает снятые на бэкенде (см.
   // VoiceService.executeTaskAction/executeEventAction) значения тем же
   // PATCH-эндпоинтом плюс инвертирует изменения участников.
-  async function performUndo(messageId: string, undo: UndoInfo) {
+  // Stage 2, Phase H.1 (аудит 20.09.2026, P0/P1) — раньше этот компонент
+  // сам откатывал через PATCH/DELETE, потом отдельно просил сервер
+  // записать придуманный им самим текст подтверждения через
+  // POST /voice/messages (произвольный текст от клиента с ролью
+  // ASSISTANT — conversation-history poisoning, особенно опасно после
+  // того, как эта лента стала общим AI-контекстом). Теперь один вызов
+  // POST /voice/undo: сервер сам выполняет откат и сам решает текст
+  // подтверждения — эта страница только рендерит локальную копию по
+  // {ok, error} для собственного localStorage-чата (сервер параллельно
+  // сохраняет свою версию текста в общей ленте, эта страница её не читает
+  // обратно, см. комментарий у ChatMessage выше в файле).
+  async function performUndo(messageId: string, undo: VoiceUndoInput) {
     updateMessage(messageId, { undo: null });
     try {
-      if (undo.kind === 'task') {
-        if (undo.action === 'create') await api.delete(`/tasks/${undo.id}`);
-        else await api.patch(`/tasks/${undo.id}`, undo.previous);
+      const response = await api.post<VoiceUndoResponse>('/voice/undo', undo);
+      if (response.ok) {
+        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: 'Отменено.' });
       } else {
-        if (undo.action === 'create') {
-          await api.delete(`/events/${undo.id}`);
-        } else {
-          if (Object.keys(undo.previous).length > 0) await api.patch(`/events/${undo.id}`, undo.previous);
-          for (const employeeId of undo.addedParticipantIds) {
-            await api.delete(`/events/${undo.id}/participants/${employeeId}`).catch(() => {});
-          }
-          for (const employeeId of undo.removedParticipantIds) {
-            await api.post(`/events/${undo.id}/participants`, { employeeId }).catch(() => {});
-          }
-        }
+        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: `Не получилось отменить: ${response.error}`, status: 'error' });
       }
-      const text = 'Отменено.';
-      pushMessage({ id: crypto.randomUUID(), role: 'assistant', text });
-      logAssistant(text);
     } catch (err) {
       const text = `Не получилось отменить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}`;
       pushMessage({ id: crypto.randomUUID(), role: 'assistant', text, status: 'error' });
-      logAssistant(text);
     }
   }
 

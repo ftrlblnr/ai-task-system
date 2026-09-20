@@ -434,16 +434,41 @@ export interface VoiceParseResponse {
   // «Ассистент») добавляет userMessage/assistantMessage в тот же messages
   // state, что и обычная отправка текста — тот же ConversationMessage,
   // тот же MessagePartRenderer.
-  conversationId: string;
-  userMessage: ConversationMessage;
-  assistantMessage: ConversationMessage;
+  //
+  // null (Stage 2, Phase H.1, аудит 20.09.2026, P1) — редкий сбой
+  // сохранения истории ПОСЛЕ того, как реальное действие (results) уже
+  // выполнено, не должен превращать успешное действие в ошибку для
+  // клиента. В этом случае фронтенд просто не добавляет голосовую реплику
+  // в общую ленту, results отображаются как обычно.
+  conversationId: string | null;
+  userMessage: ConversationMessage | null;
+  assistantMessage: ConversationMessage | null;
 }
 
-// Память голосового диалога (аудит 10.09.2026, п. 2.9) — POST
-// /voice/messages, фронтенд шлёт это, когда текст чат-пузыря ассистента
-// становится окончательным (см. VoiceService.logAssistantMessage).
-export interface LogVoiceMessageInput {
-  text: string;
+// POST /voice/undo (Stage 2, Phase H.1, аудит 20.09.2026) — заменяет
+// прежний POST /voice/messages: тот принимал от клиента произвольный
+// текст и записывал его в общую ленту с ролью ASSISTANT
+// (conversation-history poisoning — особенно опасно после Phase H, когда
+// эта лента стала общим AI-контекстом для голоса и текста разом). Теперь
+// клиент присылает только структурированное описание того, что откатить —
+// сам откат (теми же TasksService/EventsService, что и обычные REST-пути)
+// и текст подтверждения решает сервер, не клиент.
+export type VoiceUndoInput =
+  | { kind: 'task'; action: 'create'; id: string }
+  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
+  | { kind: 'event'; action: 'create'; id: string }
+  | {
+      kind: 'event';
+      action: 'update';
+      id: string;
+      previous: EventRevertPayload;
+      addedParticipantIds: string[];
+      removedParticipantIds: string[];
+    };
+
+export interface VoiceUndoResponse {
+  ok: boolean;
+  error: string | null;
 }
 
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------

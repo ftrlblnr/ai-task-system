@@ -146,7 +146,15 @@ export interface VoiceParseResponse {
   // не трогая. apps/miniapp (объединённый экран «Ассистент») добавляет
   // userMessage/assistantMessage в ту же ленту, что уже рендерит для текста
   // — тем же MessagePartRenderer, без изменений в нём.
-  conversationId: string;
-  userMessage: ResponseMessage;
-  assistantMessage: ResponseMessage;
+  //
+  // null (Stage 2, Phase H.1, аудит 20.09.2026, P1) — действия (results)
+  // уже выполнены к моменту ответа независимо от того, удалось ли сохранить
+  // историю переписки; редкий сбой персистентности ПОСЛЕ реальной мутации
+  // не должен превращать успешное действие в ошибку для клиента — см.
+  // комментарий в VoiceService.parse. Фронтенд просто не добавляет
+  // голосовую реплику в общую ленту в этом случае, results отображаются
+  // как обычно.
+  conversationId: string | null;
+  userMessage: ResponseMessage | null;
+  assistantMessage: ResponseMessage | null;
 }
