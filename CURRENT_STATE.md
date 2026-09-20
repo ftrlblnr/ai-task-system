@@ -347,6 +347,32 @@ Phase A) → обычный `FILE` `MessagePart`, тот же рендер/ск�
 - **`extractText` склеивает все `TextBlock`** от Anthropic, не только
   первый через `.find()`.
 
+**Exactly-once execution (Phase F.3, P0, 20.09.2026)** — закрывает находку
+внешнего аудита от того же дня. Идемпотентность (`conversationId`+
+`clientRequestId`/`replyToMessageId` unique, P2002-recovery) защищала
+только СТРОКИ в БД от дублей — два конкурентных запроса с одним
+`clientRequestId`, оба прошедших `findExistingPair` до того, как первый
+успевал записать assistant-строку, реально вызывали
+`this.reply.reply()`/`streamReply()` (настоящий запрос к Anthropic +
+инструменты) дважды. `AssistantChatService.claimOrJoin` — in-memory
+`Map<userMessage.id, Promise<MessageWithParts>>`, не БД compare-and-set и
+не распределённая блокировка (API работает одним процессом — тот же
+принцип, что уже принят для cron-задач без distributed lock). Проверка
+карты и запись в неё — синхронный код без `await` между ними, поэтому два
+конкурентных вызова не могут интерливиться на этом участке в одном
+процессе: какой бы из них ни выполнился первым, он успевает
+"застолбить" ключ до того, как второй увидит карту. Второй присоединяется
+к уже идущему выполнению вместо повторного вызова. Для `streamMessage`
+"проигравший" получает `message.started`+`message.completed`/`failed` с
+финальным результатом победителя, без live-дельт (реального стрима для
+него не было). Если API когда-нибудь станет многопроцессным — этот
+механизм перестанет координировать между процессами, потребуется
+настоящая распределённая блокировка. Закреплено acceptance-тестом по
+образцу из самого аудита: `Promise.all` с двумя одновременными вызовами
+одного и того же логического запроса, `reply.reply()`/`streamReply()
+called === 1` (тесты преднамеренно проверены на то, что падают при
+временном откате фикса, не только на то, что проходят с ним).
+
 **Unified Voice Integration (Phase H, 20.09.2026, `apps/miniapp` only)**:
 - **Схема** — модель `VoiceMessage`/enum `VoiceMessageRole` удалены
   (миграция `drop_voice_message_unify_conversation`), голос читает/пишет
@@ -431,22 +457,8 @@ Phase A) → обычный `FILE` `MessagePart`, тот же рендер/ск�
   просьбы), не типичный сценарий использования; принудительный
   `tool_choice` для этого намеренно не заводился — это уже другой,
   более инвазивный механизм диспетчеризации инструментов.
-- **Exactly-once execution не гарантирован** (P0, найдено внешним
-  аудитом 20.09.2026, не в рамках Phase H) — идемпотентность
-  (`conversationId`+`clientRequestId`/`replyToMessageId` unique,
-  P2002-recovery) защищает от дублей СТРОК в БД, но не от двух
-  конкурентных запросов с одним `clientRequestId`, оба прошедших
-  `findExistingPair` до того, как первый успел записать
-  assistant-сообщение — в этом окне оба вызовут `this.reply.reply(...)`
-  (реальный запрос к Anthropic + инструменты) по-настоящему дважды.
-  Сегодня инструменты только читают (`get_tasks`/`get_events`) или
-  идемпотентно генерируют файл (`export_tasks_xlsx` — просто лишний
-  файл при дублировании), поэтому наблюдаемый эффект ограничен; до
-  появления мутирующих write-tools (`create_task`/`send_email` и т.п.)
-  это нужно закрыть atomic execution claim'ом (compare-and-set на
-  `status`, не просто unique-constraint постфактум).
-- **Message+FileArtifact linking не транзакционен** (P1, тот же аудит)
-  — `createUserMessageIdempotent`/`sendMessage`/`streamMessage` создают
+- **Message+FileArtifact linking не транзакционен** (P1, внешний аудит
+  20.09.2026) — `createUserMessageIdempotent`/`sendMessage`/`streamMessage` создают
   `Message`+`FILE`-`MessagePart` и отдельным вызовом
   `linkAttachments`/`fileArtifact.updateMany` привязывают `FileArtifact`.
   Сбой процесса между этими двумя операциями оставляет `FILE`-часть,
