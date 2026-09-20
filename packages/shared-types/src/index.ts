@@ -427,6 +427,16 @@ export interface VoiceParseResponse {
   clarificationNeeded: boolean;
   clarificationReason: string | null;
   results: VoiceActionResult[];
+  // Stage 2, Phase H — аддитивные поля: голос и текст пишут в одну ленту
+  // (Conversation/Message/MessagePart, см. комментарий у ConversationMessage
+  // ниже). apps/web (отдельная страница /voice) продолжает работать на
+  // полях выше, эти новые не трогая. apps/miniapp (объединённый экран
+  // «Ассистент») добавляет userMessage/assistantMessage в тот же messages
+  // state, что и обычная отправка текста — тот же ConversationMessage,
+  // тот же MessagePartRenderer.
+  conversationId: string;
+  userMessage: ConversationMessage;
+  assistantMessage: ConversationMessage;
 }
 
 // Память голосового диалога (аудит 10.09.2026, п. 2.9) — POST
@@ -437,9 +447,11 @@ export interface LogVoiceMessageInput {
 }
 
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
-// Полноценный AI-чат (GET/POST /assistant/conversations[...]) — отдельная
-// от voice-пути (VoiceParseResponse выше) история, объединение — отдельный,
-// более поздний этап. task_card/event_card/tool_activity получили реальных
+// Полноценный AI-чат (GET/POST /assistant/conversations[...]). С Phase H
+// (18.09.2026) voice-путь (VoiceParseResponse выше) пишет в ту же ленту —
+// userMessage/assistantMessage в VoiceParseResponse используют
+// ConversationMessage/MessagePart ниже, а не отдельный формат. task_card/
+// event_card/tool_activity получили реальных
 // producer'ов в Phase C (tool-calling); file по-прежнему без формы данных —
 // ждёт Phase F (upload/generation). role/status/type — строчные строки;
 // AssistantChatController переводит Prisma-enum'ы (заглавные) в них на

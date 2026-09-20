@@ -68,7 +68,6 @@ model Employee {
   eventsCreated            Event[]
   googleCalendarConnection GoogleCalendarConnection?
   plaudConnection          PlaudConnection?
-  voiceMessages            VoiceMessage[]
   conversations            Conversation[]
   fileArtifacts            FileArtifact[]
 
@@ -76,50 +75,20 @@ model Employee {
   updatedAt DateTime @updatedAt
 }
 
-// Роль реплики в истории голосового диалога — те же два значения, что
-// Anthropic messages API ('user'/'assistant'), не более общий Role
-// (владелец/сотрудник) — не путать друг с другом.
-enum VoiceMessageRole {
-  USER
-  ASSISTANT
-}
-
-// Память голосового диалога (аудит 10.09.2026, п. 2.9): раньше переписка
-// жила только в localStorage браузера и на сервер не возвращалась — ни
-// системный промпт, ни сама модель не видели, что говорилось раньше.
-// "Перенеси её на вторник", "нет, не Ивану, а Петру" были физически
-// невозможны — каждая заметка обрабатывалась в полном отрыве от предыдущей,
-// хотя промпт (buildSystemPrompt) уже обещал реакцию на "предыдущий ответ".
-// Строка на каждую реплику (и пользователя, и ассистента) — VoiceService.parse
-// пишет реплику пользователя сама (транскрипт уже есть на сервере), а
-// финальный текст ответа ассистента (chat-реплика, итог создания/
-// редактирования/удаления или текст ошибки) пишет фронтенд отдельным
-// вызовом POST /voice/messages в момент, когда этот текст становится
-// окончательным в чате — с тем чтобы не дублировать на бэкенде логику
-// форматирования (describeSuccess и т.п.), которая и так уже есть на
-// фронтенде для самого чат-пузыря.
-model VoiceMessage {
-  id         String           @id @default(cuid())
-  employeeId String
-  employee   Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  role       VoiceMessageRole
-  text       String
-
-  createdAt DateTime @default(now())
-
-  @@index([employeeId, createdAt])
-}
-
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
-// Полноценный AI-чат поверх текущего voice-only пути (VoiceMessage/
-// /voice/parse выше — не трогается этим блоком, продолжает работать как
-// раньше; объединение — отдельный, более поздний этап). Conversation/
-// Message/MessagePart — структурированная история с частями разных типов
-// (markdown/карточки задачи-события/файл/статус инструмента/ошибка), а не
-// один текстовый столбец, как у VoiceMessage — чтобы ответ ассистента мог
-// содержать больше одного текстового пузыря. FileArtifact заведена в этой
-// же миграции (нужна модели Message/Conversation для связи), но своей
-// логики (хранилище, upload/download) пока не имеет — это отдельный этап.
+// Единая лента для голоса и текста (Stage 2, Phase H, владелец 18.09.2026).
+// До Phase H здесь стояла отдельная модель VoiceMessage — память голосового
+// диалога (окно 3 часа) для /voice/parse, никогда не отображавшаяся ни на
+// одном фронтенде (оба — apps/miniapp и apps/web — держали видимую историю
+// только в localStorage). Conversation/Message/MessagePart — структурированная
+// история с частями разных типов (markdown/карточки задачи-события/файл/
+// статус инструмента/ошибка), а не один текстовый столбец, как раньше у
+// VoiceMessage — чтобы ответ (текстовый или голосовой) мог содержать больше
+// одного текстового пузыря/карточки за раз. Голос (VoiceService,
+// /voice/parse) теперь тоже пишет сюда — см. комментарий в voice.service.ts.
+// FileArtifact заведена в этой же миграции (нужна модели Message/Conversation
+// для связи), но своей логики (хранилище, upload/download) пока не имеет —
+// это отдельный этап.
 
 enum MessageRole {
   USER

@@ -22,6 +22,46 @@ const MAX_TOOL_ITEMS = 10;
 
 export type GetTasksFilter = 'all' | 'overdue';
 
+// Вынесены из getTasks/getEvents ниже (Stage 2, Phase H) — voice.service.ts
+// строит те же карточки для только что созданной/изменённой голосом задачи/
+// встречи, одна форма карточки для "просмотрел" и "только что сделал
+// голосом". Принимают минимальный набор полей, а не целый Task/Event —
+// TasksService.findAll/findOne/create/update возвращают разные select'ы
+// (TASK_LIST_SELECT/TASK_DETAIL_SELECT), но оба — надмножество этих полей.
+export function toTaskCardData(t: {
+  id: string;
+  title: string;
+  status: string;
+  dueDate: Date | null;
+  assignee: { id: string; fullName: string } | null;
+}): TaskCardData {
+  return {
+    taskId: t.id,
+    title: t.title,
+    status: t.status,
+    dueDate: t.dueDate ? t.dueDate.toISOString() : null,
+    assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.fullName } : null,
+  };
+}
+
+export function toEventCardData(e: {
+  id: string;
+  title: string;
+  startAt: Date;
+  endAt: Date;
+  location: string | null;
+  participants: { id: string; fullName: string }[];
+}): EventCardData {
+  return {
+    eventId: e.id,
+    title: e.title,
+    startAt: e.startAt.toISOString(),
+    endAt: e.endAt.toISOString(),
+    location: e.location,
+    participants: e.participants.map((p) => ({ id: p.id, name: p.fullName })),
+  };
+}
+
 type KnownToolName = 'get_tasks' | 'get_events' | 'export_tasks_xlsx';
 
 function resolveToolName(name: string): KnownToolName {
@@ -138,16 +178,11 @@ export class AssistantToolsService {
   private async getTasks(user: AuthenticatedUser, filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
     const tasks = await this.tasks.findAll(user);
     const filtered = filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
-    const items: TaskCardData[] = filtered.slice(0, MAX_TOOL_ITEMS).map((t) => ({
-      taskId: t.id,
-      title: t.title,
-      status: t.status,
-      // findAll() вызывается напрямую (в обход HTTP-сериализации), поэтому
-      // dueDate — сырой Prisma Date, не строка (тот же приём, что уже был
-      // пойман в voice.service.ts при прямом вызове TasksService.findOne).
-      dueDate: t.dueDate ? t.dueDate.toISOString() : null,
-      assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.fullName } : null,
-    }));
+    // findAll() вызывается напрямую (в обход HTTP-сериализации), поэтому
+    // dueDate — сырой Prisma Date, не строка (тот же приём, что уже был
+    // пойман в voice.service.ts при прямом вызове TasksService.findOne) —
+    // toTaskCardData учитывает это сам.
+    const items: TaskCardData[] = filtered.slice(0, MAX_TOOL_ITEMS).map(toTaskCardData);
     return { tool: 'get_tasks', items, totalCount: filtered.length };
   }
 
@@ -174,14 +209,7 @@ export class AssistantToolsService {
     const now = new Date();
     const events = await this.events.findAll(user.id);
     const upcoming = events.filter((e) => e.status !== EventStatus.CANCELLED && e.startAt >= now);
-    const items: EventCardData[] = upcoming.slice(0, MAX_TOOL_ITEMS).map((e) => ({
-      eventId: e.id,
-      title: e.title,
-      startAt: e.startAt.toISOString(),
-      endAt: e.endAt.toISOString(),
-      location: e.location,
-      participants: e.participants.map((p) => ({ id: p.id, name: p.fullName })),
-    }));
+    const items: EventCardData[] = upcoming.slice(0, MAX_TOOL_ITEMS).map(toEventCardData);
     return { tool: 'get_events', items, totalCount: upcoming.length };
   }
 }

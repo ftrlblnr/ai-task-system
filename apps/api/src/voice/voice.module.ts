@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TasksModule } from '../tasks/tasks.module';
 import { CalendarModule } from '../calendar/calendar.module';
+import { AssistantModule } from '../assistant/assistant.module';
 import { VoiceController } from './voice.controller';
 import { VoiceService } from './voice.service';
 import { WhisperService } from './whisper.service';
@@ -11,7 +12,11 @@ import { DraftExtractionService } from './draft-extraction.service';
   // вопросы про статус задач/встречи, переиспользуя те же
   // TasksService.findAll/EventsService.findAll, что и обычные списки в
   // UI — те же правила видимости (кто что видит), без отдельной RBAC-копии.
-  imports: [TasksModule, CalendarModule],
+  // AssistantModule (Stage 2, Phase H) — VoiceService пишет в ту же ленту
+  // (Conversation/Message), что и текстовый чат, через
+  // AssistantChatService.getOrCreatePrimaryConversation (экспортирован
+  // оттуда специально для этого).
+  imports: [TasksModule, CalendarModule, AssistantModule],
   controllers: [VoiceController],
   providers: [VoiceService, WhisperService, DraftExtractionService],
 })

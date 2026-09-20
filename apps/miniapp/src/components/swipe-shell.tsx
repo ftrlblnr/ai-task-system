@@ -49,7 +49,7 @@ const SWIPE_THRESHOLD_RATIO = 0.22;
 //    открывают не те вкладки" — на проде трек стабильно давал
 //    getBoundingClientRect().x ≈ -358px при transform:translateX(0%)
 //    вместо ожидаемых ~8px (край .swipe-viewport). Настоящая причина
-//    нашлась не здесь, а в voice-screen.tsx: SwipeShell монтирует ВСЕ
+//    нашлась не здесь, а в assistant-screen.tsx: SwipeShell монтирует ВСЕ
 //    экраны сразу (прячет неактивные через transform, не условным
 //    рендером), и эффект автоскролла чата внутри экрана «Голос» вызывал
 //    scrollEndRef.scrollIntoView(...) при каждом монтировании — в том
@@ -58,7 +58,7 @@ const SWIPE_THRESHOLD_RATIO = 0.22;
 //    overflow:hidden, всё равно программно скроллируется — и получал
 //    паразитный scrollLeft≈358px, который никак не связан с
 //    translateX-позиционированием трека, но getBoundingClientRect() его
-//    учитывает. Пофикшено в voice-screen.tsx (прямой chat.scrollTo()
+//    учитывает. Пофикшено в assistant-screen.tsx (прямой chat.scrollTo()
 //    вместо scrollIntoView()) + защитный el.parentElement.scrollLeft=0
 //    в applyTransform() ниже на случай повтора той же ошибки где-то ещё.
 //    Заодно (уже не для фикса самого бага, а по мотивам находки) ширина
@@ -99,7 +99,7 @@ export function SwipeShell({ screens }: { screens: SwipeScreen[] }) {
     const el = trackRef.current;
     if (!el) return;
     // Защита от повтора того же класса бага (см. пункт 3 в комментарии
-    // выше, root cause был в voice-screen.tsx, не здесь): .swipe-viewport
+    // выше, root cause был в assistant-screen.tsx, не здесь): .swipe-viewport
     // технически скроллируемый (overflow:hidden не запрещает программный
     // scrollLeft), и любой будущий scrollIntoView()/focus() внутри СКРЫТОГО
     // экрана снова может выставить там паразитный scrollLeft, ломая это

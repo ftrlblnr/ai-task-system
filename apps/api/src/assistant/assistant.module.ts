@@ -18,5 +18,9 @@ import { AssistantToolsService } from './assistant-tools.service';
   imports: [TasksModule, CalendarModule, FilesModule],
   controllers: [AssistantChatController],
   providers: [AssistantChatService, AssistantReplyService, AssistantToolsService],
+  // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
+  // модуль, чтобы писать голосовые реплики в ту же ленту через
+  // getOrCreatePrimaryConversation, не дублируя её логику.
+  exports: [AssistantChatService],
 })
 export class AssistantModule {}

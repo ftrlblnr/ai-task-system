@@ -1,13 +1,18 @@
-import { Role } from '@prisma/client';
+import { MessageRole, Role } from '@prisma/client';
 import { VoiceService } from './voice.service';
+import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { VoiceEventActionDraft, VoiceTaskActionDraft } from './dto/voice-draft-response.dto';
+
+function makeUser(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+}
 
 // Ни validateTarget, ни validateEventCreateCompleteness, ни
 // validateReferences, ни enforceEventRbac не трогают внедрённые зависимости
 // (whisper/extraction/prisma/audit/tasks/events) — заглушены, тестируем
 // саму логику (аудит 10.09.2026, п. 5.1).
 function makeService(): any {
-  return new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any) as any;
+  return new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any) as any;
 }
 
 function taskDraft(overrides: Partial<VoiceTaskActionDraft> = {}): VoiceTaskActionDraft {
@@ -148,5 +153,148 @@ describe('VoiceService.enforceEventRbac (граница безопасности
   it('task_action не трогается независимо от роли', () => {
     const draft = taskDraft();
     expect(service.enforceEventRbac(draft, Role.EMPLOYEE)).toEqual([draft]);
+  });
+});
+
+describe('VoiceService.executeTaskAction (Stage 2, Phase H — entity для карточки объединённой ленты)', () => {
+  it('create — entity берётся из возврата TasksService.create напрямую', async () => {
+    const created = { id: 't1', title: 'Задача', status: 'NEW', dueDate: null, assignee: null };
+    const tasks = { create: jest.fn().mockResolvedValue(created) };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const draft = taskDraft({ action: 'create' });
+
+    const { result, entity } = await service.executeTaskAction(draft, makeUser());
+
+    expect(result).toEqual({ type: 'task_action', draft, ok: true, error: null, taskId: 't1', previous: null });
+    expect(entity).toBe(created);
+  });
+
+  it('update — entity берётся из свежего возврата TasksService.update, не из before-снимка', async () => {
+    const before = { id: 't1', title: 'Старое', description: '', assignee: null, dueDate: null, priority: null };
+    const updated = { id: 't1', title: 'Новое', status: 'NEW', dueDate: null, assignee: null };
+    const tasks = { findOne: jest.fn().mockResolvedValue(before), update: jest.fn().mockResolvedValue(updated) };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const draft = taskDraft({ action: 'update', targetTaskId: 't1', title: 'Новое' });
+
+    const { entity } = await service.executeTaskAction(draft, makeUser());
+
+    expect(entity).toBe(updated);
+  });
+
+  it('delete — entity=null, сущности больше нет, карточку строить не из чего', async () => {
+    const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const draft = taskDraft({ action: 'delete', targetTaskId: 't1' });
+
+    const { result, entity } = await service.executeTaskAction(draft, makeUser());
+
+    expect(entity).toBeNull();
+    expect(result.ok).toBe(true);
+  });
+
+  it('ошибка — entity=null, ok=false, тот же текст исключения, что раньше уходил клиенту напрямую', async () => {
+    const tasks = { create: jest.fn().mockRejectedValue(new Error('Постановщик не найден')) };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const draft = taskDraft({ action: 'create' });
+
+    const { result, entity } = await service.executeTaskAction(draft, makeUser());
+
+    expect(entity).toBeNull();
+    expect(result).toMatchObject({ ok: false, error: 'Постановщик не найден' });
+  });
+});
+
+describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для карточки, включая участников)', () => {
+  it('create без участников — entity это created напрямую, без лишнего findOne', async () => {
+    const created = { id: 'e1', title: 'Встреча', startAt: new Date(), endAt: new Date(), location: null, participants: [] };
+    const events = { create: jest.fn().mockResolvedValue(created), findOne: jest.fn() };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'create', addParticipantIds: [] });
+
+    const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+
+    expect(entity).toBe(created);
+    expect(events.findOne).not.toHaveBeenCalled();
+  });
+
+  it('create с участниками — entity дозапрашивается через findOne ПОСЛЕ addParticipant (у created ещё нет свежих участников)', async () => {
+    const created = { id: 'e1', title: 'Встреча', startAt: new Date(), endAt: new Date(), location: null, participants: [] };
+    const refetched = { ...created, participants: [{ id: 'emp1', fullName: 'Азамат' }] };
+    const events = {
+      create: jest.fn().mockResolvedValue(created),
+      addParticipant: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn().mockResolvedValue(refetched),
+    };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'create', addParticipantIds: ['emp1'] });
+
+    const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+
+    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp1');
+    expect(events.findOne).toHaveBeenCalledWith('e1');
+    expect(entity).toBe(refetched);
+  });
+
+  it('update — entity это финальный findOne после изменения полей и участников, не before-снимок', async () => {
+    const before = { id: 'e1', title: 'Старое', description: '', location: '', startAt: new Date('2026-01-01T00:00:00Z'), endAt: new Date('2026-01-01T01:00:00Z'), allDay: false };
+    const finalEntity = { id: 'e1', title: 'Новое', startAt: before.startAt, endAt: before.endAt, location: null, participants: [] };
+    const events = {
+      findOne: jest.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(finalEntity),
+      update: jest.fn().mockResolvedValue(undefined),
+      addParticipant: jest.fn(),
+      removeParticipant: jest.fn(),
+    };
+    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'update', targetEventId: 'e1', title: 'Новое' });
+
+    const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+
+    expect(entity).toBe(finalEntity);
+    expect(events.findOne).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('VoiceService.logAssistantMessage (Stage 2, Phase H — standalone-сообщение в общей ленте, не отдельная VoiceMessage)', () => {
+  it('пишет ASSISTANT-сообщение без replyToMessageId в разговор от getOrCreatePrimaryConversation', async () => {
+    const conversation = { id: 'c1' };
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue(conversation) };
+    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, assistantChat as any) as any;
+
+    await service.logAssistantMessage('Отменено.', makeUser());
+
+    expect(assistantChat.getOrCreatePrimaryConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }));
+    expect(prisma.message.create).toHaveBeenCalledWith({
+      data: {
+        conversationId: 'c1',
+        role: MessageRole.ASSISTANT,
+        status: 'COMPLETED',
+        parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } }] },
+      },
+    });
+  });
+});
+
+describe('VoiceService.loadHistory (Stage 2, Phase H — читает Message/MessagePart вместо отдельной VoiceMessage)', () => {
+  it('фильтрует по conversationId и окну VOICE_HISTORY_MAX_AGE_MS, сериализует части через общий serializeMessageForModelContext', async () => {
+    const rows = [
+      { role: MessageRole.ASSISTANT, parts: [{ type: 'MARKDOWN', order: 0, data: { content: 'Привет!' } }] },
+      { role: MessageRole.USER, parts: [{ type: 'MARKDOWN', order: 0, data: { content: 'Перенеси на вторник' } }] },
+    ];
+    const prisma = { message: { findMany: jest.fn().mockResolvedValue(rows) } };
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+
+    const history = await service.loadHistory('c1');
+
+    expect(prisma.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ conversationId: 'c1' }) }),
+    );
+    // rows приходят DESC (order: 'desc' в запросе) — loadHistory разворачивает
+    // их обратно в хронологический порядок, тот же приём, что уже в
+    // AssistantChatService.loadHistory.
+    expect(history).toEqual([
+      { role: 'user', text: 'Перенеси на вторник' },
+      { role: 'assistant', text: 'Привет!' },
+    ]);
   });
 });

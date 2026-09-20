@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { Role, VoiceMessageRole } from '@prisma/client';
+import { MessagePartType, MessageRole, MessageStatus, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -11,8 +11,12 @@ import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
 import type { CreateEventDto } from '../calendar/dto/create-event.dto';
 import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { formatLocalDateTime } from '../common/timezone';
+import { AssistantChatService, serializeMessageForModelContext } from '../assistant/assistant-chat.service';
+import { stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
+import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
+import { buildVoiceAssistantParts, resolveClarificationReason } from './voice-render';
 import type {
   EventRevertPayload,
   TaskRevertPayload,
@@ -24,6 +28,36 @@ import type {
   VoiceTaskActionDraft,
   VoiceTaskActionResult,
 } from './dto/voice-draft-response.dto';
+
+// Минимальные структурные формы, нужные toTaskCardData/toEventCardData
+// (assistant-tools.service.ts) — TasksService.create/update и
+// EventsService.create/update возвращают разные select'ы, но оба —
+// надмножество этих полей (см. комментарий у toTaskCardData).
+export interface TaskCardEntity {
+  id: string;
+  title: string;
+  status: string;
+  dueDate: Date | null;
+  assignee: { id: string; fullName: string } | null;
+}
+export interface EventCardEntity {
+  id: string;
+  title: string;
+  startAt: Date;
+  endAt: Date;
+  location: string | null;
+  participants: { id: string; fullName: string }[];
+}
+
+// Stage 2, Phase H — пара "результат для фронтенда" + "свежая сущность для
+// карточки", собираемая исполнением одного черновика. entity — только для
+// ok=true task_action/event_action с action create/update (voice-render.ts
+// строит по нему TASK_CARD/EVENT_CARD); во всех остальных случаях (chat,
+// ok=false, delete) — null, рендер идёт по одному result без сущности.
+export interface ExecutedVoiceAction {
+  result: VoiceActionResult;
+  entity: TaskCardEntity | EventCardEntity | null;
+}
 
 // HttpException'ы (ForbiddenException/NotFoundException/BadRequestException
 // и т.п.) везде в проекте конструируются с обычной строкой — .message уже
@@ -65,6 +99,7 @@ export class VoiceService {
     private readonly audit: AuditService,
     private readonly tasks: TasksService,
     private readonly events: EventsService,
+    private readonly assistantChat: AssistantChatService,
   ) {}
 
   async parse(
@@ -88,6 +123,14 @@ export class VoiceService {
     const t0 = Date.now();
     const requestId = randomUUID();
     const audioBytes = audio.buffer.length;
+
+    // Stage 2, Phase H — голос и текст пишут в один и тот же разговор
+    // сотрудника. Резолвится до общего Promise.all ниже (а не внутри него):
+    // getOrCreatePrimaryConversation в редком случае (первое голосовое
+    // сообщение вообще) сам создаёт строку в БД — короткая, не зависящая от
+    // Whisper/контекста операция, не стоит искусственно распараллеливать её
+    // с loadHistory, которому нужен уже готовый conversation.id.
+    const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
 
     // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
     // шли строго последовательно (расшифровка → сотрудники → задачи →
@@ -135,7 +178,7 @@ export class VoiceService {
             // копии RBAC здесь.
             this.tasks.findAll(user),
             user.role === Role.OWNER ? this.events.findAll(user.id) : Promise.resolve([]),
-            this.loadHistory(user.id),
+            this.loadHistory(conversation.id),
           ]);
           contextDbMs = Date.now() - start;
           return result;
@@ -177,18 +220,25 @@ export class VoiceService {
       requestId,
     );
 
-    // Реплику пользователя пишем сама — транскрипт уже есть на сервере.
-    // Финальный текст ответа ассистента (chat-реплика, итог действия или
-    // текст ошибки) пишет фронтенд отдельно, см. logAssistantMessage ниже —
-    // он собирает его из VoiceActionResult, который возвращает этот метод
-    // (действие уже выполнено на момент ответа, см. комментарий у
-    // VoiceParseResponse в dto). Не await — запись истории не должна
-    // задерживать ответ пользователю (владелец 10.09.2026, по итогам
-    // анализа задержки), тот же fire-and-forget приём, что уже у
-    // notifyEmployee/notifyWatchers в TasksService.
-    void this.prisma.voiceMessage
-      .create({ data: { employeeId: user.id, role: VoiceMessageRole.USER, text: transcript } })
-      .catch((err) => this.logger.warn(`Не удалось сохранить реплику пользователя в историю: ${err}`));
+    // Реплика пользователя (Stage 2, Phase H) — пишется в ту же ленту, что и
+    // текстовый чат, не в отдельную VoiceMessage. Запущено здесь, ДО цикла
+    // исполнения черновиков ниже, а await — только непосредственно перед
+    // созданием assistant-сообщения (нужен её id для replyToMessageId): это
+    // сохраняет часть выигрыша исходного fire-and-forget (запись идёт
+    // параллельно с executeTaskAction/executeEventAction), при этом ответ
+    // пользователю теперь ДОЛЖЕН содержать реальный userMessage/
+    // assistantMessage (следующий Phase H-экран рендерит голосовую реплику
+    // тем же MessagePartRenderer, что и текст) — полностью fire-and-forget,
+    // как раньше, здесь уже не получится.
+    const userMessagePromise = this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: MessageRole.USER,
+        status: MessageStatus.COMPLETED,
+        parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
+      },
+      include: { parts: { orderBy: { order: 'asc' } } },
+    });
 
     const taskIds = new Set(taskContext.map((t) => t.id));
     const eventIds = new Set(eventContext.map((e) => e.id));
@@ -231,18 +281,40 @@ export class VoiceService {
     // executeTaskAction/executeEventAction сами ловят свои ошибки — сбой
     // одного действия не должен прерывать остальные в этом же транскрипте.
     const t2 = Date.now();
-    const results: VoiceActionResult[] = [];
+    const execResults: ExecutedVoiceAction[] = [];
     for (const draft of drafts) {
       if (draft.type === 'chat') {
-        results.push({ type: 'chat', reply: draft.reply });
+        execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
       } else if (draft.type === 'task_action') {
-        results.push(await this.executeTaskAction(draft, user));
+        execResults.push(await this.executeTaskAction(draft, user));
       } else {
-        results.push(await this.executeEventAction(draft, user));
+        execResults.push(await this.executeEventAction(draft, user));
       }
     }
+    const results: VoiceActionResult[] = execResults.map((r) => r.result);
     const executionMs = Date.now() - t2;
     const totalMs = Date.now() - t0;
+
+    // Ответ ассистента (Stage 2, Phase H) — один Message с одной частью на
+    // каждый execResults[i] (см. buildVoiceAssistantParts), в общей ленте
+    // сотрудника. clarificationReason — общая оценка на весь транскрипт, не
+    // на конкретное действие, отдельной частью последней. resolveClarificationReason
+    // (voice-render.ts) — гейт на clarificationNeeded + санитизация от утечки
+    // [shown_task]/[file]-меток в одном месте, см. комментарий там (живой
+    // прогон 20.09.2026 поймал лишний пузырь "null" без этого гейта).
+    const clarificationReason = resolveClarificationReason(result.clarificationNeeded, result.clarificationReason);
+    const userMessage = await userMessagePromise;
+    const assistantMessage = await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: MessageRole.ASSISTANT,
+        status: MessageStatus.COMPLETED,
+        replyToMessageId: userMessage.id,
+        parts: { create: buildVoiceAssistantParts(execResults, clarificationReason) },
+      },
+      include: { parts: { orderBy: { order: 'asc' } } },
+    });
+    await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
 
     // Единая сводная строка на весь voice request (observability-этап,
     // владелец 15.09.2026, раздел 2-3 ТЗ этапа) — reqId тот же, что в
@@ -276,8 +348,11 @@ export class VoiceService {
       transcript,
       confidence: result.confidence,
       clarificationNeeded: result.clarificationNeeded,
-      clarificationReason: result.clarificationReason,
+      clarificationReason,
       results,
+      conversationId: conversation.id,
+      userMessage: toResponseMessage(userMessage),
+      assistantMessage: toResponseMessage(assistantMessage),
     };
   }
 
@@ -286,7 +361,7 @@ export class VoiceService {
   // её здесь) и возвращает итог вместо черновика. previous — снимок ДО
   // мутации тех полей, что реально меняются (черновик несёт только новые
   // значения), нужен фронтенду для кнопки "Отменить" (UNDO_WINDOW_MS).
-  private async executeTaskAction(draft: VoiceTaskActionDraft, user: AuthenticatedUser): Promise<VoiceTaskActionResult> {
+  private async executeTaskAction(draft: VoiceTaskActionDraft, user: AuthenticatedUser): Promise<ExecutedVoiceAction> {
     try {
       if (draft.action === 'create') {
         const dto: CreateTaskDto = {
@@ -298,7 +373,10 @@ export class VoiceService {
           sourceMeetingId: draft.sourceMeetingId || undefined,
         };
         const created = await this.tasks.create(dto, user);
-        return { type: 'task_action', draft, ok: true, error: null, taskId: created.id, previous: null };
+        return {
+          result: { type: 'task_action', draft, ok: true, error: null, taskId: created.id, previous: null },
+          entity: created,
+        };
       }
 
       if (draft.action === 'update') {
@@ -324,16 +402,28 @@ export class VoiceService {
         if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
         if (dto.priority !== undefined) previous.priority = before.priority;
 
-        await this.tasks.update(draft.targetTaskId, dto, user);
-        return { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous };
+        // updated — свежая сущность ПОСЛЕ патча (Stage 2, Phase H): раньше
+        // возврат update() отбрасывался, карточку в объединённой ленте
+        // строить было не из чего.
+        const updated = await this.tasks.update(draft.targetTaskId, dto, user);
+        return {
+          result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous },
+          entity: updated,
+        };
       }
 
       // delete — без дополнительного подтверждения (владелец 10.09.2026:
       // "по удалению давай доверять", после практической проверки).
       await this.tasks.remove(draft.targetTaskId, user);
-      return { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous: null };
+      return {
+        result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous: null },
+        entity: null,
+      };
     } catch (err) {
-      return { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, previous: null };
+      return {
+        result: { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, previous: null },
+        entity: null,
+      };
     }
   }
 
@@ -342,7 +432,7 @@ export class VoiceService {
   // AuthenticatedUser (весь модуль и так закрыт на Role.OWNER на уровне
   // контроллера, см. комментарий в events.service.ts); enforceEventRbac
   // выше гарантирует, что сюда event_action от не-OWNER не попадает.
-  private async executeEventAction(draft: VoiceEventActionDraft, user: AuthenticatedUser): Promise<VoiceEventActionResult> {
+  private async executeEventAction(draft: VoiceEventActionDraft, user: AuthenticatedUser): Promise<ExecutedVoiceAction> {
     try {
       if (draft.action === 'create') {
         const dto: CreateEventDto = {
@@ -357,7 +447,16 @@ export class VoiceService {
         for (const employeeId of draft.addParticipantIds) {
           await this.events.addParticipant(created.id, employeeId).catch(() => {});
         }
-        return { type: 'event_action', draft, ok: true, error: null, eventId: created.id, previous: null };
+        // Свежая сущность ПОСЛЕ добавления участников (Stage 2, Phase H) —
+        // created сам по себе ещё не знает про них (addParticipant меняет
+        // строку в БД уже после того, как created был получен), карточка с
+        // пустым participants была бы неверна для только что созданной
+        // встречи с указанными участниками.
+        const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id) : created;
+        return {
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, previous: null },
+          entity,
+        };
       }
 
       if (draft.action === 'update') {
@@ -388,15 +487,28 @@ export class VoiceService {
         for (const employeeId of draft.removeParticipantIds) {
           await this.events.removeParticipant(draft.targetEventId, employeeId).catch(() => {});
         }
-        return { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous };
+        // Один финальный findOne после всех изменений (полей + участников)
+        // — Stage 2, Phase H: раньше возврат update()/addParticipant не
+        // использовался вовсе, строить карточку было не из чего.
+        const entity = await this.events.findOne(draft.targetEventId);
+        return {
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous },
+          entity,
+        };
       }
 
       // delete — без дополнительного подтверждения, тот же принцип, что и
       // для задач (владелец 10.09.2026).
       await this.events.remove(draft.targetEventId, user.id);
-      return { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous: null };
+      return {
+        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous: null },
+        entity: null,
+      };
     } catch (err) {
-      return { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, previous: null };
+      return {
+        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, previous: null },
+        entity: null,
+      };
     }
   }
 
@@ -404,25 +516,47 @@ export class VoiceService {
   // пределах окна VOICE_HISTORY_MAX_AGE_MS — см. комментарий у констант
   // выше. findMany с take по индексу [employeeId, createdAt] дёшев
   // независимо от того, сколько всего реплик накопилось за всё время.
-  private async loadHistory(employeeId: string): Promise<VoiceHistoryItem[]> {
-    const rows = await this.prisma.voiceMessage.findMany({
-      where: { employeeId, createdAt: { gte: new Date(Date.now() - VOICE_HISTORY_MAX_AGE_MS) } },
+  // Stage 2, Phase H — читает ту же ленту (Message/MessagePart), что и
+  // текстовый чат, вместо отдельной VoiceMessage. conversationId, а не
+  // employeeId — разговор уже resolved в parse() (getOrCreatePrimaryConversation),
+  // не нужно резолвить его второй раз через relation-фильтр.
+  // serializeMessageForModelContext — тот же сериализатор, что уже
+  // используется AssistantChatService.loadHistory (Stage 2, Phase F.1), даёт
+  // тот же {role, text}-формат, что уже ожидает DraftExtractionService (не
+  // меняется).
+  private async loadHistory(conversationId: string): Promise<VoiceHistoryItem[]> {
+    const rows = await this.prisma.message.findMany({
+      where: { conversationId, createdAt: { gte: new Date(Date.now() - VOICE_HISTORY_MAX_AGE_MS) } },
       orderBy: { createdAt: 'desc' },
       take: VOICE_HISTORY_LIMIT,
-      select: { role: true, text: true },
+      include: { parts: { orderBy: { order: 'asc' } } },
     });
-    return rows.reverse().map((r) => ({ role: r.role === VoiceMessageRole.USER ? 'user' : 'assistant', text: r.text }));
+    return rows
+      .reverse()
+      .map((m) => ({
+        role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
+        text: serializeMessageForModelContext(m.parts),
+      }))
+      .filter((h) => h.text);
   }
 
   // Вызывается фронтендом (POST /voice/messages) в момент, когда текст в
-  // чат-пузыре ассистента становится окончательным — chat-реплика, итог
-  // действия (ok/error уже известны из VoiceActionResult, action выполнено
-  // внутри parse(), см. п. 2.11) или текст после отдельного вызова undo.
-  // См. комментарий у модели VoiceMessage в schema.prisma про то, почему
-  // это не пишется здесь же, в parse().
+  // чат-пузыре ассистента становится окончательным — итог отдельного
+  // действия пользователя (сейчас: подтверждение отмены, см. performUndo на
+  // фронте), не часть исходного ответа parse() (тот уже пишет свой
+  // assistantMessage сам, см. выше). Stage 2, Phase H — отдельное
+  // ("standalone") assistant-сообщение без replyToMessageId (ни на какое
+  // user-сообщение не отвечает) в той же ленте, что и всё остальное; раньше
+  // писало в отдельную VoiceMessage.
   async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
-    await this.prisma.voiceMessage.create({
-      data: { employeeId: user.id, role: VoiceMessageRole.ASSISTANT, text },
+    const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
+    await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: MessageRole.ASSISTANT,
+        status: MessageStatus.COMPLETED,
+        parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: text } }] },
+      },
     });
   }
 

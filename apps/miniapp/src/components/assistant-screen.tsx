@@ -1,16 +1,21 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { Paperclip, Send, X } from 'lucide-react';
+import { Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
+  EventRevertPayload,
   FilePartData,
   MessagePart,
   StreamEvent,
+  TaskRevertPayload,
   UploadedFileInfo,
+  VoiceActionResult,
+  VoiceParseResponse,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
+import { haptic, notificationHaptic } from '@/lib/telegram';
 import { MessagePartRenderer, FilePartView } from './assistant-message-part';
 
 const MAX_TEXTAREA_HEIGHT = 140;
@@ -31,6 +36,78 @@ const ACCEPTED_UPLOAD_MIME_TYPES =
 // "почти внизу", не точный 0 (иначе любой суб-пиксельный скролл во время
 // стрима считался бы "ушёл вверх").
 const NEAR_BOTTOM_THRESHOLD_PX = 80;
+
+// Голос (Stage 2, Phase H — перенесено из voice-screen.tsx, экран объединён
+// с этим). Полноэкранная сфера/кольца с амплитудой сознательно не перенесены
+// (владелец 18.09.2026: один композер с текстом и микрофоном, без отдельного
+// полноэкранного состояния записи) — во время записи кнопка микрофона
+// становится кнопкой "стоп" с таймером рядом, тот же принцип, что у обычных
+// мессенджеров.
+const MAX_VOICE_DURATION_MS = 100_000;
+const VOICE_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+// Undo активен ~30 секунд после голосового действия (владелец 10.09.2026,
+// см. исходный комментарий в прежнем voice-screen.tsx) — та же логика,
+// перенесена без изменений: удаление undo не даёт (полное восстановление
+// задачи/встречи со всеми комментариями/подзадачами/участниками — отдельная,
+// более тяжёлая фича).
+const VOICE_UNDO_WINDOW_MS = 30_000;
+
+function pickVoiceMimeType(): string | undefined {
+  if (typeof MediaRecorder === 'undefined') return undefined;
+  return VOICE_MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m));
+}
+
+type VoiceUndoInfo =
+  | { kind: 'task'; action: 'create'; id: string }
+  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
+  | { kind: 'event'; action: 'create'; id: string }
+  | {
+      kind: 'event';
+      action: 'update';
+      id: string;
+      previous: EventRevertPayload;
+      addedParticipantIds: string[];
+      removedParticipantIds: string[];
+    };
+
+// Undo привязан к конкретной части конкретного assistant-сообщения (не ко
+// всему сообщению) — один голосовой ответ может содержать несколько
+// независимых действий в одном транскрипте ("удали встречу с Петром и
+// создай новую на пятницу"), каждое со своей карточкой и своей кнопкой
+// "Отменить".
+interface VoiceUndoEntry {
+  messageId: string;
+  partId: string;
+  undo: VoiceUndoInfo;
+}
+
+// Портировано из voice-screen.tsx без изменений — create/update дают
+// undo, delete — нет (сущности уже нет, откатывать нечего); ok=false и
+// type='chat' тоже не дают undo.
+function buildVoiceUndo(item: VoiceActionResult): VoiceUndoInfo | null {
+  if (item.type === 'chat') return null;
+  if (item.type === 'task_action') {
+    if (!item.ok) return null;
+    if (item.draft.action === 'create' && item.taskId) return { kind: 'task', action: 'create', id: item.taskId };
+    if (item.draft.action === 'update' && item.taskId && item.previous) {
+      return { kind: 'task', action: 'update', id: item.taskId, previous: item.previous };
+    }
+    return null;
+  }
+  if (!item.ok) return null;
+  if (item.draft.action === 'create' && item.eventId) return { kind: 'event', action: 'create', id: item.eventId };
+  if (item.draft.action === 'update' && item.eventId && item.previous) {
+    return {
+      kind: 'event',
+      action: 'update',
+      id: item.eventId,
+      previous: item.previous,
+      addedParticipantIds: item.draft.addParticipantIds,
+      removedParticipantIds: item.draft.removeParticipantIds,
+    };
+  }
+  return null;
+}
 
 function newClientRequestId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -99,10 +176,12 @@ function buildLiveParts(toolStates: { name: string; label: string | null }[], li
 }
 
 // Текстовый AI-чат поверх /assistant/* (Stage 2, Phase D — базовый чат;
-// Phase E — streaming) — отдельная вкладка от «Голос» (владелец
-// 15.09.2026: голос трогать не обязательно в этой фазе, объединение —
-// Phase H). История — с сервера (Phase B), не localStorage: refresh/
-// другое устройство видят ту же переписку (спека §27).
+// Phase E — streaming; Phase F/F.2 — вложения; Phase H — голос объединён в
+// этот же экран, одна лента для обоих: раньше «Голос» была отдельной
+// вкладкой со своей историей в localStorage, POST /voice/parse теперь пишет
+// в ту же Conversation/Message, что и текст, см. voice.service.ts). История
+// — с сервера (Phase B), не localStorage: refresh/другое устройство видят
+// ту же переписку (спека §27) — это верно и для голосовых реплик теперь.
 export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
@@ -136,6 +215,146 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Голос (Stage 2, Phase H) — запись поверх того же composer'а.
+  const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'processing'>('idle');
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceElapsedSec, setVoiceElapsedSec] = useState(0);
+  const [voiceUndos, setVoiceUndos] = useState<VoiceUndoEntry[]>([]);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const voiceAutoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceTickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (voiceAutoStopTimerRef.current) clearTimeout(voiceAutoStopTimerRef.current);
+      if (voiceTickTimerRef.current) clearInterval(voiceTickTimerRef.current);
+      voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  async function startVoiceRecording() {
+    setVoiceError(null);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : '';
+      if (name === 'NotAllowedError') {
+        setVoiceError(
+          'Доступ к микрофону запрещён. Если в браузере разрешение выдано, но не работает — проверьте, что у самого приложения Telegram есть доступ к микрофону в настройках телефона.',
+        );
+      } else if (name === 'NotFoundError') {
+        setVoiceError('Микрофон не найден на этом устройстве.');
+      } else {
+        setVoiceError('Не удалось получить доступ к микрофону.');
+      }
+      return;
+    }
+
+    const mimeType = pickVoiceMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    voiceChunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) voiceChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => void handleVoiceStop();
+
+    voiceStreamRef.current = stream;
+    recorderRef.current = recorder;
+    recorder.start();
+    haptic('medium');
+
+    setVoiceElapsedSec(0);
+    setVoicePhase('recording');
+    voiceTickTimerRef.current = setInterval(() => setVoiceElapsedSec((s) => s + 1), 1000);
+    voiceAutoStopTimerRef.current = setTimeout(() => stopVoiceRecording(), MAX_VOICE_DURATION_MS);
+  }
+
+  function stopVoiceRecording() {
+    if (voiceAutoStopTimerRef.current) clearTimeout(voiceAutoStopTimerRef.current);
+    if (voiceTickTimerRef.current) clearInterval(voiceTickTimerRef.current);
+    voiceAutoStopTimerRef.current = null;
+    voiceTickTimerRef.current = null;
+    recorderRef.current?.stop();
+    voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
+  }
+
+  // По остановке записи — POST /voice/parse (multipart), затем
+  // userMessage/assistantMessage из ответа добавляются в ту же ленту, что и
+  // обычная текстовая отправка (Stage 2, Phase H) — тем же
+  // MessagePartRenderer, без отдельного рендер-пути для голоса. results[i]
+  // и assistantMessage.parts[i] идут в одном порядке (см.
+  // buildVoiceAssistantParts на бэкенде) — зипуем по индексу, чтобы прицепить
+  // временную (не персистентную — как и раньше) кнопку "Отменить" к нужной
+  // части.
+  async function handleVoiceStop() {
+    setVoicePhase('processing');
+    haptic('light');
+    try {
+      const actualMimeType = recorderRef.current?.mimeType || 'audio/webm';
+      const blob = new Blob(voiceChunksRef.current, { type: actualMimeType });
+      const ext = actualMimeType.includes('mp4') ? 'm4a' : actualMimeType.includes('ogg') ? 'ogg' : 'webm';
+      const formData = new FormData();
+      formData.append('audio', blob, `voice.${ext}`);
+
+      const response = await api.postForm<VoiceParseResponse>('/voice/parse', formData);
+
+      setMessages((prev) => [...(prev ?? []), response.userMessage, response.assistantMessage]);
+      if (!conversationId) setConversationId(response.conversationId);
+
+      const newUndos: VoiceUndoEntry[] = [];
+      response.results.forEach((item, i) => {
+        const undo = buildVoiceUndo(item);
+        const part = response.assistantMessage.parts[i];
+        if (undo && part) newUndos.push({ messageId: response.assistantMessage.id, partId: part.id, undo });
+      });
+      if (newUndos.length > 0) {
+        setVoiceUndos((prev) => [...prev, ...newUndos]);
+        setTimeout(() => {
+          setVoiceUndos((prev) => prev.filter((u) => !newUndos.includes(u)));
+        }, VOICE_UNDO_WINDOW_MS);
+      }
+      notificationHaptic(response.results.every((r) => r.type === 'chat' || r.ok) ? 'success' : 'error');
+    } catch (err) {
+      notificationHaptic('error');
+      setVoiceError(err instanceof ApiError ? err.message : 'Не удалось обработать голосовое сообщение.');
+    } finally {
+      setVoicePhase('idle');
+    }
+  }
+
+  async function performVoiceUndo(entry: VoiceUndoEntry) {
+    setVoiceUndos((prev) => prev.filter((u) => u !== entry));
+    const { undo } = entry;
+    try {
+      if (undo.kind === 'task') {
+        if (undo.action === 'create') await api.delete(`/tasks/${undo.id}`);
+        else await api.patch(`/tasks/${undo.id}`, undo.previous);
+      } else {
+        if (undo.action === 'create') {
+          await api.delete(`/events/${undo.id}`);
+        } else {
+          if (Object.keys(undo.previous).length > 0) await api.patch(`/events/${undo.id}`, undo.previous);
+          for (const employeeId of undo.addedParticipantIds) {
+            await api.delete(`/events/${undo.id}/participants/${employeeId}`).catch(() => {});
+          }
+          for (const employeeId of undo.removedParticipantIds) {
+            await api.post(`/events/${undo.id}/participants`, { employeeId }).catch(() => {});
+          }
+        }
+      }
+      await api.post('/voice/messages', { text: 'Отменено.' });
+      notificationHaptic('success');
+    } catch (err) {
+      notificationHaptic('error');
+      await api.post('/voice/messages', { text: `Не получилось отменить: ${err instanceof ApiError ? err.message : 'попробуйте ещё раз'}` }).catch(() => {});
+    } finally {
+      load();
+    }
+  }
 
   async function onFileSelected(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -391,6 +610,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   return (
     <div className="assistant-screen">
       <div className="assistant-chat" ref={chatRef}>
+        {messages.length === 0 && (
+          <p className="hint" style={{ margin: '10px 0' }}>
+            Спросите что-нибудь текстом или надиктуйте задачу/встречу голосом — кнопка микрофона рядом с полем ввода.
+          </p>
+        )}
         {messages.map((m) =>
           m.role === 'user' ? (
             <div key={m.id} className="assistant-user-bubble">
@@ -406,7 +630,24 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
               {m.status === 'pending' ? (
                 <p className="assistant-pending">Печатает…</p>
               ) : (
-                m.parts.map((part) => <MessagePartRenderer key={part.id} part={part} />)
+                m.parts.map((part) => {
+                  const undo = voiceUndos.find((u) => u.messageId === m.id && u.partId === part.id);
+                  if (!undo) return <MessagePartRenderer key={part.id} part={part} />;
+                  // Голос (Stage 2, Phase H) — "Отменить" рядом с картой/
+                  // текстом только что выполненного действия, временно
+                  // (VOICE_UNDO_WINDOW_MS), не персистентно — то же
+                  // ограничение, что и раньше в voice-screen.tsx.
+                  return (
+                    <div key={part.id}>
+                      <MessagePartRenderer part={part} />
+                      <div className="voice-confirm-actions">
+                        <button type="button" className="btn-secondary btn-small" onClick={() => performVoiceUndo(undo)}>
+                          Отменить
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           ),
@@ -443,12 +684,17 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           {uploadError && <span className="error">{uploadError}</span>}
         </div>
       )}
+      {voiceError && (
+        <div className="assistant-pending-attachments">
+          <span className="error">{voiceError}</span>
+        </div>
+      )}
       <div className="assistant-composer">
         <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
         <button
           type="button"
           className="assistant-attach-btn"
-          disabled={sending || uploading || pendingAttachments.length >= MAX_ATTACHMENTS}
+          disabled={sending || uploading || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Прикрепить файл"
         >
@@ -458,7 +704,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           rows={1}
           placeholder="Спросите что-нибудь…"
           value={text}
-          disabled={sending}
+          disabled={sending || voicePhase !== 'idle'}
           maxLength={MAX_TEXT_LENGTH}
           onChange={(e) => setText(e.target.value)}
           onInput={onTextareaInput}
@@ -469,9 +715,27 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
             {text.length}/{MAX_TEXT_LENGTH}
           </span>
         )}
-        <button type="button" className="assistant-send-btn" disabled={sending || !text.trim()} onClick={() => send()}>
-          <Send size={18} strokeWidth={2.2} />
-        </button>
+        {voicePhase === 'recording' && (
+          <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>
+            {String(Math.floor(voiceElapsedSec / 60)).padStart(2, '0')}:{String(voiceElapsedSec % 60).padStart(2, '0')}
+          </span>
+        )}
+        {!text.trim() && (
+          <button
+            type="button"
+            className="assistant-attach-btn"
+            disabled={sending || uploading || voicePhase === 'processing'}
+            onClick={voicePhase === 'recording' ? stopVoiceRecording : startVoiceRecording}
+            aria-label={voicePhase === 'recording' ? 'Остановить запись' : 'Надиктовать'}
+          >
+            {voicePhase === 'recording' ? <Square size={16} strokeWidth={2} /> : <Mic size={18} strokeWidth={2} />}
+          </button>
+        )}
+        {!!text.trim() && (
+          <button type="button" className="assistant-send-btn" disabled={sending} onClick={() => send()}>
+            <Send size={18} strokeWidth={2.2} />
+          </button>
+        )}
       </div>
     </div>
   );

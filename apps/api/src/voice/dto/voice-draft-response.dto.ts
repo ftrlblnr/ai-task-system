@@ -1,4 +1,5 @@
 import { TaskPriority } from '@prisma/client';
+import type { ResponseMessage } from '../../assistant/assistant-response.mapper';
 
 // Ответ POST /voice/parse. Черновик разбирается и ВЫПОЛНЯЕТСЯ в одном и том
 // же запросе (владелец 10.09.2026, аудит п. 2.11 — см. комментарий у
@@ -138,4 +139,14 @@ export interface VoiceParseResponse {
   clarificationNeeded: boolean;
   clarificationReason: string | null;
   results: VoiceActionResult[];
+  // Stage 2, Phase H — аддитивные поля: голос и текст теперь пишут в одну
+  // ленту (Conversation/Message/MessagePart вместо отдельной VoiceMessage).
+  // apps/web (отдельная страница /voice, не объединена с текстовым чатом —
+  // его там просто нет) продолжает работать на полях выше, эти новые поля
+  // не трогая. apps/miniapp (объединённый экран «Ассистент») добавляет
+  // userMessage/assistantMessage в ту же ленту, что уже рендерит для текста
+  // — тем же MessagePartRenderer, без изменений в нём.
+  conversationId: string;
+  userMessage: ResponseMessage;
+  assistantMessage: ResponseMessage;
 }

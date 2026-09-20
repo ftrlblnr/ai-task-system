@@ -60,7 +60,7 @@ function isUniqueConstraintError(err: unknown): boolean {
 // внутренний объект. tool_activity/error намеренно пропускаются — статус
 // "проверяю задачи" или текст ошибки не несут содержательного контекста
 // для следующего вопроса пользователя.
-function serializeMessageForModelContext(parts: MessagePart[]): string {
+export function serializeMessageForModelContext(parts: MessagePart[]): string {
   return parts
     .map((p) => {
       switch (p.type) {
@@ -144,6 +144,20 @@ export class AssistantChatService {
     return this.prisma.conversation.create({
       data: { employeeId: user.id, title: title || null },
     });
+  }
+
+  // Stage 2, Phase H — точка входа для голоса (VoiceService): в отличие от
+  // listConversations (список для UI, лениво заводит первый диалог), здесь
+  // нужен ровно один разговор без списка — "тот самый", в который дальше
+  // пишутся голосовые реплики. findFirst по updatedAt: если у сотрудника
+  // когда-нибудь появится больше одного диалога, голос продолжит писать в
+  // последний активный, а не в случайный.
+  async getOrCreatePrimaryConversation(user: AuthenticatedUser): Promise<Conversation> {
+    const existing = await this.prisma.conversation.findFirst({
+      where: { employeeId: user.id },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return existing ?? this.createConversation(user);
   }
 
   private async findOwnedConversation(user: AuthenticatedUser, conversationId: string): Promise<Conversation> {
