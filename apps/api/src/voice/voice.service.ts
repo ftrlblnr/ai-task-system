@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { MessagePartType, MessageRole, MessageStatus, Role, VoiceExecutionStatus } from '@prisma/client';
+import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, VoiceExecutionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -66,6 +66,14 @@ export interface ExecutedVoiceAction {
 // parse(), но текст ошибки в чате должен остаться тем же.
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Не удалось выполнить действие';
+}
+
+// Тот же приём, что toJson в assistant-render.ts/voice-render.ts —
+// VoiceActionResult[] формально не совместим с Prisma.InputJsonValue (у
+// него index signature, у named-типов нет), хотя структурно это обычный
+// плоский JSON (см. комментарий там же).
+function toJson<T>(value: T): Prisma.InputJsonValue {
+  return value as unknown as Prisma.InputJsonValue;
 }
 
 type MulterFile = Express.Multer.File;
@@ -576,7 +584,7 @@ export class VoiceService {
           where: { id: executionId },
           data: {
             status: VoiceExecutionStatus.COMPLETED,
-            resultJson: { transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results },
+            resultJson: toJson({ transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results }),
           },
         })
         .catch(() => {});
