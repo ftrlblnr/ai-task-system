@@ -438,20 +438,28 @@ workspaces при таком масштабе проекта.
    current attachments, валидация файлов, идемпотентность под гонкой,
    provider-neutral storage) сделана 17.09.2026, Phase H (объединение
    голосового и текстового путей в один разговор, `apps/miniapp` only)
-   сделана 20.09.2026 — Phase A–H закрыты. Три внешних аудита 20-21.09.2026
-   (второй и третий — уже после Phase H, специально проверяли, что
-   unified-лента не открыла новых рисков) нашли в сумме десять находок —
-   все закрыты: exactly-once execution под конкурентными text-запросами
-   (P0, `AssistantChatService.claimOrJoin`) и под конкурентными
-   voice-запросами (P0, `VoiceService.inFlightParseRequests`, Phase H.2),
-   `POST /voice/messages` заменён на `POST /voice/undo` (P0/P1 — раньше
-   клиент мог писать в общую ленту произвольный текст с ролью ASSISTANT),
-   дублирующее логирование в `apps/web/voice/page.tsx` убрано (P0/P1),
-   идемпотентность `/voice/parse` + graceful degradation при сбое
-   персистентности после уже выполненных действий (P0/P1), транзакционная
-   линковка Message+FileArtifact (P1, Phase H.2), `storage.delete()`
-   больше не глотает не-ENOENT ошибки + крон повторяет неудачное удаление
-   (P1, Phase H.2), `conversationId` передаётся явно из
-   `apps/miniapp` (P2), `totalMs` теперь считает реальное end-to-end время
-   (P2), `StorageRegistry` + `FilesModule` DI-фикс (P2/P3). Подробности —
-   раздел "Assistant Chat" в `CURRENT_STATE.md`.
+   сделана 20.09.2026 — Phase A–H закрыты. Четыре внешних аудита
+   20-21.09.2026 (второй-четвёртый — уже после Phase H, специально
+   проверяли, что unified-лента не открыла новых рисков) нашли в сумме
+   одиннадцать находок — все закрыты: exactly-once execution под
+   конкурентными text-запросами (P0, `AssistantChatService.claimOrJoin`) и
+   под конкурентными voice-запросами (P0, `VoiceService.inFlightParseRequests`,
+   Phase H.2), `POST /voice/messages` заменён на `POST /voice/undo` (P0/P1
+   — раньше клиент мог писать в общую ленту произвольный текст с ролью
+   ASSISTANT), дублирующее логирование в `apps/web/voice/page.tsx` убрано
+   (P0/P1), идемпотентность `/voice/parse` + graceful degradation при
+   сбое персистентности после уже выполненных действий (P0/P1),
+   транзакционная линковка Message+FileArtifact (P1, Phase H.2),
+   `storage.delete()` больше не глотает не-ENOENT ошибки + крон повторяет
+   неудачное удаление (P1, Phase H.2), `conversationId` передаётся явно
+   из `apps/miniapp` (P2), `totalMs` теперь считает реальное end-to-end
+   время (P2), `StorageRegistry` + `FilesModule` DI-фикс (P2/P3) — и,
+   четвёртым аудитом, **durable voice exactly-once** (P0, Phase H.3,
+   21.09.2026): `inFlightParseRequests` защищал только конкурентные
+   запросы внутри одного живого процесса, не переживал рестарт — новая
+   таблица `VoiceExecution` (`unique(conversationId, clientRequestId)`,
+   статусы `RECEIVED→PROCESSING→EXECUTING→COMPLETED/FAILED/
+   NEEDS_RECONCILIATION`) делает claim durable на уровне БД, закрывая
+   сценарий "действие выполнено, ответ потерян/процесс упал, retry
+   выполняет действие ещё раз". Подробности — раздел "Assistant Chat" в
+   `CURRENT_STATE.md`.

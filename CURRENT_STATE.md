@@ -557,6 +557,48 @@ called === 1` (тесты преднамеренно проверены на т�
   хранит per-request state), но нарушало принцип "один provider — один
   экземпляр". Заменено на `useExisting: LocalFileStorageService`.
 
+**Durable voice exactly-once (Phase H.3, 21.09.2026)** — четвёртый внешний
+аудит проверил Phase H.2 и указал, что `inFlightParseRequests` (P0 выше)
+— это только БЫСТРЫЙ ПУТЬ для конкурентных запросов внутри ОДНОГО живого
+процесса; после падения/рестарта процесса он ничего не знает о прошлой
+попытке. Опасный сценарий, который аудит воспроизвёл в коде: business-
+действие (`TasksService.create` и т.п.) уже выполнилось, но процесс упал
+или сохранение истории переписки не удалось ДО того, как ответ дошёл до
+клиента — повторный `/voice/parse` с тем же `clientRequestId` после
+рестарта запускал бы весь пайплайн заново, включая уже случившуюся
+мутацию (старый `findCachedParseResponse` из Phase H.1 при этом сценарии
+удалял осиротевшую user-строку и позволял выполнить всё заново — именно
+это аудит и указал как непойманный случай).
+- **`VoiceExecution`** — новая таблица (`employeeId`, `conversationId`,
+  `clientRequestId`, `status`, `resultJson`, `userMessageId`,
+  `assistantMessageId`, `errorMessage`; `unique(conversationId,
+  clientRequestId)`), durable claim жизненного цикла выполнения:
+  `RECEIVED → PROCESSING → EXECUTING → COMPLETED`, либо `FAILED`
+  (упало до начала действий — retry безопасен), либо
+  `NEEDS_RECONCILIATION` (упало непредвиденно ПОСЛЕ начала действий —
+  неизвестно, сколько из них выполнилось, retry небезопасен).
+- **`VoiceService.claimAndRunDurable`** — `create()` строки на
+  `(conversationId, clientRequestId)`; P2002 (строка уже есть) → смотрит
+  на её статус: `COMPLETED` → `reconstructCompletedResponse` (реальный
+  сохранённый `results`, не пустышка, как было в старом
+  `findCachedParseResponse`); `FAILED` → безопасно начать заново на той
+  же строке; любой другой статус (`RECEIVED`/`PROCESSING`/`EXECUTING`/
+  `NEEDS_RECONCILIATION`) → явный отказ (`BadRequestException`) БЕЗ
+  единого вызова `TasksService`/`EventsService` — тот же принцип "не
+  трогать бизнес-логику при неуверенности", что и defensive RBAC-проверка
+  в `undo()`.
+- **Статус `COMPLETED` ставится СРАЗУ после исполнения действий**, до
+  попытки сохранить историю переписки — именно факт "действия выполнены"
+  (необратимый), а не факт "история сохранилась", решает, безопасен ли
+  retry. Проверено тестом: retry на `COMPLETED` возвращает настоящий
+  `resultJson` даже если персистентность в исходной попытке упала
+  (Phase H.1 graceful degradation не пострадал).
+- `inFlightParseRequests` (in-memory Map, Phase H.2) остаётся как
+  оптимизация для конкурентных запросов внутри одного процесса — второй
+  такой запрос просто ждёт тот же промис, не делая лишний round-trip к
+  БД; реальная гарантия корректности теперь — `unique(conversationId,
+  clientRequestId)` на уровне БД, переживающая рестарт процесса.
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
