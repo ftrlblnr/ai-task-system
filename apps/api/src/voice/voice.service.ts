@@ -23,10 +23,8 @@ import type {
   VoiceActionResult,
   VoiceDraft,
   VoiceEventActionDraft,
-  VoiceEventActionResult,
   VoiceParseResponse,
   VoiceTaskActionDraft,
-  VoiceTaskActionResult,
 } from './dto/voice-draft-response.dto';
 import type { VoiceUndoDto } from './dto/voice-undo.dto';
 
