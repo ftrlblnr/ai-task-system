@@ -482,8 +482,8 @@ select {
 }
 
 /* ============ Voice undo (Stage 2, Phase H — микрофон переехал в
-   AssistantScreen composer, .voice-screen/.voice-chat/.voice-bubble*/
-   .voice-orb-* удалены вместе с voice-screen.tsx; .voice-confirm-actions
+   AssistantScreen composer, классы voice-screen/voice-chat/voice-bubble
+   и voice-orb удалены вместе с voice-screen.tsx; .voice-confirm-actions
    осталась — та же кнопка "Отменить" под карточкой/текстом только что
    выполненного голосового действия, владелец 09.09.2026) ============ */
 .voice-confirm-actions {
