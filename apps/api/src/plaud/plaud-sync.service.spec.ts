@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { PlaudSyncStatus } from '@prisma/client';
 import { PlaudSyncService } from './plaud-sync.service';
 
@@ -149,7 +150,6 @@ describe('PlaudSyncService.pullChanges', () => {
   it('содержимое не изменилось (тот же contentHash) — Meeting.update не вызывается вовсе', async () => {
     const rawSummary = 'Саммари встречи';
     const title = 'Встреча';
-    const { createHash } = require('crypto');
     const hash = createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
     const tracking = { plaudRecordingId: 'p1', status: PlaudSyncStatus.SYNCED, contentHash: hash, meetingId: 'm1', plaudCreatedAt: new Date('2026-09-01T10:00:00Z') };
     const prisma = {

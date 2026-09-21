@@ -63,7 +63,8 @@ export function parseTranscriptSegments(raw: string): TranscriptSegmentInput[] {
   } catch {
     return [];
   }
-  const list = Array.isArray(parsed) ? parsed : Array.isArray((parsed as any)?.segments) ? (parsed as any).segments : null;
+  const wrapped = parsed && typeof parsed === 'object' ? (parsed as { segments?: unknown }).segments : undefined;
+  const list = Array.isArray(parsed) ? parsed : Array.isArray(wrapped) ? wrapped : null;
   if (!list) return [];
 
   const segments: TranscriptSegmentInput[] = [];
