@@ -463,3 +463,25 @@ workspaces при таком масштабе проекта.
    сценарий "действие выполнено, ответ потерян/процесс упал, retry
    выполняет действие ещё раз". Подробности — раздел "Assistant Chat" в
    `CURRENT_STATE.md`.
+5. Полный roadmap четвёртого внешнего аудита (21.09.2026) закрыт тем же
+   заходом, помимо durable voice exactly-once выше: **Phase H.4 trusted
+   server-side undo** (`UndoRecord` + непрозрачный `undoToken` вместо
+   authoritative rollback-payload от клиента), **Phase I Employee Resolver**
+   (`EmployeeAlias` + `EmployeeResolverService`, независимая от LLM
+   перепроверка `assigneeId` по буквальному тексту имени) и **Company/STT
+   vocabulary** (`CompanyVocabularyService` — подсказка-словарь именам/
+   терминам компании для Whisper), **Phase J Plaud Sync v2** (`PlaudSyncItem`
+   — фикс двух реальных багов: запись без готового summary раньше терялась
+   навсегда; уже импортированная запись никогда не обновлялась при
+   изменении на стороне Plaud), **Phase K MeetingSegment + Assistant
+   meeting/Plaud tools** (`get_recent_meetings`/`search_meetings`/
+   `get_meeting`/`search_meeting_transcript` — Assistant теперь может
+   отвечать на вопросы про прошлые встречи, не только задачи/календарь).
+   **Важная оговорка Phase K**: сама выборка транскрипта из Plaud API
+   (`data_type`/JSON-формат сегментов) — best-effort, не подтверждена
+   живым вызовом (пакет `@plaud-ai/cli`, которым в своё время сверяли
+   `auto_sum_note`, недоступен в этом окружении) — нужна проверка на
+   реальном аккаунте перед тем, как полагаться на это в проде; всё
+   остальное протестировано и не зависит от того, окажется ли это
+   предположение верным. Подробности — раздел "Assistant Chat" в
+   `CURRENT_STATE.md`.
