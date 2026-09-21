@@ -207,11 +207,12 @@ magic-byte + структурная OOXML-проверка DOCX/XLSX, компе
 падают — но это не то же самое, что exactly-once ВЫПОЛНЕНИЕ, см. ниже).
 Подробности реализации, известные ограничения этого этапа (нет
 frontend-тестовой инфраструктуры, узкий случай ненадёжного повторного
-вызова `export_tasks_xlsx` при буквальном повторе запроса, а также три
-находки внешнего аудита от 20.09.2026 — exactly-once execution под
+вызова `export_tasks_xlsx` при буквальном повторе запроса) и путь данных —
+раздел "Assistant Chat" в `CURRENT_STATE.md`. Находки трёх внешних аудитов
+20-21.09.2026 (exactly-once execution для текстового чата и для голоса под
 конкурентными запросами, нетранзакционная линковка Message+FileArtifact,
-`storage.delete()` глотает не-ENOENT ошибки) и путь данных — раздел
-"Assistant Chat" в `CURRENT_STATE.md`.
+`storage.delete()` глотавший не-ENOENT ошибки, `StorageRegistry`,
+`FilesModule` DI) — закрыты, см. Phase F.3/H.1/H.2 в `CURRENT_STATE.md`.
 
 ## Привязка Telegram-аккаунтов
 
@@ -437,18 +438,20 @@ workspaces при таком масштабе проекта.
    current attachments, валидация файлов, идемпотентность под гонкой,
    provider-neutral storage) сделана 17.09.2026, Phase H (объединение
    голосового и текстового путей в один разговор, `apps/miniapp` only)
-   сделана 20.09.2026 — Phase A–H закрыты. Два внешних аудита от 20.09.2026
-   (второй — уже после Phase H, специально проверял, что unified-лента не
-   открыла новых рисков) нашли в сумме шесть находок; четыре закрыты тем
-   же днём: exactly-once execution под конкурентными text-запросами (P0,
-   `AssistantChatService.claimOrJoin`), `POST /voice/messages` заменён на
-   `POST /voice/undo` (P0/P1 — раньше клиент мог писать в общую ленту
-   произвольный текст с ролью ASSISTANT), дублирующее логирование в
-   `apps/web/voice/page.tsx` убрано (P0/P1), идемпотентность
-   `/voice/parse` + graceful degradation при сбое персистентности после
-   уже выполненных действий (P0/P1). До подключения мутирующих write-tools
-   (`create_task`/`update_task`/`send_email` и т.п.) остаются два P1 из
-   Phase F.3, не связанных с голосом: транзакционная линковка
-   Message+FileArtifact, корректная семантика `storage.delete()` — не
-   глотать ошибки кроме ENOENT. Подробности — раздел "Assistant Chat" в
-   `CURRENT_STATE.md`.
+   сделана 20.09.2026 — Phase A–H закрыты. Три внешних аудита 20-21.09.2026
+   (второй и третий — уже после Phase H, специально проверяли, что
+   unified-лента не открыла новых рисков) нашли в сумме десять находок —
+   все закрыты: exactly-once execution под конкурентными text-запросами
+   (P0, `AssistantChatService.claimOrJoin`) и под конкурентными
+   voice-запросами (P0, `VoiceService.inFlightParseRequests`, Phase H.2),
+   `POST /voice/messages` заменён на `POST /voice/undo` (P0/P1 — раньше
+   клиент мог писать в общую ленту произвольный текст с ролью ASSISTANT),
+   дублирующее логирование в `apps/web/voice/page.tsx` убрано (P0/P1),
+   идемпотентность `/voice/parse` + graceful degradation при сбое
+   персистентности после уже выполненных действий (P0/P1), транзакционная
+   линковка Message+FileArtifact (P1, Phase H.2), `storage.delete()`
+   больше не глотает не-ENOENT ошибки + крон повторяет неудачное удаление
+   (P1, Phase H.2), `conversationId` передаётся явно из
+   `apps/miniapp` (P2), `totalMs` теперь считает реальное end-to-end время
+   (P2), `StorageRegistry` + `FilesModule` DI-фикс (P2/P3). Подробности —
+   раздел "Assistant Chat" в `CURRENT_STATE.md`.
