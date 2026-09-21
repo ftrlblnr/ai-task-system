@@ -1204,6 +1204,8 @@ export class VoiceService {
         description: draft.description,
         assigneeId: null,
         assigneeName: null,
+        assigneeMentioned: false,
+        assigneeRawText: '',
         dueDate: null,
         priority: null,
         sourceMeetingId: null,
