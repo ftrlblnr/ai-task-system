@@ -102,21 +102,26 @@ export class MeetingsService {
   // проверка по видимым ACTIVE-сотрудникам, что и у голосового
   // assigneeRawText) и пишется в сегменты транскрипта той же встречи.
   // AMBIGUOUS/NOT_FOUND — обычный, ожидаемый исход (введённое имя не
-  // обязано совпасть ни с одним сотрудником, например внешний участник) —
-  // такие метки просто остаются без speakerEmployeeId, не ошибка.
+  // обязано совпасть ни с одним сотрудником, например внешний участник).
+  //
+  // Находка №5 шестого внешнего аудита (Stage 2, Phase M) — раньше
+  // AMBIGUOUS/NOT_FOUND просто пропускался (`continue`), не трогая
+  // speakerEmployeeId — если руководитель СНАЧАЛА привязал "Speaker 1" к
+  // реальному сотруднику, а ПОТОМ исправил имя на то, что не резолвится
+  // (например, внешний клиент), старый (уже неверный) speakerEmployeeId
+  // оставался на сегментах навсегда. Явно сбрасываем в null при
+  // AMBIGUOUS/NOT_FOUND — так неверный маппинг не переживает исправление.
   private async resolveSegmentSpeakers(meetingId: string, speakerNames: Record<string, string>): Promise<void> {
     const entries = Object.entries(speakerNames).filter(([, name]) => name && name.trim());
     if (entries.length === 0) return;
 
     const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
-    if (employees.length === 0) return;
 
     for (const [label, name] of entries) {
-      const resolution = await this.employeeResolver.resolve(name, employees);
-      if (resolution.status !== 'RESOLVED') continue;
+      const resolution = employees.length > 0 ? await this.employeeResolver.resolve(name, employees) : { status: 'NOT_FOUND' as const, employeeId: null };
       await this.prisma.meetingSegment.updateMany({
         where: { meetingId, speakerLabel: label },
-        data: { speakerEmployeeId: resolution.employeeId },
+        data: { speakerEmployeeId: resolution.status === 'RESOLVED' ? resolution.employeeId : null },
       });
     }
   }

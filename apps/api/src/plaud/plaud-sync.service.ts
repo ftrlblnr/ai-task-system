@@ -25,6 +25,10 @@ function contentHashOf(title: string, rawSummary: string): string {
   return createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
 }
 
+function hashOf(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 // Синхронизация встреч из Plaud (владелец 08.09.2026) — переносит только
 // саммари (auto_sum_note), транскрипт сознательно не храним (см. план).
 //
@@ -132,17 +136,24 @@ export class PlaudSyncService {
       const hash = contentHashOf(title, rawSummary);
       const contentUnchanged = tracking?.status === PlaudSyncStatus.SYNCED && tracking.contentHash === hash;
 
+      // Stage 2, Phase M (внешний аудит 21.09.2026, "transcript freshness
+      // после первого успешного sync") — загружаем и хэшируем транскрипт
+      // ОДИН раз здесь, независимо от того, изменилось ли summary: у Plaud
+      // это отдельная note/source, меняется независимо. transcriptHash —
+      // не просто "был ли синхронизирован хоть раз" (transcriptSyncedAt),
+      // а "совпадает ли с тем, что мы видели в ПРОШЛЫЙ раз" — ловит и
+      // случай "транскрипт был готов частично, потом Plaud его дописал".
+      const transcript = await this.loadTranscriptContent(detail);
+
       if (contentUnchanged) {
-        // Находка №3 пятого аудита (Stage 2, Phase L) — summary/title не
-        // изменились, но транскрипт мог быть ещё не готов на момент прошлой
-        // успешной синхронизации (contentHash после этого больше никогда не
-        // меняется, а транскрипт — отдельная note в Plaud). transcriptSyncedAt
-        // — независимый от contentHash признак: пока он null, пробуем
-        // досинхронизировать транскрипт, не трогая уже синхронное summary.
-        if (!tracking.transcriptSyncedAt && tracking.meetingId) {
-          const transcriptSynced = await this.syncTranscriptSegments(tracking.meetingId, detail);
+        const transcriptChanged = transcript && transcript.hash !== tracking.transcriptHash;
+        if (transcriptChanged && tracking.meetingId) {
+          const transcriptSynced = await this.applyTranscriptSegments(tracking.meetingId, transcript.content);
           if (transcriptSynced) {
-            await this.prisma.plaudSyncItem.update({ where: { plaudRecordingId }, data: { transcriptSyncedAt: new Date() } });
+            await this.prisma.plaudSyncItem.update({
+              where: { plaudRecordingId },
+              data: { transcriptSyncedAt: new Date(), transcriptHash: transcript.hash },
+            });
           }
         }
         return;
@@ -167,7 +178,7 @@ export class PlaudSyncService {
         meetingId = created.id;
       }
 
-      const transcriptSynced = await this.syncTranscriptSegments(meetingId, detail);
+      const transcriptSynced = transcript ? await this.applyTranscriptSegments(meetingId, transcript.content) : false;
 
       await this.prisma.plaudSyncItem.upsert({
         where: { plaudRecordingId },
@@ -179,6 +190,7 @@ export class PlaudSyncService {
           meetingId,
           contentHash: hash,
           transcriptSyncedAt: transcriptSynced ? new Date() : null,
+          transcriptHash: transcriptSynced ? transcript!.hash : null,
         },
         update: {
           status: PlaudSyncStatus.SYNCED,
@@ -186,11 +198,11 @@ export class PlaudSyncService {
           contentHash: hash,
           lastAttemptAt: new Date(),
           errorMessage: null,
-          // transcriptSyncedAt не сбрасывается в null, если этот прогон не
-          // засинкал транскрипт заново (transcriptSynced=false) — иначе
-          // изменение title/summary откатывало бы уже успешно
+          // transcriptSyncedAt/transcriptHash не сбрасываются, если этот
+          // прогон не засинкал транскрипт заново (transcriptSynced=false)
+          // — иначе изменение title/summary откатывало бы уже успешно
           // синхронизированный транскрипт обратно в "не синхронизирован".
-          ...(transcriptSynced ? { transcriptSyncedAt: new Date() } : {}),
+          ...(transcriptSynced ? { transcriptSyncedAt: new Date(), transcriptHash: transcript!.hash } : {}),
         },
       });
     } catch (err) {
@@ -211,31 +223,63 @@ export class PlaudSyncService {
     });
   }
 
+  // Загружается ОДИН раз за вызов syncItem (см. её комментарий, Phase M) —
+  // используется и веткой "summary не изменилось" (независимая проверка
+  // транскрипта), и веткой "summary изменилось/новая запись", чтобы не
+  // делать двойной запрос к Plaud/S3 за одним и тем же содержимым.
+  private async loadTranscriptContent(detail: PlaudFileDetail): Promise<{ content: string; hash: string } | null> {
+    const note = this.api.findTranscriptNote(detail);
+    if (!note) return null;
+    const content = await this.api.loadNoteContent(note);
+    if (!content) return null;
+    return { content, hash: hashOf(content) };
+  }
+
   // Stage 2, Phase K — best-effort, см. предупреждение у
   // PlaudApiService.findTranscriptNote/parseTranscriptSegments: если
-  // формат окажется неверным (findTranscriptNote ничего не находит,
-  // JSON.parse не парсится), сегменты просто не появятся — не роняет
-  // синхронизацию summary, которая уже успешно завершилась к этому
-  // моменту. delete+createMany внутри транзакции — идемпотентно, старые
-  // сегменты этой встречи не задваиваются при повторном прогоне.
+  // формат окажется неверным (JSON.parse не парсится), сегменты просто не
+  // появятся — не роняет синхронизацию summary, которая уже успешно
+  // завершилась к этому моменту. delete+createMany внутри транзакции —
+  // идемпотентно, старые сегменты этой встречи не задваиваются при
+  // повторном прогоне.
   //
   // Возвращает true только если сегменты реально записаны — вызывающий код
-  // (syncItem, Phase L) использует это, чтобы решить, можно ли пометить
-  // transcriptSyncedAt: false здесь означает "транскрипт ещё не готов у
-  // Plaud", а не "мы его синхронизировали и он пуст" — на следующем прогоне
-  // нужно попробовать снова, а не считать вопрос закрытым.
-  private async syncTranscriptSegments(meetingId: string, detail: PlaudFileDetail): Promise<boolean> {
-    const note = this.api.findTranscriptNote(detail);
-    if (!note) return false;
-    const rawContent = await this.api.loadNoteContent(note);
-    if (!rawContent) return false;
+  // (syncItem) использует это, чтобы решить, можно ли пометить
+  // transcriptSyncedAt/transcriptHash: false здесь означает "транскрипт
+  // не распарсился", а не "мы его синхронизировали и он пуст" — на
+  // следующем прогоне нужно попробовать снова, а не считать вопрос
+  // закрытым.
+  private async applyTranscriptSegments(meetingId: string, rawContent: string): Promise<boolean> {
     const segments = parseTranscriptSegments(rawContent);
     if (segments.length === 0) return false;
+
+    // Находка №4 шестого внешнего аудита (Stage 2, Phase M) — delete+
+    // createMany ниже полностью пересоздаёт сегменты этой встречи (resync
+    // после того, как Plaud дописал/изменил транскрипт), а вместе с ними
+    // раньше терялся уже проставленный руководителем speakerEmployeeId
+    // (MeetingsService.updateSpeakers) — новые строки создавались с
+    // speakerEmployeeId: null, и "Speaker 2 → Жандос" приходилось
+    // сопоставлять заново после каждого resync'а. Читаем прежнее
+    // сопоставление speakerLabel → speakerEmployeeId ДО удаления и
+    // переносим его на новые сегменты с той же меткой.
+    const previouslyMapped = await this.prisma.meetingSegment.findMany({
+      where: { meetingId, speakerEmployeeId: { not: null } },
+      select: { speakerLabel: true, speakerEmployeeId: true },
+    });
+    const speakerMapping = new Map(previouslyMapped.map((s) => [s.speakerLabel, s.speakerEmployeeId]));
 
     await this.prisma.$transaction([
       this.prisma.meetingSegment.deleteMany({ where: { meetingId } }),
       this.prisma.meetingSegment.createMany({
-        data: segments.map((s) => ({ meetingId, order: s.order, startMs: s.startMs, endMs: s.endMs, speakerLabel: s.speakerLabel, text: s.text })),
+        data: segments.map((s) => ({
+          meetingId,
+          order: s.order,
+          startMs: s.startMs,
+          endMs: s.endMs,
+          speakerLabel: s.speakerLabel,
+          speakerEmployeeId: speakerMapping.get(s.speakerLabel) ?? null,
+          text: s.text,
+        })),
       }),
     ]);
     return true;

@@ -126,6 +126,8 @@ export interface VoiceEventActionResult {
   error: string | null;
   eventId: string | null;
   undoToken: string | null;
+  // Зеркало packages/shared-types — подробные комментарии там.
+  warning: string | null;
 }
 export interface VoiceChatResult {
   type: 'chat';

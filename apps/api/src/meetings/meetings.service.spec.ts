@@ -44,13 +44,26 @@ describe('MeetingsService.updateSpeakers — сопоставление спик
     });
   });
 
-  it('имя не резолвится (NOT_FOUND/AMBIGUOUS) — MeetingSegment не трогается, updateSpeakers всё равно успешен', async () => {
+  it('имя не резолвится (NOT_FOUND/AMBIGUOUS) — speakerEmployeeId выставляется в null, updateSpeakers всё равно успешен', async () => {
     const { service, prisma } = makeDeps(); // resolutions по умолчанию NOT_FOUND
 
     const result = await service.updateSpeakers('m1', { 'Speaker 1': 'Внешний гость' });
 
-    expect(prisma.meetingSegment.updateMany).not.toHaveBeenCalled();
+    expect(prisma.meetingSegment.updateMany).toHaveBeenCalledWith({ where: { meetingId: 'm1', speakerLabel: 'Speaker 1' }, data: { speakerEmployeeId: null } });
     expect(result).toEqual({ id: 'm1' });
+  });
+
+  // РЕГРЕССИЯ находки №5 шестого внешнего аудита (Stage 2, Phase M) —
+  // раньше AMBIGUOUS/NOT_FOUND просто пропускался, оставляя УЖЕ
+  // проставленный ранее (теперь неверный) speakerEmployeeId на сегментах.
+  it('РЕГРЕССИЯ находки №5 — переисправление "Speaker 1" на нерезолвящееся имя очищает ранее проставленный speakerEmployeeId', async () => {
+    const { service, prisma } = makeDeps({
+      resolutions: { 'Внешний клиент': { status: 'AMBIGUOUS', employeeId: null } },
+    });
+
+    await service.updateSpeakers('m1', { 'Speaker 1': 'Внешний клиент' });
+
+    expect(prisma.meetingSegment.updateMany).toHaveBeenCalledWith({ where: { meetingId: 'm1', speakerLabel: 'Speaker 1' }, data: { speakerEmployeeId: null } });
   });
 
   it('несколько говорящих — каждый резолвится и обновляется независимо', async () => {

@@ -24,11 +24,26 @@ describe('parseTranscriptSegments', () => {
   });
 
   it('обёрнуто в {segments: [...]}', () => {
-    const raw = JSON.stringify({ segments: [{ speaker_label: 'A', start_time: 1, end_time: 2, content: 'Текст' }] });
+    const raw = JSON.stringify({ segments: [{ speaker_label: 'A', start_time: 1000, end_time: 2000, content: 'Текст' }] });
 
     const result = parseTranscriptSegments(raw);
 
     expect(result).toEqual([{ order: 0, startMs: 1000, endMs: 2000, speakerLabel: 'A', text: 'Текст' }]);
+  });
+
+  // РЕГРЕССИЯ находки шестого внешнего аудита (Stage 2, Phase M) —
+  // подтверждено живым вызовом реального Plaud API 21.09.2026: start_time/
+  // end_time у Plaud ВСЕГДА уже в миллисекундах, несмотря на то что имя
+  // поля само по себе не содержит "ms" — раньше start_time/end_time шли
+  // через pickAmbiguousMs и маленькое значение (типично для реплики в
+  // начале записи) домножалось на 1000, превращая, например, 8.79 секунды
+  // от начала записи в ~2.4 часа.
+  it('start_time/end_time — реальный формат Plaud, маленькое значение НЕ домножается (short-реплика в начале записи)', () => {
+    const raw = JSON.stringify([{ speaker: 'Speaker 1', start_time: 8790, end_time: 9810, content: 'Привет' }]);
+
+    const result = parseTranscriptSegments(raw);
+
+    expect(result).toEqual([{ order: 0, startMs: 8790, endMs: 9810, speakerLabel: 'Speaker 1', text: 'Привет' }]);
   });
 
   it('время уже в миллисекундах (большие значения) — не домножается повторно', () => {

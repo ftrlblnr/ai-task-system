@@ -250,6 +250,43 @@ describe('AssistantToolsService.execute — инструменты встреч 
     );
   });
 
+  // Находка №3 шестого внешнего аудита (Stage 2, Phase M) — раньше
+  // инструмент отдавал только сырую speakerLabel ("Speaker 2"), даже если
+  // MeetingsService.updateSpeakers уже резолвил говорящего в сотрудника —
+  // Assistant не мог ответить "Жандос сказал", только "Speaker 2 сказал".
+  it('search_meeting_transcript — говорящий сопоставлен с сотрудником, отдаёт speakerName/speakerEmployeeId', async () => {
+    const found = [
+      {
+        meetingId: 'm1',
+        speakerLabel: 'Speaker 2',
+        speakerEmployeeId: 'e1',
+        speakerEmployee: { fullName: 'Жандос Ахметов' },
+        startMs: 60000,
+        endMs: 65000,
+        text: 'по договору',
+        meeting: { title: 'Встреча про завод' },
+      },
+    ];
+    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+
+    const result = await service.execute('search_meeting_transcript', { query: 'договор' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({
+      items: [{ speakerLabel: 'Speaker 2', speakerEmployeeId: 'e1', speakerName: 'Жандос Ахметов' }],
+    });
+  });
+
+  it('search_meeting_transcript — говорящий НЕ сопоставлен — speakerEmployeeId/speakerName оба null', async () => {
+    const found = [{ meetingId: 'm1', speakerLabel: 'Speaker 1', speakerEmployeeId: null, speakerEmployee: null, startMs: 0, endMs: 1000, text: 'привет', meeting: { title: 'Встреча' } }];
+    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+
+    const result = await service.execute('search_meeting_transcript', { query: 'привет' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ items: [{ speakerEmployeeId: null, speakerName: null }] });
+  });
+
   it('search_meeting_transcript — без транскрипта (ничего не найдено) отдаёт пустой items, не бросает', async () => {
     const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) } };
     const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);

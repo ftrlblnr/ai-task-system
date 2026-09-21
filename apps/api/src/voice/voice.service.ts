@@ -824,6 +824,33 @@ export class VoiceService {
     }
   }
 
+  // Находка №6 шестого внешнего аудита (Stage 2, Phase M) — раньше
+  // addParticipant/removeParticipant молча глотали свою ошибку
+  // (`.catch(() => {})`), и если, например, один из трёх названных
+  // участников не добавлялся (сотрудник уже неактивен/не существует),
+  // ответ всё равно приходил ok:true без единого следа проблемы —
+  // пользователь считал встречу полностью настроенной. Возвращает null,
+  // если все операции прошли успешно (или их не было), иначе — человеко-
+  // читаемое описание, какие именно упали (result.warning, ok остаётся
+  // true — сама встреча создана/изменена успешно, это вторичный сбой, тот
+  // же decoupling-принцип, что и у createUndoRecord).
+  private async applyParticipants(eventId: string, addParticipantIds: string[], removeParticipantIds: string[]): Promise<string | null> {
+    const failures: string[] = [];
+    for (const employeeId of addParticipantIds) {
+      await this.events.addParticipant(eventId, employeeId).catch((err) => {
+        failures.push(`не удалось добавить участника ${employeeId}: ${toErrorMessage(err)}`);
+      });
+    }
+    for (const employeeId of removeParticipantIds) {
+      await this.events.removeParticipant(eventId, employeeId).catch((err) => {
+        failures.push(`не удалось убрать участника ${employeeId}: ${toErrorMessage(err)}`);
+      });
+    }
+    if (failures.length === 0) return null;
+    this.logger.warn(`executeEventAction: частичный сбой участников события ${eventId}: ${failures.join('; ')}`);
+    return failures.join('; ');
+  }
+
   // Аналог executeTaskAction для событий — EventsService.create/update/
   // remove/addParticipant/removeParticipant принимают employeeId, не весь
   // AuthenticatedUser (весь модуль и так закрыт на Role.OWNER на уровне
@@ -841,9 +868,7 @@ export class VoiceService {
           allDay: draft.allDay ?? false,
         };
         const created = await this.events.create(dto, user.id);
-        for (const employeeId of draft.addParticipantIds) {
-          await this.events.addParticipant(created.id, employeeId).catch(() => {});
-        }
+        const warning = await this.applyParticipants(created.id, draft.addParticipantIds, []);
         // Свежая сущность ПОСЛЕ добавления участников (Stage 2, Phase H) —
         // created сам по себе ещё не знает про них (addParticipant меняет
         // строку в БД уже после того, как created был получен), карточка с
@@ -852,7 +877,7 @@ export class VoiceService {
         const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id) : created;
         const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.CREATE, created.id);
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, undoToken },
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, undoToken, warning },
           entity,
         };
       }
@@ -879,12 +904,7 @@ export class VoiceService {
           if (dto.allDay !== undefined) previous.allDay = before.allDay;
           await this.events.update(draft.targetEventId, dto, user.id);
         }
-        for (const employeeId of draft.addParticipantIds) {
-          await this.events.addParticipant(draft.targetEventId, employeeId).catch(() => {});
-        }
-        for (const employeeId of draft.removeParticipantIds) {
-          await this.events.removeParticipant(draft.targetEventId, employeeId).catch(() => {});
-        }
+        const warning = await this.applyParticipants(draft.targetEventId, draft.addParticipantIds, draft.removeParticipantIds);
         // Один финальный findOne после всех изменений (полей + участников)
         // — Stage 2, Phase H: раньше возврат update()/addParticipant не
         // использовался вовсе, строить карточку было не из чего.
@@ -895,7 +915,7 @@ export class VoiceService {
           removedParticipantIds: draft.removeParticipantIds,
         });
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken },
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken, warning },
           entity,
         };
       }
@@ -904,12 +924,12 @@ export class VoiceService {
       // для задач (владелец 10.09.2026).
       await this.events.remove(draft.targetEventId, user.id);
       return {
-        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken: null },
+        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken: null, warning: null },
         entity: null,
       };
     } catch (err) {
       return {
-        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, undoToken: null },
+        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, undoToken: null, warning: null },
         entity: null,
       };
     }
@@ -1051,13 +1071,25 @@ export class VoiceService {
           // Инверсия: то, что исходное действие ДОБАВИЛО, undo СНИМАЕТ, и
           // наоборот — тот же смысл, что уже был в прежнем клиентском
           // performUndo (обеих фронтендов), просто выполняется здесь.
+          //
+          // Находка №6 шестого внешнего аудита (Stage 2, Phase M) — раньше
+          // сбой отката отдельного участника проходил полностью бесследно
+          // (`.catch(() => {})`) — не только для клиента (тот же decoupling-
+          // принцип здесь оправдан: остальная часть отката события уже
+          // произошла, превращать весь undo в ok:false из-за одного
+          // участника было бы неверно), но и для логов — диагностировать
+          // такой сбой раньше было нечем. Теперь как минимум логируется.
           const addedParticipantIds = (record.addedParticipantIds ?? []) as string[];
           const removedParticipantIds = (record.removedParticipantIds ?? []) as string[];
           for (const employeeId of addedParticipantIds) {
-            await this.events.removeParticipant(record.entityId, employeeId).catch(() => {});
+            await this.events.removeParticipant(record.entityId, employeeId).catch((err) => {
+              this.logger.warn(`undo: не удалось откатить добавленного участника ${employeeId} у события ${record.entityId}: ${toErrorMessage(err)}`);
+            });
           }
           for (const employeeId of removedParticipantIds) {
-            await this.events.addParticipant(record.entityId, employeeId).catch(() => {});
+            await this.events.addParticipant(record.entityId, employeeId).catch((err) => {
+              this.logger.warn(`undo: не удалось восстановить снятого участника ${employeeId} у события ${record.entityId}: ${toErrorMessage(err)}`);
+            });
           }
         }
       }

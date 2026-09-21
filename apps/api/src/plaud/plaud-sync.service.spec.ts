@@ -255,7 +255,7 @@ describe('PlaudSyncService.pullChanges', () => {
         plaudConnection: { findUnique: jest.fn().mockResolvedValue(makeConnection()), update: jest.fn() },
         plaudSyncItem: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn() },
         meeting: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({ id: 'm1' }), update: jest.fn() },
-        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn() },
+        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
         $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
       };
       const api = {
@@ -290,7 +290,7 @@ describe('PlaudSyncService.pullChanges', () => {
 
       expect(prisma.meetingSegment.deleteMany).toHaveBeenCalledWith({ where: { meetingId: 'm1' } });
       expect(prisma.meetingSegment.createMany).toHaveBeenCalledWith({
-        data: [{ meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'A', text: 'Привет' }],
+        data: [{ meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'A', speakerEmployeeId: null, text: 'Привет' }],
       });
     });
 
@@ -334,7 +334,7 @@ describe('PlaudSyncService.pullChanges', () => {
           upsert: jest.fn(),
         },
         meeting: { findUnique: jest.fn(), update: jest.fn() },
-        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn() },
+        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
         $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
       };
       const transcriptNote = { data_type: 'origin_text_note', data_content: JSON.stringify([{ speaker: 'A', start: 0, end: 2, text: 'Привет' }]) };
@@ -354,21 +354,27 @@ describe('PlaudSyncService.pullChanges', () => {
       expect(prisma.plaudSyncItem.upsert).not.toHaveBeenCalled();
       // Но транскрипт синхронизирован и transcriptSyncedAt проставлен.
       expect(prisma.meetingSegment.createMany).toHaveBeenCalledWith({
-        data: [{ meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'A', text: 'Привет' }],
+        data: [{ meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'A', speakerEmployeeId: null, text: 'Привет' }],
       });
-      expect(prisma.plaudSyncItem.update).toHaveBeenCalledWith({ where: { plaudRecordingId: 'p1' }, data: { transcriptSyncedAt: expect.any(Date) } });
+      expect(prisma.plaudSyncItem.update).toHaveBeenCalledWith({
+        where: { plaudRecordingId: 'p1' },
+        data: { transcriptSyncedAt: expect.any(Date), transcriptHash: expect.any(String) },
+      });
     });
 
-    it('содержимое не изменилось, транскрипт уже был синхронизирован (transcriptSyncedAt задан) — повторно не трогается', async () => {
+    it('содержимое (summary) не изменилось, транскрипт тоже не изменился (совпадает transcriptHash) — не пересинхронизируется', async () => {
       const rawSummary = 'Саммари встречи';
       const title = 'Встреча';
       const hash = createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
+      const transcriptContent = JSON.stringify([{ speaker: 'A', start_time: 0, end_time: 2000, content: 'Привет' }]);
+      const transcriptHash = createHash('sha256').update(transcriptContent).digest('hex');
       const tracking = {
         plaudRecordingId: 'p1',
         status: PlaudSyncStatus.SYNCED,
         contentHash: hash,
         meetingId: 'm1',
         transcriptSyncedAt: new Date('2026-09-01T10:05:00Z'),
+        transcriptHash,
         plaudCreatedAt: new Date('2026-09-01T10:00:00Z'),
       };
       const prisma = {
@@ -380,21 +386,88 @@ describe('PlaudSyncService.pullChanges', () => {
           upsert: jest.fn(),
         },
         meeting: { findUnique: jest.fn(), update: jest.fn() },
-        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn() },
+        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
         $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
       };
+      const transcriptNote = { data_type: 'origin_text_note', data_content: transcriptContent };
       const api = {
         listFiles: jest.fn().mockResolvedValue(makeListResponse([])),
         getFile: jest.fn().mockResolvedValue(makeDetail('p1', title, '2026-09-01T10:00:00Z', rawSummary)),
         loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
-        findTranscriptNote: jest.fn(),
+        findTranscriptNote: jest.fn().mockReturnValue(transcriptNote),
       };
       const service = new PlaudSyncService(prisma as any, api as any);
 
       await service.pullChanges('emp1');
 
-      expect(api.findTranscriptNote).not.toHaveBeenCalled();
+      // findTranscriptNote/loadNoteContent теперь ВСЕГДА вызываются (нужно
+      // посчитать текущий хэш для сравнения) — но раз он совпал с
+      // сохранённым, ни пересохранение сегментов, ни upsert не происходят.
+      expect(prisma.meetingSegment.createMany).not.toHaveBeenCalled();
       expect(prisma.plaudSyncItem.update).not.toHaveBeenCalled();
+    });
+
+    // РЕГРЕССИЯ находки шестого внешнего аудита (Stage 2, Phase M,
+    // "transcript freshness после первого успешного sync") — раньше
+    // transcriptSyncedAt, однажды выставленный, НАВСЕГДА блокировал
+    // повторную проверку транскрипта, даже если Plaud его потом дописал
+    // (например, запись была ещё не до конца обработана на момент первого
+    // успешного sync). transcriptHash ловит именно этот случай — сравнение
+    // содержимого, а не факта "хоть раз синхронизировали".
+    it('РЕГРЕССИЯ находки шестого аудита — транскрипт вырос после первого успешного sync (summary не менялось) → пересинхронизируется', async () => {
+      const rawSummary = 'Саммари встречи';
+      const title = 'Встреча';
+      const hash = createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
+      const oldTranscriptContent = JSON.stringify([{ speaker: 'A', start_time: 0, end_time: 2000, content: 'Привет' }]);
+      const oldTranscriptHash = createHash('sha256').update(oldTranscriptContent).digest('hex');
+      const tracking = {
+        plaudRecordingId: 'p1',
+        status: PlaudSyncStatus.SYNCED,
+        contentHash: hash,
+        meetingId: 'm1',
+        transcriptSyncedAt: new Date('2026-09-01T10:05:00Z'),
+        transcriptHash: oldTranscriptHash,
+        plaudCreatedAt: new Date('2026-09-01T10:00:00Z'),
+      };
+      const prisma = {
+        plaudConnection: { findUnique: jest.fn().mockResolvedValue(makeConnection({ lastSyncedCreatedAt: new Date('2026-09-01T10:00:00Z') })), update: jest.fn() },
+        plaudSyncItem: {
+          findMany: jest.fn().mockImplementation(({ where }: any) => Promise.resolve(where.status === PlaudSyncStatus.SYNCED ? [tracking] : [])),
+          findUnique: jest.fn().mockResolvedValue(tracking),
+          update: jest.fn(),
+          upsert: jest.fn(),
+        },
+        meeting: { findUnique: jest.fn(), update: jest.fn() },
+        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+        $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
+      };
+      // Plaud дописал транскрипт — теперь два сегмента вместо одного,
+      // содержимое (и, соответственно, хэш) реально изменилось.
+      const newTranscriptContent = JSON.stringify([
+        { speaker: 'A', start_time: 0, end_time: 2000, content: 'Привет' },
+        { speaker: 'B', start_time: 2000, end_time: 4000, content: 'Добрый день' },
+      ]);
+      const transcriptNote = { data_type: 'origin_text_note', data_content: newTranscriptContent };
+      const api = {
+        listFiles: jest.fn().mockResolvedValue(makeListResponse([])),
+        getFile: jest.fn().mockResolvedValue(makeDetail('p1', title, '2026-09-01T10:00:00Z', rawSummary)),
+        loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
+        findTranscriptNote: jest.fn().mockReturnValue(transcriptNote),
+      };
+      const service = new PlaudSyncService(prisma as any, api as any);
+
+      await service.pullChanges('emp1');
+
+      expect(prisma.meetingSegment.createMany).toHaveBeenCalledWith({
+        data: [
+          { meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'A', speakerEmployeeId: null, text: 'Привет' },
+          { meetingId: 'm1', order: 1, startMs: 2000, endMs: 4000, speakerLabel: 'B', speakerEmployeeId: null, text: 'Добрый день' },
+        ],
+      });
+      expect(prisma.plaudSyncItem.update).toHaveBeenCalledWith({
+        where: { plaudRecordingId: 'p1' },
+        data: { transcriptSyncedAt: expect.any(Date), transcriptHash: expect.any(String) },
+      });
     });
 
     it('summary изменилось (новый contentHash) и транскрипт синхронизирован — upsert выставляет transcriptSyncedAt', async () => {
@@ -415,7 +488,7 @@ describe('PlaudSyncService.pullChanges', () => {
           upsert: jest.fn(),
         },
         meeting: { findUnique: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn() },
+        meetingSegment: { deleteMany: jest.fn(), createMany: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
         $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
       };
       const transcriptNote = { data_type: 'origin_text_note', data_content: JSON.stringify([{ speaker: 'A', start: 0, end: 2, text: 'Привет' }]) };
@@ -432,6 +505,68 @@ describe('PlaudSyncService.pullChanges', () => {
       expect(prisma.plaudSyncItem.upsert).toHaveBeenCalledWith(
         expect.objectContaining({ update: expect.objectContaining({ transcriptSyncedAt: expect.any(Date) }) }),
       );
+    });
+
+    // РЕГРЕССИЯ находки №4 шестого внешнего аудита (Stage 2, Phase M) —
+    // раньше delete+createMany при ресинке транскрипта (например, Plaud
+    // дописал запись) полностью стирало уже проставленный руководителем
+    // speakerEmployeeId ("Speaker 2" → Жандос) — новые строки создавались
+    // с speakerEmployeeId: null, сопоставление приходилось делать заново
+    // после каждого resync'а.
+    it('РЕГРЕССИЯ находки №4 шестого аудита — resync транскрипта сохраняет ранее проставленный speakerEmployeeId по speakerLabel', async () => {
+      const rawSummary = 'Саммари встречи';
+      const title = 'Встреча';
+      const hash = createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
+      const oldTranscriptContent = JSON.stringify([{ speaker: 'Speaker 2', start_time: 0, end_time: 2000, content: 'Привет' }]);
+      const oldTranscriptHash = createHash('sha256').update(oldTranscriptContent).digest('hex');
+      const tracking = {
+        plaudRecordingId: 'p1',
+        status: PlaudSyncStatus.SYNCED,
+        contentHash: hash,
+        meetingId: 'm1',
+        transcriptSyncedAt: new Date('2026-09-01T10:05:00Z'),
+        transcriptHash: oldTranscriptHash,
+        plaudCreatedAt: new Date('2026-09-01T10:00:00Z'),
+      };
+      const prisma = {
+        plaudConnection: { findUnique: jest.fn().mockResolvedValue(makeConnection({ lastSyncedCreatedAt: new Date('2026-09-01T10:00:00Z') })), update: jest.fn() },
+        plaudSyncItem: {
+          findMany: jest.fn().mockImplementation(({ where }: any) => Promise.resolve(where.status === PlaudSyncStatus.SYNCED ? [tracking] : [])),
+          findUnique: jest.fn().mockResolvedValue(tracking),
+          update: jest.fn(),
+          upsert: jest.fn(),
+        },
+        meeting: { findUnique: jest.fn(), update: jest.fn() },
+        meetingSegment: {
+          deleteMany: jest.fn(),
+          createMany: jest.fn(),
+          // Уже проставленное руководителем сопоставление до ресинка.
+          findMany: jest.fn().mockResolvedValue([{ speakerLabel: 'Speaker 2', speakerEmployeeId: 'e1' }]),
+        },
+        $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
+      };
+      // Plaud дописал транскрипт — новый сегмент с той же меткой "Speaker 2".
+      const newTranscriptContent = JSON.stringify([
+        { speaker: 'Speaker 2', start_time: 0, end_time: 2000, content: 'Привет' },
+        { speaker: 'Speaker 2', start_time: 2000, end_time: 4000, content: 'Как дела' },
+      ]);
+      const transcriptNote = { data_type: 'origin_text_note', data_content: newTranscriptContent };
+      const api = {
+        listFiles: jest.fn().mockResolvedValue(makeListResponse([])),
+        getFile: jest.fn().mockResolvedValue(makeDetail('p1', title, '2026-09-01T10:00:00Z', rawSummary)),
+        loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
+        findTranscriptNote: jest.fn().mockReturnValue(transcriptNote),
+      };
+      const service = new PlaudSyncService(prisma as any, api as any);
+
+      await service.pullChanges('emp1');
+
+      expect(prisma.meetingSegment.createMany).toHaveBeenCalledWith({
+        data: [
+          { meetingId: 'm1', order: 0, startMs: 0, endMs: 2000, speakerLabel: 'Speaker 2', speakerEmployeeId: 'e1', text: 'Привет' },
+          { meetingId: 'm1', order: 1, startMs: 2000, endMs: 4000, speakerLabel: 'Speaker 2', speakerEmployeeId: 'e1', text: 'Как дела' },
+        ],
+      });
     });
   });
 });

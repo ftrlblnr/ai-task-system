@@ -393,6 +393,13 @@ export interface VoiceEventActionResult {
   error: string | null;
   eventId: string | null;
   undoToken: string | null;
+  // Stage 2, Phase M (внешний аудит 21.09.2026, "participant operations
+  // могут проглатываться") — событие может быть успешно создано/изменено
+  // (ok:true), но отдельные addParticipant/removeParticipant — упасть
+  // (например, сотрудник уже удалён). Раньше это никак не отражалось в
+  // ответе — пользователь думал, что все указанные участники добавлены.
+  // null — все участники обработаны без ошибок (или участников не было).
+  warning: string | null;
 }
 export interface VoiceChatResult {
   type: 'chat';

@@ -1,15 +1,15 @@
-// Stage 2, Phase K (внешний аудит 21.09.2026, "MeetingSegment + transcript
-// ingestion") — ⚠️ формат входных данных НЕ подтверждён живым вызовом
-// Plaud API (см. комментарий у PlaudApiService.findTranscriptNote) — это
-// best-effort парсер под ПРЕДПОЛАГАЕМЫЙ формат (JSON-массив сегментов с
-// говорящим/таймкодами/текстом, самый распространённый вид у
-// ASR-транскрипции). Разбит на чистую функцию отдельно от
-// PlaudApiService/PlaudSyncService намеренно — сама логика
-// разбора+валидации полностью тестируема независимо от вопроса "что
-// именно возвращает Plaud" (тот тестировать нечем без реального
-// аккаунта). Если реальный формат окажется другим, поправить нужно только
-// этот файл — весь остальной pipeline (сохранение в MeetingSegment) не
-// зависит от того, откуда взялись сегменты.
+// Stage 2, Phase M (внешний аудит 21.09.2026) — формат ПОДТВЕРЖДЁН живым
+// вызовом реального Plaud API 21.09.2026 (см. PlaudApiService.findTranscriptNote):
+// JSON-массив объектов вида {content, start_time, end_time, speaker,
+// original_speaker, embeddingKey}, start_time/end_time уже в миллисекундах
+// (проверено: короткая реплика в начале записи имела start_time=8790,
+// т.е. 8.79 сек от начала — не 8790 секунд). Поля start/end (без _time) и
+// speaker_label/speakerLabel/text/startMs/endMs — остаются в парсере как
+// толерантность к вариациям (обёрнутый {segments:[...]}, альтернативные
+// имена полей), но реальный, подтверждённый формат Plaud — start_time/
+// end_time/content/speaker. Разбит на чистую функцию отдельно от
+// PlaudApiService/PlaudSyncService — сама логика разбора+валидации
+// тестируема независимо (см. spec с fixture реального формата).
 export interface TranscriptSegmentInput {
   order: number;
   startMs: number;
@@ -53,6 +53,15 @@ function toFiniteNonNegative(v: unknown): number | null {
 // молча домножалось на 1000 ещё раз — опасная порча данных именно там, где
 // формат был известен точно, не там, где он неоднозначен. Явные *Ms/*_ms
 // поля теперь берутся как есть, без какой-либо эвристики.
+//
+// Stage 2, Phase M — start_time/end_time ТОЖЕ перенесены сюда (были в
+// pickAmbiguousMs): живой вызов реального Plaud API 21.09.2026 подтвердил,
+// что у Plaud start_time/end_time всегда уже в миллисекундах, несмотря на
+// то что имя поля само по себе не содержит "ms" — предыдущая эвристика
+// молча домножала бы 8790 (8.79 сек от начала записи) на 1000, превращая
+// его в ~2.4 часа. Раз для КОНКРЕТНО этих имён полей единица теперь
+// эмпирически известна (не предположение), их место — здесь, а не в
+// pickAmbiguousMs.
 function pickExplicitMs(...values: unknown[]): number | null {
   for (const v of values) {
     const n = toFiniteNonNegative(v);
@@ -61,12 +70,12 @@ function pickExplicitMs(...values: unknown[]): number | null {
   return null;
 }
 
-// Секунды vs миллисекунды — здесь имя поля (start/end/start_time/end_time)
-// само по себе не уточняет единицу: эвристика "меньше 100000 → скорее
-// всего секунды, домножить на 1000" достаточно надёжна для реальных
-// длительностей встреч (до ~27 часов в секундах), но это предположение,
-// не факт — применяется ТОЛЬКО к этим неоднозначным полям, см. pickExplicitMs
-// выше про однозначные.
+// Секунды vs миллисекунды — здесь имя поля (голое start/end, без _time)
+// само по себе не уточняет единицу и реального подтверждения у Plaud для
+// него нет (Plaud использует start_time/end_time, см. pickExplicitMs
+// выше): эвристика "меньше 100000 → скорее всего секунды, домножить на
+// 1000" остаётся как последняя линия обороны на случай нестандартного/
+// стороннего формата, не как основной путь для Plaud.
 function pickAmbiguousMs(...values: unknown[]): number | null {
   for (const v of values) {
     const n = toFiniteNonNegative(v);
@@ -94,8 +103,8 @@ export function parseTranscriptSegments(raw: string): TranscriptSegmentInput[] {
     const text = pickString(item.text, item.content);
     if (!text) continue;
     const speakerLabel = pickString(item.speaker, item.speaker_label, item.speakerLabel) ?? 'Неизвестный говорящий';
-    const startMs = pickExplicitMs(item.startMs, item.start_ms) ?? pickAmbiguousMs(item.start, item.start_time) ?? 0;
-    const endMs = pickExplicitMs(item.endMs, item.end_ms) ?? pickAmbiguousMs(item.end, item.end_time) ?? startMs;
+    const startMs = pickExplicitMs(item.startMs, item.start_ms, item.start_time) ?? pickAmbiguousMs(item.start) ?? 0;
+    const endMs = pickExplicitMs(item.endMs, item.end_ms, item.end_time) ?? pickAmbiguousMs(item.end) ?? startMs;
     segments.push({ order: order++, startMs, endMs, speakerLabel, text });
   }
   return segments;

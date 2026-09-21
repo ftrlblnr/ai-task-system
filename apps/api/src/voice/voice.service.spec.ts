@@ -370,6 +370,48 @@ describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для к
       }),
     );
   });
+
+  // РЕГРЕССИЯ находки №6 шестого внешнего аудита (Stage 2, Phase M) —
+  // раньше addParticipant/removeParticipant глотали свою ошибку
+  // (`.catch(() => {})`) полностью бесследно — событие создавалось
+  // (ok:true), но пользователь не узнавал, что часть участников не
+  // добавилась.
+  it('create — один из участников не добавляется → ok:true (событие создано), но result.warning описывает сбой', async () => {
+    const created = { id: 'e1', title: 'Встреча', startAt: new Date(), endAt: new Date(), location: null, participants: [] };
+    const refetched = { ...created, participants: [{ id: 'emp1', fullName: 'Азамат' }] };
+    const events = {
+      create: jest.fn().mockResolvedValue(created),
+      addParticipant: jest.fn().mockImplementation((_id: string, employeeId: string) => (employeeId === 'emp2' ? Promise.reject(new Error('сотрудник не найден')) : Promise.resolve(undefined))),
+      findOne: jest.fn().mockResolvedValue(refetched),
+    };
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'create', addParticipantIds: ['emp1', 'emp2'] });
+
+    const { result } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+
+    expect(result.ok).toBe(true);
+    expect((result as any).warning).toContain('emp2');
+    expect((result as any).warning).toContain('сотрудник не найден');
+  });
+
+  it('update — все участники обработаны успешно → result.warning=null', async () => {
+    const before = { id: 'e1', title: 'Старое', description: '', location: '', startAt: new Date(), endAt: new Date(), allDay: false };
+    const finalEntity = { ...before, participants: [] };
+    const events = {
+      findOne: jest.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(finalEntity),
+      update: jest.fn().mockResolvedValue(undefined),
+      addParticipant: jest.fn().mockResolvedValue(undefined),
+      removeParticipant: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'update', targetEventId: 'e1', title: 'Новое', addParticipantIds: ['emp1'], removeParticipantIds: [] });
+
+    const { result } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+
+    expect((result as any).warning).toBeNull();
+  });
 });
 
 describe('VoiceService.logAssistantMessage (Stage 2, Phase H — standalone-сообщение в общей ленте, не отдельная VoiceMessage)', () => {

@@ -118,6 +118,15 @@ export interface MeetingTranscriptMatchData {
   meetingId: string;
   meetingTitle: string;
   speakerLabel: string;
+  // Stage 2, Phase M (внешний аудит 21.09.2026, "speaker mapping пока не
+  // полностью доступен Assistant") — раньше инструмент отдавал только
+  // сырую метку ("Speaker 2"), хотя MeetingSegment.speakerEmployeeId уже
+  // мог быть резолвлен (MeetingsService.updateSpeakers) — Assistant не мог
+  // ответить "Жандос сказал...", только "Speaker 2 сказал...". null, если
+  // говорящий ещё не сопоставлен с сотрудником — тогда используется
+  // speakerLabel как раньше (см. промпт инструмента).
+  speakerEmployeeId: string | null;
+  speakerName: string | null;
   startMs: number;
   endMs: number;
   text: string;
@@ -232,7 +241,7 @@ export class AssistantToolsService {
       tools.push({
         name: 'search_meeting_transcript',
         description:
-          'Найти конкретные реплики в транскриптах встреч по ключевым словам — кто и что именно сказал, не общий пересказ саммари. Может не найти ничего, если транскрипт этой встречи ещё не синхронизирован (это отдельная, не всегда доступная часть данных) — в этом случае честно скажи, что не нашёл, не выдумывай. meetingId необязателен, ограничивает поиск одной встречей.',
+          'Найти конкретные реплики в транскриптах встреч по ключевым словам — кто и что именно сказал, не общий пересказ саммари. Может не найти ничего, если транскрипт этой встречи ещё не синхронизирован (это отдельная, не всегда доступная часть данных) — в этом случае честно скажи, что не нашёл, не выдумывай. meetingId необязателен, ограничивает поиск одной встречей. У каждой реплики есть speakerLabel (техническая метка вида "Speaker 2") и, если руководитель уже сопоставил говорящего с сотрудником, speakerName — используй speakerName в ответе, если он есть, иначе speakerLabel.',
         input_schema: {
           type: 'object',
           properties: {
@@ -396,7 +405,16 @@ export class AssistantToolsService {
     const [segments, totalCount] = await Promise.all([
       this.prisma.meetingSegment.findMany({
         where,
-        select: { meetingId: true, speakerLabel: true, startMs: true, endMs: true, text: true, meeting: { select: { title: true } } },
+        select: {
+          meetingId: true,
+          speakerLabel: true,
+          speakerEmployeeId: true,
+          startMs: true,
+          endMs: true,
+          text: true,
+          meeting: { select: { title: true } },
+          speakerEmployee: { select: { fullName: true } },
+        },
         orderBy: { meeting: { meetingDate: 'desc' } },
         take: MAX_TOOL_ITEMS,
       }),
@@ -406,6 +424,8 @@ export class AssistantToolsService {
       meetingId: s.meetingId,
       meetingTitle: s.meeting.title,
       speakerLabel: s.speakerLabel,
+      speakerEmployeeId: s.speakerEmployeeId,
+      speakerName: s.speakerEmployee?.fullName ?? null,
       startMs: s.startMs,
       endMs: s.endMs,
       text: s.text,

@@ -433,6 +433,17 @@ model PlaudSyncItem {
   // синхронизировать транскрипт заново на каждом прогоне (в пределах окна
   // ретрая), даже если summary/title не изменились.
   transcriptSyncedAt DateTime?
+  // Stage 2, Phase M (внешний аудит 21.09.2026, "transcript freshness
+  // после первого успешного sync") — transcriptSyncedAt сам по себе решал
+  // задачу "транскрипт ещё не был готов вообще", но не задачу "транскрипт
+  // был готов ЧАСТИЧНО (Plaud ещё дописывал его) и с тех пор вырос/
+  // изменился" — once transcriptSyncedAt становился non-null, повторная
+  // проверка транскрипта прекращалась навсегда, даже если summary/title не
+  // менялись (Plaud не отдаёт updated_at, только перечитать и сравнить
+  // хэш — тот же принцип, что contentHash у summary, но независимый:
+  // summary и транскрипт — разные note/source в Plaud, меняются
+  // независимо друг от друга).
+  transcriptHash     String?
   lastAttemptAt    DateTime        @default(now())
   createdAt        DateTime        @default(now())
 }

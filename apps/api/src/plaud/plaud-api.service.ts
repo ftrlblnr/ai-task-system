@@ -29,6 +29,12 @@ export interface PlaudFileDetail {
   name: string;
   created_at: string;
   note_list: PlaudNote[];
+  // Stage 2, Phase M (21.09.2026) — подтверждено живым вызовом реального
+  // GET /files/:id на подключённом проде: транскрипт лежит именно здесь
+  // (data_type: 'transaction'/'transaction_polish'), не в note_list (см.
+  // findTranscriptNote ниже). Та же форма элемента, что PlaudNote — те же
+  // поля data_id/data_type/data_content/data_link на практике.
+  source_list?: PlaudNote[];
 }
 
 // Тонкая обёртка над Plaud REST — без SDK, тот же стиль, что и
@@ -69,18 +75,31 @@ export class PlaudApiService {
     return '';
   }
 
-  // Stage 2, Phase K (внешний аудит 21.09.2026, "MeetingSegment +
-  // transcript ingestion") — ⚠️ НЕ ПОДТВЕРЖДЕНО живым вызовом API в этой
-  // сессии, в отличие от 'auto_sum_note' (тот был явно проверен чтением
-  // исходников @plaud-ai/cli, см. комментарий класса выше — этот пакет
-  // недоступен в данном окружении, свериться было не с чем). Значения
-  // data_type ниже — best-effort предположение по аналогии с другими
-  // AI-транскрипцией сервисами (raw ASR-транскрипт как отдельный "note",
-  // параллельный auto_sum_note). Прежде чем полагаться на это в проде —
-  // нужно подключить реальный Plaud-аккаунт с готовой записью и свериться
-  // с фактическим note_list в ответе GET /files/:id.
+  // Stage 2, Phase M (внешний аудит 21.09.2026, находка "Plaud transcript
+  // может читаться не из того поля") — ПОДТВЕРЖДЕНО живым вызовом реального
+  // GET /files/:id на боевом подключённом аккаунте 21.09.2026: транскрипт
+  // лежит в detail.source_list, НЕ в note_list (прежняя догадка Phase K
+  // была основана на аналогии с другими ASR-сервисами, без подтверждения —
+  // она оказалась неверной, source_list вообще отдельный top-level массив).
+  // Реальная структура одной записи:
+  //   source_list: [
+  //     { data_type: 'transaction',        data_content: '[{...сегменты}]' },
+  //     { data_type: 'transaction_polish', data_content: '' | '[...]' },
+  //     { data_type: 'outline',            data_content: '...' },
+  //   ]
+  // 'transaction_polish' — по всей видимости причёсанная/AI-исправленная
+  // версия того же транскрипта (в проверенной записи была пустой, но раз
+  // Plaud вообще выделяет для неё отдельный слот — предпочитаем её, если
+  // она непустая, иначе берём сырой 'transaction'). note_list оставлен как
+  // best-effort фолбэк последним пунктом — на случай если Plaud когда-то
+  // отдаст транскрипт и там тоже (не наблюдалось в проверенной записи, но
+  // не исключено для других типов записей/тарифов).
   findTranscriptNote(detail: PlaudFileDetail): PlaudNote | undefined {
-    const candidates = ['origin_text_note', 'transcript_note', 'origin_note'];
-    return detail.note_list?.find((note) => candidates.includes(note.data_type));
+    const polish = detail.source_list?.find((note) => note.data_type === 'transaction_polish' && note.data_content);
+    if (polish) return polish;
+    const transaction = detail.source_list?.find((note) => note.data_type === 'transaction');
+    if (transaction) return transaction;
+    const legacyCandidates = ['origin_text_note', 'transcript_note', 'origin_note'];
+    return detail.note_list?.find((note) => legacyCandidates.includes(note.data_type));
   }
 }
