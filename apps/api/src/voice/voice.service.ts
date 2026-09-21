@@ -213,7 +213,7 @@ export class VoiceService {
     t0: number,
     audioBytes: number,
   ): Promise<VoiceParseResponse> {
-    let execution;
+    let execution: Awaited<ReturnType<typeof this.prisma.voiceExecution.create>>;
     try {
       execution = await this.prisma.voiceExecution.create({
         data: { employeeId: user.id, conversationId: conversation.id, clientRequestId, status: VoiceExecutionStatus.RECEIVED },

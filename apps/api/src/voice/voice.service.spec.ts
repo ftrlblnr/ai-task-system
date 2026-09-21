@@ -409,7 +409,7 @@ describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST
 // был удалить незавершённую строку и выполнить ВСЁ заново, включая уже
 // случившуюся бизнес-мутацию (ровно то, на что указал аудит). VoiceExecution
 // — durable claim именно о жизненном цикле выполнения, не о персистентности.
-function baseParseMocks(overrides: { extraction?: any; tasks?: any } = {}) {
+function baseParseMocks() {
   const whisperSpy = jest.fn().mockResolvedValue({ text: 'Привет', durationMs: 500 });
   const extractSpy = jest.fn().mockResolvedValue({
     drafts: [{ type: 'chat', reply: 'Ок' }],
