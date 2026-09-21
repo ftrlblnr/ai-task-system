@@ -283,20 +283,6 @@ export class AssistantChatService {
     return parts;
   }
 
-  // Файл существует и уже принадлежит сотруднику — здесь он только
-  // привязывается к конкретному сообщению/разговору постфактум
-  // (conversationId/messageId были null до этого момента). Общий как для
-  // пользовательских вложений (source: UPLOADED, с момента POST
-  // /files/upload), так и для файлов, сгенерированных инструментом
-  // (source: GENERATED, Stage 2 Phase G, см. generatedFileIdsFrom ниже) —
-  // сам факт линковки не зависит от происхождения файла.
-  private async linkAttachments(conversationId: string, messageId: string, fileIds: string[]): Promise<void> {
-    if (!fileIds.length) return;
-    await this.prisma.fileArtifact.updateMany({
-      where: { id: { in: fileIds } },
-      data: { conversationId, messageId },
-    });
-  }
 
   // Phase F.2 (аудит 17.09.2026, P1.8) — общий путь создания user-сообщения
   // для sendMessage/streamMessage (раньше был продублирован в обоих).
@@ -305,24 +291,35 @@ export class AssistantChatService {
   // на unique(conversationId, clientRequestId) — "проигравший" не получает
   // 500, а переиспользует строку победителя (тот же результат, что и
   // обычный idempotent-повтор).
+  //
+  // Phase H.1 (внешний аудит 20.09.2026, P1) — create()+linkAttachments()
+  // раньше были двумя отдельными вызовами БД: сбой процесса между ними
+  // оставлял FILE-часть, ссылающуюся на FileArtifact с messageId: null —
+  // FilesCleanupCron реаплет такой файл как orphan через 24 часа, оставляя
+  // в истории постоянно нерабочую ссылку. `$transaction` с callback (не
+  // array-форма — updateMany нужен id только что созданного сообщения,
+  // недоступный до его создания) делает обе операции атомарными.
   private async createUserMessageIdempotent(conversationId: string, dto: SendMessageDto, attachments: FileArtifact[]): Promise<MessageWithParts> {
     try {
-      const created = await this.prisma.message.create({
-        data: {
-          conversationId,
-          role: MessageRole.USER,
-          status: MessageStatus.COMPLETED,
-          clientRequestId: dto.clientRequestId || null,
-          parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
-        },
-        include: { parts: { orderBy: { order: 'asc' } } },
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.message.create({
+          data: {
+            conversationId,
+            role: MessageRole.USER,
+            status: MessageStatus.COMPLETED,
+            clientRequestId: dto.clientRequestId || null,
+            parts: { create: this.buildUserMessagePartsInput(dto.text, attachments) },
+          },
+          include: { parts: { orderBy: { order: 'asc' } } },
+        });
+        if (attachments.length > 0) {
+          await tx.fileArtifact.updateMany({
+            where: { id: { in: attachments.map((f) => f.id) } },
+            data: { conversationId, messageId: created.id },
+          });
+        }
+        return created;
       });
-      await this.linkAttachments(
-        conversationId,
-        created.id,
-        attachments.map((f) => f.id),
-      );
-      return created;
     } catch (err) {
       if (isUniqueConstraintError(err) && dto.clientRequestId) {
         const winner = await this.prisma.message.findUnique({
@@ -345,9 +342,26 @@ export class AssistantChatService {
   // (replyToMessageId стал @unique) два одновременных запроса могут оба
   // пройти "assistant-сообщения ещё нет" и оба попытаться его создать;
   // "проигравший" переиспользует строку победителя вместо 500.
-  private async createAssistantMessageIdempotent(userMessageId: string, data: Prisma.MessageUncheckedCreateInput): Promise<MessageWithParts> {
+  // generatedFileIds (Phase H.1, внешний аудит 20.09.2026, P1) — та же
+  // атомарность create+link, что теперь у createUserMessageIdempotent
+  // (см. её комментарий): сбой между созданием ASSISTANT-сообщения и
+  // привязкой FileArtifact оставлял бы FILE-часть с "осиротевшей" ссылкой.
+  private async createAssistantMessageIdempotent(
+    userMessageId: string,
+    data: Prisma.MessageUncheckedCreateInput,
+    generatedFileIds: string[] = [],
+  ): Promise<MessageWithParts> {
     try {
-      return await this.prisma.message.create({ data, include: { parts: { orderBy: { order: 'asc' } } } });
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.message.create({ data, include: { parts: { orderBy: { order: 'asc' } } } });
+        if (generatedFileIds.length > 0) {
+          await tx.fileArtifact.updateMany({
+            where: { id: { in: generatedFileIds } },
+            data: { conversationId: data.conversationId, messageId: created.id },
+          });
+        }
+        return created;
+      });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
         const winner = await this.prisma.message.findFirst({
@@ -358,6 +372,27 @@ export class AssistantChatService {
       }
       throw err;
     }
+  }
+
+  // Тот же приём для ветки "сообщение уже существует, обновляем на месте"
+  // (retry после FAILED) — update()+linkAttachments() атомарно, не двумя
+  // отдельными вызовами.
+  private async updateAssistantMessageWithAttachments(
+    id: string,
+    data: Prisma.MessageUpdateInput,
+    conversationId: string,
+    generatedFileIds: string[],
+  ): Promise<MessageWithParts> {
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.message.update({ where: { id }, data, include: { parts: { orderBy: { order: 'asc' } } } });
+      if (generatedFileIds.length > 0) {
+        await tx.fileArtifact.updateMany({
+          where: { id: { in: generatedFileIds } },
+          data: { conversationId, messageId: updated.id },
+        });
+      }
+      return updated;
+    });
   }
 
   // Stage 2, Phase G — export_tasks_xlsx создаёт FileArtifact ещё внутри
@@ -487,21 +522,26 @@ export class AssistantChatService {
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
+      const generatedFileIds = this.generatedFileIdsFrom(result.toolCalls);
       assistantMessage = existingAssistantMessage
-        ? await this.prisma.message.update({
-            where: { id: existingAssistantMessage.id },
-            data: { status: MessageStatus.COMPLETED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: partsInput } },
-            include: { parts: { orderBy: { order: 'asc' } } },
-          })
-        : await this.createAssistantMessageIdempotent(userMessage.id, {
+        ? await this.updateAssistantMessageWithAttachments(
+            existingAssistantMessage.id,
+            { status: MessageStatus.COMPLETED, requestId, replyToMessageId: userMessage.id, parts: { deleteMany: {}, create: partsInput } },
             conversationId,
-            role: MessageRole.ASSISTANT,
-            status: MessageStatus.COMPLETED,
-            requestId,
-            replyToMessageId: userMessage.id,
-            parts: { create: partsInput },
-          });
-      await this.linkAttachments(conversationId, assistantMessage.id, this.generatedFileIdsFrom(result.toolCalls));
+            generatedFileIds,
+          )
+        : await this.createAssistantMessageIdempotent(
+            userMessage.id,
+            {
+              conversationId,
+              role: MessageRole.ASSISTANT,
+              status: MessageStatus.COMPLETED,
+              requestId,
+              replyToMessageId: userMessage.id,
+              parts: { create: partsInput },
+            },
+            generatedFileIds,
+          );
     } catch (err) {
       // Техническая ошибка — только в логи (Stage 2 §5.6/§32); пользователю
       // уходит безопасный текст через ErrorPart.
@@ -691,12 +731,12 @@ export class AssistantChatService {
 
       const toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
-      const updated = await this.prisma.message.update({
-        where: { id: assistantMessage.id },
-        data: { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: partsInput } },
-        include: { parts: { orderBy: { order: 'asc' } } },
-      });
-      await this.linkAttachments(conversationId, assistantMessage.id, this.generatedFileIdsFrom(result.toolCalls));
+      const updated = await this.updateAssistantMessageWithAttachments(
+        assistantMessage.id,
+        { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: partsInput } },
+        conversationId,
+        this.generatedFileIdsFrom(result.toolCalls),
+      );
       for (const part of updated.parts) {
         emit({ event: 'part.completed', messageId: assistantMessage.id, partId: part.id, part });
       }

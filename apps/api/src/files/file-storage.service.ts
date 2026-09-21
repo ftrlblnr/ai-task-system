@@ -73,14 +73,27 @@ export class LocalFileStorageService implements FileStorage {
     return Promise.resolve(fs.createReadStream(path.join(this.uploadDir(), storageKey)));
   }
 
-  // Best-effort — тот же принцип, что AuditService.log/
-  // GoogleCalendarSyncService.pushBestEffort: отсутствующий на диске файл
-  // (например, ручная чистка volume) не должен ронять удаление записи в БД.
+  // Best-effort только для "файла и так уже нет" (ENOENT) — тот же
+  // принцип, что AuditService.log/GoogleCalendarSyncService.pushBestEffort:
+  // отсутствующий на диске файл (например, ручная чистка volume) не должен
+  // ронять удаление записи в БД. Любая ДРУГАЯ ошибка (диск полон, нет прав,
+  // I/O-сбой) раньше тоже глоталась здесь же — вызывающий код
+  // (FilesCleanupCron) считал delete() успешным и убирал FileArtifact из
+  // БД, хотя физический файл остался: единственная запись, по которой его
+  // можно было бы найти и повторить попытку, уже удалена — файл осиротел
+  // навсегда (внешний аудит 20.09.2026, P1). Теперь такие ошибки
+  // пробрасываются — вызывающий код решает, что делать (см.
+  // FilesCleanupCron.cleanupOrphanUploads: не удалять DB-строку, оставить
+  // на повтор следующим прогоном).
   async delete(storageKey: string): Promise<void> {
     try {
       await fsPromises.unlink(path.join(this.uploadDir(), storageKey));
     } catch (err) {
-      this.logger.warn(`Не удалось удалить файл ${storageKey} с диска: ${err}`);
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.logger.warn(`Файл ${storageKey} уже отсутствовал на диске — считаем удаление успешным.`);
+        return;
+      }
+      throw err;
     }
   }
 }

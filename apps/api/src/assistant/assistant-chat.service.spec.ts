@@ -43,6 +43,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     const existingAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date('2026-01-01T00:00:01Z'), parts: [] };
     const replySpy = jest.fn();
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(existingUserMessage),
@@ -69,6 +70,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     const updatedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'теперь получилось', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(existingUserMessage),
@@ -96,6 +98,7 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'привет!', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -140,6 +143,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     });
 
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -171,6 +175,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const streamingAssistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
     const streamReplySpy = jest.fn().mockRejectedValue(new Error('anthropic недоступен'));
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -198,6 +203,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const completedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, parts: [] };
     const streamReplySpy = jest.fn().mockResolvedValue({ text: 'теперь получилось', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(existingUserMessage),
@@ -223,6 +229,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const existingCompletedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [] };
     const streamReplySpy = jest.fn();
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(existingUserMessage),
@@ -250,6 +257,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const streamingAssistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
     const streamReplySpy = jest.fn().mockResolvedValue({ text: 'ok', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -285,6 +293,7 @@ describe('AssistantChatService — current-turn attachments видны моде�
     const replySpy = jest.fn().mockResolvedValue({ text: 'Хорошо, вижу файл.', toolCalls: [] });
     const filesStub = { assertOwnedFile: jest.fn().mockResolvedValue(attachment) };
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -320,6 +329,7 @@ describe('AssistantChatService — current-turn attachments видны моде�
     const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'привет!', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn(),
@@ -343,6 +353,7 @@ describe('AssistantChatService — недоступный attachment не про
     const conversation = { id: 'c1', employeeId: 'u1' };
     const filesStub = { assertOwnedFile: jest.fn().mockRejectedValue(new NotFoundException('Файл не найден')) };
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: { findUnique: jest.fn(), findFirst: jest.fn(), findMany: jest.fn(), create: jest.fn() },
     };
@@ -375,6 +386,7 @@ describe('AssistantChatService — идемпотентность под гон�
     const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'ответ', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         // findExistingPair: пара не найдена — оба "конкурента" видят это.
@@ -398,6 +410,7 @@ describe('AssistantChatService — идемпотентность под гон�
     const winnerAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'ответ', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         // Без clientRequestId findExistingPair не зовёт findUnique/findFirst
@@ -435,6 +448,7 @@ describe('AssistantChatService — exactly-once execution под конкуре�
     const assistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [] };
     const replySpy = jest.fn().mockResolvedValue({ text: 'ответ', toolCalls: [] });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         // Оба конкурентных вызова "не находят" существующую пару — оба
@@ -482,6 +496,7 @@ describe('AssistantChatService — exactly-once execution под конкуре�
       return Promise.resolve({ text: 'ответ', toolCalls: [] });
     });
     const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
       conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -511,5 +526,66 @@ describe('AssistantChatService — exactly-once execution под конкуре�
     // ради него), но получает тот же финальный результат.
     expect(loserEvents.some((e) => e.event === 'part.delta')).toBe(false);
     expect(loserEvents.at(-1)).toMatchObject({ event: 'message.completed', message: completedMessage });
+  });
+});
+
+// P1 (внешний аудит 20.09.2026) — раньше create()/update() и
+// fileArtifact.updateMany() были двумя отдельными вызовами БД: сбой между
+// ними оставлял FILE-часть, ссылающуюся на FileArtifact с messageId: null
+// (FilesCleanupCron реаплет такой файл как orphan через 24 часа, оставляя
+// в истории постоянно нерабочую ссылку). Теперь обе операции — внутри
+// одного prisma.$transaction: тест проверяет именно то, что было
+// НЕВОЗМОЖНО проверить раньше — сбой линковки не оставляет сообщение
+// "наполовину созданным", ошибка реально долетает до вызывающего кода.
+describe('AssistantChatService — транзакционная линковка Message+FileArtifact (P1, аудит 20.09.2026)', () => {
+  it('sendMessage: сбой fileArtifact.updateMany внутри транзакции пробрасывается наружу, а не проглатывается', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const attachment = { id: 'f1', employeeId: 'u1', name: 'report.pdf', mimeType: 'application/pdf', size: 1000 };
+    const filesStub = { assertOwnedFile: jest.fn().mockResolvedValue(attachment) };
+    const prisma = {
+      $transaction: jest.fn((fn: any) => fn(prisma)),
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({ id: 'm1', createdAt: new Date(), parts: [] }),
+      },
+      fileArtifact: { updateMany: jest.fn().mockRejectedValue(new Error('connection lost mid-transaction')) },
+    };
+    const service = new AssistantChatService(prisma as any, { reply: jest.fn() } as any, filesStub as any);
+
+    await expect(service.sendMessage(user(), 'c1', { text: 'привет', attachmentIds: ['f1'] })).rejects.toThrow(
+      'connection lost mid-transaction',
+    );
+  });
+
+  it('createAssistantMessageIdempotent (не-streaming, export_tasks_xlsx) линкует сгенерированный файл в той же транзакции, что создание сообщения', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const userMessage = { id: 'm1', createdAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
+    const replySpy = jest.fn().mockResolvedValue({
+      text: 'Вот файл.',
+      toolCalls: [{ name: 'export_tasks_xlsx', durationMs: 5, result: { tool: 'export_tasks_xlsx', totalCount: 3, file: { fileId: 'gen1', name: 'Задачи.xlsx', mimeType: 'x', size: 1 } } }],
+    });
+    const updateManySpy = jest.fn();
+    const prisma = {
+      $transaction: jest.fn((fn: any) => fn(prisma)),
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      fileArtifact: { updateMany: updateManySpy },
+    };
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any);
+
+    await service.sendMessage(user(), 'c1', { text: 'экспортируй задачи' });
+
+    expect(updateManySpy).toHaveBeenCalledWith({ where: { id: { in: ['gen1'] } }, data: { conversationId: 'c1', messageId: 'm2' } });
+    // $transaction реально обёртывал оба вызова, не два независимых.
+    expect(prisma.$transaction).toHaveBeenCalled();
   });
 });

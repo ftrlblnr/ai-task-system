@@ -4,6 +4,7 @@ import { FileArtifact, FileArtifactSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FILE_STORAGE, type FileStorage } from './file-storage.service';
+import { StorageRegistry } from './storage-registry.service';
 import { isSuspiciousUpload, extensionMatchesMimeType } from './file-signature';
 import { ALLOWED_UPLOAD_MIME_TYPES, MAX_UPLOAD_FILE_SIZE } from './dto/upload-file.dto';
 
@@ -44,7 +45,14 @@ export class FilesService {
 
   constructor(
     private readonly prisma: PrismaService,
+    // FILE_STORAGE — провайдер для НОВЫХ файлов (persist() ниже). Чтение/
+    // удаление СУЩЕСТВУЮЩЕГО файла (getDownloadStream/deleteUnattached) —
+    // через StorageRegistry, по file.storageProvider самого файла, не по
+    // текущему умолчанию (Stage 2, Phase H.2, аудит 20.09.2026, P2) — на
+    // сегодня оба пути ведут к одному и тому же LocalFileStorageService
+    // (провайдер один), расходятся только после появления второго.
     @Inject(FILE_STORAGE) private readonly storage: FileStorage,
+    private readonly registry: StorageRegistry,
   ) {}
 
   async upload(user: AuthenticatedUser, buffer: Buffer, originalName: string, mimeType: string): Promise<FileArtifact> {
@@ -136,7 +144,7 @@ export class FilesService {
   // LocalFileStorageService.getStream не меняется.
   async getDownloadStream(user: AuthenticatedUser, fileId: string): Promise<{ stream: Readable; file: FileArtifact }> {
     const file = await this.assertOwnedFile(user, fileId);
-    const stream = await this.storage.getStream(file.storageKey);
+    const stream = await this.registry.resolve(file.storageProvider).getStream(file.storageKey);
     return { stream, file };
   }
 
@@ -153,7 +161,7 @@ export class FilesService {
     if (file.messageId) {
       throw new BadRequestException('Нельзя удалить файл, уже прикреплённый к отправленному сообщению');
     }
-    await this.storage.delete(file.storageKey);
+    await this.registry.resolve(file.storageProvider).delete(file.storageKey);
     await this.prisma.fileArtifact.delete({ where: { id: file.id } });
   }
 }

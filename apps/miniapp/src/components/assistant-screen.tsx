@@ -290,6 +290,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       const formData = new FormData();
       formData.append('audio', blob, `voice.${ext}`);
       formData.append('clientRequestId', newClientRequestId());
+      // Stage 2, Phase H.1 (аудит 20.09.2026, P2) — пишем именно в тот
+      // разговор, что открыт на этом экране, а не в "последний активный"
+      // (пока это одно и то же — один разговор на сотрудника — но не
+      // полагаемся на эвристику там, где уже знаем точный id).
+      if (conversationId) formData.append('conversationId', conversationId);
 
       const response = await api.postForm<VoiceParseResponse>('/voice/parse', formData);
 

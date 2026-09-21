@@ -1,7 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
-import { FILE_STORAGE, type FileStorage } from './file-storage.service';
+import { StorageRegistry } from './storage-registry.service';
 
 const ORPHAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -17,7 +17,11 @@ export class FilesCleanupCron {
 
   constructor(
     private readonly prisma: PrismaService,
-    @Inject(FILE_STORAGE) private readonly storage: FileStorage,
+    // StorageRegistry, не напрямую FILE_STORAGE (Stage 2, Phase H.2, аудит
+    // 20.09.2026, P2) — каждый orphan удаляется через ТОТ провайдер, что
+    // реально его сохранил (file.storageProvider), не через текущее
+    // умолчание для новых файлов.
+    private readonly registry: StorageRegistry,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -26,15 +30,30 @@ export class FilesCleanupCron {
     const orphans = await this.prisma.fileArtifact.findMany({
       where: { messageId: null, createdAt: { lt: cutoff } },
     });
+    let deleted = 0;
     for (const file of orphans) {
-      // storage.delete уже best-effort (см. LocalFileStorageService) — не
-      // мешает удалить строку из БД, даже если физического файла на диске
-      // уже не было.
-      await this.storage.delete(file.storageKey);
+      // storage.delete теперь best-effort только для ENOENT (файла и так
+      // уже нет — не мешает удалить строку из БД, см.
+      // LocalFileStorageService.delete). Любая ДРУГАЯ ошибка диска раньше
+      // тоже глоталась там же, и эта строка удаляла FileArtifact из БД
+      // безусловно — физический файл оставался на диске, но единственная
+      // запись, по которой его можно было бы найти и повторить попытку,
+      // уже удалена (внешний аудит 20.09.2026, P1). Теперь настоящая
+      // ошибка пробрасывается сюда — не удаляем строку, оставляем на
+      // повтор следующим часовым прогоном, продолжаем с остальными файлами
+      // в этой же партии (один сбойный файл не должен блокировать чистку
+      // остальных).
+      try {
+        await this.registry.resolve(file.storageProvider).delete(file.storageKey);
+      } catch (err) {
+        this.logger.error(`Не удалось удалить файл ${file.storageKey} с диска — оставляю запись в БД для повтора: ${err instanceof Error ? err.message : err}`);
+        continue;
+      }
       await this.prisma.fileArtifact.delete({ where: { id: file.id } });
+      deleted++;
     }
-    if (orphans.length > 0) {
-      this.logger.log(`Удалено orphan-загрузок: ${orphans.length}`);
+    if (deleted > 0) {
+      this.logger.log(`Удалено orphan-загрузок: ${deleted}`);
     }
   }
 }

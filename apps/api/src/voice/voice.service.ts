@@ -103,11 +103,25 @@ export class VoiceService {
     private readonly assistantChat: AssistantChatService,
   ) {}
 
+  // Exactly-once для голосовых мутаций (Stage 2, Phase H.1, внешний аудит
+  // 20.09.2026, P0/P1 — "durable voice execution lifecycle"). Тот же
+  // приём, что AssistantChatService.claimOrJoin (in-memory Map, не БД
+  // compare-and-set/распределённая блокировка — API работает одним
+  // процессом): findCachedParseResponse ниже ловит ПОСЛЕДОВАТЕЛЬНЫЙ повтор
+  // ПОСЛЕ того, как прошлая попытка полностью сохранилась — но не ловит
+  // конкурентный повтор, пока первая попытка ещё выполняется (например,
+  // клиентский HTTP-таймаут посреди минуты Whisper+Claude, автоматический
+  // retry той же формы). Ключ — `${conversationId}:${clientRequestId}`, не
+  // просто clientRequestId — на случай, если один сотрудник когда-нибудь
+  // получит несколько разговоров.
+  private readonly inFlightParseRequests = new Map<string, Promise<VoiceParseResponse>>();
+
   async parse(
     audio: MulterFile | undefined,
     user: AuthenticatedUser,
     meetingId?: string,
     clientRequestId?: string,
+    conversationId?: string,
   ): Promise<VoiceParseResponse> {
     // fileFilter в FileInterceptor отклоняет неподдерживаемый mime через
     // cb(null, false) — файл молча не попадает в запрос, а не кидает ошибку,
@@ -132,34 +146,92 @@ export class VoiceService {
     // сообщение вообще) сам создаёт строку в БД — короткая, не зависящая от
     // Whisper/контекста операция, не стоит искусственно распараллеливать её
     // с loadHistory, которому нужен уже готовый conversation.id.
-    const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
-
-    // Идемпотентность (Stage 2, Phase H.1, внешний аудит 20.09.2026, P0) —
-    // до этого /voice/parse не имел вообще никакой защиты от повторной
-    // отправки: сеть оборвалась ПОСЛЕ того, как реальная мутация
-    // (создание/правка/удаление задачи или события) уже случилась, но ДО
-    // того, как ответ дошёл до клиента — повторная отправка того же уже
-    // записанного аудио (например, автоматическим повтором на нестабильной
-    // сети, не обязательно новой надиктовкой) выполнила бы действие ещё
-    // раз. Короткое замыкание — только на пару, где ОБА сообщения уже
-    // сохранены (т.е. прошлая попытка полностью успела дойти до конца, см.
-    // персистентность ниже) — если найдена только user-строка без
-    // ответной (прошлая попытка умерла где-то посередине), безопасной
-    // информации о том, выполнились ли уже действия, нет: продолжаем как
-    // обычную новую попытку (см. cleanupOrphanUserMessage ниже), а не
-    // рискуем пропустить реально не выполненное действие.
     //
-    // Результат на попадании в кэш — намеренно БЕЗ results (нет способа
-    // восстановить исходные VoiceActionResult из уже сохранённых
-    // MessagePart без потери полей вроде taskId/previous, нужных фронтенду
-    // для undo) — но с настоящими userMessage/assistantMessage: дубль всё
-    // равно не создаёт лишней записи в истории и не тратит Whisper/Claude
-    // повторно, просто без кнопки "Отменить" на повторном показе.
-    if (clientRequestId) {
-      const cached = await this.findCachedParseResponse(conversation.id, clientRequestId);
-      if (cached) return cached;
+    // conversationId (Stage 2, Phase H.1, внешний аудит 20.09.2026, P2) —
+    // если клиент уже знает, какой разговор у него открыт, пишем именно
+    // туда (assertOwnedConversation — та же проверка владения, что у
+    // текстового чата, 404 на чужой/несуществующий разговор). Без него —
+    // прежнее поведение (последний по updatedAt), обратная совместимость с
+    // apps/web, который его не передаёт.
+    const conversation = conversationId
+      ? await this.assistantChat.assertOwnedConversation(user, conversationId).then(() => ({ id: conversationId }))
+      : await this.assistantChat.getOrCreatePrimaryConversation(user);
+
+    if (!clientRequestId) {
+      return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes);
     }
 
+    // Claim — синхронная проверка карты и запись в неё СРАЗУ, без await
+    // между ними (тот же приём и то же обоснование корректности, что у
+    // claimOrJoin в assistant-chat.service.ts: Node не может прервать этот
+    // участок ради другого таска, поэтому два "по-настоящему одновременных"
+    // запроса не могут оба проскочить проверку). Проверка БД-кэша — уже
+    // ВНУТРИ застолблённого выполнения (runParseIdempotent), не до него —
+    // иначе await там же открыл бы то самое окно для интерливинга.
+    const claimKey = `${conversation.id}:${clientRequestId}`;
+    const existingInFlight = this.inFlightParseRequests.get(claimKey);
+    if (existingInFlight) return existingInFlight;
+
+    const promise = this.runParseIdempotent(audio, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
+      if (this.inFlightParseRequests.get(claimKey) === promise) {
+        this.inFlightParseRequests.delete(claimKey);
+      }
+    });
+    this.inFlightParseRequests.set(claimKey, promise);
+    return promise;
+  }
+
+  // Идемпотентность (Stage 2, Phase H.1, внешний аудит 20.09.2026, P0) —
+  // до этого /voice/parse не имел вообще никакой защиты от повторной
+  // отправки: сеть оборвалась ПОСЛЕ того, как реальная мутация
+  // (создание/правка/удаление задачи или события) уже случилась, но ДО
+  // того, как ответ дошёл до клиента — повторная отправка того же уже
+  // записанного аудио (например, автоматическим повтором на нестабильной
+  // сети, не обязательно новой надиктовкой) выполнила бы действие ещё
+  // раз. Короткое замыкание — только на пару, где ОБА сообщения уже
+  // сохранены (т.е. прошлая попытка полностью успела дойти до конца, см.
+  // персистентность ниже) — если найдена только user-строка без
+  // ответной (прошлая попытка умерла где-то посередине), безопасной
+  // информации о том, выполнились ли уже действия, нет: продолжаем как
+  // обычную новую попытку (см. findCachedParseResponse ниже), а не
+  // рискуем пропустить реально не выполненное действие.
+  //
+  // Результат на попадании в кэш — намеренно БЕЗ results (нет способа
+  // восстановить исходные VoiceActionResult из уже сохранённых
+  // MessagePart без потери полей вроде taskId/previous, нужных фронтенду
+  // для undo) — но с настоящими userMessage/assistantMessage: дубль всё
+  // равно не создаёт лишней записи в истории и не тратит Whisper/Claude
+  // повторно, просто без кнопки "Отменить" на повторном показе.
+  private async runParseIdempotent(
+    audio: MulterFile,
+    user: AuthenticatedUser,
+    meetingId: string | undefined,
+    clientRequestId: string,
+    conversation: { id: string },
+    requestId: string,
+    t0: number,
+    audioBytes: number,
+  ): Promise<VoiceParseResponse> {
+    const cached = await this.findCachedParseResponse(conversation.id, clientRequestId);
+    if (cached) return cached;
+    return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId);
+  }
+
+  // Тело фактического разбора — выполняется не более одного раза на
+  // (conversationId, clientRequestId) одновременно, см. claim в parse()
+  // выше. clientRequestId здесь нужен только для итоговой записи
+  // userMessage (идемпотентность на уровне БД, recovery на гонку —
+  // см. userMessagePromise ниже), сам разбор от него не зависит.
+  private async runParse(
+    audio: MulterFile,
+    user: AuthenticatedUser,
+    meetingId: string | undefined,
+    conversation: { id: string },
+    requestId: string,
+    t0: number,
+    audioBytes: number,
+    clientRequestId?: string,
+  ): Promise<VoiceParseResponse> {
     // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
     // шли строго последовательно (расшифровка → сотрудники → задачи →
     // события), хотя ни один из этих запросов не читает transcript. Раньше
@@ -338,7 +410,6 @@ export class VoiceService {
     }
     const results: VoiceActionResult[] = execResults.map((r) => r.result);
     const executionMs = Date.now() - t2;
-    const totalMs = Date.now() - t0;
 
     // Ответ ассистента (Stage 2, Phase H) — один Message с одной частью на
     // каждый execResults[i] (см. buildVoiceAssistantParts), в общей ленте
@@ -361,6 +432,7 @@ export class VoiceService {
     // добавляет голосовую реплику в общую ленту в этом редком случае),
     // сбой явно и подробно логируется — диагностируем, не тонет молча в
     // общем 500.
+    const t3 = Date.now();
     let userMessage: MessageWithParts | null = null;
     let assistantMessage: MessageWithParts | null = null;
     try {
@@ -383,6 +455,14 @@ export class VoiceService {
           `${err instanceof Error ? err.message : err}`,
       );
     }
+    // Stage 2, Phase H.1 (внешний аудит 20.09.2026, P2, observability) —
+    // раньше totalMs считался ДО await userMessagePromise/создания
+    // assistantMessage/обновления conversation, хотя ответ клиенту ждёт
+    // именно их — метрика занижала реальное время до HTTP-ответа.
+    // persistenceMs — отдельно, чтобы разделить "сколько заняли реальные
+    // действия" (executionMs) от "сколько заняло сохранение истории".
+    const persistenceMs = Date.now() - t3;
+    const totalMs = Date.now() - t0;
 
     // Единая сводная строка на весь voice request (observability-этап,
     // владелец 15.09.2026, раздел 2-3 ТЗ этапа) — reqId тот же, что в
@@ -394,7 +474,7 @@ export class VoiceService {
       `voice parse reqId=${requestId} audioBytes=${audioBytes} audioDurationMs=${audioDurationMs ?? 'n/a'} ` +
         `sttMs=${sttMs} contextDbMs=${contextDbMs} llmFastMs=${result.timing.fastMs} ` +
         `llmStrongMs=${result.timing.strongMs} escalatedToStrongModel=${result.escalatedToStrongModel} ` +
-        `executionMs=${executionMs} totalMs=${totalMs} draftsCount=${drafts.length}`,
+        `executionMs=${executionMs} persistenceMs=${persistenceMs} totalMs=${totalMs} draftsCount=${drafts.length}`,
     );
 
     // Раздел 15 ТЗ: голосовые заметки — чувствительный контент. Логируем сам

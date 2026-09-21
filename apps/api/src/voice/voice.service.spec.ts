@@ -478,3 +478,118 @@ describe('VoiceService.findCachedParseResponse (Stage 2, Phase H.1, P0 — ид�
     expect(prisma.message.delete).toHaveBeenCalledWith({ where: { id: 'm1' } });
   });
 });
+
+// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P0/P1 — "durable voice
+// execution lifecycle") — findCachedParseResponse (проверено выше) ловит
+// ТОЛЬКО последовательный повтор ПОСЛЕ того, как прошлая попытка уже
+// полностью сохранилась. Этот тест — acceptance-тест по тому же образцу,
+// что уже применён к AssistantChatService.claimOrJoin: два ПО-НАСТОЯЩЕМУ
+// одновременных вызова с одним clientRequestId, пока первый ещё выполняет
+// Whisper/Claude, не должны оба реально транскрибировать/мутировать.
+describe('VoiceService.parse — exactly-once под конкурентными запросами (Phase H.1, P0/P1)', () => {
+  it('два одновременных parse() с одним clientRequestId зовут whisper.transcribe ровно один раз', async () => {
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+    const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+
+    const whisperSpy = jest.fn().mockResolvedValue({ text: 'Привет', durationMs: 500 });
+    const extractSpy = jest.fn().mockResolvedValue({
+      drafts: [{ type: 'chat', reply: 'Ок' }],
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 10, strongMs: 0 },
+      escalatedToStrongModel: false,
+    });
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const prisma = {
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      conversation: { update: jest.fn() },
+    };
+    const tasks = { findAll: jest.fn().mockResolvedValue([]) };
+    const audit = { log: jest.fn() };
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      audit as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    );
+
+    const dto = { audio, user: makeUser(), clientRequestId: 'req-1' };
+    const [resultA, resultB] = await Promise.all([
+      service.parse(dto.audio, dto.user, undefined, dto.clientRequestId),
+      service.parse(dto.audio, dto.user, undefined, dto.clientRequestId),
+    ]);
+
+    expect(whisperSpy).toHaveBeenCalledTimes(1);
+    expect(extractSpy).toHaveBeenCalledTimes(1);
+    expect(resultA.userMessage?.id).toBe(resultB.userMessage?.id);
+  });
+});
+
+// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P2) — раньше голос всегда
+// резолвил "последний активный разговор" (getOrCreatePrimaryConversation),
+// не обязательно тот, что открыт на экране. Явный conversationId от
+// клиента должен использоваться напрямую, с той же проверкой владения,
+// что у текстового чата — не полагаться на эвристику там, где id уже
+// известен.
+describe('VoiceService.parse — явный conversationId (Phase H.1, P2)', () => {
+  it('conversationId передан и принадлежит пользователю — пишет туда, getOrCreatePrimaryConversation не вызывается', async () => {
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+    const userMessage = { id: 'm1', conversationId: 'c-explicit', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', conversationId: 'c-explicit', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantChat = {
+      assertOwnedConversation: jest.fn().mockResolvedValue(undefined),
+      getOrCreatePrimaryConversation: jest.fn(),
+    };
+    const prisma = {
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      conversation: { update: jest.fn() },
+    };
+    const service = new VoiceService(
+      { transcribe: jest.fn().mockResolvedValue({ text: 'Привет', durationMs: 500 }) } as any,
+      { extract: jest.fn().mockResolvedValue({ drafts: [{ type: 'chat', reply: 'Ок' }], confidence: 'HIGH', clarificationNeeded: false, clarificationReason: 'null', timing: { fastMs: 1, strongMs: 0 }, escalatedToStrongModel: false }) } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+    );
+
+    const response = await service.parse(audio, makeUser(), undefined, undefined, 'c-explicit');
+
+    expect(assistantChat.assertOwnedConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }), 'c-explicit');
+    expect(assistantChat.getOrCreatePrimaryConversation).not.toHaveBeenCalled();
+    expect(response.conversationId).toBe('c-explicit');
+  });
+
+  it('conversationId передан, но не принадлежит пользователю — parse() падает до Whisper', async () => {
+    const assistantChat = {
+      assertOwnedConversation: jest.fn().mockRejectedValue(new Error('Диалог не найден')),
+      getOrCreatePrimaryConversation: jest.fn(),
+    };
+    const whisperSpy = jest.fn();
+    const service = new VoiceService({ transcribe: whisperSpy } as any, {} as any, {} as any, {} as any, {} as any, {} as any, assistantChat as any);
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    await expect(service.parse(audio, makeUser(), undefined, undefined, 'not-mine')).rejects.toThrow('Диалог не найден');
+    expect(whisperSpy).not.toHaveBeenCalled();
+  });
+});
