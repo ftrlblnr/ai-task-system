@@ -421,6 +421,18 @@ model PlaudSyncItem {
   errorMessage     String?
   meetingId        String?         @unique
   meeting          Meeting?        @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  // Stage 2, Phase L (внешний аудит 21.09.2026, "Plaud transcript
+  // independence", P0) — раньше транскрипт синхронизировался ТОЛЬКО в той
+  // же ветке, что и summary/title, и та ветка пропускалась целиком, если
+  // contentHash (title+rawSummary) совпадал с прошлым разом — если
+  // транскрипт ещё не был готов к моменту первой успешной синхронизации
+  // summary, contentHash после этого больше никогда не менялся, и
+  // транскрипт не подхватывался НИКОГДА. transcriptSyncedAt — отдельный,
+  // независимый от contentHash признак "уже реально сохранили сегменты
+  // хотя бы раз"; пока он null, PlaudSyncService.syncItem пробует
+  // синхронизировать транскрипт заново на каждом прогоне (в пределах окна
+  // ретрая), даже если summary/title не изменились.
+  transcriptSyncedAt DateTime?
   lastAttemptAt    DateTime        @default(now())
   createdAt        DateTime        @default(now())
 }
@@ -695,6 +707,27 @@ enum UndoRecordAction {
 // (executeTaskAction/executeEventAction, см. VoiceService), клиенту
 // отдаётся только непрозрачный `id` этой записи (`undoToken`) — сам откат
 // выполняется по хранимым здесь данным, не по тому, что прислал клиент.
+enum UndoRecordStatus {
+  // Ещё не использована — можно клеймить.
+  AVAILABLE
+  // Атомарно застолблена одним запросом POST /voice/undo, откат ещё
+  // выполняется — второй конкурентный запрос с тем же undoToken получит
+  // безопасный отказ (не AVAILABLE, значит уже занято), не выполнит откат
+  // повторно.
+  CLAIMED
+  // Откат реально выполнился успешно.
+  COMPLETED
+  // Stage 2, Phase L (внешний аудит 21.09.2026, "Undo consistency", P1) —
+  // раньше запись помечалась "использованной" (consumedAt) СРАЗУ при
+  // claim'е, ДО попытки самого отката — если сам откат (TasksService.update/
+  // EventsService.remove и т.п.) падал, запись оставалась "уже
+  // использована" навсегда, и повторный клик "Отменить" получал
+  // generic-отказ, хотя откат так и не произошёл. FAILED — переходное
+  // состояние: VoiceService.undo при неудачном откате возвращает запись
+  // обратно в AVAILABLE (в пределах expiresAt), позволяя реальный повтор.
+  FAILED
+}
+
 model UndoRecord {
   id         String           @id @default(cuid())
   // Чей голосовой запрос породил это действие — POST /voice/undo
@@ -710,12 +743,16 @@ model UndoRecord {
   addedParticipantIds   Json?
   removedParticipantIds Json?
 
+  status UndoRecordStatus @default(AVAILABLE)
+
   // 30 секунд от создания (VOICE_UNDO_WINDOW_MS, то же окно, что и раньше
   // проверялось только на фронте, скрывавшем кнопку "Отменить" по
   // таймеру) — теперь это ГРАНИЦА, проверяемая на сервере: раньше ничто
   // не мешало вызвать /voice/undo намного позже 30 секунд напрямую
   // (не через кнопку), полагаясь только на клиентский таймер.
   expiresAt  DateTime
+  // Ставится только при переходе в COMPLETED — "когда откат реально
+  // произошёл", не "когда его застолбили" (см. status выше).
   consumedAt DateTime?
   createdAt  DateTime @default(now())
 }

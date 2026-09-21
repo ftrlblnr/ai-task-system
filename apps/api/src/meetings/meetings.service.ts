@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { TasksService } from '../tasks/tasks.service';
+import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { CreateTaskDto } from '../tasks/dto/create-task.dto';
 import { CreateMeetingDto } from './dto/create-meeting.dto';
@@ -25,6 +26,7 @@ export class MeetingsService {
     private readonly tasks: TasksService,
     private readonly extraction: MeetingTaskExtractionService,
     private readonly speakerSubstitution: SpeakerSubstitutionService,
+    private readonly employeeResolver: EmployeeResolverService,
   ) {}
 
   findAll() {
@@ -77,11 +79,46 @@ export class MeetingsService {
 
     const enhancedSummary = await this.speakerSubstitution.substitute(meeting.rawSummary, speakerNames);
 
-    return this.prisma.meeting.update({
+    const updated = await this.prisma.meeting.update({
       where: { id },
       data: { speakerNames, enhancedSummary },
       select: LIST_SELECT,
     });
+
+    // Best-effort, не должно мешать основному ответу (см. комментарий у
+    // resolveSegmentSpeakers) — сбой здесь не откатывает уже сохранённые
+    // speakerNames/enhancedSummary выше.
+    await this.resolveSegmentSpeakers(id, speakerNames).catch(() => {});
+
+    return updated;
+  }
+
+  // Находка №7 пятого внешнего аудита (Stage 2, Phase L) —
+  // MeetingSegment.speakerEmployeeId существовал в схеме с Phase K, но ни
+  // один код путь его не заполнял (найдено грепом: только объявление в
+  // schema.prisma, ни одного присвоения). Тот же словарь "Speaker N" ->
+  // реальное имя, что руководитель уже вводит здесь для enhancedSummary
+  // (speakerNames), резолвится через EmployeeResolverService (та же
+  // проверка по видимым ACTIVE-сотрудникам, что и у голосового
+  // assigneeRawText) и пишется в сегменты транскрипта той же встречи.
+  // AMBIGUOUS/NOT_FOUND — обычный, ожидаемый исход (введённое имя не
+  // обязано совпасть ни с одним сотрудником, например внешний участник) —
+  // такие метки просто остаются без speakerEmployeeId, не ошибка.
+  private async resolveSegmentSpeakers(meetingId: string, speakerNames: Record<string, string>): Promise<void> {
+    const entries = Object.entries(speakerNames).filter(([, name]) => name && name.trim());
+    if (entries.length === 0) return;
+
+    const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
+    if (employees.length === 0) return;
+
+    for (const [label, name] of entries) {
+      const resolution = await this.employeeResolver.resolve(name, employees);
+      if (resolution.status !== 'RESOLVED') continue;
+      await this.prisma.meetingSegment.updateMany({
+        where: { meetingId, speakerLabel: label },
+        data: { speakerEmployeeId: resolution.employeeId },
+      });
+    }
   }
 
   // Черновики эфемерны — ничего не пишем в БД здесь, только возвращаем

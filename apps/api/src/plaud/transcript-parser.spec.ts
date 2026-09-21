@@ -39,6 +39,36 @@ describe('parseTranscriptSegments', () => {
     expect(result).toEqual([{ order: 0, startMs: 120000, endMs: 125000, speakerLabel: 'A', text: 'Через две минуты' }]);
   });
 
+  // РЕГРЕССИЯ находки №4 пятого внешнего аудита (Stage 2, Phase L) — раньше
+  // эвристика "< 100000 → секунды" применялась даже к полям startMs/endMs,
+  // чьё имя уже однозначно говорит "это миллисекунды". Сегмент из первых
+  // ~1:40 записи (значение меньше порога 100000) домножался на 1000 ещё
+  // раз — 5 секунд превращались в 5000 секунд (~1.4ч), что рвало и
+  // сортировку сегментов, и любое отображение таймкода.
+  it('время уже в миллисекундах, но МЕНЬШЕ порога эвристики (начало записи) — тоже не домножается', () => {
+    const raw = JSON.stringify([{ speaker: 'A', startMs: 5000, endMs: 8000, text: 'В самом начале записи' }]);
+
+    const result = parseTranscriptSegments(raw);
+
+    expect(result).toEqual([{ order: 0, startMs: 5000, endMs: 8000, speakerLabel: 'A', text: 'В самом начале записи' }]);
+  });
+
+  it('start_ms (snake_case, явно мс) — тоже без эвристики, даже если значение маленькое', () => {
+    const raw = JSON.stringify([{ speaker: 'A', start_ms: 1500, end_ms: 3000, text: 'Ещё раньше' }]);
+
+    const result = parseTranscriptSegments(raw);
+
+    expect(result).toEqual([{ order: 0, startMs: 1500, endMs: 3000, speakerLabel: 'A', text: 'Ещё раньше' }]);
+  });
+
+  it('неоднозначные start/end (без Ms в имени), маленькое значение — эвристика секунд по-прежнему работает', () => {
+    const raw = JSON.stringify([{ speaker: 'A', start: 5, end: 8, text: 'В секундах' }]);
+
+    const result = parseTranscriptSegments(raw);
+
+    expect(result).toEqual([{ order: 0, startMs: 5000, endMs: 8000, speakerLabel: 'A', text: 'В секундах' }]);
+  });
+
   it('сегмент без текста пропускается, остальные сохраняют порядок', () => {
     const raw = JSON.stringify([
       { speaker: 'A', start: 0, end: 1, text: 'Первый' },

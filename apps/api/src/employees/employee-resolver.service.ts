@@ -73,12 +73,26 @@ export class EmployeeResolverService {
   // Слова короче 3 символов не сравниваются эвристически вовсе (слишком
   // велик риск случайного совпадения короткого префикса) — только через
   // точное совпадение (уже проверено раньше в resolve) или явный alias.
+  //
+  // Находка №6 пятого внешнего аудита (Stage 2, Phase L) — фиксированный
+  // допуск "хвост ≤2 символа, разница длин ≤3" был откалиброван на именах
+  // длиной 6-7 букв ("Алексей"/"Алексею") и давал реальные ложные
+  // срабатывания на коротких словах, где те же 2 символа — существенная
+  // доля всей длины: "Ким" (3 буквы) и "Кирилл" (6 букв) имеют общий
+  // префикс "ки" (2 буквы) — под старой формулой (prefixLen ≥ minLen-2 = 1)
+  // это засчитывалось как совпадение. Допуск теперь масштабируется по
+  // длине КОРОТКОГО слова: для 3-4-буквенных слов требуем, чтобы оно
+  // целиком было префиксом более длинного (без хвоста вообще), для 5-6 —
+  // хвост ≤1, для 7+ — прежний хвост ≤2 (поведение для длинных имён не
+  // меняется).
   private wordsMatch(a: string, b: string): boolean {
     if (a === b) return true;
     const minLen = Math.min(a.length, b.length);
     if (minLen < 3) return false;
     const prefixLen = this.commonPrefixLength(a, b);
-    return prefixLen >= minLen - 2 && Math.abs(a.length - b.length) <= 3;
+    const maxTail = minLen <= 4 ? 0 : minLen <= 6 ? 1 : 2;
+    const maxLenDiff = minLen <= 4 ? 2 : 3;
+    return prefixLen >= minLen - maxTail && Math.abs(a.length - b.length) <= maxLenDiff;
   }
 
   private words(fullName: string): string[] {

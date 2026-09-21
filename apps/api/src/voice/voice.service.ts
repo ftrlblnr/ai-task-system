@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, UndoKind, UndoRecordAction, VoiceExecutionStatus } from '@prisma/client';
+import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, UndoKind, UndoRecordAction, UndoRecordStatus, VoiceExecutionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -159,8 +159,8 @@ export class VoiceService {
   async parse(
     audio: MulterFile | undefined,
     user: AuthenticatedUser,
-    meetingId?: string,
-    clientRequestId?: string,
+    meetingId: string | undefined,
+    clientRequestId: string,
     conversationId?: string,
   ): Promise<VoiceParseResponse> {
     // fileFilter в FileInterceptor отклоняет неподдерживаемый mime через
@@ -196,10 +196,6 @@ export class VoiceService {
     const conversation = conversationId
       ? await this.assistantChat.assertOwnedConversation(user, conversationId).then(() => ({ id: conversationId }))
       : await this.assistantChat.getOrCreatePrimaryConversation(user);
-
-    if (!clientRequestId) {
-      return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes);
-    }
 
     // Claim — синхронная проверка карты и запись в неё СРАЗУ, без await
     // между ними (тот же приём и то же обоснование корректности, что у
@@ -456,25 +452,21 @@ export class VoiceService {
     requestId: string,
     t0: number,
     audioBytes: number,
-    clientRequestId?: string,
-    executionId?: string,
+    clientRequestId: string,
+    executionId: string,
   ): Promise<VoiceParseResponse> {
-    if (executionId) {
-      await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.PROCESSING } })
-        .catch(() => {});
-    }
+    await this.prisma.voiceExecution
+      .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.PROCESSING } })
+      .catch(() => {});
     let loaded: Awaited<ReturnType<typeof this.loadContextAndExtract>>;
     try {
       loaded = await this.loadContextAndExtract(audio, user, meetingId, conversation, requestId);
     } catch (err) {
       // Ничего не выполнено — retry с тем же clientRequestId безопасен
       // (claimAndRunDurable разрешает повтор только на FAILED).
-      if (executionId) {
-        await this.prisma.voiceExecution
-          .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.FAILED, errorMessage: toErrorMessage(err) } })
-          .catch(() => {});
-      }
+      await this.prisma.voiceExecution
+        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.FAILED, errorMessage: toErrorMessage(err) } })
+        .catch(() => {});
       throw err;
     }
     const { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result } = loaded;
@@ -495,7 +487,7 @@ export class VoiceService {
           conversationId: conversation.id,
           role: MessageRole.USER,
           status: MessageStatus.COMPLETED,
-          clientRequestId: clientRequestId || null,
+          clientRequestId,
           parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
         },
         include: { parts: { orderBy: { order: 'asc' } } },
@@ -507,7 +499,7 @@ export class VoiceService {
         // clientRequestId, но на случай прямого P2002 здесь всё равно
         // безопасно восстановиться, не падать 500-й. Тот же приём, что уже
         // в AssistantChatService.createUserMessageIdempotent.
-        if (isUniqueConstraintError(err) && clientRequestId) {
+        if (isUniqueConstraintError(err)) {
           const winner = await this.prisma.message.findUnique({
             where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
             include: { parts: { orderBy: { order: 'asc' } } },
@@ -574,11 +566,9 @@ export class VoiceService {
     // разрешило бы retry и повторную мутацию УЖЕ выполненных действий), а
     // NEEDS_RECONCILIATION: claimAndRunDurable откажет в повторе, оставляя
     // ручную проверку по логам/audit trail.
-    if (executionId) {
-      await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } })
-        .catch(() => {});
-    }
+    await this.prisma.voiceExecution
+      .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } })
+      .catch(() => {});
 
     const t2 = Date.now();
     const execResults: ExecutedVoiceAction[] = [];
@@ -593,11 +583,9 @@ export class VoiceService {
         }
       }
     } catch (err) {
-      if (executionId) {
-        await this.prisma.voiceExecution
-          .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.NEEDS_RECONCILIATION, errorMessage: toErrorMessage(err) } })
-          .catch(() => {});
-      }
+      await this.prisma.voiceExecution
+        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.NEEDS_RECONCILIATION, errorMessage: toErrorMessage(err) } })
+        .catch(() => {});
       throw err;
     }
     const results: VoiceActionResult[] = execResults.map((r) => r.result);
@@ -621,17 +609,15 @@ export class VoiceService {
     // previous и т.п.), не пустышку: retry на COMPLETED теперь получает
     // настоящий исход, а не "results: []", как было в старом
     // findCachedParseResponse.
-    if (executionId) {
-      await this.prisma.voiceExecution
-        .update({
-          where: { id: executionId },
-          data: {
-            status: VoiceExecutionStatus.COMPLETED,
-            resultJson: toJson({ transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results }),
-          },
-        })
-        .catch(() => {});
-    }
+    await this.prisma.voiceExecution
+      .update({
+        where: { id: executionId },
+        data: {
+          status: VoiceExecutionStatus.COMPLETED,
+          resultJson: toJson({ transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results }),
+        },
+      })
+      .catch(() => {});
 
     // Stage 2, Phase H.1 (внешний аудит 20.09.2026, P1) — действия выше
     // (executeTaskAction/executeEventAction) УЖЕ выполнены к этому моменту.
@@ -661,11 +647,9 @@ export class VoiceService {
         include: { parts: { orderBy: { order: 'asc' } } },
       });
       await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
-      if (executionId) {
-        await this.prisma.voiceExecution
-          .update({ where: { id: executionId }, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id } })
-          .catch(() => {});
-      }
+      await this.prisma.voiceExecution
+        .update({ where: { id: executionId }, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id } })
+        .catch(() => {});
     } catch (err) {
       this.logger.error(
         `voice parse reqId=${requestId} persistence failed AFTER actions already executed ` +
@@ -728,26 +712,43 @@ export class VoiceService {
   // сервере; клиенту отдаётся только id этой записи (undoToken, см.
   // VoiceTaskActionResult/VoiceEventActionResult) — сам откат в undo()
   // ниже читает данные отсюда, не из того, что прислал клиент.
+  // Stage 2, Phase L (внешний аудит 21.09.2026, P0/P1 — "business mutation
+  // не должна зависеть от UndoRecord") — раньше вызывающий код (executeTaskAction/
+  // executeEventAction) делал `await this.createUndoRecord(...)` внутри ТОГО ЖЕ
+  // try, что и саму мутацию: сбой здесь (например, БД недоступна на долю
+  // секунды) означал, что УЖЕ СОЗДАННАЯ/ИЗМЕНЁННАЯ задача/событие репортились
+  // клиенту как ok:false — пользователь повторял команду и получал дубликат.
+  // undo — вторичное удобство, не основной результат действия; эта функция
+  // теперь сама ловит свою ошибку и возвращает null вместо того, чтобы
+  // прокидывать её вызывающему коду.
   private async createUndoRecord(
     user: AuthenticatedUser,
     kind: UndoKind,
     action: UndoRecordAction,
     entityId: string,
     extra: { previous?: unknown; addedParticipantIds?: string[]; removedParticipantIds?: string[] } = {},
-  ): Promise<string> {
-    const record = await this.prisma.undoRecord.create({
-      data: {
-        employeeId: user.id,
-        kind,
-        action,
-        entityId,
-        previous: extra.previous !== undefined ? toJson(extra.previous) : undefined,
-        addedParticipantIds: extra.addedParticipantIds ? toJson(extra.addedParticipantIds) : undefined,
-        removedParticipantIds: extra.removedParticipantIds ? toJson(extra.removedParticipantIds) : undefined,
-        expiresAt: new Date(Date.now() + UNDO_WINDOW_MS),
-      },
-    });
-    return record.id;
+  ): Promise<string | null> {
+    try {
+      const record = await this.prisma.undoRecord.create({
+        data: {
+          employeeId: user.id,
+          kind,
+          action,
+          entityId,
+          previous: extra.previous !== undefined ? toJson(extra.previous) : undefined,
+          addedParticipantIds: extra.addedParticipantIds ? toJson(extra.addedParticipantIds) : undefined,
+          removedParticipantIds: extra.removedParticipantIds ? toJson(extra.removedParticipantIds) : undefined,
+          status: UndoRecordStatus.AVAILABLE,
+          expiresAt: new Date(Date.now() + UNDO_WINDOW_MS),
+        },
+      });
+      return record.id;
+    } catch (err) {
+      this.logger.error(
+        `createUndoRecord failed for ${kind}/${action}/${entityId} — действие УЖЕ выполнено, продолжаем без undo: ${err instanceof Error ? err.message : err}`,
+      );
+      return null;
+    }
   }
 
   // Создаёт/обновляет/удаляет задачу напрямую через TasksService (та же
@@ -975,10 +976,19 @@ export class VoiceService {
   // Один общий безопасный текст на "не найдено"/"чужое"/"уже
   // отменено"/"истекло" — тот же принцип "не раскрываем, какой из
   // случаев", что и у 404 при скачивании чужого файла (FilesService).
+  // Stage 2, Phase L (внешний аудит 21.09.2026, "Undo consistency", P1) —
+  // раньше "занято" (consumedAt) ставилось СРАЗУ при claim'е, ДО попытки
+  // самого отката — если сам откат падал (TasksService.update и т.п.
+  // бросали), запись оставалась помеченной использованной НАВСЕГДА, и
+  // повторный клик "Отменить" получал generic-отказ, хотя откат так и не
+  // произошёл. Теперь статус — явный конечный автомат: AVAILABLE →
+  // CLAIMED (атомарно, тот же приём P2025 через where) → COMPLETED (откат
+  // реально удался) или обратно в AVAILABLE (откат упал — в пределах
+  // expiresAt пользователь может нажать "Отменить" ещё раз).
   async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null }> {
     const genericError = 'Время для отмены истекло, действие уже отменено, или ссылка на отмену недействительна.';
     const record = await this.prisma.undoRecord.findUnique({ where: { id: dto.undoToken } });
-    if (!record || record.employeeId !== user.id || record.consumedAt || record.expiresAt.getTime() < Date.now()) {
+    if (!record || record.employeeId !== user.id || record.expiresAt.getTime() < Date.now()) {
       await this.logAssistantMessage(`Не получилось отменить: ${genericError}`, user).catch(() => {});
       return { ok: false, error: genericError };
     }
@@ -995,15 +1005,15 @@ export class VoiceService {
       return { ok: false, error };
     }
 
-    // Атомарный claim — where: {id, consumedAt: null} закрывает узкую гонку
-    // двойного одновременного POST /voice/undo с одним undoToken: если
-    // конкурентный запрос уже успел проставить consumedAt между findUnique
+    // Атомарный claim — where: {id, status: AVAILABLE} закрывает узкую
+    // гонку двойного одновременного POST /voice/undo с одним undoToken:
+    // если конкурентный запрос уже успел перевести статус между findUnique
     // выше и этим update, where больше не matches ни одной строки, Prisma
     // бросает P2025 вместо того, чтобы молча обновить нулём строк — этот
     // запрос откатывается на безопасный "уже отменено", не выполняет
     // мутацию повторно.
     try {
-      await this.prisma.undoRecord.update({ where: { id: record.id, consumedAt: null }, data: { consumedAt: new Date() } });
+      await this.prisma.undoRecord.update({ where: { id: record.id, status: UndoRecordStatus.AVAILABLE }, data: { status: UndoRecordStatus.CLAIMED } });
     } catch (err) {
       if (isRecordNotFoundError(err)) {
         return { ok: false, error: genericError };
@@ -1051,10 +1061,19 @@ export class VoiceService {
           }
         }
       }
-      await this.logAssistantMessage('Отменено.', user);
+      await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.COMPLETED, consumedAt: new Date() } });
+      // Логирование подтверждения — вторичный эффект, не должен превращать
+      // уже случившийся успешный откат в ok:false для клиента (тот же
+      // принцип, что и graceful degradation в runParse, Phase H.1).
+      await this.logAssistantMessage('Отменено.', user).catch(() => {});
       return { ok: true, error: null };
     } catch (err) {
       const error = toErrorMessage(err);
+      // Откат не удался — возвращаем запись в AVAILABLE (best-effort, в
+      // своём catch: сбой этого шага не должен маскировать реальную
+      // причину сбоя отката), чтобы пользователь мог нажать "Отменить" ещё
+      // раз в пределах expiresAt, а не получал "уже отменено" на ровном месте.
+      await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.AVAILABLE } }).catch(() => {});
       await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
       return { ok: false, error };
     }

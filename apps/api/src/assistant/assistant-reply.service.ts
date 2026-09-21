@@ -7,16 +7,29 @@ import { AssistantToolsService, type ToolExecutionResult } from './assistant-too
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
 // вызов. Phase C: один раунд tool use (LLM решает вызвать get_tasks/
 // get_events → реальные данные → бэкенд сам рисует карточки, см.
-// assistant-render.ts) — НЕ рекурсивный agentic loop (спека §33 запрещает
-// multi-agent на этом этапе): если после результата инструмента модель
-// снова просит инструмент, второй раунд не выполняется, берём текст как
-// есть. Phase E: тот же tool loop, но через messages.stream() вместо
-// messages.create() — runReply() отдаёт прогресс через необязательный
-// onEvent, reply()/streamReply() — тонкие обёртки над одной и той же
-// логикой (не дублировать tool loop в двух местах). Модель здесь
-// сознательно НЕ каскад Haiku→Opus, как в voice — это отдельный,
+// assistant-render.ts). Phase E: тот же tool loop, но через
+// messages.stream() вместо messages.create() — runReply() отдаёт прогресс
+// через необязательный onEvent, reply()/streamReply() — тонкие обёртки над
+// одной и той же логикой (не дублировать tool loop в двух местах). Модель
+// здесь сознательно НЕ каскад Haiku→Opus, как в voice — это отдельный,
 // независимый путь использования Anthropic, draft-extraction.service.ts
 // (голос) не трогается и не участвует.
+//
+// MAX_TOOL_ROUNDS (Stage 2, Phase L, находка №5 пятого внешнего аудита,
+// 21.09.2026, P1) — раньше был жёстко один раунд tool use, не
+// рекурсивный agentic loop (спека §33 запрещает multi-agent на этом
+// этапе). Это блокировало естественные многошаговые вопросы про Plaud-
+// встречи (Phase K), например "найди встречу с Петром на прошлой неделе и
+// процитируй, что он сказал про сроки" — требует get_recent_meetings,
+// затем search_meeting_transcript по её id, т.е. минимум два
+// последовательных вызова инструментов. Ограниченный цикл (не безусловная
+// рекурсия) — не agentic loop в смысле §33 (нет автономного планирования
+// между произвольными инструментами/агентами, нет само-порождённых
+// подзадач): та же модель, тот же system-промпт, тот же список
+// инструментов на каждом раунде, просто до 3 раундов вместо 1 — числовой
+// потолок предотвращает патологическое зацикливание модели.
+const MAX_TOOL_ROUNDS = 3;
+
 const REPLY_MODEL = 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Ты — ассистент корпоративной системы задач «Адъютант».
@@ -140,56 +153,56 @@ export class AssistantReplyService {
     onEvent?: ReplyStreamListener,
     signal?: AbortSignal,
   ): Promise<AssistantReplyResult> {
-    const messages: Anthropic.MessageParam[] = [
+    let messages: Anthropic.MessageParam[] = [
       ...history.map((h) => ({ role: h.role, content: h.text })),
       { role: 'user' as const, content: text },
     ];
     const tools = this.tools.buildTools(user);
-
-    onEvent?.({ type: 'text-reset' });
-    const first = await this.streamOnce(messages, tools, onEvent, signal);
-
-    const toolUseBlocks = first.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-    if (toolUseBlocks.length === 0) {
-      return { text: this.extractText(first.content), toolCalls: [] };
-    }
-
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
-    const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
-    for (const block of toolUseBlocks) {
-      onEvent?.({ type: 'tool-started', name: block.name });
-      const toolStart = Date.now();
-      const result = await this.tools.execute(block.name, block.input, user);
-      const durationMs = Date.now() - toolStart;
-      toolCalls.push({ name: block.name, result, durationMs });
-      onEvent?.({ type: 'tool-completed', name: block.name, result });
-      toolResultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: block.id,
-        content: JSON.stringify('error' in result ? { error: result.message } : result),
-        is_error: 'error' in result,
-      });
-    }
 
-    // Раунд 1 не мог быть финальным ответом (были tool_use) — сбрасываем
-    // то, что могло успеть настримиться текстом до/вперемешку с tool_use,
-    // и начинаем текст раунда 2 с чистого накопителя (см. комментарий у
-    // ReplyStreamEvent выше).
     onEvent?.({ type: 'text-reset' });
-    const second = await this.streamOnce(
-      [...messages, { role: 'assistant', content: first.content }, { role: 'user', content: toolResultBlocks }],
-      tools,
-      onEvent,
-      signal,
-    );
+    let response = await this.streamOnce(messages, tools, onEvent, signal);
 
-    // Один раунд tool use — сознательно не зацикливаемся, если модель
-    // просит инструмент повторно (см. комментарий у класса выше).
-    if (second.content.some((b) => b.type === 'tool_use')) {
-      this.logger.warn('Модель запросила ещё один раунд tool use — второй раунд не поддерживается, беру текст как есть');
+    for (let round = 1; ; round++) {
+      const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+      if (toolUseBlocks.length === 0) {
+        return { text: this.extractText(response.content), toolCalls };
+      }
+
+      if (round > MAX_TOOL_ROUNDS) {
+        // Потолок раундов достигнут — сознательно не зацикливаемся дальше
+        // (см. MAX_TOOL_ROUNDS выше), берём текст последнего ответа как
+        // есть (обычно пустой, раз модель снова попросила инструмент —
+        // extractText сам подставит нейтральный fallback).
+        this.logger.warn(`Модель запросила ещё один раунд tool use сверх лимита (${MAX_TOOL_ROUNDS}) — беру текст как есть`);
+        return { text: this.extractText(response.content), toolCalls };
+      }
+
+      const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of toolUseBlocks) {
+        onEvent?.({ type: 'tool-started', name: block.name });
+        const toolStart = Date.now();
+        const result = await this.tools.execute(block.name, block.input, user);
+        const durationMs = Date.now() - toolStart;
+        toolCalls.push({ name: block.name, result, durationMs });
+        onEvent?.({ type: 'tool-completed', name: block.name, result });
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify('error' in result ? { error: result.message } : result),
+          is_error: 'error' in result,
+        });
+      }
+
+      messages = [...messages, { role: 'assistant', content: response.content }, { role: 'user', content: toolResultBlocks }];
+
+      // Этот раунд не мог быть финальным ответом (были tool_use) —
+      // сбрасываем то, что могло успеть настримиться текстом до/вперемешку
+      // с tool_use, и начинаем текст следующего раунда с чистого
+      // накопителя (см. комментарий у ReplyStreamEvent выше).
+      onEvent?.({ type: 'text-reset' });
+      response = await this.streamOnce(messages, tools, onEvent, signal);
     }
-
-    return { text: this.extractText(second.content), toolCalls };
   }
 
   private async streamOnce(

@@ -41,16 +41,36 @@ function pickString(...values: unknown[]): string | null {
   return null;
 }
 
-// Секунды vs миллисекунды — ещё одна неопределённость формата: значения
-// <= 24h в секундах обычно намного меньше, чем в мс, для типичной
-// длительности встречи (минуты-часы) — эвристика "меньше 100000 → скорее
-// всего секунды, домножить на 1000" достаточно надёжна для реальных
-// длительностей встреч (до ~27 часов в секундах), но это тоже
-// предположение, не факт.
-function pickMs(...values: unknown[]): number | null {
+function toFiniteNonNegative(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// Находка №4 пятого внешнего аудита (Stage 2, Phase L) — раньше одна и та
+// же "< 100000 → скорее всего секунды" эвристика применялась и к полям,
+// чьё ИМЯ уже однозначно называет единицу (startMs/start_ms), из-за чего
+// реальное значение в миллисекундах меньше 100000 (первые ~1:40 записи)
+// молча домножалось на 1000 ещё раз — опасная порча данных именно там, где
+// формат был известен точно, не там, где он неоднозначен. Явные *Ms/*_ms
+// поля теперь берутся как есть, без какой-либо эвристики.
+function pickExplicitMs(...values: unknown[]): number | null {
   for (const v of values) {
-    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-    if (!Number.isFinite(n) || n < 0) continue;
+    const n = toFiniteNonNegative(v);
+    if (n !== null) return Math.round(n);
+  }
+  return null;
+}
+
+// Секунды vs миллисекунды — здесь имя поля (start/end/start_time/end_time)
+// само по себе не уточняет единицу: эвристика "меньше 100000 → скорее
+// всего секунды, домножить на 1000" достаточно надёжна для реальных
+// длительностей встреч (до ~27 часов в секундах), но это предположение,
+// не факт — применяется ТОЛЬКО к этим неоднозначным полям, см. pickExplicitMs
+// выше про однозначные.
+function pickAmbiguousMs(...values: unknown[]): number | null {
+  for (const v of values) {
+    const n = toFiniteNonNegative(v);
+    if (n === null) continue;
     return n < 100_000 ? Math.round(n * 1000) : Math.round(n);
   }
   return null;
@@ -74,8 +94,8 @@ export function parseTranscriptSegments(raw: string): TranscriptSegmentInput[] {
     const text = pickString(item.text, item.content);
     if (!text) continue;
     const speakerLabel = pickString(item.speaker, item.speaker_label, item.speakerLabel) ?? 'Неизвестный говорящий';
-    const startMs = pickMs(item.startMs, item.start_ms, item.start, item.start_time) ?? 0;
-    const endMs = pickMs(item.endMs, item.end_ms, item.end, item.end_time) ?? startMs;
+    const startMs = pickExplicitMs(item.startMs, item.start_ms) ?? pickAmbiguousMs(item.start, item.start_time) ?? 0;
+    const endMs = pickExplicitMs(item.endMs, item.end_ms) ?? pickAmbiguousMs(item.end, item.end_time) ?? startMs;
     segments.push({ order: order++, startMs, endMs, speakerLabel, text });
   }
   return segments;

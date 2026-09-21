@@ -109,6 +109,49 @@ describe('EmployeeResolverService.resolve', () => {
     expect(result).toEqual({ status: 'NOT_FOUND', employeeId: null });
   });
 
+  // РЕГРЕССИЯ находки №6 пятого внешнего аудита — короткие слова (3-4
+  // буквы) раньше давали ложные совпадения из-за фиксированного допуска на
+  // хвост (2 символа), откалиброванного под более длинные имена.
+  it('РЕГРЕССИЯ находки №6 — короткое имя "Ким" не путается с непохожим длинным "Кирилл" (общий префикс всего 2 буквы)', async () => {
+    const prisma = makePrisma();
+    const service = new EmployeeResolverService(prisma as any);
+    const candidates = [{ id: 'e5', fullName: 'Кирилл Смирнов' }];
+
+    const result = await service.resolve('Ким', candidates);
+
+    expect(result).toEqual({ status: 'NOT_FOUND', employeeId: null });
+  });
+
+  it('короткое имя "Олег" не путается с непохожим "Олеся" (расходятся на 4-й букве)', async () => {
+    const prisma = makePrisma();
+    const service = new EmployeeResolverService(prisma as any);
+    const candidates = [{ id: 'e6', fullName: 'Олеся Кузнецова' }];
+
+    const result = await service.resolve('Олег', candidates);
+
+    expect(result).toEqual({ status: 'NOT_FOUND', employeeId: null });
+  });
+
+  it('короткое имя всё ещё резолвится через падежную форму без хвоста ("Олег"/"Олега")', async () => {
+    const prisma = makePrisma();
+    const service = new EmployeeResolverService(prisma as any);
+    const candidates = [{ id: 'e7', fullName: 'Олег Кузнецов' }];
+
+    const result = await service.resolve('Олега Кузнецова', candidates);
+
+    expect(result).toEqual({ status: 'RESOLVED', employeeId: 'e7' });
+  });
+
+  it('среднее по длине имя "Борис" не путается с посторонним словом "Борьба" (общий префикс "бор", 3 буквы)', async () => {
+    const prisma = makePrisma();
+    const service = new EmployeeResolverService(prisma as any);
+    const candidates = [{ id: 'e8', fullName: 'Борьба Победова' }];
+
+    const result = await service.resolve('Борис', candidates);
+
+    expect(result).toEqual({ status: 'NOT_FOUND', employeeId: null });
+  });
+
   it('alias-поиск фильтруется по переданным candidateIds — чужой сотрудник не резолвится', async () => {
     const prisma = makePrisma([]); // findMany сам фильтрует по employeeId: {in: candidateIds} — здесь просто нет строк
     const service = new EmployeeResolverService(prisma as any);

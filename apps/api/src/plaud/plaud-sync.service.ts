@@ -130,8 +130,22 @@ export class PlaudSyncService {
 
       const title = detail.name || fallbackName || 'Запись Plaud';
       const hash = contentHashOf(title, rawSummary);
-      if (tracking?.status === PlaudSyncStatus.SYNCED && tracking.contentHash === hash) {
-        return; // не изменилось — ничего делать не нужно
+      const contentUnchanged = tracking?.status === PlaudSyncStatus.SYNCED && tracking.contentHash === hash;
+
+      if (contentUnchanged) {
+        // Находка №3 пятого аудита (Stage 2, Phase L) — summary/title не
+        // изменились, но транскрипт мог быть ещё не готов на момент прошлой
+        // успешной синхронизации (contentHash после этого больше никогда не
+        // меняется, а транскрипт — отдельная note в Plaud). transcriptSyncedAt
+        // — независимый от contentHash признак: пока он null, пробуем
+        // досинхронизировать транскрипт, не трогая уже синхронное summary.
+        if (!tracking.transcriptSyncedAt && tracking.meetingId) {
+          const transcriptSynced = await this.syncTranscriptSegments(tracking.meetingId, detail);
+          if (transcriptSynced) {
+            await this.prisma.plaudSyncItem.update({ where: { plaudRecordingId }, data: { transcriptSyncedAt: new Date() } });
+          }
+        }
+        return;
       }
 
       // meetingId уже известен из tracking, либо (данные до Phase J —
@@ -153,13 +167,32 @@ export class PlaudSyncService {
         meetingId = created.id;
       }
 
+      const transcriptSynced = await this.syncTranscriptSegments(meetingId, detail);
+
       await this.prisma.plaudSyncItem.upsert({
         where: { plaudRecordingId },
-        create: { employeeId, plaudRecordingId, plaudCreatedAt: new Date(createdAtIso), status: PlaudSyncStatus.SYNCED, meetingId, contentHash: hash },
-        update: { status: PlaudSyncStatus.SYNCED, meetingId, contentHash: hash, lastAttemptAt: new Date(), errorMessage: null },
+        create: {
+          employeeId,
+          plaudRecordingId,
+          plaudCreatedAt: new Date(createdAtIso),
+          status: PlaudSyncStatus.SYNCED,
+          meetingId,
+          contentHash: hash,
+          transcriptSyncedAt: transcriptSynced ? new Date() : null,
+        },
+        update: {
+          status: PlaudSyncStatus.SYNCED,
+          meetingId,
+          contentHash: hash,
+          lastAttemptAt: new Date(),
+          errorMessage: null,
+          // transcriptSyncedAt не сбрасывается в null, если этот прогон не
+          // засинкал транскрипт заново (transcriptSynced=false) — иначе
+          // изменение title/summary откатывало бы уже успешно
+          // синхронизированный транскрипт обратно в "не синхронизирован".
+          ...(transcriptSynced ? { transcriptSyncedAt: new Date() } : {}),
+        },
       });
-
-      await this.syncTranscriptSegments(meetingId, detail);
     } catch (err) {
       await this.prisma.plaudSyncItem.upsert({
         where: { plaudRecordingId },
@@ -185,13 +218,19 @@ export class PlaudSyncService {
   // синхронизацию summary, которая уже успешно завершилась к этому
   // моменту. delete+createMany внутри транзакции — идемпотентно, старые
   // сегменты этой встречи не задваиваются при повторном прогоне.
-  private async syncTranscriptSegments(meetingId: string, detail: PlaudFileDetail): Promise<void> {
+  //
+  // Возвращает true только если сегменты реально записаны — вызывающий код
+  // (syncItem, Phase L) использует это, чтобы решить, можно ли пометить
+  // transcriptSyncedAt: false здесь означает "транскрипт ещё не готов у
+  // Plaud", а не "мы его синхронизировали и он пуст" — на следующем прогоне
+  // нужно попробовать снова, а не считать вопрос закрытым.
+  private async syncTranscriptSegments(meetingId: string, detail: PlaudFileDetail): Promise<boolean> {
     const note = this.api.findTranscriptNote(detail);
-    if (!note) return;
+    if (!note) return false;
     const rawContent = await this.api.loadNoteContent(note);
-    if (!rawContent) return;
+    if (!rawContent) return false;
     const segments = parseTranscriptSegments(rawContent);
-    if (segments.length === 0) return;
+    if (segments.length === 0) return false;
 
     await this.prisma.$transaction([
       this.prisma.meetingSegment.deleteMany({ where: { meetingId } }),
@@ -199,5 +238,6 @@ export class PlaudSyncService {
         data: segments.map((s) => ({ meetingId, order: s.order, startMs: s.startMs, endMs: s.endMs, speakerLabel: s.speakerLabel, text: s.text })),
       }),
     ]);
+    return true;
   }
 }
