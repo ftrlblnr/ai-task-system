@@ -1,7 +1,11 @@
-import { MessageRole, Role } from '@prisma/client';
+import { MessageRole, Prisma, Role, VoiceExecutionStatus } from '@prisma/client';
 import { VoiceService } from './voice.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { VoiceEventActionDraft, VoiceTaskActionDraft } from './dto/voice-draft-response.dto';
+
+function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
+}
 
 function makeUser(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
   return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
@@ -397,112 +401,247 @@ describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST
   });
 });
 
-// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P0) — раньше /voice/parse
-// не имел идемпотентности вовсе: сеть могла оборваться ПОСЛЕ того, как
-// реальная мутация уже случилась, но ДО того, как ответ дошёл до клиента.
-// findCachedParseResponse — короткое замыкание на полную (user+assistant)
-// пару, без повторного Whisper/Claude/исполнения действий.
-describe('VoiceService.findCachedParseResponse (Stage 2, Phase H.1, P0 — идемпотентность /voice/parse)', () => {
-  it('нет существующего user-сообщения — null, продолжаем как обычную новую попытку', async () => {
-    const prisma = { message: { findUnique: jest.fn().mockResolvedValue(null) } };
-    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
-
-    const cached = await service.findCachedParseResponse('c1', 'req-1');
-
-    expect(cached).toBeNull();
+// Stage 2, Phase H.3 (внешний аудит 21.09.2026, P0 — "durable voice
+// exactly-once") — заменяет старый findCachedParseResponse (Phase H.1),
+// который смотрел на Message-строки (побочный эффект персистентности) и
+// не мог отличить "действие не выполнялось" от "действие выполнилось, но
+// история переписки не сохранилась" — единственный безопасный выход тогда
+// был удалить незавершённую строку и выполнить ВСЁ заново, включая уже
+// случившуюся бизнес-мутацию (ровно то, на что указал аудит). VoiceExecution
+// — durable claim именно о жизненном цикле выполнения, не о персистентности.
+function baseParseMocks(overrides: { extraction?: any; tasks?: any } = {}) {
+  const whisperSpy = jest.fn().mockResolvedValue({ text: 'Привет', durationMs: 500 });
+  const extractSpy = jest.fn().mockResolvedValue({
+    drafts: [{ type: 'chat', reply: 'Ок' }],
+    confidence: 'HIGH',
+    clarificationNeeded: false,
+    clarificationReason: 'null',
+    timing: { fastMs: 10, strongMs: 0 },
+    escalatedToStrongModel: false,
   });
+  return { whisperSpy, extractSpy };
+}
 
-  it('полная пара уже есть — возвращает готовый ответ, без results (не восстановить из MessagePart)', async () => {
-    const userMessage = {
-      id: 'm1',
-      conversationId: 'c1',
-      role: MessageRole.USER,
-      status: 'COMPLETED',
-      clientRequestId: 'req-1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'Создай задачу купить билеты' } }],
-    };
-    const assistantMessage = {
-      id: 'm2',
-      conversationId: 'c1',
-      role: MessageRole.ASSISTANT,
-      status: 'COMPLETED',
-      clientRequestId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      parts: [{ id: 'p2', type: 'TASK_CARD', order: 0, data: { taskId: 't1', title: 'Купить билеты', status: 'NEW', dueDate: null, assignee: null } }],
-    };
+describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)', () => {
+  it('COMPLETED — возвращает реальный сохранённый results (не пустышку), Whisper/Claude не вызываются повторно', async () => {
+    const cachedUserMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const cachedAssistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
     const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockRejectedValue(p2002()),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'exec-1',
+          conversationId: 'c1',
+          status: VoiceExecutionStatus.COMPLETED,
+          userMessageId: 'm1',
+          assistantMessageId: 'm2',
+          resultJson: {
+            transcript: 'Создай задачу купить билеты',
+            confidence: 'HIGH',
+            clarificationNeeded: false,
+            clarificationReason: null,
+            results: [{ type: 'task_action', draft: {}, ok: true, error: null, taskId: 't1', previous: null }],
+          },
+        }),
+      },
       message: {
-        findUnique: jest.fn().mockResolvedValue(userMessage),
-        findFirst: jest.fn().mockResolvedValue(assistantMessage),
+        findUnique: jest.fn().mockImplementation(({ where }: any) => Promise.resolve(where.id === 'm1' ? cachedUserMessage : cachedAssistantMessage)),
       },
     };
-    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+    const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, {} as any, {} as any, assistantChat as any);
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
-    const cached = await service.findCachedParseResponse('c1', 'req-1');
+    const response = await service.parse(audio, makeUser(), undefined, 'req-1');
 
-    expect(cached).toMatchObject({
-      transcript: 'Создай задачу купить билеты',
-      results: [],
-      conversationId: 'c1',
+    expect(whisperSpy).not.toHaveBeenCalled();
+    expect(extractSpy).not.toHaveBeenCalled();
+    expect(response.results).toEqual([{ type: 'task_action', draft: {}, ok: true, error: null, taskId: 't1', previous: null }]);
+    expect(response.userMessage?.id).toBe('m1');
+    expect(response.assistantMessage?.id).toBe('m2');
+  });
+
+  it('FAILED — ничего ещё не выполнялось, retry безопасен и реально запускает Whisper/Claude заново', async () => {
+    const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockRejectedValue(p2002()),
+        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.FAILED }),
+        update: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }),
+      },
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      conversation: { update: jest.fn() },
+    };
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+    );
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    await service.parse(audio, makeUser(), undefined, 'req-1');
+
+    expect(prisma.voiceExecution.update).toHaveBeenCalledWith({ where: { id: 'exec-1' }, data: { status: VoiceExecutionStatus.RECEIVED, errorMessage: null } });
+    expect(whisperSpy).toHaveBeenCalledTimes(1);
+    expect(extractSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([VoiceExecutionStatus.RECEIVED, VoiceExecutionStatus.PROCESSING, VoiceExecutionStatus.EXECUTING, VoiceExecutionStatus.NEEDS_RECONCILIATION])(
+    '%s — отказ без единого вызова Whisper/TasksService (небезопасно трогать бизнес-логику при неуверенности)',
+    async (status) => {
+      const { whisperSpy, extractSpy } = baseParseMocks();
+      const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+      const tasksSpy = { findAll: jest.fn() };
+      const prisma = {
+        voiceExecution: {
+          create: jest.fn().mockRejectedValue(p2002()),
+          findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status }),
+        },
+      };
+      const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, tasksSpy as any, {} as any, assistantChat as any);
+      const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+      await expect(service.parse(audio, makeUser(), undefined, 'req-1')).rejects.toThrow(/ещё выполняется|прервалась/);
+      expect(whisperSpy).not.toHaveBeenCalled();
+      expect(tasksSpy.findAll).not.toHaveBeenCalled();
+    },
+  );
+
+  // Явно НЕ полагается на inFlightParseRequests (свежий VoiceService — Map
+  // пустой, ровно как после рестарта процесса) — единственный источник
+  // "не трогать бизнес-логику повторно" здесь: durable-строка VoiceExecution.
+  it('post-restart (пустой in-memory Map, только БД-строка) — EXECUTING всё равно блокирует повтор', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const tasksSpy = { findAll: jest.fn() };
+    const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockRejectedValue(p2002()),
+        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.EXECUTING }),
+      },
+    };
+    // Новый инстанс — не переиспользует promise/Map предыдущего теста,
+    // моделирует ситуацию "процесс перезапустился, в памяти ничего нет".
+    const freshService = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, tasksSpy as any, {} as any, assistantChat as any);
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    await expect(freshService.parse(audio, makeUser(), undefined, 'req-1')).rejects.toThrow(/ещё выполняется|прервалась/);
+    expect(whisperSpy).not.toHaveBeenCalled();
+    expect(tasksSpy.findAll).not.toHaveBeenCalled();
+  });
+
+  it('успешный прогон — VoiceExecution помечается COMPLETED с реальным resultJson ДО попытки персистентности, переживает её сбой', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const updateSpy = jest.fn().mockResolvedValue({ id: 'exec-1' });
+    const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }),
+        update: updateSpy,
+      },
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        // Персистентность падает (Phase H.1) — actions уже выполнены (тут
+        // единственный draft — 'chat', ничего не мутирует, но путь тот же).
+        create: jest.fn().mockRejectedValue(new Error('db unreachable')),
+      },
+    };
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+    );
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    const response = await service.parse(audio, makeUser(), undefined, 'req-1');
+
+    // Персистентность действительно упала (Phase H.1, graceful degradation).
+    expect(response.userMessage).toBeNull();
+    // Но VoiceExecution уже COMPLETED с настоящим results — retry на этом
+    // ключе теперь короткое замыкание на COMPLETED, не повторная мутация.
+    const completedCall = updateSpy.mock.calls.find(([arg]: any[]) => arg.data?.status === VoiceExecutionStatus.COMPLETED);
+    expect(completedCall).toBeDefined();
+    expect(completedCall![0].data.resultJson.results).toEqual([{ type: 'chat', reply: 'Ок' }]);
+  });
+
+  it('цикл исполнения черновиков падает непредвиденно — NEEDS_RECONCILIATION, не FAILED (FAILED разрешил бы повторную мутацию)', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    extractSpy.mockResolvedValue({
+      drafts: [{ type: 'task_action', action: 'create', targetTaskId: '', targetTitle: 'Задача', title: 'Задача', description: '', assigneeId: null, assigneeName: null, dueDate: null, priority: null, sourceMeetingId: null }],
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 1, strongMs: 0 },
+      escalatedToStrongModel: false,
     });
-    expect(cached.userMessage.id).toBe('m1');
-    expect(cached.assistantMessage.id).toBe('m2');
-  });
-
-  it('найден только user без ответа (прошлая попытка умерла посередине) — удаляет незавершённую строку, возвращает null', async () => {
-    const userMessage = {
-      id: 'm1',
-      conversationId: 'c1',
-      role: MessageRole.USER,
-      status: 'COMPLETED',
-      clientRequestId: 'req-1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'Создай задачу' } }],
-    };
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const updateSpy = jest.fn().mockResolvedValue({ id: 'exec-1' });
     const prisma = {
-      message: {
-        findUnique: jest.fn().mockResolvedValue(userMessage),
-        findFirst: jest.fn().mockResolvedValue(null),
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
+      voiceExecution: { create: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }), update: updateSpy },
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: { findMany: jest.fn().mockResolvedValue([]), create: jest.fn().mockResolvedValue({ id: 'm1', parts: [] }) },
     };
-    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, {} as any, {} as any) as any;
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      {} as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+    );
+    // executeTaskAction ловит свои ошибки (никогда не бросает) — только
+    // непредвиденный сбой (баг где-то ещё) может уронить сам цикл; здесь
+    // смоделировано напрямую.
+    jest.spyOn(service as any, 'executeTaskAction').mockRejectedValue(new Error('unexpected bug'));
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
-    const cached = await service.findCachedParseResponse('c1', 'req-1');
+    await expect(service.parse(audio, makeUser(), undefined, 'req-1')).rejects.toThrow('unexpected bug');
 
-    expect(cached).toBeNull();
-    expect(prisma.message.delete).toHaveBeenCalledWith({ where: { id: 'm1' } });
+    const reconciliationCall = updateSpy.mock.calls.find(([arg]: any[]) => arg.data?.status === VoiceExecutionStatus.NEEDS_RECONCILIATION);
+    expect(reconciliationCall).toBeDefined();
+    expect(updateSpy.mock.calls.some(([arg]: any[]) => arg.data?.status === VoiceExecutionStatus.FAILED)).toBe(false);
   });
 });
 
-// Stage 2, Phase H.1 (внешний аудит 20.09.2026, P0/P1 — "durable voice
-// execution lifecycle") — findCachedParseResponse (проверено выше) ловит
-// ТОЛЬКО последовательный повтор ПОСЛЕ того, как прошлая попытка уже
-// полностью сохранилась. Этот тест — acceptance-тест по тому же образцу,
-// что уже применён к AssistantChatService.claimOrJoin: два ПО-НАСТОЯЩЕМУ
-// одновременных вызова с одним clientRequestId, пока первый ещё выполняет
-// Whisper/Claude, не должны оба реально транскрибировать/мутировать.
-describe('VoiceService.parse — exactly-once под конкурентными запросами (Phase H.1, P0/P1)', () => {
+// Stage 2, Phase H.1 → H.3 — второй, независимый уровень защиты
+// (inFlightParseRequests) для конкурентных вызовов ВНУТРИ одного процесса:
+// тот же образец, что уже применён к AssistantChatService.claimOrJoin.
+describe('VoiceService.parse — exactly-once под конкурентными запросами (Phase H.1/H.3, P0/P1)', () => {
   it('два одновременных parse() с одним clientRequestId зовут whisper.transcribe ровно один раз', async () => {
     const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
     const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
     const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
 
-    const whisperSpy = jest.fn().mockResolvedValue({ text: 'Привет', durationMs: 500 });
-    const extractSpy = jest.fn().mockResolvedValue({
-      drafts: [{ type: 'chat', reply: 'Ок' }],
-      confidence: 'HIGH',
-      clarificationNeeded: false,
-      clarificationReason: 'null',
-      timing: { fastMs: 10, strongMs: 0 },
-      escalatedToStrongModel: false,
-    });
+    const { whisperSpy, extractSpy } = baseParseMocks();
     const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
     const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }),
+        update: jest.fn().mockResolvedValue({ id: 'exec-1' }),
+      },
       meeting: { findUnique: jest.fn() },
       employee: { findMany: jest.fn().mockResolvedValue([]) },
       message: {
@@ -533,6 +672,7 @@ describe('VoiceService.parse — exactly-once под конкурентными 
 
     expect(whisperSpy).toHaveBeenCalledTimes(1);
     expect(extractSpy).toHaveBeenCalledTimes(1);
+    expect(prisma.voiceExecution.create).toHaveBeenCalledTimes(1);
     expect(resultA.userMessage?.id).toBe(resultB.userMessage?.id);
   });
 });

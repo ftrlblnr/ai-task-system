@@ -535,6 +535,52 @@ model AuditLog {
   @@index([entityType, entityId])
 }
 
+enum VoiceExecutionStatus {
+  RECEIVED
+  PROCESSING
+  EXECUTING
+  COMPLETED
+  FAILED
+  NEEDS_RECONCILIATION
+}
+
+// Stage 2, Phase H.3 (внешний аудит 21.09.2026, P0 "durable voice
+// exactly-once") — VoiceService.inFlightParseRequests (in-memory Map)
+// защищает только от конкурентного повтора внутри ОДНОГО живого процесса;
+// после падения/рестарта процесса он ничего не знает о прошлой попытке —
+// повторный /voice/parse с тем же clientRequestId, пришедший ПОСЛЕ того,
+// как задача/событие уже реально созданы, но ДО того, как ответ дошёл до
+// клиента (или процесс упал), выполнил бы мутацию ещё раз. Эта таблица —
+// durable claim: unique(conversationId, clientRequestId) на уровне БД
+// гарантирует ровно одну "владеющую" попытку на ключ, переживает рестарт.
+//
+// Без formal @relation на Employee/Conversation (как AuditLog.actorId
+// выше не единственный такой прецедент, entityId там тоже голый String) —
+// эта таблица не нуждается в каскадном удалении, важна только сама
+// уникальность ключа claim'а.
+model VoiceExecution {
+  id             String @id @default(cuid())
+  employeeId     String
+  conversationId String
+
+  clientRequestId String
+  status          VoiceExecutionStatus @default(RECEIVED)
+
+  // Полный ответ /voice/parse (без userMessage/assistantMessage — их
+  // проще перечитать по id ниже) — на COMPLETED позволяет вернуть retry
+  // РЕАЛЬНЫЙ results (taskId/previous и т.п.), не пустой массив, как в
+  // старом findCachedParseResponse.
+  resultJson         Json?
+  userMessageId      String?
+  assistantMessageId String?
+  errorMessage       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([conversationId, clientRequestId])
+}
+
 // --- Календарь руководителя (раздел 14.2/Адъютант, скорректировано --------
 // владельцем 28.08.2026) ------------------------------------------------------
 //

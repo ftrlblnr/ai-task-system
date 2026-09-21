@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { MessagePartType, MessageRole, MessageStatus, Role } from '@prisma/client';
+import { MessagePartType, MessageRole, MessageStatus, Role, VoiceExecutionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -101,17 +101,22 @@ export class VoiceService {
     private readonly assistantChat: AssistantChatService,
   ) {}
 
-  // Exactly-once для голосовых мутаций (Stage 2, Phase H.1, внешний аудит
-  // 20.09.2026, P0/P1 — "durable voice execution lifecycle"). Тот же
-  // приём, что AssistantChatService.claimOrJoin (in-memory Map, не БД
-  // compare-and-set/распределённая блокировка — API работает одним
-  // процессом): findCachedParseResponse ниже ловит ПОСЛЕДОВАТЕЛЬНЫЙ повтор
-  // ПОСЛЕ того, как прошлая попытка полностью сохранилась — но не ловит
-  // конкурентный повтор, пока первая попытка ещё выполняется (например,
-  // клиентский HTTP-таймаут посреди минуты Whisper+Claude, автоматический
-  // retry той же формы). Ключ — `${conversationId}:${clientRequestId}`, не
-  // просто clientRequestId — на случай, если один сотрудник когда-нибудь
-  // получит несколько разговоров.
+  // Exactly-once для голосовых мутаций (Stage 2, Phase H.1 → H.3, третий
+  // внешний аудит 21.09.2026, P0 "durable voice execution lifecycle").
+  // Этот in-memory Map — только БЫСТРЫЙ ПУТЬ для конкурентных запросов
+  // ВНУТРИ одного живого процесса (тот же приём, что
+  // AssistantChatService.claimOrJoin): второй "по-настоящему одновременный"
+  // запрос с тем же ключом просто ждёт тот же промис вместо повторного
+  // Whisper/Claude round-trip'а к БД. Реальная гарантия корректности —
+  // durable VoiceExecution (см. claimAndRunDurable ниже): unique(conversationId,
+  // clientRequestId) на уровне БД переживает рестарт процесса, чего этот
+  // Map сам по себе никогда не мог (аудит прямо указал на этот пробел —
+  // findCachedParseResponse из Phase H.1 ловил только ПОСЛЕДОВАТЕЛЬНЫЙ
+  // повтор после того, как прошлая попытка полностью сохранилась, но не
+  // ловил ни конкурентный повтор без этого Map, ни повтор ПОСЛЕ падения/
+  // рестарта процесса — VoiceExecution закрывает оба случая разом). Ключ —
+  // `${conversationId}:${clientRequestId}`, не просто clientRequestId — на
+  // случай, если один сотрудник когда-нибудь получит несколько разговоров.
   private readonly inFlightParseRequests = new Map<string, Promise<VoiceParseResponse>>();
 
   async parse(
@@ -163,14 +168,15 @@ export class VoiceService {
     // между ними (тот же приём и то же обоснование корректности, что у
     // claimOrJoin в assistant-chat.service.ts: Node не может прервать этот
     // участок ради другого таска, поэтому два "по-настоящему одновременных"
-    // запроса не могут оба проскочить проверку). Проверка БД-кэша — уже
-    // ВНУТРИ застолблённого выполнения (runParseIdempotent), не до него —
-    // иначе await там же открыл бы то самое окно для интерливинга.
+    // запроса не могут оба проскочить проверку). Реальный claim (durable,
+    // на уровне БД) — уже ВНУТРИ застолблённого выполнения
+    // (claimAndRunDurable), не до него — иначе await там же открыл бы то
+    // самое окно для интерливинга.
     const claimKey = `${conversation.id}:${clientRequestId}`;
     const existingInFlight = this.inFlightParseRequests.get(claimKey);
     if (existingInFlight) return existingInFlight;
 
-    const promise = this.runParseIdempotent(audio, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
+    const promise = this.claimAndRunDurable(audio, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
       if (this.inFlightParseRequests.get(claimKey) === promise) {
         this.inFlightParseRequests.delete(claimKey);
       }
@@ -179,28 +185,25 @@ export class VoiceService {
     return promise;
   }
 
-  // Идемпотентность (Stage 2, Phase H.1, внешний аудит 20.09.2026, P0) —
-  // до этого /voice/parse не имел вообще никакой защиты от повторной
-  // отправки: сеть оборвалась ПОСЛЕ того, как реальная мутация
-  // (создание/правка/удаление задачи или события) уже случилась, но ДО
-  // того, как ответ дошёл до клиента — повторная отправка того же уже
-  // записанного аудио (например, автоматическим повтором на нестабильной
-  // сети, не обязательно новой надиктовкой) выполнила бы действие ещё
-  // раз. Короткое замыкание — только на пару, где ОБА сообщения уже
-  // сохранены (т.е. прошлая попытка полностью успела дойти до конца, см.
-  // персистентность ниже) — если найдена только user-строка без
-  // ответной (прошлая попытка умерла где-то посередине), безопасной
-  // информации о том, выполнились ли уже действия, нет: продолжаем как
-  // обычную новую попытку (см. findCachedParseResponse ниже), а не
-  // рискуем пропустить реально не выполненное действие.
+  // Durable exactly-once claim (Stage 2, Phase H.3, внешний аудит
+  // 21.09.2026, P0) — заменяет старый findCachedParseResponse. Разница:
+  // findCachedParseResponse смотрел на Message-строки (побочный эффект
+  // персистентности) и не мог отличить "действие не выполнялось" от
+  // "действие выполнилось, но история переписки не сохранилась" — единственный
+  // безопасный выход тогда был удалить незавершённую строку и выполнить
+  // ВСЁ заново, включая уже случившуюся бизнес-мутацию. VoiceExecution —
+  // отдельная durable запись именно о жизненном цикле САМОГО ВЫПОЛНЕНИЯ
+  // (RECEIVED → PROCESSING → EXECUTING → COMPLETED/FAILED/
+  // NEEDS_RECONCILIATION, см. runParse), не о том, сохранилась ли история.
   //
-  // Результат на попадании в кэш — намеренно БЕЗ results (нет способа
-  // восстановить исходные VoiceActionResult из уже сохранённых
-  // MessagePart без потери полей вроде taskId/previous, нужных фронтенду
-  // для undo) — но с настоящими userMessage/assistantMessage: дубль всё
-  // равно не создаёт лишней записи в истории и не тратит Whisper/Claude
-  // повторно, просто без кнопки "Отменить" на повторном показе.
-  private async runParseIdempotent(
+  // unique(conversationId, clientRequestId) в БД — второй, независимый
+  // уровень защиты от гонки (первый — inFlightParseRequests выше): даже
+  // если два по-настоящему параллельных запроса как-то проскочили Map
+  // (например, второй процесс API, если это когда-нибудь перестанет быть
+  // однопроцессным приложением), create() у ровно одного из них успеет
+  // первым, второй получит P2002 и уйдёт в ветку ниже вместо повторного
+  // исполнения.
+  private async claimAndRunDurable(
     audio: MulterFile,
     user: AuthenticatedUser,
     meetingId: string | undefined,
@@ -210,26 +213,102 @@ export class VoiceService {
     t0: number,
     audioBytes: number,
   ): Promise<VoiceParseResponse> {
-    const cached = await this.findCachedParseResponse(conversation.id, clientRequestId);
-    if (cached) return cached;
-    return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId);
+    let execution;
+    try {
+      execution = await this.prisma.voiceExecution.create({
+        data: { employeeId: user.id, conversationId: conversation.id, clientRequestId, status: VoiceExecutionStatus.RECEIVED },
+      });
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+      const existing = await this.prisma.voiceExecution.findUnique({
+        where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
+      });
+      if (!existing) throw err;
+
+      if (existing.status === VoiceExecutionStatus.COMPLETED) {
+        return this.reconstructCompletedResponse(existing);
+      }
+      if (existing.status !== VoiceExecutionStatus.FAILED) {
+        // RECEIVED/PROCESSING/EXECUTING/NEEDS_RECONCILIATION — небезопасно
+        // трогать бизнес-логику: либо предыдущая попытка ещё реально
+        // выполняется (маловероятно при пойманном inFlightParseRequests
+        // выше, но возможно сразу после рестарта процесса, когда Map уже
+        // пуст, а строка в БД осталась от незавершённой попытки), либо
+        // упала где-то посередине выполнения действий (NEEDS_RECONCILIATION)
+        // — в обоих случаях слепой повтор рискует выполнить мутацию дважды
+        // или наложиться на ещё идущую. Явный отказ без единого вызова
+        // TasksService/EventsService — тот же принцип "не трогать бизнес-
+        // логику при неуверенности", что и defensive RBAC-проверка в undo().
+        throw new BadRequestException(
+          'Предыдущая попытка обработать эту голосовую команду ещё выполняется или прервалась не до конца — подождите немного и попробуйте снова; если задача/событие уже появились, повторно диктовать не нужно.',
+        );
+      }
+      // FAILED — до этого момента НИ ОДНО действие ещё не выполнялось (см.
+      // runParse: FAILED ставится только из loadContextAndExtract, ДО
+      // цикла исполнения черновиков) — безопасно начать заново на той же
+      // строке (не create() новую — та же уникальность всё равно упадёт).
+      execution = await this.prisma.voiceExecution.update({
+        where: { id: existing.id },
+        data: { status: VoiceExecutionStatus.RECEIVED, errorMessage: null },
+      });
+    }
+
+    return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId, execution.id);
   }
 
-  // Тело фактического разбора — выполняется не более одного раза на
-  // (conversationId, clientRequestId) одновременно, см. claim в parse()
-  // выше. clientRequestId здесь нужен только для итоговой записи
-  // userMessage (идемпотентность на уровне БД, recovery на гонку —
-  // см. userMessagePromise ниже), сам разбор от него не зависит.
-  private async runParse(
+  // Реконструкция ответа на COMPLETED (Stage 2, Phase H.3) — resultJson
+  // несёт ВЕСЬ ответ, включая настоящие results (в отличие от старого
+  // findCachedParseResponse, который на попадании в кэш всегда отдавал
+  // пустой массив). userMessage/assistantMessage перечитываются по
+  // сохранённым id, а не хранятся в resultJson целиком — они и так уже
+  // есть в БД, дублировать их в JSON незачем; оба поля могут быть null,
+  // если персистентность в исходной попытке не удалась (Phase H.1) — в
+  // этом случае действия всё равно были выполнены и results настоящие.
+  private async reconstructCompletedResponse(execution: {
+    conversationId: string;
+    resultJson: unknown;
+    userMessageId: string | null;
+    assistantMessageId: string | null;
+  }): Promise<VoiceParseResponse> {
+    const cached = execution.resultJson as {
+      transcript: string;
+      confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+      clarificationNeeded: boolean;
+      clarificationReason: string | null;
+      results: VoiceActionResult[];
+    };
+    const [userMessage, assistantMessage] = await Promise.all([
+      execution.userMessageId
+        ? this.prisma.message.findUnique({ where: { id: execution.userMessageId }, include: { parts: { orderBy: { order: 'asc' } } } })
+        : Promise.resolve(null),
+      execution.assistantMessageId
+        ? this.prisma.message.findUnique({ where: { id: execution.assistantMessageId }, include: { parts: { orderBy: { order: 'asc' } } } })
+        : Promise.resolve(null),
+    ]);
+    return {
+      transcript: cached.transcript,
+      confidence: cached.confidence,
+      clarificationNeeded: cached.clarificationNeeded,
+      clarificationReason: cached.clarificationReason,
+      results: cached.results,
+      conversationId: userMessage ? execution.conversationId : null,
+      userMessage: userMessage ? toResponseMessage(userMessage) : null,
+      assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
+    };
+  }
+
+  // STT + контекст (сотрудники/задачи/события/история) + draft extraction —
+  // выделено в отдельный метод (Stage 2, Phase H.3), чтобы runParse мог
+  // обернуть именно эту фазу в try/catch и пометить VoiceExecution как
+  // FAILED, если она упадёт: до этой точки НИКАКИХ бизнес-мутаций ещё не
+  // было, значит retry с тем же clientRequestId безопасен (см. claimAndRunDurable).
+  private async loadContextAndExtract(
     audio: MulterFile,
     user: AuthenticatedUser,
     meetingId: string | undefined,
     conversation: { id: string },
     requestId: string,
-    t0: number,
-    audioBytes: number,
-    clientRequestId?: string,
-  ): Promise<VoiceParseResponse> {
+  ) {
     // Whisper и вся БД-часть контекста не зависят друг от друга — раньше
     // шли строго последовательно (расшифровка → сотрудники → задачи →
     // события), хотя ни один из этих запросов не читает transcript. Раньше
@@ -318,6 +397,46 @@ export class VoiceService {
       requestId,
     );
 
+    return { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result };
+  }
+
+  // Тело фактического разбора — выполняется не более одного раза на
+  // (conversationId, clientRequestId) одновременно, см. claim в parse()
+  // выше. clientRequestId/executionId здесь нужны только для итоговой
+  // записи userMessage/VoiceExecution (идемпотентность на уровне БД,
+  // recovery на гонку — см. userMessagePromise ниже), сам разбор от них
+  // не зависит.
+  private async runParse(
+    audio: MulterFile,
+    user: AuthenticatedUser,
+    meetingId: string | undefined,
+    conversation: { id: string },
+    requestId: string,
+    t0: number,
+    audioBytes: number,
+    clientRequestId?: string,
+    executionId?: string,
+  ): Promise<VoiceParseResponse> {
+    if (executionId) {
+      await this.prisma.voiceExecution
+        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.PROCESSING } })
+        .catch(() => {});
+    }
+    let loaded: Awaited<ReturnType<typeof this.loadContextAndExtract>>;
+    try {
+      loaded = await this.loadContextAndExtract(audio, user, meetingId, conversation, requestId);
+    } catch (err) {
+      // Ничего не выполнено — retry с тем же clientRequestId безопасен
+      // (claimAndRunDurable разрешает повтор только на FAILED).
+      if (executionId) {
+        await this.prisma.voiceExecution
+          .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.FAILED, errorMessage: toErrorMessage(err) } })
+          .catch(() => {});
+      }
+      throw err;
+    }
+    const { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result } = loaded;
+
     // Реплика пользователя (Stage 2, Phase H) — пишется в ту же ленту, что и
     // текстовый чат, не в отдельную VoiceMessage. Запущено здесь, ДО цикла
     // исполнения черновиков ниже, а await — только непосредственно перед
@@ -340,11 +459,12 @@ export class VoiceService {
         include: { parts: { orderBy: { order: 'asc' } } },
       })
       .catch(async (err) => {
-        // Гонка (Stage 2, Phase H.1) — два по-настоящему одновременных
-        // запроса с одним clientRequestId (findCachedParseResponse выше не
-        // мог увидеть строку победителя — её ещё не было на момент
-        // проверки). Тот же приём, что уже в
-        // AssistantChatService.createUserMessageIdempotent.
+        // Гонка (Stage 2, Phase H.1) — теоретический defense-in-depth: сам
+        // durable claim (VoiceExecution, см. claimAndRunDurable) уже не
+        // должен пропускать сюда два одновременных вызова с одним
+        // clientRequestId, но на случай прямого P2002 здесь всё равно
+        // безопасно восстановиться, не падать 500-й. Тот же приём, что уже
+        // в AssistantChatService.createUserMessageIdempotent.
         if (isUniqueConstraintError(err) && clientRequestId) {
           const winner = await this.prisma.message.findUnique({
             where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
@@ -395,16 +515,39 @@ export class VoiceService {
     // записями, но естественно выполнить их в порядке произнесения), и
     // executeTaskAction/executeEventAction сами ловят свои ошибки — сбой
     // одного действия не должен прерывать остальные в этом же транскрипте.
+    // EXECUTING (Stage 2, Phase H.3) — с этого момента retry небезопасен:
+    // executeTaskAction/executeEventAction ниже реально мутируют Task/Event.
+    // Если сам цикл упадёт непредвиденно (сами методы ловят свои ошибки —
+    // это был бы баг где-то ещё, не обычный business error), неизвестно,
+    // сколько действий из drafts успело выполниться — не FAILED (это
+    // разрешило бы retry и повторную мутацию УЖЕ выполненных действий), а
+    // NEEDS_RECONCILIATION: claimAndRunDurable откажет в повторе, оставляя
+    // ручную проверку по логам/audit trail.
+    if (executionId) {
+      await this.prisma.voiceExecution
+        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } })
+        .catch(() => {});
+    }
+
     const t2 = Date.now();
     const execResults: ExecutedVoiceAction[] = [];
-    for (const draft of drafts) {
-      if (draft.type === 'chat') {
-        execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
-      } else if (draft.type === 'task_action') {
-        execResults.push(await this.executeTaskAction(draft, user));
-      } else {
-        execResults.push(await this.executeEventAction(draft, user));
+    try {
+      for (const draft of drafts) {
+        if (draft.type === 'chat') {
+          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
+        } else if (draft.type === 'task_action') {
+          execResults.push(await this.executeTaskAction(draft, user));
+        } else {
+          execResults.push(await this.executeEventAction(draft, user));
+        }
       }
+    } catch (err) {
+      if (executionId) {
+        await this.prisma.voiceExecution
+          .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.NEEDS_RECONCILIATION, errorMessage: toErrorMessage(err) } })
+          .catch(() => {});
+      }
+      throw err;
     }
     const results: VoiceActionResult[] = execResults.map((r) => r.result);
     const executionMs = Date.now() - t2;
@@ -417,6 +560,27 @@ export class VoiceService {
     // [shown_task]/[file]-меток в одном месте, см. комментарий там (живой
     // прогон 20.09.2026 поймал лишний пузырь "null" без этого гейта).
     const clarificationReason = resolveClarificationReason(result.clarificationNeeded, result.clarificationReason);
+
+    // COMPLETED (Stage 2, Phase H.3) — ставим СРАЗУ здесь, а не после
+    // персистентности ниже: действия выше уже выполнены и это необратимо,
+    // и именно этот факт (а не то, сохранилась ли история переписки)
+    // должен решать, безопасен ли retry (см. claimAndRunDurable и
+    // комментарий у try/catch персистентности ниже про Phase H.1).
+    // resultJson хранит ВЕСЬ ответ (включая реальные results — taskId/
+    // previous и т.п.), не пустышку: retry на COMPLETED теперь получает
+    // настоящий исход, а не "results: []", как было в старом
+    // findCachedParseResponse.
+    if (executionId) {
+      await this.prisma.voiceExecution
+        .update({
+          where: { id: executionId },
+          data: {
+            status: VoiceExecutionStatus.COMPLETED,
+            resultJson: { transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results },
+          },
+        })
+        .catch(() => {});
+    }
 
     // Stage 2, Phase H.1 (внешний аудит 20.09.2026, P1) — действия выше
     // (executeTaskAction/executeEventAction) УЖЕ выполнены к этому моменту.
@@ -446,6 +610,11 @@ export class VoiceService {
         include: { parts: { orderBy: { order: 'asc' } } },
       });
       await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+      if (executionId) {
+        await this.prisma.voiceExecution
+          .update({ where: { id: executionId }, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id } })
+          .catch(() => {});
+      }
     } catch (err) {
       this.logger.error(
         `voice parse reqId=${requestId} persistence failed AFTER actions already executed ` +
@@ -499,51 +668,6 @@ export class VoiceService {
       conversationId: userMessage ? conversation.id : null,
       userMessage: userMessage ? toResponseMessage(userMessage) : null,
       assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
-    };
-  }
-
-  // Идемпотентность (Stage 2, Phase H.1, см. комментарий в parse() выше).
-  // Полная пара (user+assistant) уже сохранена — безопасный short-circuit,
-  // возвращаем её как есть, без повторного Whisper/Claude/исполнения
-  // действий. Найден только user без ответа (прошлая попытка умерла
-  // где-то между сохранением реплики и сохранением ответа) — удаляем эту
-  // незавершённую строку и возвращаем null, чтобы вызывающий код создал
-  // чистую пару заново: переиспользовать её было бы нельзя (её транскрипт
-  // — от ПРОШЛОЙ попытки распознавания речи, а новые results — от этой,
-  // возможно другой), а оставить её как есть с тем же clientRequestId
-  // означало бы падение нового prisma.message.create() на unique
-  // constraint при следующей же попытке.
-  private async findCachedParseResponse(conversationId: string, clientRequestId: string): Promise<VoiceParseResponse | null> {
-    const existingUserMessage = await this.prisma.message.findUnique({
-      where: { conversationId_clientRequestId: { conversationId, clientRequestId } },
-      include: { parts: { orderBy: { order: 'asc' } } },
-    });
-    if (!existingUserMessage) return null;
-
-    const existingAssistantMessage = await this.prisma.message.findFirst({
-      where: { replyToMessageId: existingUserMessage.id },
-      include: { parts: { orderBy: { order: 'asc' } } },
-    });
-    if (!existingAssistantMessage) {
-      await this.prisma.message.delete({ where: { id: existingUserMessage.id } }).catch(() => {});
-      return null;
-    }
-
-    const transcriptPart = existingUserMessage.parts[0]?.data as { content?: string } | undefined;
-    return {
-      transcript: transcriptPart?.content ?? '',
-      confidence: 'HIGH',
-      clarificationNeeded: false,
-      clarificationReason: null,
-      // Нет способа восстановить исходные VoiceActionResult (taskId/
-      // previous и т.п.) из уже сохранённых MessagePart без потери полей,
-      // нужных фронтенду для undo — дубль всё равно не создаёт лишней
-      // записи и не тратит Whisper/Claude повторно, просто без кнопки
-      // "Отменить" на повторном показе.
-      results: [],
-      conversationId,
-      userMessage: toResponseMessage(existingUserMessage),
-      assistantMessage: toResponseMessage(existingAssistantMessage),
     };
   }
 
