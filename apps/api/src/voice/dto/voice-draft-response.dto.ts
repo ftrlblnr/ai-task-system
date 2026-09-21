@@ -39,6 +39,12 @@ export interface VoiceTaskActionDraft {
   description: string;
   assigneeId: string | null;
   assigneeName: string | null; // резолвит сервер, не поле схемы инструмента
+  // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+  // независимая от модели перепроверка assigneeId, см. комментарий у
+  // buildDraftTool в draft-extraction.service.ts и
+  // VoiceService.resolveAssigneeMention.
+  assigneeMentioned: boolean;
+  assigneeRawText: string;
   dueDate: string | null;
   priority: TaskPriority | null;
   // Заполнено, если диктовка начата со страницы встречи (владелец
@@ -79,8 +85,12 @@ export interface VoiceChatReply {
 
 export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
-// Зеркало packages/shared-types (проект дублирует типы api/web вручную,
-// см. остальные dto в этой папке) — подробные комментарии там.
+// Snapshot "до" мутации — Stage 2, Phase H.4: больше не отдаётся клиенту
+// (не экспортируется из packages/shared-types), только внутреннее
+// представление, которое VoiceService сохраняет в UndoRecord.previous
+// (Json) сразу после мутации и читает обратно в undo(). Клиент видит
+// только непрозрачный `undoToken` в VoiceTaskActionResult/
+// VoiceEventActionResult ниже (см. комментарий у VoiceUndoDto).
 export interface TaskRevertPayload {
   title?: string;
   description?: string;
@@ -106,7 +116,8 @@ export interface VoiceTaskActionResult {
   ok: boolean;
   error: string | null;
   taskId: string | null;
-  previous: TaskRevertPayload | null;
+  // Зеркало packages/shared-types — подробные комментарии там.
+  undoToken: string | null;
 }
 export interface VoiceEventActionResult {
   type: 'event_action';
@@ -114,7 +125,7 @@ export interface VoiceEventActionResult {
   ok: boolean;
   error: string | null;
   eventId: string | null;
-  previous: EventRevertPayload | null;
+  undoToken: string | null;
 }
 export interface VoiceChatResult {
   type: 'chat';

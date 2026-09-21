@@ -37,7 +37,14 @@ export class WhisperService {
   // причина: доступ к result.duration (секунды исходного аудио) для метрики
   // audioDurationMs (observability-этап, владелец 15.09.2026, раздел 2 ТЗ
   // этапа). Whisper-модель и язык распознавания не меняются.
-  async transcribe(buffer: Buffer, mimetype: string, originalName: string): Promise<TranscriptionResult> {
+  //
+  // prompt (Stage 2, Phase I, внешний аудит 21.09.2026, "Company/STT
+  // vocabulary") — необязательная строка-подсказка словаря (имена
+  // сотрудников/алиасы/термины компании, см. CompanyVocabularyService) —
+  // Whisper API документирует её как способ склонить распознавание в
+  // сторону перечисленных слов. Не меняет язык/модель, чисто аддитивная
+  // подсказка — при пустой строке API ведёт себя как раньше.
+  async transcribe(buffer: Buffer, mimetype: string, originalName: string, prompt?: string): Promise<TranscriptionResult> {
     const ext = mimetype.split('/')[1]?.split(';')[0] || 'webm';
     const file = await toFile(buffer, originalName || `voice.${ext}`, { type: mimetype });
     const result = await this.getClient().audio.transcriptions.create({
@@ -45,6 +52,7 @@ export class WhisperService {
       model: 'whisper-1',
       language: 'ru',
       response_format: 'verbose_json',
+      ...(prompt ? { prompt } : {}),
     });
     return {
       text: result.text,

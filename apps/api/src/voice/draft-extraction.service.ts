@@ -156,6 +156,19 @@ function buildDraftTool(): Anthropic.Tool {
                   title: { type: 'string' },
                   description: OPTIONAL_STRING,
                   assigneeId: NULLABLE_ID,
+                  // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee
+                  // Resolver") — assigneeId остаётся первой попыткой
+                  // модели сопоставить имя со списком сотрудников, но
+                  // сервер больше не доверяет ей вслепую: assigneeMentioned/
+                  // assigneeRawText дают backend'у (EmployeeResolverService)
+                  // независимый способ перепроверить это сопоставление по
+                  // буквальному тексту имени, не угадывая молча, если
+                  // модель ошиблась. assigneeMentioned=false, когда исполнитель
+                  // вообще не упоминался (обычная постановка "себе"/без
+                  // адресата) — тогда assigneeRawText="" и проверка не
+                  // выполняется.
+                  assigneeMentioned: { type: 'boolean' },
+                  assigneeRawText: OPTIONAL_STRING,
                   dueDate: NULLABLE_DATE_TIME,
                   priority: NULLABLE_PRIORITY,
                 },
@@ -167,6 +180,8 @@ function buildDraftTool(): Anthropic.Tool {
                   'title',
                   'description',
                   'assigneeId',
+                  'assigneeMentioned',
+                  'assigneeRawText',
                   'dueDate',
                   'priority',
                 ],
@@ -319,6 +334,8 @@ ${meetingSection}
 
 Сотрудники (id: имя) — используй как закрытый список для assigneeId/addParticipantIds/removeParticipantIds, если в тексте назван человек; если не назван, не удаётся сопоставить или сопоставляется НЕСКОЛЬКИМ сотрудникам сразу — см. правило "ДВУСМЫСЛЕННОСТЬ" выше:
 ${employeeTable}
+
+Для type="task_action" — assigneeMentioned/assigneeRawText (сервер сам ещё раз перепроверяет твоё сопоставление имени с сотрудником, это не лишняя формальность): assigneeMentioned=true, если в тексте вообще был назван исполнитель (даже если ты не смог уверенно сопоставить его с id из списка выше и поставил assigneeId=null) — assigneeRawText в этом случае буквальный текст имени/обращения, как оно прозвучало ("Амиру", "Иванову", "новому стажёру Пете"), НЕ приводи его к именительному падежу и не подставляй имя из списка сотрудников. assigneeMentioned=false, если исполнитель вообще не упоминался (обычная постановка задачи без адресата) — тогда assigneeRawText="".
 
 Актуальные задачи, которые видит этот пользователь (для ответа на вопросы по пункту 3, и как закрытый список targetTaskId для action='update'/'delete'):
 ${formatTaskContext(tasks)}

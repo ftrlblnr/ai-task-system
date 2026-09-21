@@ -68,32 +68,15 @@ interface VoiceUndoEntry {
   undo: VoiceUndoInput;
 }
 
-// Портировано из voice-screen.tsx без изменений — create/update дают
-// undo, delete — нет (сущности уже нет, откатывать нечего); ok=false и
-// type='chat' тоже не дают undo.
+// Stage 2, Phase H.4 (внешний аудит 21.09.2026, "trusted server-side
+// undo") — сервер сам создаёт и хранит запись отката (UndoRecord) сразу
+// после мутации; отсюда достаточно взять её id (undoToken), не собирать
+// payload из previous/draft самим клиентом (previous больше не приходит
+// с сервера вообще, см. VoiceTaskActionResult/VoiceEventActionResult в
+// shared-types).
 function buildVoiceUndo(item: VoiceActionResult): VoiceUndoInput | null {
-  if (item.type === 'chat') return null;
-  if (item.type === 'task_action') {
-    if (!item.ok) return null;
-    if (item.draft.action === 'create' && item.taskId) return { kind: 'task', action: 'create', id: item.taskId };
-    if (item.draft.action === 'update' && item.taskId && item.previous) {
-      return { kind: 'task', action: 'update', id: item.taskId, previous: item.previous };
-    }
-    return null;
-  }
-  if (!item.ok) return null;
-  if (item.draft.action === 'create' && item.eventId) return { kind: 'event', action: 'create', id: item.eventId };
-  if (item.draft.action === 'update' && item.eventId && item.previous) {
-    return {
-      kind: 'event',
-      action: 'update',
-      id: item.eventId,
-      previous: item.previous,
-      addedParticipantIds: item.draft.addParticipantIds,
-      removedParticipantIds: item.draft.removeParticipantIds,
-    };
-  }
-  return null;
+  if (item.type === 'chat' || !item.ok || !item.undoToken) return null;
+  return { undoToken: item.undoToken };
 }
 
 function newClientRequestId(): string {

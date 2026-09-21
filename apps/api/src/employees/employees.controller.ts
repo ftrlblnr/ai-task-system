@@ -20,6 +20,7 @@ import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { SetCompetencyDto } from './dto/set-competency.dto';
+import { CreateEmployeeAliasDto } from './dto/create-employee-alias.dto';
 
 // Список сотрудников доступен всем (раздел 5 ТЗ, скорректировано
 // 28.08.2026: любой участник ставит задачи коллегам) — но сервис отдаёт
@@ -64,5 +65,29 @@ export class EmployeesController {
   @HttpCode(HttpStatus.NO_CONTENT)
   removeCompetency(@Param('id') id: string, @Param('competencyId') competencyId: string) {
     return this.employeesService.removeCompetency(id, competencyId);
+  }
+
+  // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+  // управление известными вариантами имени сотрудника (короткие формы/
+  // никнеймы), которые EmployeeResolverService использует при разборе
+  // голосовых команд. OWNER-only — та же граница, что у остального
+  // управления сотрудниками.
+  @Get(':id/aliases')
+  @Roles(Role.OWNER)
+  listAliases(@Param('id') id: string) {
+    return this.employeesService.listAliases(id);
+  }
+
+  @Post(':id/aliases')
+  @Roles(Role.OWNER)
+  addAlias(@Param('id') id: string, @Body() dto: CreateEmployeeAliasDto) {
+    return this.employeesService.addAlias(id, dto.alias);
+  }
+
+  @Delete(':id/aliases/:aliasId')
+  @Roles(Role.OWNER)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeAlias(@Param('id') id: string, @Param('aliasId') aliasId: string) {
+    return this.employeesService.removeAlias(id, aliasId);
   }
 }

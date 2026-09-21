@@ -29,12 +29,27 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     // "Не удалось проверить файл" вводила бы в заблуждение, инструмент не
     // проверяет файл, а формирует его.
     if (result.tool === 'export_tasks_xlsx') return { label: 'Не удалось сформировать файл' };
+    // Stage 2, Phase K — все четыре инструмента встреч/Plaud делят одну
+    // формулировку: пользователю не важно, какой конкретно из четырёх
+    // подвёл, только что раздел с встречами сейчас недоступен.
+    if (
+      result.tool === 'get_recent_meetings' ||
+      result.tool === 'search_meetings' ||
+      result.tool === 'get_meeting' ||
+      result.tool === 'search_meeting_transcript'
+    ) {
+      return { label: 'Не удалось проверить встречи' };
+    }
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
   if (result.tool === 'get_tasks') return { label: `Проверил задачи: найдено ${result.totalCount}` };
   if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
-  return { label: `Сформировал файл: ${result.file.name}` };
+  if (result.tool === 'export_tasks_xlsx') return { label: `Сформировал файл: ${result.file.name}` };
+  if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
+  if (result.tool === 'search_meetings') return { label: `Искал встречи: найдено ${result.totalCount}` };
+  if (result.tool === 'get_meeting') return { label: `Открыл встречу «${result.meeting.title}»` };
+  return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
 }
 
 // Бэкенд-рендерер (спека §16) — LLM решает вызвать инструмент, инструмент
@@ -62,13 +77,18 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
       for (const item of call.result.items) {
         parts.push({ type: MessagePartType.EVENT_CARD, order: order++, data: toJson(item) });
       }
-    } else {
+    } else if (call.result.tool === 'export_tasks_xlsx') {
       // export_tasks_xlsx — один сгенерированный файл, не список карточек
       // (Stage 2, Phase G). Тот же FILE-тип части, что и пользовательские
       // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
       // и скачать без каких-либо изменений.
       parts.push({ type: MessagePartType.FILE, order: order++, data: toJson(call.result.file) });
     }
+    // Stage 2, Phase K — инструменты встреч намеренно не строят
+    // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,
+    // владелец явно ограничил Phase K сервером/инструментами, см. финальный
+    // отчёт) — ответ модели текстом (MARKDOWN выше) достаточен, tool-result
+    // JSON модель уже видела и пересказала своими словами.
   }
 
   return parts;

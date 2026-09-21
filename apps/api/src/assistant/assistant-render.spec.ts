@@ -110,4 +110,46 @@ describe('buildAssistantParts (Stage 2 Phase C — бэкенд-рендерер
     expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN]);
     expect(parts[0].data).toEqual({ label: 'Не удалось сформировать файл' });
   });
+
+  // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
+  // tools") — намеренно НЕТ отдельного типа карточки под встречи (нет
+  // MEETING_CARD/UI под неё, владелец ограничил Phase K сервером/
+  // инструментами) — только tool_activity + markdown-ответ модели, без
+  // дополнительных частей.
+  it('инструменты встреч — tool_activity со своей формулировкой на каждый, без доп. карточек', () => {
+    const result: AssistantReplyResult = {
+      text: 'Нашёл 2 встречи про завод.',
+      toolCalls: [
+        { name: 'search_meetings', result: { tool: 'search_meetings', totalCount: 2, items: [] } },
+        {
+          name: 'get_meeting',
+          result: { tool: 'get_meeting', meeting: { meetingId: 'm1', title: 'Встреча про завод', meetingDate: '2026-09-01T00:00:00.000Z', summary: 'Обсудили сроки' } },
+        },
+        { name: 'search_meeting_transcript', result: { tool: 'search_meeting_transcript', totalCount: 0, items: [] } },
+      ],
+    };
+
+    const parts = buildAssistantParts(result);
+
+    expect(parts.map((p) => p.type)).toEqual([
+      MessagePartType.TOOL_ACTIVITY,
+      MessagePartType.TOOL_ACTIVITY,
+      MessagePartType.TOOL_ACTIVITY,
+      MessagePartType.MARKDOWN,
+    ]);
+    expect(parts[0].data).toEqual({ label: 'Искал встречи: найдено 2' });
+    expect(parts[1].data).toEqual({ label: 'Открыл встречу «Встреча про завод»' });
+    expect(parts[2].data).toEqual({ label: 'Искал в транскриптах: найдено 0' });
+  });
+
+  it('ошибка любого из инструментов встреч — общая формулировка "Не удалось проверить встречи"', () => {
+    const result: AssistantReplyResult = {
+      text: 'Не удалось найти встречи.',
+      toolCalls: [{ name: 'search_meetings', result: { tool: 'search_meetings', error: true, message: 'MEETING_LOOKUP_FAILED: не удалось найти встречи' } }],
+    };
+
+    const parts = buildAssistantParts(result);
+
+    expect(parts[0].data).toEqual({ label: 'Не удалось проверить встречи' });
+  });
 });

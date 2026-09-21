@@ -31,6 +31,13 @@ interface ChatMessage {
   // задачи/встречи со всеми комментариями/подзадачами/участниками, это
   // отдельная, более тяжёлая фича, не часть этого захода.
   undo?: VoiceUndoInput | null;
+  // Stage 2, Phase H.4 (внешний аудит 21.09.2026) — раньше "Открыть"
+  // читал taskId прямо из undo.id (undo раньше нёс {kind, id, ...}).
+  // VoiceUndoInput теперь только {undoToken} (сервер сам решает, что и как
+  // откатывать) — id для ссылки хранится отдельно, но гаснет ВМЕСТЕ с undo
+  // по тому же таймеру (UNDO_WINDOW_MS) — то же поведение, что было раньше
+  // (оба элемента жили внутри одного `{m.undo && (...)}`).
+  openTaskId?: string | null;
 }
 
 const UNDO_WINDOW_MS = 30_000;
@@ -296,36 +303,25 @@ function VoiceView() {
 
     const text = item.ok ? describeOutcome(item.draft) : `Не получилось выполнить: ${item.error}`;
     const undo = item.ok ? buildUndo(item) : null;
+    // Тот же гейт, что раньше был неявным (m.undo.kind === 'task' внутри
+    // {m.undo && (...)}): "Открыть" имеет смысл только когда есть и что
+    // отменить (delete — undo=null, задачи уже нет, открывать нечего).
+    const openTaskId = undo && item.type === 'task_action' ? item.taskId : null;
     const messageId = crypto.randomUUID();
 
-    pushMessage({ id: messageId, role: 'assistant', text, status: item.ok ? undefined : 'error', undo });
+    pushMessage({ id: messageId, role: 'assistant', text, status: item.ok ? undefined : 'error', undo, openTaskId });
     if (undo) {
-      setTimeout(() => updateMessage(messageId, { undo: null }), UNDO_WINDOW_MS);
+      setTimeout(() => updateMessage(messageId, { undo: null, openTaskId: null }), UNDO_WINDOW_MS);
     }
   }
 
-  // create/update дают undo; delete — нет (см. комментарий у ChatMessage.undo).
+  // Stage 2, Phase H.4 (внешний аудит 21.09.2026, "trusted server-side
+  // undo") — сервер сам создаёт и хранит запись отката (UndoRecord) сразу
+  // после мутации; отсюда достаточно взять её id (undoToken), не собирать
+  // payload из previous/draft самим клиентом.
   function buildUndo(item: VoiceActionResult): VoiceUndoInput | null {
-    if (item.type === 'chat') return null;
-    if (item.type === 'task_action') {
-      if (item.draft.action === 'create' && item.taskId) return { kind: 'task', action: 'create', id: item.taskId };
-      if (item.draft.action === 'update' && item.taskId && item.previous) {
-        return { kind: 'task', action: 'update', id: item.taskId, previous: item.previous };
-      }
-      return null;
-    }
-    if (item.draft.action === 'create' && item.eventId) return { kind: 'event', action: 'create', id: item.eventId };
-    if (item.draft.action === 'update' && item.eventId && item.previous) {
-      return {
-        kind: 'event',
-        action: 'update',
-        id: item.eventId,
-        previous: item.previous,
-        addedParticipantIds: item.draft.addParticipantIds,
-        removedParticipantIds: item.draft.removeParticipantIds,
-      };
-    }
-    return null;
+    if (item.type === 'chat' || !item.undoToken) return null;
+    return { undoToken: item.undoToken };
   }
 
   // "Отменить" в баббле (аудит 10.09.2026, п. 4.2). create — просто удаляет
@@ -417,8 +413,8 @@ function VoiceView() {
             {m.text}
             {m.undo && (
               <div className="voice-confirm-actions">
-                {m.undo.kind === 'task' && (
-                  <button type="button" className="btn-secondary btn-small" onClick={() => router.push(`/tasks/${m.undo!.id}`)}>
+                {m.openTaskId && (
+                  <button type="button" className="btn-secondary btn-small" onClick={() => router.push(`/tasks/${m.openTaskId}`)}>
                     Открыть
                   </button>
                 )}

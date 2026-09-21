@@ -70,9 +70,30 @@ model Employee {
   plaudConnection          PlaudConnection?
   conversations            Conversation[]
   fileArtifacts            FileArtifact[]
+  aliases                  EmployeeAlias[]
+  meetingSegmentsSpoken    MeetingSegment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+// имя-варианты одного сотрудника ("Амир"/"Амиру"/"Амиром", короткие
+// формы, должностные варианты), которые EmployeeResolverService
+// использует В ДОПОЛНЕНИЕ к морфологической эвристике (см. её комментарий)
+// при разборе assigneeRawText из голосовой команды. normalizedAlias —
+// lowercase/trim/collapsed-whitespace форма alias, по ней идёт поиск;
+// alias хранит оригинал для отображения в UI управления алиасами.
+model EmployeeAlias {
+  id              String   @id @default(cuid())
+  employeeId      String
+  employee        Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  alias           String
+  normalizedAlias String
+  createdAt       DateTime @default(now())
+
+  @@unique([employeeId, normalizedAlias])
+  @@index([normalizedAlias])
 }
 
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
@@ -326,9 +347,82 @@ model Meeting {
   createdBy   Employee @relation(fields: [createdById], references: [id])
 
   tasks Task[]
+  plaudSyncItem PlaudSyncItem?
+  segments      MeetingSegment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Stage 2, Phase K (внешний аудит 21.09.2026, "MeetingSegment + transcript
+// ingestion") — раньше Assistant мог отвечать только по rawSummary/
+// enhancedSummary (обобщённый пересказ), не по самому транскрипту: "что
+// именно сказал Жандос про договор" требует поиска по репликам с
+// таймкодами и говорящими, не по резюме. speakerLabel — та же условная
+// метка ("Speaker 1" и т.п.), что уже используется в Meeting.speakerNames
+// для enhancedSummary — тот же словарь можно использовать, чтобы
+// подставить реальное имя и здесь, не заводя вторую систему разметки
+// говорящих. speakerEmployeeId — опционально резолвится отдельно (не
+// делается автоматически при импорте — см. PlaudSyncService), когда
+// имя говорящего уже сопоставлено с сотрудником.
+//
+// ВАЖНО: реальный формат транскрипта, который отдаёт Plaud API (сам
+// data_type в note_list, JSON-структура сегментов) НЕ подтверждён живым
+// вызовом API в этой сессии — см. подробный комментарий у
+// PlaudApiService.getTranscriptNote/parseTranscriptSegments. Модель и
+// таблица корректны и протестированы независимо от этого; сама выборка
+// данных из Plaud — best-effort, требует проверки на реальном аккаунте.
+model MeetingSegment {
+  id                String   @id @default(cuid())
+  meetingId         String
+  meeting           Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  order             Int
+  startMs           Int
+  endMs             Int
+  speakerLabel      String
+  speakerEmployeeId String?
+  speakerEmployee   Employee? @relation(fields: [speakerEmployeeId], references: [id], onDelete: SetNull)
+  text              String
+
+  @@index([meetingId, order])
+}
+
+enum PlaudSyncStatus {
+  // Найдена в списке Plaud, но у неё ещё нет готового auto_sum_note
+  // (запись только что сделана, Plaud ещё её обрабатывает).
+  WAITING_FOR_CONTENT
+  SYNCED
+  FAILED
+}
+
+// Stage 2, Phase J (внешний аудит 21.09.2026, "Plaud Sync v2") — раньше
+// PlaudSyncService.pullChanges полагался ТОЛЬКО на скалярный курсор
+// PlaudConnection.lastSyncedCreatedAt: запись, у которой на момент прогона
+// крона ещё не было готово summary, тихо пропускалась (найдено: тот же
+// метод, что и раньше, возвращался без throw), но курсор всё равно
+// продвигался мимо нужного created_at — на следующем прогоне запись уже
+// НИКОГДА не рассматривалась заново, даже когда Plaud заканчивал её
+// обработку. Эта таблица — отдельная память "что видели, но ещё не
+// синхронизировали" НЕЗАВИСИМО от курсора: WAITING_FOR_CONTENT/FAILED
+// строки в пределах окна ретрая пересматриваются на каждом прогоне,
+// независимо от того, куда уже успел уйти курсор.
+//
+// contentHash — Plaud API не отдаёт updated_at ни в списке файлов, ни в
+// деталях записи (см. PlaudFileListItem/PlaudFileDetail) — единственный
+// способ заметить, что содержимое записи изменилось на стороне Plaud,
+// это перечитать и сравнить хэш с сохранённым.
+model PlaudSyncItem {
+  id               String          @id @default(cuid())
+  employeeId       String
+  plaudRecordingId String          @unique
+  plaudCreatedAt   DateTime
+  status           PlaudSyncStatus
+  contentHash      String?
+  errorMessage     String?
+  meetingId        String?         @unique
+  meeting          Meeting?        @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  lastAttemptAt    DateTime        @default(now())
+  createdAt        DateTime        @default(now())
 }
 
 // Тип задачи: категория + требуемые компетенции (раздел 6.4).
@@ -579,6 +673,51 @@ model VoiceExecution {
   updatedAt DateTime @updatedAt
 
   @@unique([conversationId, clientRequestId])
+}
+
+enum UndoKind {
+  TASK
+  EVENT
+}
+
+enum UndoRecordAction {
+  CREATE
+  UPDATE
+}
+
+// Stage 2, Phase H.4 (внешний аудит 21.09.2026, "trusted server-side
+// undo") — заменяет прежнюю схему, где клиент сам хранил и присылал
+// обратно rollback-payload (previous/addedParticipantIds/
+// removedParticipantIds в VoiceUndoDto): клиент был authoritative
+// источником отката, что означало, что подделанный/устаревший payload с
+// фронтенда мог откатить задачу/событие в произвольное состояние. Теперь
+// сервер сам строит и хранит снимок "до" сразу после мутации
+// (executeTaskAction/executeEventAction, см. VoiceService), клиенту
+// отдаётся только непрозрачный `id` этой записи (`undoToken`) — сам откат
+// выполняется по хранимым здесь данным, не по тому, что прислал клиент.
+model UndoRecord {
+  id         String           @id @default(cuid())
+  // Чей голосовой запрос породил это действие — POST /voice/undo
+  // (VoiceService.undo) сверяет вызывающего с этим полем: тот же принцип
+  // "не раскрываем, какой из случаев" 404, что и у скачивания файлов
+  // (см. FilesService.getDownloadStream) — не своя/несуществующая/
+  // истёкшая запись отвечают одинаковым безопасным текстом.
+  employeeId String
+  kind       UndoKind
+  action     UndoRecordAction
+  entityId   String
+  previous              Json?
+  addedParticipantIds   Json?
+  removedParticipantIds Json?
+
+  // 30 секунд от создания (VOICE_UNDO_WINDOW_MS, то же окно, что и раньше
+  // проверялось только на фронте, скрывавшем кнопку "Отменить" по
+  // таймеру) — теперь это ГРАНИЦА, проверяемая на сервере: раньше ничто
+  // не мешало вызвать /voice/undo намного позже 30 секунд напрямую
+  // (не через кнопку), полагаясь только на клиентский таймер.
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
 }
 
 // --- Календарь руководителя (раздел 14.2/Адъютант, скорректировано --------

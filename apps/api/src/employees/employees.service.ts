@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { SetCompetencyDto } from './dto/set-competency.dto';
+import { normalizeAliasText } from './employee-resolver.service';
 
 const SALT_ROUNDS = 12;
 
@@ -116,6 +117,27 @@ export class EmployeesService {
     await this.prisma.employeeCompetency.delete({
       where: { employeeId_competencyId: { employeeId, competencyId } },
     });
+  }
+
+  // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+  // ручное добавление известных коротких форм/никнеймов ("Амир" для
+  // "Амир Жаксылыков"), которые эвристика EmployeeResolverService не
+  // угадает сама (например, имя, не оканчивающееся на типичный падежный
+  // суффикс, или прозвище, не связанное морфологически с фамилией).
+  async listAliases(employeeId: string) {
+    await this.ensureExists(employeeId);
+    return this.prisma.employeeAlias.findMany({ where: { employeeId }, orderBy: { createdAt: 'asc' } });
+  }
+
+  async addAlias(employeeId: string, alias: string) {
+    await this.ensureExists(employeeId);
+    return this.prisma.employeeAlias.create({
+      data: { employeeId, alias, normalizedAlias: normalizeAliasText(alias) },
+    });
+  }
+
+  async removeAlias(employeeId: string, aliasId: string) {
+    await this.prisma.employeeAlias.delete({ where: { id: aliasId, employeeId } });
   }
 
   private async ensureExists(id: string) {

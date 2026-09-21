@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, VoiceExecutionStatus } from '@prisma/client';
+import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, UndoKind, UndoRecordAction, VoiceExecutionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -12,6 +12,8 @@ import type { CreateEventDto } from '../calendar/dto/create-event.dto';
 import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { formatLocalDateTime } from '../common/timezone';
 import { AssistantChatService, isUniqueConstraintError, serializeMessageForModelContext, type MessageWithParts } from '../assistant/assistant-chat.service';
+import { EmployeeResolverService } from '../employees/employee-resolver.service';
+import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
 import { stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
 import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
@@ -76,6 +78,16 @@ function toJson<T>(value: T): Prisma.InputJsonValue {
   return value as unknown as Prisma.InputJsonValue;
 }
 
+// Тот же приём, что isUniqueConstraintError в assistant-chat.service.ts —
+// P2025 = "запись, подходящая под where, не найдена" (Prisma.update/delete).
+// Используется в undo() ниже как атомарный claim: update() с
+// where: {id, consumedAt: null} — если запись уже отменена конкурентным
+// запросом, where больше не matches, Prisma бросает P2025 вместо того,
+// чтобы молча обновить нулём строк.
+function isRecordNotFoundError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025';
+}
+
 type MulterFile = Express.Multer.File;
 
 // Сколько задач/событий максимум класть в контекст модели — не весь архив,
@@ -95,6 +107,13 @@ const EVENT_LOOKAHEAD_DAYS = 30;
 const VOICE_HISTORY_LIMIT = 20;
 const VOICE_HISTORY_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
+// Окно "Отменить" (владелец 10.09.2026) — раньше проверялось только на
+// фронте (кнопка скрывалась таймером); Stage 2, Phase H.4 переносит саму
+// границу на сервер (UndoRecord.expiresAt), фронтенд по-прежнему скрывает
+// кнопку тем же таймером для UX, но POST /voice/undo больше не доверяет
+// одному только отсутствию клика вовремя.
+const UNDO_WINDOW_MS = 30_000;
+
 @Injectable()
 export class VoiceService {
   private readonly logger = new Logger(VoiceService.name);
@@ -107,6 +126,16 @@ export class VoiceService {
     private readonly tasks: TasksService,
     private readonly events: EventsService,
     private readonly assistantChat: AssistantChatService,
+    // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+    // последний параметр, не переставлен в середину списка: существующие
+    // позиционные вызовы конструктора (много в voice.service.spec.ts) не
+    // ломаются, для тестов, где assigneeMentioned всегда false, этот
+    // параметр можно даже не мокать (resolveAssigneeMention до него не
+    // достаёт, см. её ранний return).
+    private readonly employeeResolver: EmployeeResolverService,
+    // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
+    // vocabulary") — тот же принцип, последний параметр.
+    private readonly vocabulary: CompanyVocabularyService,
   ) {}
 
   // Exactly-once для голосовых мутаций (Stage 2, Phase H.1 → H.3, третий
@@ -334,7 +363,12 @@ export class VoiceService {
       await Promise.all([
         (async () => {
           const start = Date.now();
-          const result = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname);
+          // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
+          // vocabulary") — обычно кэшировано (CompanyVocabularyService,
+          // TTL 10 минут), поэтому не превращает эту ветку в дорогой
+          // последовательный запрос к БД перед каждой транскрипцией.
+          const prompt = await this.vocabulary.getPrompt();
+          const result = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname, prompt);
           sttMs = Date.now() - start;
           return result;
         })(),
@@ -499,14 +533,23 @@ export class VoiceService {
     // slice(0, MAX_DRAFTS_PER_NOTE) — потолок задать в самой схеме нельзя
     // (см. комментарий у MAX_DRAFTS_PER_NOTE в draft-extraction.service.ts),
     // защита от патологического транскрипта здесь, постфактум.
-    const drafts = result.drafts.slice(0, MAX_DRAFTS_PER_NOTE).flatMap((draft) => {
-      const validatedTarget = this.validateTarget(draft, taskIds, eventIds);
-      const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
-      const validatedRefs = this.validateReferences(withCompleteEvent, employeeIds);
-      const enrichedDraft = this.attachAssigneeName(validatedRefs, employees);
-      const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
-      return this.enforceEventRbac(withMeeting, user.role);
-    });
+    //
+    // Promise.all + flat() вместо синхронного flatMap (Stage 2, Phase I) —
+    // resolveAssigneeMention ниже асинхронный (обращается к
+    // EmployeeAlias в БД), остальные шаги синхронные и порядок между собой
+    // не меняли.
+    const draftGroups = await Promise.all(
+      result.drafts.slice(0, MAX_DRAFTS_PER_NOTE).map(async (draft) => {
+        const validatedTarget = this.validateTarget(draft, taskIds, eventIds);
+        const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
+        const validatedRefs = this.validateReferences(withCompleteEvent, employeeIds);
+        const resolvedAssignee = await this.resolveAssigneeMention(validatedRefs, employees);
+        const enrichedDraft = this.attachAssigneeName(resolvedAssignee, employees);
+        const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
+        return this.enforceEventRbac(withMeeting, user.role);
+      }),
+    );
+    const drafts = draftGroups.flat();
 
     // Без minItems в схеме (Anthropic его тоже не поддерживает, см. тот же
     // комментарий) пустой drafts теоретически возможен — без этой защиты
@@ -679,11 +722,39 @@ export class VoiceService {
     };
   }
 
+  // Trusted server-side undo (Stage 2, Phase H.4, внешний аудит
+  // 21.09.2026) — создаётся сразу после мутации (create/update), хранит
+  // снимок "до" (previous) и/или инвертируемые списки участников на
+  // сервере; клиенту отдаётся только id этой записи (undoToken, см.
+  // VoiceTaskActionResult/VoiceEventActionResult) — сам откат в undo()
+  // ниже читает данные отсюда, не из того, что прислал клиент.
+  private async createUndoRecord(
+    user: AuthenticatedUser,
+    kind: UndoKind,
+    action: UndoRecordAction,
+    entityId: string,
+    extra: { previous?: unknown; addedParticipantIds?: string[]; removedParticipantIds?: string[] } = {},
+  ): Promise<string> {
+    const record = await this.prisma.undoRecord.create({
+      data: {
+        employeeId: user.id,
+        kind,
+        action,
+        entityId,
+        previous: extra.previous !== undefined ? toJson(extra.previous) : undefined,
+        addedParticipantIds: extra.addedParticipantIds ? toJson(extra.addedParticipantIds) : undefined,
+        removedParticipantIds: extra.removedParticipantIds ? toJson(extra.removedParticipantIds) : undefined,
+        expiresAt: new Date(Date.now() + UNDO_WINDOW_MS),
+      },
+    });
+    return record.id;
+  }
+
   // Создаёт/обновляет/удаляет задачу напрямую через TasksService (та же
   // RBAC-проверка, что у обычного PATCH/DELETE /tasks/:id — не дублируем
-  // её здесь) и возвращает итог вместо черновика. previous — снимок ДО
-  // мутации тех полей, что реально меняются (черновик несёт только новые
-  // значения), нужен фронтенду для кнопки "Отменить" (UNDO_WINDOW_MS).
+  // её здесь) и возвращает итог вместо черновика. undoToken — см.
+  // createUndoRecord выше; null для delete (сущности уже нет, откатывать
+  // нечего) и для ok=false.
   private async executeTaskAction(draft: VoiceTaskActionDraft, user: AuthenticatedUser): Promise<ExecutedVoiceAction> {
     try {
       if (draft.action === 'create') {
@@ -696,8 +767,9 @@ export class VoiceService {
           sourceMeetingId: draft.sourceMeetingId || undefined,
         };
         const created = await this.tasks.create(dto, user);
+        const undoToken = await this.createUndoRecord(user, UndoKind.TASK, UndoRecordAction.CREATE, created.id);
         return {
-          result: { type: 'task_action', draft, ok: true, error: null, taskId: created.id, previous: null },
+          result: { type: 'task_action', draft, ok: true, error: null, taskId: created.id, undoToken },
           entity: created,
         };
       }
@@ -729,8 +801,9 @@ export class VoiceService {
         // возврат update() отбрасывался, карточку в объединённой ленте
         // строить было не из чего.
         const updated = await this.tasks.update(draft.targetTaskId, dto, user);
+        const undoToken = await this.createUndoRecord(user, UndoKind.TASK, UndoRecordAction.UPDATE, draft.targetTaskId, { previous });
         return {
-          result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous },
+          result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, undoToken },
           entity: updated,
         };
       }
@@ -739,12 +812,12 @@ export class VoiceService {
       // "по удалению давай доверять", после практической проверки).
       await this.tasks.remove(draft.targetTaskId, user);
       return {
-        result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, previous: null },
+        result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, undoToken: null },
         entity: null,
       };
     } catch (err) {
       return {
-        result: { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, previous: null },
+        result: { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, undoToken: null },
         entity: null,
       };
     }
@@ -776,8 +849,9 @@ export class VoiceService {
         // пустым participants была бы неверна для только что созданной
         // встречи с указанными участниками.
         const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id) : created;
+        const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.CREATE, created.id);
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, previous: null },
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, undoToken },
           entity,
         };
       }
@@ -814,8 +888,13 @@ export class VoiceService {
         // — Stage 2, Phase H: раньше возврат update()/addParticipant не
         // использовался вовсе, строить карточку было не из чего.
         const entity = await this.events.findOne(draft.targetEventId);
+        const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.UPDATE, draft.targetEventId, {
+          previous,
+          addedParticipantIds: draft.addParticipantIds,
+          removedParticipantIds: draft.removeParticipantIds,
+        });
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous },
+          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken },
           entity,
         };
       }
@@ -824,12 +903,12 @@ export class VoiceService {
       // для задач (владелец 10.09.2026).
       await this.events.remove(draft.targetEventId, user.id);
       return {
-        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, previous: null },
+        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken: null },
         entity: null,
       };
     } catch (err) {
       return {
-        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, previous: null },
+        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, undoToken: null },
         entity: null,
       };
     }
@@ -882,43 +961,75 @@ export class VoiceService {
     });
   }
 
-  // POST /voice/undo (Stage 2, Phase H.1) — заменяет прежний паттерн
+  // POST /voice/undo (Stage 2, Phase H.1 → H.4) — заменяет прежний паттерн
   // "фронтенд сам откатывает через PATCH/DELETE, потом просит сервер
-  // записать придуманный текст" (POST /voice/messages, см. комментарий у
-  // VoiceUndoDto). Сам откат — теми же TasksService/EventsService, что и
-  // executeTaskAction/executeEventAction выше (та же RBAC-проверка, не
-  // задвоена: TasksService.update/remove сами проверяют
-  // постановщика/руководителя, EventsService — по факту, что модуль
-  // целиком закрыт на OWNER, см. проверку ниже). Событие — явная,
-  // защитная проверка роли: кнопка "Отменить" для события в принципе не
-  // показывается не-OWNER на фронте, но это не граница безопасности сама
-  // по себе (тот же принцип, что и у enforceEventRbac).
+  // записать придуманный текст" (POST /voice/messages). Phase H.4 (внешний
+  // аудит 21.09.2026, "trusted server-side undo") пошла дальше: раньше
+  // dto нёс authoritative previous/addedParticipantIds/removedParticipantIds
+  // от клиента — устаревший/подделанный payload мог откатить сущность в
+  // состояние, которого никогда не было. Теперь dto — только undoToken
+  // (id UndoRecord, который сервер сам создал и сохранил сразу после
+  // мутации, см. createUndoRecord/executeTaskAction/executeEventAction) —
+  // клиент больше не authoritative источник отката.
+  //
+  // Один общий безопасный текст на "не найдено"/"чужое"/"уже
+  // отменено"/"истекло" — тот же принцип "не раскрываем, какой из
+  // случаев", что и у 404 при скачивании чужого файла (FilesService).
   async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null }> {
-    if (dto.kind === 'event' && user.role !== Role.OWNER) {
+    const genericError = 'Время для отмены истекло, действие уже отменено, или ссылка на отмену недействительна.';
+    const record = await this.prisma.undoRecord.findUnique({ where: { id: dto.undoToken } });
+    if (!record || record.employeeId !== user.id || record.consumedAt || record.expiresAt.getTime() < Date.now()) {
+      await this.logAssistantMessage(`Не получилось отменить: ${genericError}`, user).catch(() => {});
+      return { ok: false, error: genericError };
+    }
+
+    // Защитная проверка роли — та же RBAC-проверка, не задвоена:
+    // TasksService.update/remove сами проверяют постановщика/руководителя,
+    // EventsService — по факту, что модуль целиком закрыт на OWNER.
+    // Кнопка "Отменить" для события в принципе не показывается не-OWNER на
+    // фронте, но это не граница безопасности сама по себе (тот же принцип,
+    // что и у enforceEventRbac).
+    if (record.kind === UndoKind.EVENT && user.role !== Role.OWNER) {
       const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
       await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
       return { ok: false, error };
     }
 
+    // Атомарный claim — where: {id, consumedAt: null} закрывает узкую гонку
+    // двойного одновременного POST /voice/undo с одним undoToken: если
+    // конкурентный запрос уже успел проставить consumedAt между findUnique
+    // выше и этим update, where больше не matches ни одной строки, Prisma
+    // бросает P2025 вместо того, чтобы молча обновить нулём строк — этот
+    // запрос откатывается на безопасный "уже отменено", не выполняет
+    // мутацию повторно.
     try {
-      if (dto.kind === 'task') {
-        if (dto.action === 'create') {
-          await this.tasks.remove(dto.id, user);
+      await this.prisma.undoRecord.update({ where: { id: record.id, consumedAt: null }, data: { consumedAt: new Date() } });
+    } catch (err) {
+      if (isRecordNotFoundError(err)) {
+        return { ok: false, error: genericError };
+      }
+      throw err;
+    }
+
+    try {
+      if (record.kind === UndoKind.TASK) {
+        if (record.action === UndoRecordAction.CREATE) {
+          await this.tasks.remove(record.entityId, user);
         } else {
-          const previous = (dto.previous ?? {}) as TaskRevertPayload;
+          const previous = (record.previous ?? {}) as TaskRevertPayload;
           const patch: UpdateTaskDto = {};
           if (previous.title !== undefined) patch.title = previous.title;
           if (previous.description !== undefined) patch.description = previous.description;
           if (previous.assigneeId !== undefined) patch.assigneeId = previous.assigneeId;
           if (previous.dueDate !== undefined) patch.dueDate = previous.dueDate;
           if (previous.priority !== undefined) patch.priority = previous.priority;
-          await this.tasks.update(dto.id, patch, user);
+          await this.tasks.update(record.entityId, patch, user);
         }
       } else {
-        if (dto.action === 'create') {
-          await this.events.remove(dto.id, user.id);
+        if (record.action === UndoRecordAction.CREATE) {
+          await this.events.remove(record.entityId, user.id);
         } else {
-          const previous = (dto.previous ?? {}) as EventRevertPayload;
+          const previous = (record.previous ?? {}) as EventRevertPayload;
           const patch: UpdateEventDto = {};
           if (previous.title !== undefined) patch.title = previous.title;
           if (previous.description !== undefined) patch.description = previous.description;
@@ -926,15 +1037,17 @@ export class VoiceService {
           if (previous.startAt !== undefined) patch.startAt = previous.startAt;
           if (previous.endAt !== undefined) patch.endAt = previous.endAt;
           if (previous.allDay !== undefined) patch.allDay = previous.allDay;
-          if (Object.keys(patch).length > 0) await this.events.update(dto.id, patch, user.id);
+          if (Object.keys(patch).length > 0) await this.events.update(record.entityId, patch, user.id);
           // Инверсия: то, что исходное действие ДОБАВИЛО, undo СНИМАЕТ, и
           // наоборот — тот же смысл, что уже был в прежнем клиентском
           // performUndo (обеих фронтендов), просто выполняется здесь.
-          for (const employeeId of dto.addedParticipantIds ?? []) {
-            await this.events.removeParticipant(dto.id, employeeId).catch(() => {});
+          const addedParticipantIds = (record.addedParticipantIds ?? []) as string[];
+          const removedParticipantIds = (record.removedParticipantIds ?? []) as string[];
+          for (const employeeId of addedParticipantIds) {
+            await this.events.removeParticipant(record.entityId, employeeId).catch(() => {});
           }
-          for (const employeeId of dto.removedParticipantIds ?? []) {
-            await this.events.addParticipant(dto.id, employeeId).catch(() => {});
+          for (const employeeId of removedParticipantIds) {
+            await this.events.addParticipant(record.entityId, employeeId).catch(() => {});
           }
         }
       }
@@ -995,6 +1108,35 @@ export class VoiceService {
       };
     }
     return draft;
+  }
+
+  // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+  // независимая от модели перепроверка assigneeId. Раньше assigneeId,
+  // предложенный моделью, либо принимался как есть, либо (если модель
+  // ошиблась/сослалась на несуществующий id) validateReferences выше
+  // тихо превращал его в null — задача создавалась БЕЗ исполнителя, хотя
+  // пользователь явно назвал имя ("Поставь Амиру задачу..."). Теперь при
+  // assigneeMentioned=true сервер сам ищет сотрудника по буквальному
+  // тексту (assigneeRawText) через EmployeeResolverService — RESOLVED
+  // переопределяет assigneeId результатом резолвера (доверяем ему больше,
+  // чем изначальной догадке модели, поскольку резолвер детерминированно
+  // проверяет по реальному списку алиасов/имён, а не угадывает по
+  // контексту); AMBIGUOUS/NOT_FOUND превращают черновик в уточняющий
+  // вопрос вместо того, чтобы молча создать/изменить задачу без
+  // исполнителя или с неверным.
+  private async resolveAssigneeMention(draft: VoiceDraft, employees: { id: string; fullName: string }[]): Promise<VoiceDraft> {
+    if (draft.type !== 'task_action' || !draft.assigneeMentioned || !draft.assigneeRawText) {
+      return draft;
+    }
+    const resolution = await this.employeeResolver.resolve(draft.assigneeRawText, employees);
+    if (resolution.status === 'RESOLVED') {
+      return { ...draft, assigneeId: resolution.employeeId };
+    }
+    const question =
+      resolution.status === 'AMBIGUOUS'
+        ? `Уточните, пожалуйста, кого вы имели в виду под «${draft.assigneeRawText}» — нашлось несколько похожих сотрудников.`
+        : `Не нашёл сотрудника «${draft.assigneeRawText}» среди видимых вам — уточните, пожалуйста, имя.`;
+    return { type: 'chat', reply: question };
   }
 
   // assigneeId/addParticipantIds/removeParticipantIds на этом этапе уже

@@ -29,6 +29,8 @@ function taskDraft(overrides: Partial<VoiceTaskActionDraft> = {}): VoiceTaskActi
     description: '',
     assigneeId: null,
     assigneeName: null,
+    assigneeMentioned: false,
+    assigneeRawText: '',
     dueDate: null,
     priority: null,
     sourceMeetingId: null,
@@ -131,6 +133,72 @@ describe('VoiceService.validateReferences (fail-safe в null/отфильтро�
   });
 });
 
+// Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
+// независимая от модели перепроверка assigneeId.
+describe('VoiceService.resolveAssigneeMention', () => {
+  function serviceWithResolver(resolve: jest.Mock) {
+    const employeeResolver = { resolve };
+    return new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, employeeResolver as any) as any;
+  }
+
+  it('assigneeMentioned=false — резолвер не вызывается, черновик не меняется', async () => {
+    const resolve = jest.fn();
+    const service = serviceWithResolver(resolve);
+    const draft = taskDraft({ assigneeMentioned: false, assigneeRawText: '' });
+
+    const result = await service.resolveAssigneeMention(draft, []);
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result).toBe(draft);
+  });
+
+  it('не task_action — не трогается', async () => {
+    const resolve = jest.fn();
+    const service = serviceWithResolver(resolve);
+    const draft = eventDraft();
+
+    const result = await service.resolveAssigneeMention(draft, []);
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result).toBe(draft);
+  });
+
+  it('RESOLVED — переопределяет assigneeId результатом резолвера, а не оставляет догадку модели', async () => {
+    const resolve = jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'emp-real' });
+    const service = serviceWithResolver(resolve);
+    const employees = [{ id: 'emp-real', fullName: 'Амир Жаксылыков' }];
+    const draft = taskDraft({ assigneeMentioned: true, assigneeRawText: 'Амиру', assigneeId: null });
+
+    const result = await service.resolveAssigneeMention(draft, employees);
+
+    expect(resolve).toHaveBeenCalledWith('Амиру', employees);
+    expect(result.assigneeId).toBe('emp-real');
+    expect(result.type).toBe('task_action');
+  });
+
+  it('AMBIGUOUS — превращается в chat-уточнение вместо unassigned-задачи', async () => {
+    const resolve = jest.fn().mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null });
+    const service = serviceWithResolver(resolve);
+    const draft = taskDraft({ assigneeMentioned: true, assigneeRawText: 'Алексею' });
+
+    const result = await service.resolveAssigneeMention(draft, []);
+
+    expect(result.type).toBe('chat');
+    expect(result.reply).toContain('Алексею');
+  });
+
+  it('NOT_FOUND — превращается в chat-уточнение, не создаёт задачу без исполнителя молча', async () => {
+    const resolve = jest.fn().mockResolvedValue({ status: 'NOT_FOUND', employeeId: null });
+    const service = serviceWithResolver(resolve);
+    const draft = taskDraft({ assigneeMentioned: true, assigneeRawText: 'Марине Сергеевне' });
+
+    const result = await service.resolveAssigneeMention(draft, []);
+
+    expect(result.type).toBe('chat');
+    expect(result.reply).toContain('Не нашёл');
+  });
+});
+
 describe('VoiceService.enforceEventRbac (граница безопасности — не полагается на промпт, см. комментарий в самом коде)', () => {
   const service = makeService();
 
@@ -160,32 +228,49 @@ describe('VoiceService.enforceEventRbac (граница безопасности
   });
 });
 
+// Stage 2, Phase H.4 (внешний аудит 21.09.2026, "trusted server-side
+// undo") — executeTaskAction/executeEventAction создают UndoRecord через
+// prisma.undoRecord.create сразу после мутации (create/update), поэтому
+// эти тесты нужен мок этой таблицы; delete/ошибка undoToken не создают.
+function undoRecordPrismaMock(id = 'undo-1') {
+  return { undoRecord: { create: jest.fn().mockResolvedValue({ id }) } };
+}
+
 describe('VoiceService.executeTaskAction (Stage 2, Phase H — entity для карточки объединённой ленты)', () => {
-  it('create — entity берётся из возврата TasksService.create напрямую', async () => {
+  it('create — entity берётся из возврата TasksService.create напрямую, undoToken из UndoRecord', async () => {
     const created = { id: 't1', title: 'Задача', status: 'NEW', dueDate: null, assignee: null };
     const tasks = { create: jest.fn().mockResolvedValue(created) };
-    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, {} as any) as any;
     const draft = taskDraft({ action: 'create' });
 
     const { result, entity } = await service.executeTaskAction(draft, makeUser());
 
-    expect(result).toEqual({ type: 'task_action', draft, ok: true, error: null, taskId: 't1', previous: null });
+    expect(result).toEqual({ type: 'task_action', draft, ok: true, error: null, taskId: 't1', undoToken: 'undo-1' });
     expect(entity).toBe(created);
+    expect(prisma.undoRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ employeeId: 'u1', kind: 'TASK', action: 'CREATE', entityId: 't1' }) }),
+    );
   });
 
-  it('update — entity берётся из свежего возврата TasksService.update, не из before-снимка', async () => {
+  it('update — entity берётся из свежего возврата TasksService.update, не из before-снимка; UndoRecord несёт previous', async () => {
     const before = { id: 't1', title: 'Старое', description: '', assignee: null, dueDate: null, priority: null };
     const updated = { id: 't1', title: 'Новое', status: 'NEW', dueDate: null, assignee: null };
     const tasks = { findOne: jest.fn().mockResolvedValue(before), update: jest.fn().mockResolvedValue(updated) };
-    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, {} as any) as any;
     const draft = taskDraft({ action: 'update', targetTaskId: 't1', title: 'Новое' });
 
-    const { entity } = await service.executeTaskAction(draft, makeUser());
+    const { entity, result } = await service.executeTaskAction(draft, makeUser());
 
     expect(entity).toBe(updated);
+    expect(result.undoToken).toBe('undo-1');
+    expect(prisma.undoRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ kind: 'TASK', action: 'UPDATE', entityId: 't1', previous: { title: 'Старое' } }) }),
+    );
   });
 
-  it('delete — entity=null, сущности больше нет, карточку строить не из чего', async () => {
+  it('delete — entity=null, сущности больше нет, undoToken=null (нет UndoRecord)', async () => {
     const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
     const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
     const draft = taskDraft({ action: 'delete', targetTaskId: 't1' });
@@ -194,9 +279,10 @@ describe('VoiceService.executeTaskAction (Stage 2, Phase H — entity для к�
 
     expect(entity).toBeNull();
     expect(result.ok).toBe(true);
+    expect(result.undoToken).toBeNull();
   });
 
-  it('ошибка — entity=null, ok=false, тот же текст исключения, что раньше уходил клиенту напрямую', async () => {
+  it('ошибка — entity=null, ok=false, undoToken=null, тот же текст исключения, что раньше уходил клиенту напрямую', async () => {
     const tasks = { create: jest.fn().mockRejectedValue(new Error('Постановщик не найден')) };
     const service = new VoiceService({} as any, {} as any, {} as any, {} as any, tasks as any, {} as any, {} as any) as any;
     const draft = taskDraft({ action: 'create' });
@@ -204,7 +290,7 @@ describe('VoiceService.executeTaskAction (Stage 2, Phase H — entity для к�
     const { result, entity } = await service.executeTaskAction(draft, makeUser());
 
     expect(entity).toBeNull();
-    expect(result).toMatchObject({ ok: false, error: 'Постановщик не найден' });
+    expect(result).toMatchObject({ ok: false, error: 'Постановщик не найден', undoToken: null });
   });
 });
 
@@ -212,13 +298,15 @@ describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для к
   it('create без участников — entity это created напрямую, без лишнего findOne', async () => {
     const created = { id: 'e1', title: 'Встреча', startAt: new Date(), endAt: new Date(), location: null, participants: [] };
     const events = { create: jest.fn().mockResolvedValue(created), findOne: jest.fn() };
-    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, {} as any) as any;
     const draft = eventDraft({ action: 'create', addParticipantIds: [] });
 
-    const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
+    const { entity, result } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
 
     expect(entity).toBe(created);
     expect(events.findOne).not.toHaveBeenCalled();
+    expect(result.undoToken).toBe('undo-1');
   });
 
   it('create с участниками — entity дозапрашивается через findOne ПОСЛЕ addParticipant (у created ещё нет свежих участников)', async () => {
@@ -229,7 +317,8 @@ describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для к
       addParticipant: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn().mockResolvedValue(refetched),
     };
-    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, {} as any) as any;
     const draft = eventDraft({ action: 'create', addParticipantIds: ['emp1'] });
 
     const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
@@ -239,22 +328,28 @@ describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для к
     expect(entity).toBe(refetched);
   });
 
-  it('update — entity это финальный findOne после изменения полей и участников, не before-снимок', async () => {
+  it('update — entity это финальный findOne после изменения полей и участников, не before-снимок; UndoRecord несёт участников', async () => {
     const before = { id: 'e1', title: 'Старое', description: '', location: '', startAt: new Date('2026-01-01T00:00:00Z'), endAt: new Date('2026-01-01T01:00:00Z'), allDay: false };
     const finalEntity = { id: 'e1', title: 'Новое', startAt: before.startAt, endAt: before.endAt, location: null, participants: [] };
     const events = {
       findOne: jest.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(finalEntity),
       update: jest.fn().mockResolvedValue(undefined),
-      addParticipant: jest.fn(),
-      removeParticipant: jest.fn(),
+      addParticipant: jest.fn().mockResolvedValue(undefined),
+      removeParticipant: jest.fn().mockResolvedValue(undefined),
     };
-    const service = new VoiceService({} as any, {} as any, {} as any, {} as any, {} as any, events as any, {} as any) as any;
-    const draft = eventDraft({ action: 'update', targetEventId: 'e1', title: 'Новое' });
+    const prisma = undoRecordPrismaMock();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, {} as any) as any;
+    const draft = eventDraft({ action: 'update', targetEventId: 'e1', title: 'Новое', addParticipantIds: ['emp1'], removeParticipantIds: ['emp2'] });
 
     const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
 
     expect(entity).toBe(finalEntity);
     expect(events.findOne).toHaveBeenCalledTimes(2);
+    expect(prisma.undoRecord.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ addedParticipantIds: ['emp1'], removedParticipantIds: ['emp2'] }),
+      }),
+    );
   });
 });
 
@@ -310,45 +405,112 @@ describe('VoiceService.loadHistory (Stage 2, Phase H — читает Message/Me
 // — тестируем и сам откат, и то, что текст подтверждения решает сервер
 // (logAssistantMessage вызывается с фиксированным/безопасным текстом, не
 // с чем-то, что мог бы продиктовать клиент).
-describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST /voice/messages)', () => {
+// Stage 2, Phase H.4 (внешний аудит 21.09.2026, "trusted server-side
+// undo") — dto теперь только { undoToken }, все данные для отката читаются
+// из хранимой UndoRecord, не из того, что прислал клиент.
+describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
   function makeAssistantChat(conversationId = 'c1') {
     return { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: conversationId }) };
   }
 
-  it('task create — откатывает через tasks.remove, пишет "Отменено."', async () => {
+  function undoRecord(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'undo-1',
+      employeeId: 'u1',
+      kind: 'TASK',
+      action: 'CREATE',
+      entityId: 't1',
+      previous: null,
+      addedParticipantIds: null,
+      removedParticipantIds: null,
+      expiresAt: new Date(Date.now() + 30_000),
+      consumedAt: null,
+      ...overrides,
+    };
+  }
+
+  function undoPrisma(record: ReturnType<typeof undoRecord> | null, messageCreate = jest.fn().mockResolvedValue({})) {
+    return {
+      undoRecord: {
+        findUnique: jest.fn().mockResolvedValue(record),
+        update: jest.fn().mockResolvedValue(record ? { ...record, consumedAt: new Date() } : null),
+      },
+      message: { create: messageCreate },
+    };
+  }
+
+  it('task create — откатывает через tasks.remove, пишет "Отменено.", помечает UndoRecord потреблённой', async () => {
+    const record = undoRecord();
     const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
-    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
     const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
 
-    const result = await service.undo({ kind: 'task', action: 'create', id: 't1' }, makeUser());
+    const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
     expect(tasks.remove).toHaveBeenCalledWith('t1', expect.objectContaining({ id: 'u1' }));
     expect(result).toEqual({ ok: true, error: null });
+    expect(prisma.undoRecord.update).toHaveBeenCalledWith({ where: { id: 'undo-1', consumedAt: null }, data: { consumedAt: expect.any(Date) } });
     expect(prisma.message.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } }] } }) }),
     );
   });
 
   it('task update — собирает патч из previous поштучно, не спредом (лишние поля previous не всплывают в вызове)', async () => {
+    const previous = { title: 'Старое название', assigneeId: null, unexpectedField: 'should be ignored' };
+    const record = undoRecord({ action: 'UPDATE', previous });
     const tasks = { update: jest.fn().mockResolvedValue({}) };
-    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
     const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
 
-    const previous = { title: 'Старое название', assigneeId: null, unexpectedField: 'should be ignored' };
-    await service.undo({ kind: 'task', action: 'update', id: 't1', previous }, makeUser());
+    await service.undo({ undoToken: 'undo-1' }, makeUser());
 
     expect(tasks.update).toHaveBeenCalledWith('t1', { title: 'Старое название', assigneeId: null }, expect.objectContaining({ id: 'u1' }));
   });
 
-  it('event create — не-OWNER получает отказ ДО вызова events.remove (защитная RBAC-проверка)', async () => {
+  it('не найдено / не своя / уже отменена / истекла — общий безопасный текст, TasksService/EventsService не трогаются', async () => {
+    const tasks = { remove: jest.fn() };
     const events = { remove: jest.fn() };
-    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const assistantChat = makeAssistantChat();
+
+    // не найдено
+    let prisma = undoPrisma(null);
+    let service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, events as any, assistantChat as any) as any;
+    let result = await service.undo({ undoToken: 'missing' }, makeUser());
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('истекло');
+
+    // чужая (employeeId не совпадает)
+    prisma = undoPrisma(undoRecord({ employeeId: 'someone-else' }));
+    service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, events as any, assistantChat as any) as any;
+    result = await service.undo({ undoToken: 'undo-1' }, makeUser());
+    expect(result.ok).toBe(false);
+
+    // уже отменена
+    prisma = undoPrisma(undoRecord({ consumedAt: new Date() }));
+    service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, events as any, assistantChat as any) as any;
+    result = await service.undo({ undoToken: 'undo-1' }, makeUser());
+    expect(result.ok).toBe(false);
+
+    // истекла
+    prisma = undoPrisma(undoRecord({ expiresAt: new Date(Date.now() - 1000) }));
+    service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, events as any, assistantChat as any) as any;
+    result = await service.undo({ undoToken: 'undo-1' }, makeUser());
+    expect(result.ok).toBe(false);
+
+    expect(tasks.remove).not.toHaveBeenCalled();
+    expect(events.remove).not.toHaveBeenCalled();
+  });
+
+  it('event create — не-OWNER получает отказ ДО вызова events.remove (защитная RBAC-проверка)', async () => {
+    const record = undoRecord({ kind: 'EVENT', entityId: 'e1' });
+    const events = { remove: jest.fn() };
+    const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
     const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, assistantChat as any) as any;
 
-    const result = await service.undo({ kind: 'event', action: 'create', id: 'e1' }, makeUser({ role: Role.EMPLOYEE }));
+    const result = await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.EMPLOYEE }));
 
     expect(events.remove).not.toHaveBeenCalled();
     expect(result.ok).toBe(false);
@@ -356,26 +518,24 @@ describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST
   });
 
   it('event update — инвертирует участников (добавленные снимает, снятые возвращает)', async () => {
+    const record = undoRecord({
+      kind: 'EVENT',
+      action: 'UPDATE',
+      entityId: 'e1',
+      previous: {},
+      addedParticipantIds: ['emp1'],
+      removedParticipantIds: ['emp2'],
+    });
     const events = {
       update: jest.fn().mockResolvedValue({}),
       addParticipant: jest.fn().mockResolvedValue(undefined),
       removeParticipant: jest.fn().mockResolvedValue(undefined),
     };
-    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
     const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, assistantChat as any) as any;
 
-    await service.undo(
-      {
-        kind: 'event',
-        action: 'update',
-        id: 'e1',
-        previous: {},
-        addedParticipantIds: ['emp1'],
-        removedParticipantIds: ['emp2'],
-      },
-      makeUser({ role: Role.OWNER }),
-    );
+    await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.OWNER }));
 
     expect(events.removeParticipant).toHaveBeenCalledWith('e1', 'emp1');
     expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp2');
@@ -383,12 +543,13 @@ describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST
   });
 
   it('ошибка отката — ok=false, безопасный текст (toErrorMessage), тоже логируется', async () => {
+    const record = undoRecord();
     const tasks = { remove: jest.fn().mockRejectedValue(new Error('Удалить задачу может только её постановщик или руководитель')) };
-    const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
+    const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
     const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
 
-    const result = await service.undo({ kind: 'task', action: 'create', id: 't1' }, makeUser());
+    const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
     expect(result).toEqual({ ok: false, error: 'Удалить задачу может только её постановщик или руководитель' });
     expect(prisma.message.create).toHaveBeenCalledWith(
@@ -398,6 +559,30 @@ describe('VoiceService.undo (Stage 2, Phase H.1, P0/P1 — заменяет POST
         }),
       }),
     );
+  });
+
+  // Гонка двойного одновременного POST /voice/undo с одним undoToken —
+  // атомарный claim (update where: {id, consumedAt: null}) должен закрыть
+  // её: проверяем через прямой сбой этого update как P2025 (Prisma
+  // возвращает его, когда where не matches ни одной строки — тот же
+  // сценарий, что случился бы у второго конкурентного запроса).
+  it('гонка двойного undo — P2025 на claim-update трактуется как "уже отменено", tasks.remove НЕ вызывается', async () => {
+    const record = undoRecord();
+    const tasks = { remove: jest.fn() };
+    const prisma = {
+      undoRecord: {
+        findUnique: jest.fn().mockResolvedValue(record),
+        update: jest.fn().mockRejectedValue(new Prisma.PrismaClientKnownRequestError('Record not found', { code: 'P2025', clientVersion: '6.19.3' })),
+      },
+      message: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, assistantChat as any) as any;
+
+    const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
+
+    expect(result.ok).toBe(false);
+    expect(tasks.remove).not.toHaveBeenCalled();
   });
 });
 
@@ -490,6 +675,8 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       { findAll: jest.fn().mockResolvedValue([]) } as any,
       {} as any,
       assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
     );
     const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
@@ -571,6 +758,8 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       { findAll: jest.fn().mockResolvedValue([]) } as any,
       {} as any,
       assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('Амир Жаксылыков, GLB, Plaud') } as any,
     );
     const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
@@ -583,6 +772,9 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     const completedCall = updateSpy.mock.calls.find(([arg]: any[]) => arg.data?.status === VoiceExecutionStatus.COMPLETED);
     expect(completedCall).toBeDefined();
     expect(completedCall![0].data.resultJson.results).toEqual([{ type: 'chat', reply: 'Ок' }]);
+    // Stage 2, Phase I (Company/STT vocabulary) — CompanyVocabularyService.getPrompt()
+    // реально доходит до Whisper четвёртым аргументом, не только вызывается.
+    expect(whisperSpy).toHaveBeenCalledWith(audio.buffer, audio.mimetype, audio.originalname, 'Амир Жаксылыков, GLB, Plaud');
   });
 
   it('цикл исполнения черновиков падает непредвиденно — NEEDS_RECONCILIATION, не FAILED (FAILED разрешил бы повторную мутацию)', async () => {
@@ -611,6 +803,8 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       { findAll: jest.fn().mockResolvedValue([]) } as any,
       {} as any,
       assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
     );
     // executeTaskAction ловит свои ошибки (никогда не бросает) — только
     // непредвиденный сбой (баг где-то ещё) может уронить сам цикл; здесь
@@ -662,6 +856,8 @@ describe('VoiceService.parse — exactly-once под конкурентными 
       tasks as any,
       {} as any,
       assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
     );
 
     const dto = { audio, user: makeUser(), clientRequestId: 'req-1' };
@@ -711,6 +907,8 @@ describe('VoiceService.parse — явный conversationId (Phase H.1, P2)', () 
       { findAll: jest.fn().mockResolvedValue([]) } as any,
       {} as any,
       assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
     );
 
     const response = await service.parse(audio, makeUser(), undefined, undefined, 'c-explicit');

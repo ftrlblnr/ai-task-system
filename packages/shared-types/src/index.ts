@@ -318,6 +318,11 @@ export interface VoiceTaskActionDraft {
   description: string;
   assigneeId: string | null;
   assigneeName: string | null; // резолвит сервер, не поле схемы инструмента
+  // Stage 2, Phase I (владелец 21.09.2026, "Employee Resolver") —
+  // независимая от модели перепроверка assigneeId на бэкенде; фронтенд
+  // их не использует напрямую, только зеркалит форму ответа.
+  assigneeMentioned: boolean;
+  assigneeRawText: string;
   dueDate: string | null;
   priority: TaskPriority | null;
   // Заполнено, если диктовка начата со страницы встречи (владелец
@@ -356,46 +361,30 @@ export interface VoiceChatReply {
 
 export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
-// Снимок полей ДО применения голосового изменения (владелец 10.09.2026) —
-// сервер строит его сам непосредственно перед мутацией (черновик несёт
-// только новые значения, не старые) и возвращает во VoiceTaskActionResult/
-// VoiceEventActionResult, чтобы фронтенд мог откатить именно те поля,
-// которые реально поменялись, кнопкой "Отменить" в чате (UNDO_WINDOW_MS —
-// 30 секунд). Не Partial<CreateTaskInput/CreateEventInput> — те типизируют
-// assigneeId/dueDate как string | undefined без null, а PATCH-эндпоинты
-// трактуют null как "явно снять значение" (см. TasksService.update).
-export interface TaskRevertPayload {
-  title?: string;
-  description?: string;
-  assigneeId?: string | null;
-  dueDate?: string | null;
-  priority?: TaskPriority;
-}
-export interface EventRevertPayload {
-  title?: string;
-  description?: string;
-  location?: string;
-  startAt?: string;
-  endAt?: string;
-  allDay?: boolean;
-}
-
 // Итог выполнения ОДНОГО черновика (владелец 10.09.2026, аудит п. 2.11) —
 // draft здесь тот же обогащённый черновик (assigneeName и т.п.), которым
 // фронтенд уже умел пользоваться для текста в чате до перехода на
-// серверное исполнение; ok/error/*Id/previous — новое, описывает, что
+// серверное исполнение; ok/error/*Id/undoToken — новое, описывает, что
 // реально произошло. taskId/eventId — id созданной/изменённой/удалённой
 // записи (для create — новый, для update/delete — тот же, что
-// targetTaskId/targetEventId в draft), null только при ok=false. previous
-// заполнен только при action='update' и ok=true — иначе отменять нечего
-// (create отменяется удалением по id, delete/ошибка — никак).
+// targetTaskId/targetEventId в draft), null только при ok=false.
+//
+// undoToken (Stage 2, Phase H.4, внешний аудит 21.09.2026, "trusted
+// server-side undo") — заменил прежнее поле `previous`. Раньше сервер
+// отдавал клиенту снимок "до" (TaskRevertPayload/EventRevertPayload), и
+// клиент сам хранил его 30 секунд и присылал обратно в POST /voice/undo —
+// клиент был authoritative источником отката. Теперь сервер сам создаёт
+// и хранит запись отката (UndoRecord) сразу после мутации, клиенту
+// достаётся только непрозрачный id этой записи — заполнен только при
+// action='create'/'update' и ok=true (delete/ошибка/chat — отменять
+// нечего, undoToken: null).
 export interface VoiceTaskActionResult {
   type: 'task_action';
   draft: VoiceTaskActionDraft;
   ok: boolean;
   error: string | null;
   taskId: string | null;
-  previous: TaskRevertPayload | null;
+  undoToken: string | null;
 }
 export interface VoiceEventActionResult {
   type: 'event_action';
@@ -403,7 +392,7 @@ export interface VoiceEventActionResult {
   ok: boolean;
   error: string | null;
   eventId: string | null;
-  previous: EventRevertPayload | null;
+  undoToken: string | null;
 }
 export interface VoiceChatResult {
   type: 'chat';
@@ -445,26 +434,20 @@ export interface VoiceParseResponse {
   assistantMessage: ConversationMessage | null;
 }
 
-// POST /voice/undo (Stage 2, Phase H.1, аудит 20.09.2026) — заменяет
-// прежний POST /voice/messages: тот принимал от клиента произвольный
-// текст и записывал его в общую ленту с ролью ASSISTANT
-// (conversation-history poisoning — особенно опасно после Phase H, когда
-// эта лента стала общим AI-контекстом для голоса и текста разом). Теперь
-// клиент присылает только структурированное описание того, что откатить —
-// сам откат (теми же TasksService/EventsService, что и обычные REST-пути)
-// и текст подтверждения решает сервер, не клиент.
-export type VoiceUndoInput =
-  | { kind: 'task'; action: 'create'; id: string }
-  | { kind: 'task'; action: 'update'; id: string; previous: TaskRevertPayload }
-  | { kind: 'event'; action: 'create'; id: string }
-  | {
-      kind: 'event';
-      action: 'update';
-      id: string;
-      previous: EventRevertPayload;
-      addedParticipantIds: string[];
-      removedParticipantIds: string[];
-    };
+// POST /voice/undo (Stage 2, Phase H.1 → H.4) — заменяет прежний
+// POST /voice/messages: тот принимал от клиента произвольный текст и
+// записывал его в общую ленту с ролью ASSISTANT (conversation-history
+// poisoning). Phase H.1 заменила это структурированным описанием отката
+// (kind/action/id/previous/...), которое сервер сам выполнял, но клиент
+// оставался authoritative источником rollback-данных. Phase H.4 (внешний
+// аудит 21.09.2026, "trusted server-side undo") убрала и это: клиент
+// присылает только непрозрачный undoToken (id серверной записи
+// UndoRecord, созданной сразу после мутации) — сам откат выполняется по
+// данным, которые сервер сохранил тогда же, не по тому, что прислал
+// клиент сейчас.
+export interface VoiceUndoInput {
+  undoToken: string;
+}
 
 export interface VoiceUndoResponse {
   ok: boolean;

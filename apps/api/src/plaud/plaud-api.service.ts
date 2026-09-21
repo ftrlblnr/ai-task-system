@@ -68,4 +68,19 @@ export class PlaudApiService {
     }
     return '';
   }
+
+  // Stage 2, Phase K (внешний аудит 21.09.2026, "MeetingSegment +
+  // transcript ingestion") — ⚠️ НЕ ПОДТВЕРЖДЕНО живым вызовом API в этой
+  // сессии, в отличие от 'auto_sum_note' (тот был явно проверен чтением
+  // исходников @plaud-ai/cli, см. комментарий класса выше — этот пакет
+  // недоступен в данном окружении, свериться было не с чем). Значения
+  // data_type ниже — best-effort предположение по аналогии с другими
+  // AI-транскрипцией сервисами (raw ASR-транскрипт как отдельный "note",
+  // параллельный auto_sum_note). Прежде чем полагаться на это в проде —
+  // нужно подключить реальный Plaud-аккаунт с готовой записью и свериться
+  // с фактическим note_list в ответе GET /files/:id.
+  findTranscriptNote(detail: PlaudFileDetail): PlaudNote | undefined {
+    const candidates = ['origin_text_note', 'transcript_note', 'origin_note'];
+    return detail.note_list?.find((note) => candidates.includes(note.data_type));
+  }
 }

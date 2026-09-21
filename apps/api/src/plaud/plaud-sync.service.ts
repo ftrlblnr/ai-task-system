@@ -1,8 +1,19 @@
+import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
+import { PlaudSyncStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { PlaudApiService, PlaudFileListItem } from './plaud-api.service';
+import { PlaudApiService, PlaudFileDetail, PlaudFileListItem } from './plaud-api.service';
+import { parseTranscriptSegments } from './transcript-parser';
 
 const PAGE_SIZE = 20;
+
+// Stage 2, Phase J (внешний аудит 21.09.2026, "Plaud Sync v2") — сколько
+// назад пересматривать WAITING_FOR_CONTENT/FAILED записи и перепроверять
+// SYNCED записи на изменение содержимого. Не бесконечно — иначе каждый
+// прогон крона со временем бил бы по всей истории; 7 дней с запасом
+// покрывает и "Plaud ещё обрабатывает запись" (обычно минуты-часы), и
+// "руководитель поправил саммари вскоре после записи".
+const RETRY_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Убираем декоративный постер записи (presigned-ссылка на картинку, живёт
 // считанные минуты — незачем тащить битую ссылку в сохранённый markdown).
@@ -10,10 +21,28 @@ function stripImages(markdown: string): string {
   return markdown.replace(/!\[[^\]]*]\([^)]*\)\n?/g, '').trim();
 }
 
+function contentHashOf(title: string, rawSummary: string): string {
+  return createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
+}
+
 // Синхронизация встреч из Plaud (владелец 08.09.2026) — переносит только
 // саммари (auto_sum_note), транскрипт сознательно не храним (см. план).
-// Курсор — created_at последней уже импортированной записи (у Plaud нет
-// syncToken, как у Google Calendar; список файлов отдаётся newest-first).
+//
+// Stage 2, Phase J (внешний аудит 21.09.2026) закрыл два найденных бага:
+// 1. Запись без готового summary на момент прогона раньше терялась
+//    НАВСЕГДА — importFile молча возвращался, но курсор (lastSyncedCreatedAt)
+//    всё равно продвигался мимо её created_at, и следующий прогон уже не
+//    рассматривал её снова, даже когда Plaud заканчивал обработку. Теперь
+//    PlaudSyncItem — отдельная память "видели, но не синхронизировали",
+//    независимая от курсора (см. её комментарий в schema.prisma).
+// 2. Уже импортированная запись никогда не обновлялась, если Plaud менял
+//    её содержимое — `if (existing) return;` тихо игнорировал любое
+//    изменение. Теперь недавно синхронизированные записи перепроверяются
+//    по contentHash (Plaud API не отдаёт updated_at, сравнение по хэшу —
+//    единственный способ заметить изменение). НЕ трогаем Meeting.rawSummary
+//    при обнаруженном изменении — её собственный комментарий в
+//    schema.prisma прямо требует неизменности (раздел 8.1 ТЗ, чтобы всегда
+//    можно было сверить с обработанной версией); обновляется только title.
 @Injectable()
 export class PlaudSyncService {
   private readonly logger = new Logger(PlaudSyncService.name);
@@ -46,14 +75,30 @@ export class PlaudSyncService {
     // Импортируем в хронологическом порядке (список пришёл newest-first).
     newFiles.reverse();
 
+    const retryCutoff = new Date(Date.now() - RETRY_LOOKBACK_MS);
+    const [pendingRetries, recentlySynced] = await Promise.all([
+      this.prisma.plaudSyncItem.findMany({
+        where: { employeeId, status: { in: [PlaudSyncStatus.WAITING_FOR_CONTENT, PlaudSyncStatus.FAILED] }, plaudCreatedAt: { gte: retryCutoff } },
+      }),
+      this.prisma.plaudSyncItem.findMany({
+        where: { employeeId, status: PlaudSyncStatus.SYNCED, plaudCreatedAt: { gte: retryCutoff } },
+      }),
+    ]);
+
     let latestCreatedAt = connection.lastSyncedCreatedAt;
     for (const item of newFiles) {
-      try {
-        await this.importFile(employeeId, item);
-        latestCreatedAt = new Date(item.created_at);
-      } catch (err) {
-        this.logger.warn(`Не удалось импортировать запись Plaud ${item.id}: ${err}`);
-      }
+      await this.syncItem(employeeId, item.id, item.name, item.created_at);
+      // Курсор продвигается мимо КАЖДОЙ увиденной записи (даже
+      // WAITING_FOR_CONTENT) — раньше это и было причиной бага #1, но
+      // теперь PlaudSyncItem помнит её отдельно и pendingRetries выше
+      // пересмотрит её на следующих прогонах независимо от курсора.
+      latestCreatedAt = new Date(item.created_at);
+    }
+    for (const pending of pendingRetries) {
+      await this.syncItem(employeeId, pending.plaudRecordingId, null, pending.plaudCreatedAt.toISOString());
+    }
+    for (const synced of recentlySynced) {
+      await this.syncItem(employeeId, synced.plaudRecordingId, null, synced.plaudCreatedAt.toISOString());
     }
 
     await this.prisma.plaudConnection.update({
@@ -62,32 +107,97 @@ export class PlaudSyncService {
     });
   }
 
-  private async importFile(employeeId: string, item: PlaudFileListItem): Promise<void> {
-    const existing = await this.prisma.meeting.findUnique({ where: { plaudRecordingId: item.id } });
-    if (existing) return;
+  // Единая точка для всех трёх источников работы (новая запись/ретрай
+  // pending/перепроверка synced) — идемпотентна: без изменений на стороне
+  // Plaud содержимое просто перезапишется тем же значением (contentHash
+  // совпадёт, ранний return).
+  private async syncItem(employeeId: string, plaudRecordingId: string, fallbackName: string | null, createdAtIso: string): Promise<void> {
+    const tracking = await this.prisma.plaudSyncItem.findUnique({ where: { plaudRecordingId } });
+    try {
+      const detail = await this.api.getFile(employeeId, plaudRecordingId);
+      const summaryNote = detail.note_list?.find((note) => note.data_type === 'auto_sum_note');
+      if (!summaryNote) {
+        await this.markStatus(employeeId, plaudRecordingId, createdAtIso, PlaudSyncStatus.WAITING_FOR_CONTENT);
+        return;
+      }
 
-    const detail = await this.api.getFile(employeeId, item.id);
-    const summaryNote = detail.note_list?.find((note) => note.data_type === 'auto_sum_note');
-    if (!summaryNote) {
-      this.logger.warn(`Запись Plaud ${item.id} без auto_sum_note — пропущена`);
-      return;
+      const rawContent = await this.api.loadNoteContent(summaryNote);
+      const rawSummary = stripImages(rawContent);
+      if (!rawSummary) {
+        await this.markStatus(employeeId, plaudRecordingId, createdAtIso, PlaudSyncStatus.WAITING_FOR_CONTENT);
+        return;
+      }
+
+      const title = detail.name || fallbackName || 'Запись Plaud';
+      const hash = contentHashOf(title, rawSummary);
+      if (tracking?.status === PlaudSyncStatus.SYNCED && tracking.contentHash === hash) {
+        return; // не изменилось — ничего делать не нужно
+      }
+
+      // meetingId уже известен из tracking, либо (данные до Phase J —
+      // Meeting импортирован, но PlaudSyncItem для него ещё не создан)
+      // ищем по plaudRecordingId напрямую, как и раньше.
+      const existingMeetingId = tracking?.meetingId ?? (await this.prisma.meeting.findUnique({ where: { plaudRecordingId }, select: { id: true } }))?.id;
+
+      let meetingId: string;
+      if (existingMeetingId) {
+        // rawSummary НЕ обновляется — см. комментарий класса и сам
+        // комментарий у Meeting.rawSummary в schema.prisma (раздел 8.1 ТЗ,
+        // должна оставаться исходной версией для сверки).
+        await this.prisma.meeting.update({ where: { id: existingMeetingId }, data: { title } });
+        meetingId = existingMeetingId;
+      } else {
+        const created = await this.prisma.meeting.create({
+          data: { title, meetingDate: new Date(createdAtIso), plaudRecordingId, rawSummary, createdById: employeeId },
+        });
+        meetingId = created.id;
+      }
+
+      await this.prisma.plaudSyncItem.upsert({
+        where: { plaudRecordingId },
+        create: { employeeId, plaudRecordingId, plaudCreatedAt: new Date(createdAtIso), status: PlaudSyncStatus.SYNCED, meetingId, contentHash: hash },
+        update: { status: PlaudSyncStatus.SYNCED, meetingId, contentHash: hash, lastAttemptAt: new Date(), errorMessage: null },
+      });
+
+      await this.syncTranscriptSegments(meetingId, detail);
+    } catch (err) {
+      await this.prisma.plaudSyncItem.upsert({
+        where: { plaudRecordingId },
+        create: { employeeId, plaudRecordingId, plaudCreatedAt: new Date(createdAtIso), status: PlaudSyncStatus.FAILED, errorMessage: String(err) },
+        update: { status: PlaudSyncStatus.FAILED, errorMessage: String(err), lastAttemptAt: new Date() },
+      });
+      this.logger.warn(`Не удалось синхронизировать запись Plaud ${plaudRecordingId}: ${err}`);
     }
+  }
 
-    const rawContent = await this.api.loadNoteContent(summaryNote);
-    const rawSummary = stripImages(rawContent);
-    if (!rawSummary) {
-      this.logger.warn(`Запись Plaud ${item.id} — пустое саммари после обработки, пропущена`);
-      return;
-    }
-
-    await this.prisma.meeting.create({
-      data: {
-        title: detail.name || item.name || 'Запись Plaud',
-        meetingDate: new Date(item.created_at),
-        plaudRecordingId: item.id,
-        rawSummary,
-        createdById: employeeId,
-      },
+  private async markStatus(employeeId: string, plaudRecordingId: string, createdAtIso: string, status: PlaudSyncStatus): Promise<void> {
+    await this.prisma.plaudSyncItem.upsert({
+      where: { plaudRecordingId },
+      create: { employeeId, plaudRecordingId, plaudCreatedAt: new Date(createdAtIso), status },
+      update: { status, lastAttemptAt: new Date() },
     });
+  }
+
+  // Stage 2, Phase K — best-effort, см. предупреждение у
+  // PlaudApiService.findTranscriptNote/parseTranscriptSegments: если
+  // формат окажется неверным (findTranscriptNote ничего не находит,
+  // JSON.parse не парсится), сегменты просто не появятся — не роняет
+  // синхронизацию summary, которая уже успешно завершилась к этому
+  // моменту. delete+createMany внутри транзакции — идемпотентно, старые
+  // сегменты этой встречи не задваиваются при повторном прогоне.
+  private async syncTranscriptSegments(meetingId: string, detail: PlaudFileDetail): Promise<void> {
+    const note = this.api.findTranscriptNote(detail);
+    if (!note) return;
+    const rawContent = await this.api.loadNoteContent(note);
+    if (!rawContent) return;
+    const segments = parseTranscriptSegments(rawContent);
+    if (segments.length === 0) return;
+
+    await this.prisma.$transaction([
+      this.prisma.meetingSegment.deleteMany({ where: { meetingId } }),
+      this.prisma.meetingSegment.createMany({
+        data: segments.map((s) => ({ meetingId, order: s.order, startMs: s.startMs, endMs: s.endMs, speakerLabel: s.speakerLabel, text: s.text })),
+      }),
+    ]);
   }
 }

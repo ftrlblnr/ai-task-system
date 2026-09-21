@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TasksModule } from '../tasks/tasks.module';
 import { CalendarModule } from '../calendar/calendar.module';
 import { AssistantModule } from '../assistant/assistant.module';
+import { EmployeesModule } from '../employees/employees.module';
 import { VoiceController } from './voice.controller';
 import { VoiceService } from './voice.service';
 import { WhisperService } from './whisper.service';
@@ -16,7 +17,9 @@ import { DraftExtractionService } from './draft-extraction.service';
   // (Conversation/Message), что и текстовый чат, через
   // AssistantChatService.getOrCreatePrimaryConversation (экспортирован
   // оттуда специально для этого).
-  imports: [TasksModule, CalendarModule, AssistantModule],
+  // EmployeesModule (Stage 2, Phase I) — EmployeeResolverService для
+  // независимой от LLM проверки assigneeRawText (см. VoiceService).
+  imports: [TasksModule, CalendarModule, AssistantModule, EmployeesModule],
   controllers: [VoiceController],
   providers: [VoiceService, WhisperService, DraftExtractionService],
 })
