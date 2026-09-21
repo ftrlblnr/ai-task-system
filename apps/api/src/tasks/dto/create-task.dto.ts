@@ -13,9 +13,16 @@ export class CreateTaskDto {
   @IsString()
   taskProfileId?: string;
 
+  // assigneeId/priority/dueDate допускают null помимо undefined (владелец
+  // 08.09.2026, см. TasksService.update) — undefined значит "поле не
+  // пришло, не трогать", null значит "явно снять" (например, откат
+  // голосового действия, VoiceService.undo, к состоянию "было не
+  // назначено"). @IsOptional() у class-validator пропускает валидацию и
+  // для null, и для undefined — типы здесь просто честно отражают то, что
+  // сервис уже поддерживает.
   @IsOptional()
   @IsString()
-  assigneeId?: string;
+  assigneeId?: string | null;
 
   // Подзадача — обычная задача с parentTaskId (владелец 08.09.2026, по
   // образцу Linear/Asana). Один уровень вложенности проверяется в сервисе.
@@ -23,13 +30,16 @@ export class CreateTaskDto {
   @IsString()
   parentTaskId?: string;
 
+  // priority — не null, в отличие от assigneeId/dueDate: в схеме
+  // (Task.priority @default(MEDIUM)) поле обязательное, "снять приоритет"
+  // не бывает — только конкретное значение или "не трогать" (undefined).
   @IsOptional()
   @IsEnum(TaskPriority)
   priority?: TaskPriority;
 
   @IsOptional()
   @IsDateString()
-  dueDate?: string;
+  dueDate?: string | null;
 
   // Раздел 9 ТЗ: источник задачи — встреча + точный таймкод. При ручной
   // постановке (не из встречи) sourceMeetingId не задаётся, а sourceContext

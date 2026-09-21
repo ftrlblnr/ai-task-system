@@ -379,7 +379,7 @@ export class AssistantChatService {
   // отдельными вызовами.
   private async updateAssistantMessageWithAttachments(
     id: string,
-    data: Prisma.MessageUpdateInput,
+    data: Prisma.MessageUncheckedUpdateInput,
     conversationId: string,
     generatedFileIds: string[],
   ): Promise<MessageWithParts> {
@@ -491,7 +491,7 @@ export class AssistantChatService {
     // же userMessage, присоединяемся к его результату вместо повторного
     // вызова Anthropic/tools.
     const { result } = this.claimOrJoin(userMessage, () =>
-      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage, dto),
+      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto),
     );
     const assistantMessage = await result;
 
@@ -610,7 +610,7 @@ export class AssistantChatService {
     const userMessage = await this.resolveOrCreateUserMessage(user, conversationId, dto, existing?.userMessage);
 
     const { result, claimed } = this.claimOrJoin(userMessage, () =>
-      this.runStreamingReply(user, conversationId, userMessage, existing?.assistantMessage, dto, emit, abortSignal),
+      this.runStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto, emit, abortSignal),
     );
 
     if (claimed) {

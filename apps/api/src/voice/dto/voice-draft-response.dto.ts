@@ -86,7 +86,10 @@ export interface TaskRevertPayload {
   description?: string;
   assigneeId?: string | null;
   dueDate?: string | null;
-  priority?: TaskPriority | null;
+  // Не null, в отличие от assigneeId/dueDate — Task.priority обязательное
+  // поле в схеме (@default(MEDIUM)), снимок "до" всегда несёт конкретное
+  // значение (см. VoiceService, previous.priority = before.priority).
+  priority?: TaskPriority;
 }
 export interface EventRevertPayload {
   title?: string;
