@@ -1040,6 +1040,49 @@ sidebar и т.д.), не входит в этот раунд.
 заголовок+таймкод+цитата), `TaskSourceType`-enum (`sourceMeetingId != null`
 уже однозначно отличает MEETING от MANUAL).
 
+**Phase O hardening (22.09.2026)** — пользователь прислал отдельный
+hardening-отчёт по только что задеплоенному Phase O, все 3 находки
+подтвердились чтением реального кода:
+
+1. **P0, crash-safe idempotency.** `taskFromMeetingExecution.update(
+   ...COMPLETED...)` выполнялся ПОСЛЕ `tasks.create(...)` — если процесс
+   падал между этими строками, execution оставался `CLAIMED`, после
+   `STALE_TASK_FROM_MEETING_MS` (60с) становился reclaimable, и retry мог
+   создать ВТОРУЮ Task для того же execution. Новое поле
+   `Task.sourceExecutionId` (`@unique`, FK на `TaskFromMeetingExecution`,
+   `onDelete: SetNull`) — физическая DB-гарантия "максимум одна Task на
+   execution". Retry теперь СНАЧАЛА ищет Task по `sourceExecutionId` (сама
+   таблица Task — надёжный источник истины, в отличие от
+   `execution.status`, который мог не успеть записаться до крэша) и, если
+   находит, возвращает её (самоисцеляя execution в `COMPLETED`), только
+   при отсутствии Task идёт по прежней status-based reclaim-логике.
+2. **P0/P1, dedupeKey зависел от LLM-текста.** Старый ключ — хэш от
+   `userMessageId + meetingId + segmentId + title.toLowerCase()`. Два
+   реальных сценария отчёта подтвердились: (а) две РАЗНЫЕ задачи с
+   одинаковым `title`/`meeting`, но разным исполнителем (пример отчёта —
+   "Амиру"/"Жандосу" с одинаковой формулировкой пункта) схлопывались бы в
+   одну, поскольку `assigneeRawText` в ключ вообще не входил; (б)
+   перефразирование `title` моделью между попытками ретрая меняло ключ —
+   ретрай не распознавался. Новый ключ — чисто позиционная identity, не
+   зависящая от LLM-generated текста: `` `${userMessageId}:${toolCallIndex}` ``,
+   где `toolCallIndex` — общий счётчик на весь вызов `runReply()`
+   (`AssistantReplyService`), не сбрасывается между раундами, инкрементируется
+   на каждый обработанный `tool_use`-блок. Прокинут в
+   `AssistantToolsService.execute()`'s 6-м параметром.
+3. **P1, source integrity внутри `TasksService`.** Инварианты
+   `sourceSegmentId` требует `sourceMeetingId`; `sourceSegmentId` должен
+   принадлежать именно указанной встрече — раньше проверялись только в
+   `create_task_from_meeting` (caller), не в самом `TasksService.create()`
+   (domain service). Теперь проверяются и там (`BadRequestException`) —
+   вторая, независимая линия защиты для ЛЮБОГО другого/будущего caller'а,
+   не только для этого одного tool'а; RBAC-проверка (только OWNER) тоже
+   расширена на весь набор source-полей, не только `sourceMeetingId`.
+
+Все три фикса — чистый backend hardening без миграции UI-флоу
+(`apps/web`/`apps/miniapp` не тронуты). После них Phase L (Meeting → Task)
+считается закрытым; следующий этап — Phase M (Web Assistant parity),
+отдельным заходом.
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни

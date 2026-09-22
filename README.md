@@ -545,3 +545,14 @@ workspaces при таком масштабе проекта.
    тот же принцип, что `VoiceExecution`), новое поле `Task.sourceSegmentId`
    и `TaskCardData.source` для отображения происхождения задачи в
    карточке. Подробности — раздел "Phase O" в `CURRENT_STATE.md`.
+10. Phase O hardening (22.09.2026): внешний hardening-отчёт по только что
+    задеплоенному Phase O нашёл 3 реальных проблемы, все закрыты —
+    crash-safe идемпотентность (`Task.sourceExecutionId @unique`, retry
+    теперь ищет уже созданную Task напрямую, а не только по статусу
+    execution-записи), dedupeKey больше не зависит от LLM-generated текста
+    (`userMessageId:toolCallIndex` вместо хэша от title/meeting — раньше
+    два РАЗНЫХ вызова с одинаковой формулировкой пункта встречи, но разным
+    исполнителем, могли схлопнуться в одну задачу), и source integrity
+    (`sourceSegmentId`/`sourceMeetingId` согласованность) теперь
+    проверяется внутри `TasksService.create()`, не только в вызывающем
+    tool'е. Подробности — раздел "Phase O hardening" в `CURRENT_STATE.md`.
