@@ -566,3 +566,13 @@ workspaces при таком масштабе проекта.
     `assistant-screen.tsx` справа. TaskCard "Открыть" ведёт на уже
     существующую `/tasks/[id]` вместо отдельного оверлея. Подробности —
     раздел "Phase M" в `CURRENT_STATE.md`.
+12. Phase M hardening — voice ↔ text meeting Q&A parity (22.09.2026):
+    живой смоук сразу поймал разрыв — голосовой вопрос про Plaud-записи
+    отвечал "встреч не вижу", хотя тот же вопрос текстом уже работал.
+    Причина: голос и текст шли по двум разным reasoning-путям
+    (`DraftExtractionService` для голоса — контекст только tasks/events,
+    без Meeting/Plaud вообще; `AssistantReplyService`'s tool loop для
+    текста — полный доступ). Для `type:'chat'`-черновиков голос теперь
+    строит ответ тем же tool loop, что текстовый чат — полная параллель
+    между платформами не только по UI (Phase M), но и по самой логике
+    ответа. Подробности — раздел "Phase M hardening" в `CURRENT_STATE.md`.

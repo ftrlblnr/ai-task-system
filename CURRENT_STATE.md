@@ -1136,6 +1136,44 @@ WebRTC (следующий этап дорожной карты).
 гарантированно падает по OOM на этой VPS) — 0 errors. Живой смоук в
 браузере — после деплоя.
 
+**Phase M hardening — voice ↔ text meeting Q&A parity (22.09.2026)** —
+живой смоук на только что задеплоенном `/assistant` (Web) сразу нашёл
+разрыв: голосовой вопрос "О чём последняя запись из Plaud" получил
+"я вижу только предстоящие события, встреч там нет" — тот же вопрос
+ТЕКСТОМ уже отвечался корректно через `search_meetings`/
+`get_recent_meetings`/`search_meeting_transcript`.
+
+Причина, подтверждена чтением кода: голос и текст всегда шли по двум
+РАЗНЫМ путям. Текст — `AssistantReplyService`'s tool loop
+(`AssistantToolsService.buildTools`), с полным доступом к Meeting/Plaud
+инструментам. Голос — `DraftExtractionService.extract()`, отдельный,
+более ранний (Phase H и раньше) классификатор, чей контекст ограничен
+ТОЛЬКО `tasks`/`events` (см. `TaskContextItem`/`EventContextItem`) —
+Meeting-данные там были доступны только при диктовке СО страницы
+конкретной встречи (`meetingId`), не для общих вопросов. Пользователь
+выбрал (`AskUserQuestion`) наиболее полное решение: для `type:'chat'`-
+черновиков (чистый вопрос-ответ, ничего не меняет) реальный текст ответа
+теперь строит тот же tool loop, что и текстовый чат — `VoiceService`
+вызывает `AssistantReplyService.reply(transcript, history, user,
+conversationId, executionId)` вместо использования `draft.reply`
+напрямую. `history`/`transcript` — те же данные, что уже собирал
+`DraftExtractionService.extract()` (`loadContextAndExtract` теперь просто
+возвращает уже вычисленный `history` тоже, вместо того чтобы держать его
+только в своей области видимости). `executionId` (durable
+`VoiceExecution.id`, не `userMessage.id`) — стабильная identity для
+`create_task_from_meeting`'s idempotency-claim'а, специально НЕ зависящая
+от best-effort персистентности голосовой реплики (Phase H.1): если
+сохранение истории упадёт, чат-ответ всё равно должен успешно
+построиться, ровно как раньше.
+
+`task_action`/`event_action`-черновики (постановка/изменение/удаление
+задач и событий голосом) НЕ затронуты — быстрый структурированный путь
+через `DraftExtractionService` остаётся прежним, меняется только то,
+откуда берётся текст ДЛЯ `type:'chat'`. `AssistantModule` теперь
+экспортирует и `AssistantReplyService`, не только `AssistantChatService`
+(`VoiceModule` уже импортировал `AssistantModule` с Phase H) — цикла
+модулей нет (`AssistantModule` не импортирует `VoiceModule`).
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
