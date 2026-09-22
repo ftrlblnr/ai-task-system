@@ -529,5 +529,10 @@ workspaces при таком масштабе проекта.
    `VoiceExecution` в `RECEIVED`/`PROCESSING` дольше 3 минут (переживший
    крах процесс) безопасно перезапускается вместо вечного отказа, и
    `Meeting.latestSummary` хранит актуальную версию саммари с Plaud
-   независимо от замороженной `rawSummary`. Подробности — раздел "Седьмой
-   внешний аудит" в `CURRENT_STATE.md`.
+   независимо от замороженной `rawSummary`. Оставшиеся 2 P2-находки того
+   же аудита закрыты отдельным заходом (22.09.2026): audit logging для
+   `search_meetings`/`search_meeting_transcript` (`AI_MEETING_SEARCH`/
+   `AI_TRANSCRIPT_SEARCH`) и точечный `POST /plaud/sync/:recordingId`
+   (`PlaudSyncService.forceSyncOne`) — пересинхронизация одной записи в
+   обход курсора/`RETRY_LOOKBACK_MS`-окна обычного `/plaud/sync`.
+   Подробности — раздел "Седьмой внешний аудит" в `CURRENT_STATE.md`.
