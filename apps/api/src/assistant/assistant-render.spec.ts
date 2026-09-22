@@ -152,4 +152,54 @@ describe('buildAssistantParts (Stage 2 Phase C — бэкенд-рендерер
 
     expect(parts[0].data).toEqual({ label: 'Не удалось проверить встречи' });
   });
+
+  // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
+  // РЕГРЕССИЯ: изначально это ветка была пропущена и в toolActivityLabel
+  // (падало с TS2339 на build — totalCount не существует на этом
+  // варианте), и в самом buildAssistantParts (TASK_CARD не строился
+  // вообще, карточка с источником никогда не доходила бы до чата).
+  it('create_task_from_meeting — tool_activity с названием задачи, TASK_CARD с source', () => {
+    const result: AssistantReplyResult = {
+      text: 'Готово, задача создана.',
+      toolCalls: [
+        {
+          name: 'create_task_from_meeting',
+          result: {
+            tool: 'create_task_from_meeting',
+            task: {
+              taskId: 't1',
+              title: 'Получить КП',
+              status: 'NEW',
+              dueDate: null,
+              assignee: { id: 'e1', name: 'Жандос' },
+              source: { meetingId: 'm1', meetingTitle: 'Автоматизация завода', meetingDate: '2026-09-21T10:00:00.000Z', timestamp: '1:05', context: 'Нужно запросить КП' },
+            },
+          },
+        },
+      ],
+    };
+
+    const parts = buildAssistantParts(result);
+
+    expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN, MessagePartType.TASK_CARD]);
+    expect(parts[0].data).toEqual({ label: 'Поставил задачу «Получить КП»' });
+    expect(parts[2].data).toMatchObject({ taskId: 't1', source: { meetingTitle: 'Автоматизация завода', timestamp: '1:05' } });
+  });
+
+  it('create_task_from_meeting — ошибка (например, ASSIGNEE_AMBIGUOUS) отдаёт свой message как есть в tool_activity, без карточки', () => {
+    const result: AssistantReplyResult = {
+      text: 'Уточните, пожалуйста, кого вы имели в виду.',
+      toolCalls: [
+        {
+          name: 'create_task_from_meeting',
+          result: { tool: 'create_task_from_meeting', error: true, message: 'ASSIGNEE_AMBIGUOUS: не удалось однозначно определить исполнителя' },
+        },
+      ],
+    };
+
+    const parts = buildAssistantParts(result);
+
+    expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN]);
+    expect(parts[0].data).toEqual({ label: 'Не удалось проверить задачи' });
+  });
 });

@@ -49,7 +49,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
   if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
   if (result.tool === 'search_meetings') return { label: `Искал встречи: найдено ${result.totalCount}` };
   if (result.tool === 'get_meeting') return { label: `Открыл встречу «${result.meeting.title}»` };
-  return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
+  if (result.tool === 'search_meeting_transcript') return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
+  // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
+  return { label: `Поставил задачу «${result.task.title}»` };
 }
 
 // Бэкенд-рендерер (спека §16) — LLM решает вызвать инструмент, инструмент
@@ -83,6 +85,12 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
       // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
       // и скачать без каких-либо изменений.
       parts.push({ type: MessagePartType.FILE, order: order++, data: toJson(call.result.file) });
+    } else if (call.result.tool === 'create_task_from_meeting') {
+      // Stage 2, Phase O — та же карточка, что у get_tasks (TaskCardData),
+      // но с заполненным source (Task.sourceMeetingId/sourceSegmentId/
+      // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
+      // происхождение задачи прямо под карточкой.
+      parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(call.result.task) });
     }
     // Stage 2, Phase K — инструменты встреч намеренно не строят
     // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,
