@@ -1,6 +1,10 @@
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AssistantToolsService } from './assistant-tools.service';
+
+function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
+}
 
 // buildTools/execute не трогают реальный Anthropic — только RBAC-видимость
 // инструментов и маппинг/каппинг реальных Task/Event в карточки (Stage 2
@@ -28,6 +32,7 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       'search_meetings',
       'get_meeting',
       'search_meeting_transcript',
+      'create_task_from_meeting',
     ]);
   });
 });
@@ -369,5 +374,229 @@ describe('AssistantToolsService.execute — инструменты встреч 
     const result = await service.execute('search_meeting_transcript', { query: 'что угодно' }, user({ role: Role.OWNER }));
 
     expect(result).toEqual({ tool: 'search_meeting_transcript', items: [], totalCount: 0 });
+  });
+});
+
+// Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — ПЕРВЫЙ write-tool
+// Assistant Core. LLM — не security boundary (раздел 7 спеки), поэтому
+// каждый тест ниже фокусируется на том, что реально перепроверяется на
+// бэкенде, а не на слово модели.
+describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase O)', () => {
+  const owner = user({ id: 'owner1', role: Role.OWNER });
+  const meeting = { id: 'm1', title: 'Автоматизация завода', meetingDate: new Date('2026-09-21T10:00:00Z') };
+  const createdTask = { id: 't1', title: 'Получить КП', status: 'NEW', dueDate: null, assignee: null };
+
+  function makeDeps(overrides: {
+    meetingsFindOne?: jest.Mock;
+    segment?: { id: string; meetingId: string; startMs: number } | null;
+    employees?: { id: string; fullName: string }[];
+    resolve?: jest.Mock;
+    tasksCreate?: jest.Mock;
+    tasksFindOne?: jest.Mock;
+    executionCreate?: jest.Mock;
+    executionFindUnique?: jest.Mock;
+    executionUpdate?: jest.Mock;
+  } = {}) {
+    const meetingsStub = { findOne: overrides.meetingsFindOne ?? jest.fn().mockResolvedValue(meeting) };
+    const tasksStub = {
+      create: overrides.tasksCreate ?? jest.fn().mockResolvedValue(createdTask),
+      findOne: overrides.tasksFindOne ?? jest.fn(),
+    };
+    const auditStub = { log: jest.fn() };
+    const employeeResolverStub = { resolve: overrides.resolve ?? jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) };
+    const prisma = {
+      meetingSegment: { findUnique: jest.fn().mockResolvedValue(overrides.segment === undefined ? null : overrides.segment) },
+      employee: { findMany: jest.fn().mockResolvedValue(overrides.employees ?? [{ id: 'e1', fullName: 'Жандос Ахметов' }]) },
+      taskFromMeetingExecution: {
+        create: overrides.executionCreate ?? jest.fn().mockResolvedValue({ id: 'exec1' }),
+        findUnique: overrides.executionFindUnique ?? jest.fn(),
+        update: overrides.executionUpdate ?? jest.fn(),
+      },
+    };
+    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any, meetingsStub as any, prisma as any, auditStub as any, employeeResolverStub as any);
+    return { service, meetingsStub, tasksStub, auditStub, employeeResolverStub, prisma };
+  }
+
+  const baseInput = { meetingId: 'm1', title: 'Получить КП' };
+
+  it('встреча не найдена — безопасная ошибка, TasksService.create не вызывается', async () => {
+    const { service, tasksStub } = makeDeps({ meetingsFindOne: jest.fn().mockRejectedValue(new Error('Встреча не найдена')) });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', error: true });
+    expect('message' in result && result.message).toContain('MEETING_LOOKUP_FAILED');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('segmentId принадлежит ДРУГОЙ встрече — SEGMENT_MISMATCH, задача не создаётся', async () => {
+    const { service, tasksStub } = makeDeps({ segment: { id: 's1', meetingId: 'm-other', startMs: 1000 } });
+
+    const result = await service.execute('create_task_from_meeting', { ...baseInput, segmentId: 's1' }, owner, 'c1', 'msg1');
+
+    expect('message' in result && result.message).toContain('SEGMENT_MISMATCH');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('segmentId не существует вовсе — тот же SEGMENT_MISMATCH, задача не создаётся', async () => {
+    const { service, tasksStub } = makeDeps({ segment: null });
+
+    const result = await service.execute('create_task_from_meeting', { ...baseInput, segmentId: 'ghost' }, owner, 'c1', 'msg1');
+
+    expect('message' in result && result.message).toContain('SEGMENT_MISMATCH');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('без segmentId (источник — саммари) — успешно создаёт, source.timestamp = null', async () => {
+    const { service } = makeDeps();
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { source: { meetingId: 'm1', timestamp: null } } });
+  });
+
+  it('с segmentId — TasksService.create получает sourceSegmentId и отформатированный sourceTimestamp, source.timestamp в ответе тоже заполнен', async () => {
+    const { service, tasksStub } = makeDeps({ segment: { id: 's1', meetingId: 'm1', startMs: 65000 } });
+
+    const result = await service.execute('create_task_from_meeting', { ...baseInput, segmentId: 's1' }, owner, 'c1', 'msg1');
+
+    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ sourceMeetingId: 'm1', sourceSegmentId: 's1', sourceTimestamp: '1:05' }), owner);
+    expect(result).toMatchObject({ task: { source: { timestamp: '1:05' } } });
+  });
+
+  it('assigneeRawText резолвится (RESOLVED) — TasksService.create получает найденный assigneeId', async () => {
+    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) });
+
+    await service.execute('create_task_from_meeting', { ...baseInput, assigneeRawText: 'Жандосу' }, owner, 'c1', 'msg1');
+
+    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: 'e1' }), owner);
+  });
+
+  it('assigneeRawText неоднозначен (AMBIGUOUS) — задача НЕ создаётся, execution помечается FAILED', async () => {
+    const { service, tasksStub, prisma } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }) });
+
+    const result = await service.execute('create_task_from_meeting', { ...baseInput, assigneeRawText: 'Алексей' }, owner, 'c1', 'msg1');
+
+    expect('message' in result && result.message).toContain('ASSIGNEE_AMBIGUOUS');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'FAILED' }) });
+  });
+
+  it('assigneeRawText не найден (NOT_FOUND) — задача НЕ создаётся', async () => {
+    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'NOT_FOUND', employeeId: null }) });
+
+    const result = await service.execute('create_task_from_meeting', { ...baseInput, assigneeRawText: 'Незнакомец' }, owner, 'c1', 'msg1');
+
+    expect('message' in result && result.message).toContain('ASSIGNEE_NOT_FOUND');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('assigneeRawText не передан — TasksService.create получает assigneeId: undefined, резолвер не вызывается', async () => {
+    const { service, tasksStub, employeeResolverStub } = makeDeps();
+
+    await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(employeeResolverStub.resolve).not.toHaveBeenCalled();
+    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: undefined }), owner);
+  });
+
+  it('успешное создание пишет AI_MEETING_TASK_CREATE в AuditLog без полного транскрипта', async () => {
+    const { service, auditStub } = makeDeps();
+
+    await service.execute('create_task_from_meeting', { ...baseInput, assigneeRawText: 'Жандосу', dueDate: '2026-09-26T10:00:00' }, owner, 'c1', 'msg1');
+
+    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_MEETING_TASK_CREATE', 'Task', 't1', {
+      meetingId: 'm1',
+      segmentId: null,
+      assigneeId: 'e1',
+      dueDate: '2026-09-26T10:00:00',
+    });
+  });
+
+  it('dueDate приводится к местному времени с явным смещением (withLocalOffset), как в voice', async () => {
+    const { service, tasksStub } = makeDeps();
+
+    await service.execute('create_task_from_meeting', { ...baseInput, dueDate: '2026-09-26T10:00:00' }, owner, 'c1', 'msg1');
+
+    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ dueDate: '2026-09-26T10:00:00+05:00' }), owner);
+  });
+
+  // Идемпотентность — durable claim, тот же принцип, что claimAndRunDurable
+  // в voice.service.ts (см. план Phase O).
+  it('повторный вызов с тем же (userMessageId, meetingId, segmentId, title) после COMPLETED — возвращает СУЩЕСТВУЮЩУЮ задачу, TasksService.create НЕ вызывается второй раз', async () => {
+    const existingExecution = { id: 'exec1', status: 'COMPLETED', taskId: 't1', updatedAt: new Date() };
+    const { service, tasksStub } = makeDeps({
+      executionCreate: jest.fn().mockRejectedValue(p2002()),
+      executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
+      tasksFindOne: jest.fn().mockResolvedValue(createdTask),
+    });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+    expect(tasksStub.create).not.toHaveBeenCalled();
+    expect(tasksStub.findOne).toHaveBeenCalledWith('t1', owner);
+  });
+
+  it('FAILED execution допускает повтор — TasksService.create вызывается, execution переиспользуется', async () => {
+    const existingExecution = { id: 'exec1', status: 'FAILED', taskId: null, updatedAt: new Date() };
+    const { service, tasksStub, prisma } = makeDeps({
+      executionCreate: jest.fn().mockRejectedValue(p2002()),
+      executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
+    });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(tasksStub.create).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'CLAIMED' }) }),
+    );
+  });
+
+  it('свежий CLAIMED (реально конкурентный вызов) — безопасный отказ, TasksService.create НЕ вызывается', async () => {
+    const existingExecution = { id: 'exec1', status: 'CLAIMED', taskId: null, updatedAt: new Date() };
+    const { service, tasksStub } = makeDeps({
+      executionCreate: jest.fn().mockRejectedValue(p2002()),
+      executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
+    });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect('message' in result && result.message).toContain('ALREADY_PROCESSING');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('устаревший (stale) CLAIMED — брошенный процесс, безопасно переиспользуется', async () => {
+    const staleDate = new Date(Date.now() - 5 * 60 * 1000); // 5 минут назад
+    const existingExecution = { id: 'exec1', status: 'CLAIMED', taskId: null, updatedAt: staleDate };
+    const { service, tasksStub } = makeDeps({
+      executionCreate: jest.fn().mockRejectedValue(p2002()),
+      executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
+    });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(tasksStub.create).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+  });
+
+  it('TasksService.create падает — execution помечается FAILED, безопасная generic-ошибка наружу', async () => {
+    const { service, prisma } = makeDeps({ tasksCreate: jest.fn().mockRejectedValue(new Error('db down: password=secret')) });
+
+    const result = await service.execute('create_task_from_meeting', baseInput, owner, 'c1', 'msg1');
+
+    expect(result).toMatchObject({ tool: 'create_task_from_meeting', error: true, message: expect.stringContaining('TASK_CREATE_FAILED') });
+    expect('message' in result && result.message).not.toContain('password');
+    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'FAILED' }) });
+  });
+
+  it('conversationId/userMessageId отсутствуют — безопасный отказ, ничего не создаёт (не должно случаться на практике, см. execute())', async () => {
+    const { service, tasksStub } = makeDeps();
+
+    const result = await (service as any).execute('create_task_from_meeting', baseInput, owner);
+
+    expect(result).toMatchObject({ error: true });
+    expect(tasksStub.create).not.toHaveBeenCalled();
   });
 });

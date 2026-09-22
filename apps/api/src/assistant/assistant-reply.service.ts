@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { nowInLocalTimezone } from '../common/timezone';
 import { AssistantToolsService, type ToolExecutionResult } from './assistant-tools.service';
 
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
@@ -79,6 +80,20 @@ export function stripLeakedContextMarkers(text: string): string {
   return text.replace(LEAKED_CONTEXT_MARKER, '').trim();
 }
 
+// Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — до этого этапа
+// SYSTEM_PROMPT вообще не содержал текущей даты/времени (в отличие от
+// voice — draft-extraction.service.ts, где ${nowIso} уже используется для
+// разрешения "завтра"/"в пятницу"). create_task_from_meeting.dueDate
+// требует того же — не заводим новый парсер дат, переиспользуем ровно ту
+// же формулировку и источник (nowInLocalTimezone(), common/timezone.ts).
+// Отдельная функция, не статичная строка в SYSTEM_PROMPT — nowIso должен
+// быть свежим на момент вызова, не захардкожен при старте процесса.
+export function buildDateContext(): string {
+  return `Текущие дата и время — уже по местному времени пользователя (Казахстан, UTC+5), используй как есть для разрешения относительных выражений вроде "завтра", "в пятницу", "через час": ${nowInLocalTimezone()}
+
+Поле dueDate инструмента create_task_from_meeting заполняй ТОЖЕ по этому же местному времени, БЕЗ суффикса Z и без смещения часового пояса (просто "2026-09-02T13:00:00") — часовой пояс сервер подставит сам.`;
+}
+
 export interface ReplyHistoryItem {
   role: 'user' | 'assistant';
   text: string;
@@ -129,8 +144,14 @@ export class AssistantReplyService {
     return this.client;
   }
 
-  async reply(text: string, history: ReplyHistoryItem[], user: AuthenticatedUser): Promise<AssistantReplyResult> {
-    return this.runReply(text, history, user);
+  async reply(
+    text: string,
+    history: ReplyHistoryItem[],
+    user: AuthenticatedUser,
+    conversationId: string,
+    userMessageId: string,
+  ): Promise<AssistantReplyResult> {
+    return this.runReply(text, history, user, conversationId, userMessageId);
   }
 
   // signal — обрыв соединения с клиентом (AssistantChatService слушает
@@ -140,16 +161,29 @@ export class AssistantReplyService {
     text: string,
     history: ReplyHistoryItem[],
     user: AuthenticatedUser,
+    conversationId: string,
+    userMessageId: string,
     onEvent: ReplyStreamListener,
     signal?: AbortSignal,
   ): Promise<AssistantReplyResult> {
-    return this.runReply(text, history, user, onEvent, signal);
+    return this.runReply(text, history, user, conversationId, userMessageId, onEvent, signal);
   }
 
+  // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — conversationId/
+  // userMessageId прокинуты сюда только ради write-tool'ов
+  // (create_task_from_meeting): read-only тулы их игнорируют, но
+  // AssistantToolsService.execute нужна стабильная, переживающая ретрай
+  // пара (conversationId, userMessageId) для idempotency-claim'а — она уже
+  // существует к этому моменту (userMessage создан/переиспользован ДО
+  // вызова reply()/streamReply(), см. AssistantChatService), в отличие от
+  // tool_use.id от Anthropic, который при полном ретрае runReply (новый
+  // вызов Claude) каждый раз новый — не годится как ключ идемпотентности.
   private async runReply(
     text: string,
     history: ReplyHistoryItem[],
     user: AuthenticatedUser,
+    conversationId: string,
+    userMessageId: string,
     onEvent?: ReplyStreamListener,
     signal?: AbortSignal,
   ): Promise<AssistantReplyResult> {
@@ -182,7 +216,7 @@ export class AssistantReplyService {
       for (const block of toolUseBlocks) {
         onEvent?.({ type: 'tool-started', name: block.name });
         const toolStart = Date.now();
-        const result = await this.tools.execute(block.name, block.input, user);
+        const result = await this.tools.execute(block.name, block.input, user, conversationId, userMessageId);
         const durationMs = Date.now() - toolStart;
         toolCalls.push({ name: block.name, result, durationMs });
         onEvent?.({ type: 'tool-completed', name: block.name, result });
@@ -215,7 +249,7 @@ export class AssistantReplyService {
       {
         model: REPLY_MODEL,
         max_tokens: 1024,
-        system: SYSTEM_PROMPT,
+        system: `${SYSTEM_PROMPT}\n\n${buildDateContext()}`,
         tools,
         tool_choice: { type: 'auto' },
         messages,

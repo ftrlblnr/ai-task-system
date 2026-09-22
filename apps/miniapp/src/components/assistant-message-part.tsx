@@ -3,7 +3,7 @@
 import { useState, type AnchorHTMLAttributes } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Download, ExternalLink, File, FileSpreadsheet, FileText, Image as ImageIcon } from 'lucide-react';
+import { Copy, Download, ExternalLink, File, FileAudio, FileSpreadsheet, FileText, Image as ImageIcon } from 'lucide-react';
 import type {
   MessagePart as MessagePartData,
   MarkdownPartData,
@@ -97,6 +97,13 @@ function TaskCardView({ data }: { data: TaskCardData }) {
         {data.dueDate && <span>до {new Date(data.dueDate).toLocaleDateString('ru-RU')}</span>}
         {data.assignee && <span>{data.assignee.name}</span>}
       </div>
+      {data.source && (
+        <div className="assistant-card-source">
+          <FileAudio size={12} strokeWidth={2.2} />
+          <span>{data.source.meetingTitle}</span>
+          {data.source.timestamp && <span className="mono">{data.source.timestamp}</span>}
+        </div>
+      )}
       <button type="button" className="assistant-card-open" onClick={() => setOpen(true)}>
         <ExternalLink size={12} strokeWidth={2.2} style={{ marginRight: 4 }} />
         Открыть

@@ -218,6 +218,7 @@ export class TasksService {
         sourceMeetingId: dto.sourceMeetingId,
         sourceTimestamp: dto.sourceTimestamp,
         sourceContext: dto.sourceContext,
+        sourceSegmentId: dto.sourceSegmentId,
         aiConfidence: dto.aiConfidence,
         creatorId: creator.id,
         // Задачи из саммари встречи (владелец 09.09.2026) тоже идут через

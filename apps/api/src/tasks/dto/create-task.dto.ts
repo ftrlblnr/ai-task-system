@@ -56,6 +56,15 @@ export class CreateTaskDto {
   @IsString()
   sourceContext?: string;
 
+  // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — машиночитаемая
+  // ссылка на точный сегмент транскрипта, если задача поставлена из
+  // конкретной реплики (create_task_from_meeting), не из summary целиком.
+  // Тот же принцип защиты, что и у sourceMeetingId — сотрудник задачи из
+  // встречи не ставит вообще (см. TasksService.create).
+  @IsOptional()
+  @IsString()
+  sourceSegmentId?: string;
+
   // Заполняется при постановке задач из саммари встречи (владелец
   // 09.09.2026) — уверенность Claude в этом черновике (исполнитель/срок).
   // При обычном ручном создании не передаётся.

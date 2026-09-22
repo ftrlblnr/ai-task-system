@@ -136,6 +136,9 @@ model Conversation {
 
   messages      Message[]
   fileArtifacts FileArtifact[]
+  // Phase L — durable claim одного write-tool'а Assistant Core
+  // (create_task_from_meeting), см. TaskFromMeetingExecution ниже.
+  taskFromMeetingExecutions TaskFromMeetingExecution[]
 
   @@index([employeeId, updatedAt])
 }
@@ -392,6 +395,10 @@ model MeetingSegment {
   speakerEmployee   Employee? @relation(fields: [speakerEmployeeId], references: [id], onDelete: SetNull)
   text              String
 
+  // Phase L — задачи, поставленные Assistant'ом из этого конкретного
+  // сегмента (create_task_from_meeting), см. Task.sourceSegmentId.
+  sourcedTasks Task[]
+
   @@index([meetingId, order])
 }
 
@@ -559,6 +566,16 @@ model Task {
   sourceMeeting   Meeting? @relation(fields: [sourceMeetingId], references: [id])
   sourceTimestamp String?
   sourceContext   String?
+  // Phase L (Meeting → Task через Assistant-чат, create_task_from_meeting)
+  // — машиночитаемая ссылка на точный сегмент транскрипта, если задача
+  // поставлена из конкретной реплики (search_meeting_transcript), не из
+  // summary целиком. sourceTimestamp/sourceContext (выше) остаются
+  // человекочитаемым отображением — sourceSegmentId нужен отдельно для
+  // будущей точной навигации "открыть источник → подсветить сегмент".
+  // SetNull — тот же принцип, что и у sourceMeetingId: удаление
+  // встречи/сегмента не должно удалять уже поставленную задачу.
+  sourceSegmentId String?
+  sourceSegment   MeetingSegment? @relation(fields: [sourceSegmentId], references: [id], onDelete: SetNull)
 
   // Подзадачи (владелец 08.09.2026, по образцу Linear/Asana/Jira):
   // подзадача — обычная Task с parentTaskId, не отдельная лёгкая
@@ -658,6 +675,49 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([entityType, entityId])
+}
+
+enum TaskFromMeetingStatus {
+  // Застолблено, задача ещё не создана — тот же смысл, что у
+  // VoiceExecution до EXECUTING (см. её комментарий), но здесь claim и
+  // сама мутация происходят практически одновременно (создание одной
+  // Task — не многошаговый процесс), отдельного EXECUTING не заводим.
+  CLAIMED
+  COMPLETED
+  FAILED
+}
+
+// Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — durable
+// exactly-once claim для create_task_from_meeting, первого write-tool'а
+// Assistant Core (все остальные tools в assistant-tools.service.ts —
+// read-only). Тот же принцип, что VoiceExecution (см. её комментарий
+// выше): tool_use.id от Anthropic непригоден как ключ идемпотентности —
+// при полном ретрае runReply (например, процесс упал после того, как тул
+// уже создал Task, но до того, как финальное Message сохранилось) Claude
+// вызывается заново и выдаёт новые tool_use id на каждый вызов. dedupeKey
+// — детерминированный хэш от clientRequestId сообщения + meetingId +
+// segmentId + нормализованного title (см. AssistantToolsService) —
+// отличает "тот же логический вызов повторился" (ретрай) от "модель в
+// этом же ответе создаёт вторую, другую задачу" (разные meetingId/title
+// → разный ключ, не дедупится).
+//
+// Отдельная маленькая модель, не общий "ToolExecution"-фреймворк на все
+// будущие write-tools — второго write-tool'а пока не существует,
+// обобщать преждевременно (см. план Phase O).
+model TaskFromMeetingExecution {
+  id             String @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  dedupeKey String
+  status    TaskFromMeetingStatus @default(CLAIMED)
+  taskId    String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([conversationId, dedupeKey])
 }
 
 enum VoiceExecutionStatus {

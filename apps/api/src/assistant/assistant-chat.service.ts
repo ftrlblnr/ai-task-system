@@ -518,7 +518,7 @@ export class AssistantChatService {
     let toolNames: string[] = [];
     let toolExecutionMs = 0;
     try {
-      const result = await this.reply.reply(currentTurnText, history, user);
+      const result = await this.reply.reply(currentTurnText, history, user, conversationId, userMessage.id);
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
@@ -713,6 +713,8 @@ export class AssistantChatService {
         currentTurnText,
         history,
         user,
+        conversationId,
+        userMessage.id,
         (e) => {
           if (e.type === 'text-reset') {
             emit({ event: 'part.started', messageId: assistantMessage.id, partId: ASSISTANT_TEXT_PART_ID });

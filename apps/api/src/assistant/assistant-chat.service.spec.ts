@@ -129,7 +129,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
     const completedAssistantMessage = { id: 'm2', status: MessageStatus.COMPLETED, parts: [] };
 
     const events: unknown[] = [];
-    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _user, onEvent) => {
+    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _user, _conversationId, _userMessageId, onEvent) => {
       // К моменту вызова streamReply message.started/part.started уже должны
       // быть эмитированы вызывающим кодом.
       expect(events).toEqual([
@@ -272,7 +272,15 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
 
     await service.streamMessage(user(), 'c1', { text: 'привет' }, () => undefined, abortController.signal);
 
-    expect(streamReplySpy).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.anything(), expect.any(Function), abortController.signal);
+    expect(streamReplySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.anything(),
+      expect.any(String),
+      expect.any(String),
+      expect.any(Function),
+      abortController.signal,
+    );
   });
 });
 
@@ -491,7 +499,7 @@ describe('AssistantChatService — exactly-once execution под конкуре�
     const userMessage = { id: 'm1', createdAt: new Date(), parts: [] };
     const assistantMessage = { id: 'm2', status: MessageStatus.STREAMING, createdAt: new Date(), parts: [] };
     const completedMessage = { id: 'm2', status: MessageStatus.COMPLETED, createdAt: new Date(), parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: 'ответ' } }] };
-    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _u, onEvent) => {
+    const streamReplySpy = jest.fn().mockImplementation((_text, _history, _u, _conversationId, _userMessageId, onEvent) => {
       onEvent({ type: 'text-delta', delta: 'ответ' });
       return Promise.resolve({ text: 'ответ', toolCalls: [] });
     });

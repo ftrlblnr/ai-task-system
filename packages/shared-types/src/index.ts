@@ -494,6 +494,17 @@ export interface TaskCardData {
   status: string;
   dueDate: string | null;
   assignee: { id: string; name: string } | null;
+  // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — заполнено,
+  // только если задача поставлена через create_task_from_meeting (не для
+  // обычных get_tasks-карточек). timestamp/context — человекочитаемые,
+  // зеркалят Task.sourceTimestamp/sourceContext на этой конкретной задаче.
+  source?: {
+    meetingId: string;
+    meetingTitle: string;
+    meetingDate: string;
+    timestamp?: string | null;
+    context?: string | null;
+  } | null;
 }
 
 export interface EventCardData {

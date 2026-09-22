@@ -700,6 +700,26 @@ select {
   font-size: 0.8rem;
 }
 
+/* Stage 2, Phase O (Meeting → Task workflow) — задача, поставленная через
+   create_task_from_meeting, показывает происхождение (встреча + таймкод)
+   прямо в карточке ответа ассистента, тем же визуальным языком (иконка +
+   чип-таймкод), что уже есть у .source-card на Web (apps/web). Нейтральный
+   информационный тон, не warning-оттенок — это не проблема, а метаданные. */
+.assistant-card-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm, 8px);
+  background: var(--accent-soft);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+.assistant-card-source .mono {
+  margin-left: auto;
+  opacity: 0.85;
+}
+
 .assistant-error {
   align-self: flex-start;
   max-width: 92%;
