@@ -71,11 +71,68 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// Stage 2, Phase M (Web Assistant parity, 22.09.2026) — SSE-стриминг
+// (POST .../messages/stream). Логика самого разбора потока (data:-фреймы)
+// живёт на стороне вызывающего кода (assistant/page.tsx), здесь только
+// транспорт (тот же auth/401-паттерн, что request()/requestForm() выше),
+// отдаёт сырой Response для чтения потока. Порт apps/miniapp/src/lib/api.ts
+// один в один, кроме localStorage вместо sessionStorage — тот выбор был
+// специфичен для Telegram WebView, web уже везде использует localStorage
+// (см. request()/requestForm() выше).
+async function requestStream(path: string, body: unknown): Promise<Response> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const respBody = await res.json().catch(() => ({}));
+    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    throw new ApiError(respBody.message ?? `Ошибка запроса (${res.status})`, res.status);
+  }
+
+  return res;
+}
+
+// Скачивание сгенерированных/приложенных файлов (Phase M) — отдаёт Blob,
+// вызывающий код (assistant-message-part.tsx) сам делает временный
+// <a download> с URL.createObjectURL, тот же приём, что в apps/miniapp.
+async function downloadBlob(path: string): Promise<Blob> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    throw new ApiError(`Ошибка запроса (${res.status})`, res.status);
+  }
+
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
+  postStream: (path: string, body: unknown) => requestStream(path, body),
+  downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, LogOut } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, LogOut } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Avatar } from './avatar';
 
@@ -12,6 +12,12 @@ import { Avatar } from './avatar';
 // не требует условия на роль — та же логика, что в apps/miniapp/page.tsx.
 const NAV_ITEMS = [
   { href: '/tasks', label: 'Задачи', icon: KanbanSquare, ownerOnly: false },
+  // Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
+  // AI-чат с историей на сервере (GET/POST /assistant/conversations[...]),
+  // доступен всем, как задачи (видимость конкретных tools уже решает
+  // backend через buildTools(user)). Legacy /voice ниже намеренно не
+  // убран и не редиректится в этом раунде — отдельное решение по спеке.
+  { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false },
   { href: '/voice', label: 'Голос', icon: Mic, ownerOnly: false },
   { href: '/calendar', label: 'Календарь', icon: CalendarDays, ownerOnly: true },
   { href: '/meetings', label: 'Встречи', icon: FileAudio, ownerOnly: true },
