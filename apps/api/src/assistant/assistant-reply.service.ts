@@ -191,7 +191,7 @@ export class AssistantReplyService {
       ...history.map((h) => ({ role: h.role, content: h.text })),
       { role: 'user' as const, content: text },
     ];
-    const tools = this.tools.buildTools(user);
+    const tools = await this.tools.buildTools(user);
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
     // Hardening-раунд Phase O (22.09.2026, P0/P1 "stable tool
     // idempotency") — общий счётчик на ВЕСЬ вызов runReply, не сбрасывается

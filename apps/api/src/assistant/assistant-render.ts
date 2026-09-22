@@ -40,6 +40,7 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     ) {
       return { label: 'Не удалось проверить встречи' };
     }
+    if (result.tool === 'find_employee_by_competency') return { label: 'Не удалось найти сотрудников по компетенции' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -50,6 +51,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
   if (result.tool === 'search_meetings') return { label: `Искал встречи: найдено ${result.totalCount}` };
   if (result.tool === 'get_meeting') return { label: `Открыл встречу «${result.meeting.title}»` };
   if (result.tool === 'search_meeting_transcript') return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
+  // Stage 2, Phase P — find_employee_by_competency, единственный оставшийся
+  // read-only-инструмент этого этапа.
+  if (result.tool === 'find_employee_by_competency') return { label: `Нашёл сотрудников по компетенции: ${result.employees.length}` };
   // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
   return { label: `Поставил задачу «${result.task.title}»` };
 }

@@ -105,7 +105,8 @@ type KnownToolName =
   | 'search_meetings'
   | 'get_meeting'
   | 'search_meeting_transcript'
-  | 'create_task_from_meeting';
+  | 'create_task_from_meeting'
+  | 'find_employee_by_competency';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -115,6 +116,7 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'get_meeting') return 'get_meeting';
   if (name === 'search_meeting_transcript') return 'search_meeting_transcript';
   if (name === 'create_task_from_meeting') return 'create_task_from_meeting';
+  if (name === 'find_employee_by_competency') return 'find_employee_by_competency';
   return 'get_tasks';
 }
 
@@ -134,6 +136,7 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   get_meeting: 'MEETING_LOOKUP_FAILED: не удалось получить встречу',
   search_meeting_transcript: 'MEETING_LOOKUP_FAILED: не удалось найти в транскриптах',
   create_task_from_meeting: 'TASK_CREATE_FAILED: не удалось создать задачу',
+  find_employee_by_competency: 'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -181,6 +184,7 @@ export type ToolExecutionResult =
   | { tool: 'get_meeting'; meeting: MeetingDetailData }
   | { tool: 'search_meeting_transcript'; items: MeetingTranscriptMatchData[]; totalCount: number }
   | { tool: 'create_task_from_meeting'; task: TaskCardData }
+  | { tool: 'find_employee_by_competency'; competencyId: string; employees: { id: string; fullName: string }[] }
   | { tool: KnownToolName; error: true; message: string };
 
 // Инструменты, которые Assistant Core (assistant-reply.service.ts) может
@@ -207,7 +211,15 @@ export class AssistantToolsService {
     private readonly employeeResolver: EmployeeResolverService,
   ) {}
 
-  buildTools(user: AuthenticatedUser): Anthropic.Tool[] {
+  // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
+  // async ради find_employee_by_competency ниже: её схема должна нести
+  // ЗАКРЫТЫЙ enum реальных competencyId (тот же принцип, что уже
+  // применён в meeting-task-extraction.service.ts:43 для assigneeId —
+  // модель не может сослаться на несуществующую запись), а список
+  // компетенций компании — не статические данные, только из БД.
+  // Единственный реальный production-вызывающий —
+  // AssistantReplyService.runReply() (уже await'ит результат).
+  async buildTools(user: AuthenticatedUser): Promise<Anthropic.Tool[]> {
     const tools: Anthropic.Tool[] = [
       {
         name: 'get_tasks',
@@ -300,7 +312,7 @@ export class AssistantToolsService {
       tools.push({
         name: 'create_task_from_meeting',
         description:
-          'Поставить НОВУЮ задачу на основании конкретного пункта/реплики встречи — только когда пользователь ЯВНО просит создать/поставить задачу ("создай из второго пункта задачу...", "поставь ему задачу..."). Не вызывай этот инструмент просто потому, что при обсуждении встречи прозвучал потенциальный action item — только по прямой команде. meetingId обязателен (id встречи, обычно уже известен из предыдущих search_meetings/get_meeting/search_meeting_transcript в этом разговоре). segmentId — id конкретной реплики из search_meeting_transcript, если задача поставлена по конкретному сказанному, необязателен (можно не указывать, если источник — общее саммари встречи). assigneeRawText — буквальный текст имени/обращения, КАК оно прозвучало ("Жандосу", "Амиру"), НЕ приводи к именительному падежу — сервер сам сопоставит с сотрудником и переспросит, если неоднозначно; оставь пустым, если исполнитель не назван. sourceContext — короткая (1-2 предложения) цитата или пересказ ПОЧЕМУ возникла эта задача, безопасно показать исполнителю без доступа к самой встрече.',
+          'Поставить НОВУЮ задачу на основании конкретного пункта/реплики встречи — только когда пользователь ЯВНО просит создать/поставить задачу ("создай из второго пункта задачу...", "поставь ему задачу..."). Не вызывай этот инструмент просто потому, что при обсуждении встречи прозвучал потенциальный action item — только по прямой команде. meetingId обязателен (id встречи, обычно уже известен из предыдущих search_meetings/get_meeting/search_meeting_transcript в этом разговоре). segmentId — id конкретной реплики из search_meeting_transcript, если задача поставлена по конкретному сказанному, необязателен (можно не указывать, если источник — общее саммари встречи). assigneeRawText — буквальный текст имени/обращения, КАК оно прозвучало ("Жандосу", "Амиру"), НЕ приводи к именительному падежу — сервер сам сопоставит с сотрудником и переспросит, если неоднозначно; оставь пустым, если исполнитель не назван. Если пользователь называет исполнителя НЕ по имени, а по роли/обязанности ("тому, кто отвечает за X", "юристу", "бухгалтеру") — СНАЧАЛА вызови find_employee_by_competency, чтобы найти реального сотрудника, и только потом подставь сюда его настоящее полное имя. sourceContext — короткая (1-2 предложения) цитата или пересказ ПОЧЕМУ возникла эта задача, безопасно показать исполнителю без доступа к самой встрече.',
         input_schema: {
           type: 'object',
           properties: {
@@ -315,6 +327,28 @@ export class AssistantToolsService {
           required: ['meetingId', 'title'],
         },
       });
+
+      // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026)
+      // — Competency/EmployeeCompetency уже существовали в схеме (админка
+      // сотрудников), но ничем не читались для подсказки исполнителя.
+      // Закрытый enum ниже — модель не может сослаться на несуществующую
+      // компетенцию; сам подбор сотрудника (0/1/много) делает backend в
+      // execute(), не модель (раздел 7 спеки: LLM — не security boundary).
+      const competencies = await this.prisma.competency.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true, description: true } });
+      if (competencies.length > 0) {
+        tools.push({
+          name: 'find_employee_by_competency',
+          description:
+            `Найти сотрудников, отвечающих за определённую область/компетенцию — используй, когда пользователь называет исполнителя НЕ по имени, а по роли/обязанности ("тому, кто отвечает за юридические вопросы", "бухгалтеру", "ответственному за закупки"). Список компетенций компании (id — name — description):\n` +
+            competencies.map((c) => `${c.id} — ${c.name} — ${c.description}`).join('\n') +
+            '\nЕсли сотрудников с этой компетенцией не нашлось — честно скажи пользователю, не пытайся поставить задачу без исполнителя. Если нашлось несколько — перечисли их пользователю и спроси, кого выбрать, НЕ угадывай. Если нашёлся ровно один — можно сразу продолжить (например, вызвать create_task_from_meeting с его настоящим полным именем в assigneeRawText).',
+          input_schema: {
+            type: 'object',
+            properties: { competencyId: { type: 'string', enum: competencies.map((c) => c.id) } },
+            required: ['competencyId'],
+          },
+        });
+      }
     }
 
     return tools;
@@ -391,6 +425,10 @@ export class AssistantToolsService {
           userMessageId,
           toolCallIndex,
         );
+      }
+      if (name === 'find_employee_by_competency') {
+        const competencyId = (input as { competencyId?: unknown } | null)?.competencyId;
+        return await this.findEmployeeByCompetency(typeof competencyId === 'string' ? competencyId : '');
       }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
@@ -755,5 +793,26 @@ export class AssistantToolsService {
         context: rawSourceContext?.trim().slice(0, 800) || null,
       },
     };
+  }
+
+  // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
+  // Competency/EmployeeCompetency уже существовали (админка сотрудников),
+  // но ничем не читались для подсказки исполнителя. competencyId уже
+  // провалидирован закрытым enum'ом схемы тула (buildTools) — модель не
+  // могла подставить несуществующий id, но пустая строка (typeof-фолбэк
+  // в execute()) всё равно защищена ниже. Backend только ЧЕСТНО отдаёт
+  // список 0/1/много — раздел 7 спеки: LLM сам решает, что делать с
+  // результатом (продолжить/переспросить/сказать, что никто не назначен),
+  // не подбирает вместо модели.
+  private async findEmployeeByCompetency(competencyId: string): Promise<ToolExecutionResult> {
+    if (!competencyId) {
+      return { tool: 'find_employee_by_competency', error: true, message: 'INVALID_INPUT: не указана компетенция' };
+    }
+    const rows = await this.prisma.employeeCompetency.findMany({
+      where: { competencyId, employee: { status: 'ACTIVE' } },
+      select: { employee: { select: { id: true, fullName: true } } },
+    });
+    const employees = rows.map((r) => r.employee);
+    return { tool: 'find_employee_by_competency', competencyId, employees };
   }
 }

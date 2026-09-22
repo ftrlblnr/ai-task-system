@@ -15,15 +15,16 @@ function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
 }
 
 describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уровне видимости инструмента, не постфактум)', () => {
-  it('сотруднику предлагается get_tasks и export_tasks_xlsx — календарь закрыт на OWNER', () => {
+  it('сотруднику предлагается get_tasks и export_tasks_xlsx — календарь закрыт на OWNER', async () => {
     const service = new AssistantToolsService({} as any, {} as any, {} as any);
-    const names = service.buildTools(user()).map((t) => t.name);
+    const names = (await service.buildTools(user())).map((t) => t.name);
     expect(names).toEqual(['get_tasks', 'export_tasks_xlsx']);
   });
 
-  it('руководителю дополнительно предлагаются календарь и инструменты встреч (Stage 2, Phase K)', () => {
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, {} as any);
-    const names = service.buildTools(user({ role: Role.OWNER })).map((t) => t.name);
+  it('руководителю дополнительно предлагаются календарь и инструменты встреч (Stage 2, Phase K), без компетенций в компании — find_employee_by_competency не предлагается', async () => {
+    const prisma = { competency: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const names = (await service.buildTools(user({ role: Role.OWNER }))).map((t) => t.name);
     expect(names).toEqual([
       'get_tasks',
       'export_tasks_xlsx',
@@ -34,6 +35,32 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       'search_meeting_transcript',
       'create_task_from_meeting',
     ]);
+  });
+
+  // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026).
+  it('руководителю, если в компании настроены компетенции, предлагается find_employee_by_competency с закрытым enum реальных id', async () => {
+    const competencies = [
+      { id: 'c1', name: 'Юридические вопросы', description: 'Договоры, споры' },
+      { id: 'c2', name: 'Бухгалтерия', description: 'Счета, отчётность' },
+    ];
+    const prisma = { competency: { findMany: jest.fn().mockResolvedValue(competencies) } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const tools = await service.buildTools(user({ role: Role.OWNER }));
+    const tool = tools.find((t) => t.name === 'find_employee_by_competency');
+
+    expect(tool).toBeDefined();
+    expect((tool!.input_schema.properties as any).competencyId.enum).toEqual(['c1', 'c2']);
+    expect(tool!.description).toContain('Юридические вопросы');
+    expect(tool!.description).toContain('Бухгалтерия');
+  });
+
+  it('сотруднику (не OWNER) find_employee_by_competency не предлагается, даже если компетенции есть', async () => {
+    const prisma = { competency: { findMany: jest.fn() } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const names = (await service.buildTools(user())).map((t) => t.name);
+
+    expect(names).not.toContain('find_employee_by_competency');
+    expect(prisma.competency.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -675,5 +702,68 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
     expect(result).toMatchObject({ error: true });
     expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+});
+
+// Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
+// backend только ЧЕСТНО отдаёт список сотрудников с данной компетенцией
+// (0/1/много), ничего не выбирает сам — раздел 7 спеки: LLM не security
+// boundary, поэтому финальный assigneeId всегда идёт через отдельный,
+// уже захардененный create_task_from_meeting → EmployeeResolverService.
+describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Phase P)', () => {
+  const owner = user({ id: 'owner1', role: Role.OWNER });
+
+  function makeDeps(employeeCompetencyFindMany: jest.Mock) {
+    const prisma = { employeeCompetency: { findMany: employeeCompetencyFindMany } };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    return { service, prisma };
+  }
+
+  it('ни одного активного сотрудника с этой компетенцией — пустой список, не ошибка', async () => {
+    const { service, prisma } = makeDeps(jest.fn().mockResolvedValue([]));
+
+    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+
+    expect(result).toEqual({ tool: 'find_employee_by_competency', competencyId: 'c1', employees: [] });
+    expect(prisma.employeeCompetency.findMany).toHaveBeenCalledWith({
+      where: { competencyId: 'c1', employee: { status: 'ACTIVE' } },
+      select: { employee: { select: { id: true, fullName: true } } },
+    });
+  });
+
+  it('ровно один сотрудник — список из одного', async () => {
+    const { service } = makeDeps(jest.fn().mockResolvedValue([{ employee: { id: 'e1', fullName: 'Жандос Ахметов' } }]));
+
+    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+
+    expect(result).toEqual({ tool: 'find_employee_by_competency', competencyId: 'c1', employees: [{ id: 'e1', fullName: 'Жандос Ахметов' }] });
+  });
+
+  it('несколько сотрудников — полный список, backend НЕ выбирает за модель', async () => {
+    const { service } = makeDeps(
+      jest.fn().mockResolvedValue([
+        { employee: { id: 'e1', fullName: 'Жандос Ахметов' } },
+        { employee: { id: 'e2', fullName: 'Амир Жаксылыков' } },
+      ]),
+    );
+
+    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+
+    expect(result).toMatchObject({
+      employees: [
+        { id: 'e1', fullName: 'Жандос Ахметов' },
+        { id: 'e2', fullName: 'Амир Жаксылыков' },
+      ],
+    });
+  });
+
+  it('competencyId не передан — безопасная ошибка, БД не запрашивается', async () => {
+    const { service, prisma } = makeDeps(jest.fn());
+
+    const result = await service.execute('find_employee_by_competency', {}, owner);
+
+    expect(result).toMatchObject({ tool: 'find_employee_by_competency', error: true });
+    expect('message' in result && result.message).toContain('INVALID_INPUT');
+    expect(prisma.employeeCompetency.findMany).not.toHaveBeenCalled();
   });
 });
