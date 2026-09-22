@@ -101,3 +101,31 @@ describe('MeetingsService.updateSpeakers — сопоставление спик
     expect(employeeResolver.resolve).not.toHaveBeenCalled();
   });
 });
+
+// РЕГРЕССИЯ находки №4 седьмого внешнего аудита (Stage 2, Phase N, "Plaud
+// summary freshness") — раньше latestSummary не существовал вообще,
+// извлечение задач всегда смотрело на замороженную rawSummary, даже если
+// Plaud с тех пор обновил содержимое встречи.
+describe('MeetingsService.extractTasks — источник саммари (Stage 2, Phase N)', () => {
+  it('без enhancedSummary, но с latestSummary — извлечение задач использует latestSummary, не rawSummary', async () => {
+    const prisma = {
+      meeting: {
+        findUnique: jest.fn().mockResolvedValue({
+          title: 'Встреча',
+          meetingDate: new Date('2026-09-01'),
+          rawSummary: 'исходное',
+          latestSummary: 'обновлённое с Plaud',
+          enhancedSummary: null,
+        }),
+      },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const extraction = { extract: jest.fn().mockResolvedValue([]) };
+    const audit = { log: jest.fn() };
+    const service = new MeetingsService(prisma as any, audit as any, {} as any, extraction as any, {} as any, {} as any);
+
+    await service.extractTasks('m1', 'viewer1');
+
+    expect(extraction.extract).toHaveBeenCalledWith('обновлённое с Plaud', 'Встреча', expect.any(String), []);
+  });
+});

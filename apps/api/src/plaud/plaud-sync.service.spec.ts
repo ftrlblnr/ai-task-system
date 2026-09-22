@@ -51,7 +51,7 @@ describe('PlaudSyncService.pullChanges', () => {
     await service.pullChanges('emp1');
 
     expect(prisma.meeting.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ title: 'Встреча', rawSummary: 'Саммари встречи', plaudRecordingId: 'p1' }) }),
+      expect.objectContaining({ data: expect.objectContaining({ title: 'Встреча', rawSummary: 'Саммари встречи', latestSummary: 'Саммари встречи', plaudRecordingId: 'p1' }) }),
     );
     expect(prisma.plaudSyncItem.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ update: expect.objectContaining({ status: PlaudSyncStatus.SYNCED, meetingId: 'm1' }) }),
@@ -116,7 +116,12 @@ describe('PlaudSyncService.pullChanges', () => {
   // обновлялась при изменении содержимого на стороне Plaud. rawSummary
   // намеренно НЕ обновляется (см. комментарий в schema.prisma/сервисе —
   // раздел 8.1 ТЗ требует её неизменности), обновляется только title.
-  it('РЕГРЕССИЯ бага #2 — изменившееся название синхронизированной записи обновляется, rawSummary НЕ трогается', async () => {
+  //
+  // РЕГРЕССИЯ находки №4 седьмого внешнего аудита (Stage 2, Phase N,
+  // "Plaud summary freshness") — раньше новое содержимое здесь просто
+  // отбрасывалось; теперь latestSummary отражает то, что Plaud реально
+  // отдаёт сейчас, не дожидаясь ничего дополнительного.
+  it('РЕГРЕССИЯ бага #2 / находки №4 седьмого аудита — изменившееся название и latestSummary обновляются, rawSummary НЕ трогается', async () => {
     const tracking = {
       plaudRecordingId: 'p1',
       status: PlaudSyncStatus.SYNCED,
@@ -143,7 +148,7 @@ describe('PlaudSyncService.pullChanges', () => {
 
     await service.pullChanges('emp1');
 
-    expect(prisma.meeting.update).toHaveBeenCalledWith({ where: { id: 'm1' }, data: { title: 'Новое название встречи' } });
+    expect(prisma.meeting.update).toHaveBeenCalledWith({ where: { id: 'm1' }, data: { title: 'Новое название встречи', latestSummary: 'Саммари встречи' } });
     expect(prisma.meeting.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ rawSummary: expect.anything() }) }));
   });
 
@@ -236,7 +241,7 @@ describe('PlaudSyncService.pullChanges', () => {
 
     await service.pullChanges('emp1');
 
-    expect(prisma.meeting.update).toHaveBeenCalledWith({ where: { id: 'm-legacy' }, data: { title: 'Обновлённое название' } });
+    expect(prisma.meeting.update).toHaveBeenCalledWith({ where: { id: 'm-legacy' }, data: { title: 'Обновлённое название', latestSummary: 'Саммари' } });
     expect(prisma.meeting.create).not.toHaveBeenCalled();
     expect(prisma.plaudSyncItem.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ update: expect.objectContaining({ meetingId: 'm-legacy', status: PlaudSyncStatus.SYNCED }) }),

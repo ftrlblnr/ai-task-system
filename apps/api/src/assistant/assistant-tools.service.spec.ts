@@ -171,7 +171,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
     expect(prismaStub.meeting.findMany).not.toHaveBeenCalled();
   });
 
-  it('search_meetings — ищет по title/rawSummary/enhancedSummary без учёта регистра', async () => {
+  it('search_meetings — ищет по title/rawSummary/latestSummary/enhancedSummary без учёта регистра', async () => {
     const found = [{ id: 'm1', title: 'Встреча про завод', meetingDate: new Date('2026-09-01') }];
     const prismaStub = { meeting: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
     const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
@@ -185,6 +185,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
           OR: [
             { title: { contains: 'завод', mode: 'insensitive' } },
             { rawSummary: { contains: 'завод', mode: 'insensitive' } },
+            { latestSummary: { contains: 'завод', mode: 'insensitive' } },
             { enhancedSummary: { contains: 'завод', mode: 'insensitive' } },
           ],
         },
@@ -211,6 +212,20 @@ describe('AssistantToolsService.execute — инструменты встреч 
     const result = await service.execute('get_meeting', { meetingId: 'm1' }, user({ role: Role.OWNER }));
 
     expect(result).toMatchObject({ meeting: { summary: 'сырое' } });
+  });
+
+  // РЕГРЕССИЯ находки №4 седьмого внешнего аудита (Stage 2, Phase N,
+  // "Plaud summary freshness") — раньше latestSummary не существовал
+  // вообще, Assistant всегда отвечал по замороженной rawSummary, даже
+  // если Plaud обновил содержимое встречи.
+  it('get_meeting — без enhancedSummary, но с latestSummary — предпочитает latestSummary над rawSummary', async () => {
+    const meeting = { id: 'm1', title: 'Встреча', meetingDate: new Date('2026-09-01'), rawSummary: 'исходное', latestSummary: 'обновлённое с Plaud', enhancedSummary: null };
+    const meetingsStub = { findOne: jest.fn().mockResolvedValue(meeting) };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+
+    const result = await service.execute('get_meeting', { meetingId: 'm1' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ meeting: { summary: 'обновлённое с Plaud' } });
   });
 
   it('get_meeting — MeetingsService.findOne бросает NotFoundException — безопасный error, не 404-текст наружу', async () => {

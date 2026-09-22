@@ -527,7 +527,7 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
     expect(tasks.remove).toHaveBeenCalledWith('t1', expect.objectContaining({ id: 'u1' }));
-    expect(result).toEqual({ ok: true, error: null });
+    expect(result).toEqual({ ok: true, error: null, warning: null });
     expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, { where: { id: 'undo-1', status: 'AVAILABLE' }, data: { status: 'CLAIMED' } });
     expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'COMPLETED', consumedAt: expect.any(Date) } });
     expect(prisma.message.create).toHaveBeenCalledWith(
@@ -563,7 +563,7 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(result).toEqual({ ok: false, error: 'tasks db temporarily down' });
+    expect(result).toEqual({ ok: false, error: 'tasks db temporarily down', warning: null });
     expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, { where: { id: 'undo-1', status: 'AVAILABLE' }, data: { status: 'CLAIMED' } });
     expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'AVAILABLE' } });
   });
@@ -581,7 +581,7 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(result).toEqual({ ok: true, error: null });
+    expect(result).toEqual({ ok: true, error: null, warning: null });
     expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'COMPLETED', consumedAt: expect.any(Date) } });
   });
 
@@ -658,6 +658,44 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
     expect(events.update).not.toHaveBeenCalled(); // previous пуст — нечего обновлять полями
   });
 
+  // РЕГРЕССИЯ находки №2 седьмого внешнего аудита (Stage 2, Phase N) —
+  // раньше сбой отката ОДНОГО участника логировался, но запись всё равно
+  // помечалась COMPLETED и клиент получал {ok:true} без единого следа
+  // проблемы — пользователь думал, что откат прошёл полностью.
+  it('event update — сбой отката одного участника → status=PARTIAL, ok:true с warning, а не COMPLETED без следа', async () => {
+    const record = undoRecord({
+      kind: 'EVENT',
+      action: 'UPDATE',
+      entityId: 'e1',
+      previous: {},
+      addedParticipantIds: ['emp1', 'emp2'],
+      removedParticipantIds: [],
+    });
+    const events = {
+      update: jest.fn().mockResolvedValue({}),
+      addParticipant: jest.fn().mockResolvedValue(undefined),
+      removeParticipant: jest
+        .fn()
+        .mockImplementationOnce(() => Promise.resolve(undefined))
+        .mockImplementationOnce(() => Promise.reject(new Error('сотрудник уже удалён'))),
+    };
+    const prisma = undoPrisma(record);
+    const assistantChat = makeAssistantChat();
+    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, {} as any, events as any, assistantChat as any) as any;
+
+    const result = await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.OWNER }));
+
+    expect(result.ok).toBe(true);
+    expect(result.warning).toContain('emp2');
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 'undo-1' },
+      data: { status: 'PARTIAL', consumedAt: expect.any(Date) },
+    });
+    expect(prisma.message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: expect.stringContaining('Отменено частично') } }] } }) }),
+    );
+  });
+
   it('ошибка отката — ok=false, безопасный текст (toErrorMessage), тоже логируется', async () => {
     const record = undoRecord();
     const tasks = { remove: jest.fn().mockRejectedValue(new Error('Удалить задачу может только её постановщик или руководитель')) };
@@ -667,7 +705,7 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(result).toEqual({ ok: false, error: 'Удалить задачу может только её постановщик или руководитель' });
+    expect(result).toEqual({ ok: false, error: 'Удалить задачу может только её постановщик или руководитель', warning: null });
     expect(prisma.message.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -771,7 +809,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     const prisma = {
       voiceExecution: {
         create: jest.fn().mockRejectedValue(p2002()),
-        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.FAILED }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.FAILED, updatedAt: new Date() }),
         update: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }),
       },
       meeting: { findUnique: jest.fn() },
@@ -812,7 +850,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       const prisma = {
         voiceExecution: {
           create: jest.fn().mockRejectedValue(p2002()),
-          findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status }),
+          findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status, updatedAt: new Date() }),
         },
       };
       const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, tasksSpy as any, {} as any, assistantChat as any);
@@ -824,6 +862,83 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     },
   );
 
+  // РЕГРЕССИЯ находки №3 седьмого внешнего аудита (Stage 2, Phase N,
+  // "stale VoiceExecution recovery") — раньше RECEIVED/PROCESSING отказывали
+  // в retry НАВСЕГДА, без учёта давности: крашнувшийся процесс (упал ДО
+  // того, как runParse успел дойти даже до FAILED) оставлял строку в этом
+  // статусе бесконечно, и клиент получал generic-отказ при каждой попытке.
+  it.each([VoiceExecutionStatus.RECEIVED, VoiceExecutionStatus.PROCESSING])(
+    '%s, но давно устарела (обновлена > STALE_VOICE_EXECUTION_MS назад) — reclaim, retry реально запускает Whisper/Claude',
+    async (status) => {
+      const { whisperSpy, extractSpy } = baseParseMocks();
+      const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+      const staleUpdatedAt = new Date(Date.now() - 5 * 60 * 1000); // 5 минут назад
+      const prisma = {
+        voiceExecution: {
+          create: jest.fn().mockRejectedValue(p2002()),
+          findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status, updatedAt: staleUpdatedAt }),
+          update: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }),
+        },
+        meeting: { findUnique: jest.fn() },
+        employee: { findMany: jest.fn().mockResolvedValue([]) },
+        message: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue([]),
+          create: jest.fn().mockResolvedValue({ id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] }),
+        },
+        conversation: { update: jest.fn() },
+      };
+      const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, { log: jest.fn() } as any, { findAll: jest.fn().mockResolvedValue([]) } as any, {} as any, assistantChat as any, {} as any, { getPrompt: jest.fn().mockResolvedValue('') } as any);
+      const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+      await service.parse(audio, makeUser(), undefined, 'req-1');
+
+      expect(prisma.voiceExecution.update).toHaveBeenCalledWith({ where: { id: 'exec-1' }, data: { status: VoiceExecutionStatus.RECEIVED, errorMessage: null } });
+      expect(whisperSpy).toHaveBeenCalledTimes(1);
+      expect(extractSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([VoiceExecutionStatus.RECEIVED, VoiceExecutionStatus.PROCESSING])(
+    '%s, свежая (updatedAt только что) — по-прежнему отказ, не reclaim',
+    async (status) => {
+      const { whisperSpy, extractSpy } = baseParseMocks();
+      const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+      const tasksSpy = { findAll: jest.fn() };
+      const prisma = {
+        voiceExecution: {
+          create: jest.fn().mockRejectedValue(p2002()),
+          findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status, updatedAt: new Date() }),
+        },
+      };
+      const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, tasksSpy as any, {} as any, assistantChat as any);
+      const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+      await expect(service.parse(audio, makeUser(), undefined, 'req-1')).rejects.toThrow(/ещё выполняется|прервалась/);
+      expect(whisperSpy).not.toHaveBeenCalled();
+      expect(tasksSpy.findAll).not.toHaveBeenCalled();
+    },
+  );
+
+  it('EXECUTING, но давно устарела — НЕ reclaim (мутация могла уже случиться, автоматический retry небезопасен независимо от давности)', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const tasksSpy = { findAll: jest.fn() };
+    const staleUpdatedAt = new Date(Date.now() - 60 * 60 * 1000); // час назад
+    const prisma = {
+      voiceExecution: {
+        create: jest.fn().mockRejectedValue(p2002()),
+        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.EXECUTING, updatedAt: staleUpdatedAt }),
+      },
+    };
+    const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, {} as any, tasksSpy as any, {} as any, assistantChat as any);
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    await expect(service.parse(audio, makeUser(), undefined, 'req-1')).rejects.toThrow(/ещё выполняется|прервалась/);
+    expect(whisperSpy).not.toHaveBeenCalled();
+    expect(tasksSpy.findAll).not.toHaveBeenCalled();
+  });
+
   // Явно НЕ полагается на inFlightParseRequests (свежий VoiceService — Map
   // пустой, ровно как после рестарта процесса) — единственный источник
   // "не трогать бизнес-логику повторно" здесь: durable-строка VoiceExecution.
@@ -834,7 +949,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     const prisma = {
       voiceExecution: {
         create: jest.fn().mockRejectedValue(p2002()),
-        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.EXECUTING }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'exec-1', conversationId: 'c1', status: VoiceExecutionStatus.EXECUTING, updatedAt: new Date() }),
       },
     };
     // Новый инстанс — не переиспользует promise/Map предыдущего теста,

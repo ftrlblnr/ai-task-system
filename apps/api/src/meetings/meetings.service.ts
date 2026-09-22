@@ -39,6 +39,11 @@ export class MeetingsService {
       select: {
         ...LIST_SELECT,
         rawSummary: true,
+        // Находка №4 седьмого внешнего аудита (Stage 2, Phase N, "Plaud
+        // summary freshness") — то, что Plaud реально отдаёт СЕЙЧАС,
+        // независимо от замороженной rawSummary; используется ниже
+        // потребителями саммари (Assistant/извлечение задач).
+        latestSummary: true,
         enhancedSummary: true,
         speakerNames: true,
         audioUrl: true,
@@ -131,7 +136,7 @@ export class MeetingsService {
   async extractTasks(id: string, viewerId: string) {
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
-      select: { title: true, meetingDate: true, rawSummary: true, enhancedSummary: true },
+      select: { title: true, meetingDate: true, rawSummary: true, latestSummary: true, enhancedSummary: true },
     });
     if (!meeting) throw new NotFoundException('Встреча не найдена');
 
@@ -140,7 +145,10 @@ export class MeetingsService {
       select: { id: true, fullName: true },
     });
 
-    const summary = meeting.enhancedSummary ?? meeting.rawSummary;
+    // Находка №4 седьмого внешнего аудита (Stage 2, Phase N) — извлечение
+    // задач должно смотреть на самую свежую версию саммари, не на
+    // замороженную rawSummary, если Plaud её с тех пор обновил.
+    const summary = meeting.enhancedSummary ?? meeting.latestSummary ?? meeting.rawSummary;
     const drafts = await this.extraction.extract(
       summary,
       meeting.title,

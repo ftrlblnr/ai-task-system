@@ -129,6 +129,7 @@ function EventCardView({ data }: { data: EventCardData }) {
           ))}
         </div>
       )}
+      {data.warning && <div className="assistant-card-warning">⚠ {data.warning}</div>}
     </div>
   );
 }

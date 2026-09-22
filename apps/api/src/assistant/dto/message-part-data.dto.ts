@@ -26,6 +26,8 @@ export interface EventCardData {
   endAt: string;
   location: string | null;
   participants: { id: string; name: string }[];
+  // Зеркало packages/shared-types — подробные комментарии там.
+  warning?: string | null;
 }
 
 export interface ToolActivityData {

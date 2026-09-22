@@ -70,7 +70,16 @@ export function buildVoiceAssistantParts(execResults: ExecutedVoiceAction[], cla
     if (result.type === 'task_action') {
       parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(toTaskCardData(entity as TaskCardEntity)) });
     } else {
-      parts.push({ type: MessagePartType.EVENT_CARD, order: order++, data: toJson(toEventCardData(entity as EventCardEntity)) });
+      // Находка №1 седьмого внешнего аудита (Stage 2, Phase N) — result.warning
+      // (частичный сбой addParticipant/removeParticipant, см. VoiceService.applyParticipants)
+      // раньше терялся здесь: карточка строилась только из entity, без
+      // result. Подмешиваем в те же данные, что уходят в MessagePart.data —
+      // так warning переживает перезагрузку истории, не только момент ответа.
+      parts.push({
+        type: MessagePartType.EVENT_CARD,
+        order: order++,
+        data: toJson({ ...toEventCardData(entity as EventCardEntity), warning: result.warning }),
+      });
     }
   }
 

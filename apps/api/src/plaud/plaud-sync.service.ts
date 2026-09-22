@@ -168,12 +168,16 @@ export class PlaudSyncService {
       if (existingMeetingId) {
         // rawSummary НЕ обновляется — см. комментарий класса и сам
         // комментарий у Meeting.rawSummary в schema.prisma (раздел 8.1 ТЗ,
-        // должна оставаться исходной версией для сверки).
-        await this.prisma.meeting.update({ where: { id: existingMeetingId }, data: { title } });
+        // должна оставаться исходной версией для сверки). latestSummary —
+        // находка №4 седьмого внешнего аудита (Stage 2, Phase N,
+        // "Plaud summary freshness") — раньше новое содержимое здесь
+        // просто отбрасывалось после обновления title; теперь сохраняем
+        // его отдельно, не трогая замороженную rawSummary.
+        await this.prisma.meeting.update({ where: { id: existingMeetingId }, data: { title, latestSummary: rawSummary } });
         meetingId = existingMeetingId;
       } else {
         const created = await this.prisma.meeting.create({
-          data: { title, meetingDate: new Date(createdAtIso), plaudRecordingId, rawSummary, createdById: employeeId },
+          data: { title, meetingDate: new Date(createdAtIso), plaudRecordingId, rawSummary, latestSummary: rawSummary, createdById: employeeId },
         });
         meetingId = created.id;
       }

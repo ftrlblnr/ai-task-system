@@ -301,7 +301,12 @@ function VoiceView() {
       return;
     }
 
-    const text = item.ok ? describeOutcome(item.draft) : `Не получилось выполнить: ${item.error}`;
+    // Находка №1 седьмого внешнего аудита (Stage 2, Phase N) — эта страница
+    // не использует EventCard, только текст, поэтому предупреждение о
+    // частичном сбое участников (item.warning) дописываем прямо к тексту
+    // результата, иначе оно осталось бы видно только в сыром ответе API.
+    const warningSuffix = item.ok && item.type === 'event_action' && item.warning ? ` ⚠ ${item.warning}` : '';
+    const text = item.ok ? describeOutcome(item.draft) + warningSuffix : `Не получилось выполнить: ${item.error}`;
     const undo = item.ok ? buildUndo(item) : null;
     // Тот же гейт, что раньше был неявным (m.undo.kind === 'task' внутри
     // {m.undo && (...)}): "Открыть" имеет смысл только когда есть и что
@@ -344,7 +349,14 @@ function VoiceView() {
     try {
       const response = await api.post<VoiceUndoResponse>('/voice/undo', undo);
       if (response.ok) {
-        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: 'Отменено.' });
+        // Находка №2 седьмого внешнего аудита (Stage 2, Phase N) — сервер
+        // теперь может откатить не всё (например, снять участника не
+        // получилось) и всё равно вернуть ok:true с warning — эта страница
+        // сама строит текст (в отличие от Mini App, читающего серверный
+        // лог), поэтому должна сама учесть warning, иначе пользователь
+        // увидел бы обычное "Отменено." при частичном откате.
+        const text = response.warning ? `Отменено частично. ${response.warning}` : 'Отменено.';
+        pushMessage({ id: crypto.randomUUID(), role: 'assistant', text });
       } else {
         pushMessage({ id: crypto.randomUUID(), role: 'assistant', text: `Не получилось отменить: ${response.error}`, status: 'error' });
       }

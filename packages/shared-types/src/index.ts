@@ -459,6 +459,11 @@ export interface VoiceUndoInput {
 export interface VoiceUndoResponse {
   ok: boolean;
   error: string | null;
+  // Stage 2, Phase N (внешний аудит 21.09.2026, "undo participant
+  // consistency") — заполнено, когда основной откат (поля/create-remove)
+  // прошёл успешно (ok:true), но часть операций с участниками события не
+  // откатилась — UndoRecord в этом случае помечен PARTIAL, не COMPLETED.
+  warning: string | null;
 }
 
 // --- Assistant Chat (Stage 2, владелец 15.09.2026) --------------------------
@@ -498,6 +503,13 @@ export interface EventCardData {
   endAt: string;
   location: string | null;
   participants: { id: string; name: string }[];
+  // Stage 2, Phase N (внешний аудит 21.09.2026, "event participant partial
+  // failure не доходит до UI") — заполняется только когда карточка
+  // построена из результата голосового действия и часть addParticipant/
+  // removeParticipant упала (см. VoiceEventActionResult.warning); у обычных
+  // карточек из get_events — всегда undefined. Хранится прямо в
+  // MessagePart.data, поэтому переживает перезагрузку истории.
+  warning?: string | null;
 }
 
 export interface ToolActivityData {

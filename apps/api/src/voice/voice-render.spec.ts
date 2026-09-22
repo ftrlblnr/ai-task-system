@@ -88,6 +88,40 @@ describe('buildVoiceAssistantParts (Stage 2, Phase H)', () => {
     ]);
   });
 
+  // РЕГРЕССИЯ находки №1 седьмого внешнего аудита (Stage 2, Phase N) —
+  // раньше result.warning (частичный сбой addParticipant/removeParticipant,
+  // см. VoiceService.applyParticipants) строился бэкендом, но нигде не
+  // попадал в EVENT_CARD — карточка строилась только из entity.
+  it('event_action create ok, но с warning (частичный сбой участника) → event_card несёт warning', () => {
+    const execResults: ExecutedVoiceAction[] = [
+      {
+        result: {
+          type: 'event_action',
+          draft: eventDraft({ action: 'create' }),
+          ok: true,
+          error: null,
+          eventId: 'e1',
+          undoToken: 'undo-1',
+          warning: 'не удалось добавить участника emp2: сотрудник не найден',
+        },
+        entity: eventEntity,
+      },
+    ];
+    const parts = buildVoiceAssistantParts(execResults, null);
+    expect(parts[0].data).toMatchObject({ warning: 'не удалось добавить участника emp2: сотрудник не найден' });
+  });
+
+  it('event_action ok без warning → EVENT_CARD не несёт лишнего поля warning в данных', () => {
+    const execResults: ExecutedVoiceAction[] = [
+      {
+        result: { type: 'event_action', draft: eventDraft({ action: 'create' }), ok: true, error: null, eventId: 'e1', undoToken: 'undo-1', warning: null },
+        entity: eventEntity,
+      },
+    ];
+    const parts = buildVoiceAssistantParts(execResults, null);
+    expect((parts[0].data as { warning?: unknown }).warning).toBeNull();
+  });
+
   it('task_action delete ok → markdown-текст, не карточка (сущности больше нет)', () => {
     const execResults: ExecutedVoiceAction[] = [
       {

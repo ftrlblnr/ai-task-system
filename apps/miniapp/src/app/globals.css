@@ -686,6 +686,20 @@ select {
   font-size: 0.76rem;
 }
 
+/* Stage 2, Phase N (седьмой внешний аудит) — частичный сбой (например, не
+   добавился один из участников) внутри карточки, которая в целом успешна
+   (EventCard всё равно построена) — мягче, чем .assistant-error (та
+   означает "действие не выполнено целиком"), поэтому свой, не переиспользуем
+   danger-токены буквально. */
+.assistant-card-warning {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 8px);
+  background: rgba(217, 119, 6, 0.12);
+  color: #b45309;
+  font-size: 0.8rem;
+}
+
 .assistant-error {
   align-self: flex-start;
   max-width: 92%;

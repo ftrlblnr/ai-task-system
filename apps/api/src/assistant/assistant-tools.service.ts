@@ -360,6 +360,10 @@ export class AssistantToolsService {
       OR: [
         { title: { contains: trimmed, mode: 'insensitive' as const } },
         { rawSummary: { contains: trimmed, mode: 'insensitive' as const } },
+        // Находка №4 седьмого внешнего аудита (Stage 2, Phase N) — если
+        // Plaud обновил саммари, новое содержимое живёт в latestSummary,
+        // не в замороженной rawSummary — поиск должен видеть его тоже.
+        { latestSummary: { contains: trimmed, mode: 'insensitive' as const } },
         { enhancedSummary: { contains: trimmed, mode: 'insensitive' as const } },
       ],
     };
@@ -383,7 +387,10 @@ export class AssistantToolsService {
         meetingId: meeting.id,
         title: meeting.title,
         meetingDate: meeting.meetingDate.toISOString(),
-        summary: meeting.enhancedSummary ?? meeting.rawSummary,
+        // Находка №4 седьмого внешнего аудита (Stage 2, Phase N, "Plaud
+        // summary freshness") — Assistant должен отвечать по самой свежей
+        // версии, не по замороженной rawSummary, если Plaud её обновил.
+        summary: meeting.enhancedSummary ?? meeting.latestSummary ?? meeting.rawSummary,
       },
     };
   }

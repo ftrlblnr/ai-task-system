@@ -114,6 +114,16 @@ const VOICE_HISTORY_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 // одному только отсутствию клика вовремя.
 const UNDO_WINDOW_MS = 30_000;
 
+// Находка №3 седьмого внешнего аудита (Stage 2, Phase N, "stale
+// VoiceExecution recovery", P1) — раньше RECEIVED/PROCESSING отказывались
+// от retry БЕЗ учёта давности: если процесс падал именно в этом окне (STT/
+// LLM ещё идут, ни одна бизнес-мутация ещё не началась — см. runParse),
+// строка оставалась "якобы выполняется" навсегда, и клиент получал
+// generic-отказ при каждой попытке повторить. С запасом над типичной
+// длительностью STT+LLM (обычно секунды, не минуты), но короче, чем стал
+// бы вручную ждать живой пользователь.
+const STALE_VOICE_EXECUTION_MS = 3 * 60 * 1000;
+
 @Injectable()
 export class VoiceService {
   private readonly logger = new Logger(VoiceService.name);
@@ -261,25 +271,30 @@ export class VoiceService {
       if (existing.status === VoiceExecutionStatus.COMPLETED) {
         return this.reconstructCompletedResponse(existing);
       }
-      if (existing.status !== VoiceExecutionStatus.FAILED) {
-        // RECEIVED/PROCESSING/EXECUTING/NEEDS_RECONCILIATION — небезопасно
-        // трогать бизнес-логику: либо предыдущая попытка ещё реально
-        // выполняется (маловероятно при пойманном inFlightParseRequests
-        // выше, но возможно сразу после рестарта процесса, когда Map уже
-        // пуст, а строка в БД осталась от незавершённой попытки), либо
-        // упала где-то посередине выполнения действий (NEEDS_RECONCILIATION)
-        // — в обоих случаях слепой повтор рискует выполнить мутацию дважды
-        // или наложиться на ещё идущую. Явный отказ без единого вызова
+
+      const isStale = Date.now() - existing.updatedAt.getTime() > STALE_VOICE_EXECUTION_MS;
+      // RECEIVED/PROCESSING — до этой точки НИ ОДНО действие ещё не
+      // выполнялось (см. runParse: цикл исполнения черновиков начинается
+      // только после loadContextAndExtract, EXECUTING ставится прямо перед
+      // ним) — если запись зависла здесь дольше STALE_VOICE_EXECUTION_MS,
+      // это не "ещё выполняется", а брошенный процесс (краш/рестарт до
+      // того, как успел дойти даже до FAILED), и повторить безопасно, тем
+      // же путём, что и для FAILED.
+      const safeToReclaim =
+        existing.status === VoiceExecutionStatus.FAILED ||
+        ((existing.status === VoiceExecutionStatus.RECEIVED || existing.status === VoiceExecutionStatus.PROCESSING) && isStale);
+
+      if (!safeToReclaim) {
+        // EXECUTING/NEEDS_RECONCILIATION (независимо от давности — мутация
+        // могла уже случиться, автоматический повтор небезопасен), либо
+        // свежий RECEIVED/PROCESSING (предыдущая попытка правдоподобно ещё
+        // реально выполняется). Явный отказ без единого вызова
         // TasksService/EventsService — тот же принцип "не трогать бизнес-
         // логику при неуверенности", что и defensive RBAC-проверка в undo().
         throw new BadRequestException(
           'Предыдущая попытка обработать эту голосовую команду ещё выполняется или прервалась не до конца — подождите немного и попробуйте снова; если задача/событие уже появились, повторно диктовать не нужно.',
         );
       }
-      // FAILED — до этого момента НИ ОДНО действие ещё не выполнялось (см.
-      // runParse: FAILED ставится только из loadContextAndExtract, ДО
-      // цикла исполнения черновиков) — безопасно начать заново на той же
-      // строке (не create() новую — та же уникальность всё равно упадёт).
       execution = await this.prisma.voiceExecution.update({
         where: { id: existing.id },
         data: { status: VoiceExecutionStatus.RECEIVED, errorMessage: null },
@@ -1005,12 +1020,12 @@ export class VoiceService {
   // CLAIMED (атомарно, тот же приём P2025 через where) → COMPLETED (откат
   // реально удался) или обратно в AVAILABLE (откат упал — в пределах
   // expiresAt пользователь может нажать "Отменить" ещё раз).
-  async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null }> {
+  async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null; warning: string | null }> {
     const genericError = 'Время для отмены истекло, действие уже отменено, или ссылка на отмену недействительна.';
     const record = await this.prisma.undoRecord.findUnique({ where: { id: dto.undoToken } });
     if (!record || record.employeeId !== user.id || record.expiresAt.getTime() < Date.now()) {
       await this.logAssistantMessage(`Не получилось отменить: ${genericError}`, user).catch(() => {});
-      return { ok: false, error: genericError };
+      return { ok: false, error: genericError, warning: null };
     }
 
     // Защитная проверка роли — та же RBAC-проверка, не задвоена:
@@ -1022,7 +1037,7 @@ export class VoiceService {
     if (record.kind === UndoKind.EVENT && user.role !== Role.OWNER) {
       const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
       await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
-      return { ok: false, error };
+      return { ok: false, error, warning: null };
     }
 
     // Атомарный claim — where: {id, status: AVAILABLE} закрывает узкую
@@ -1036,11 +1051,12 @@ export class VoiceService {
       await this.prisma.undoRecord.update({ where: { id: record.id, status: UndoRecordStatus.AVAILABLE }, data: { status: UndoRecordStatus.CLAIMED } });
     } catch (err) {
       if (isRecordNotFoundError(err)) {
-        return { ok: false, error: genericError };
+        return { ok: false, error: genericError, warning: null };
       }
       throw err;
     }
 
+    const participantFailures: string[] = [];
     try {
       if (record.kind === UndoKind.TASK) {
         if (record.action === UndoRecordAction.CREATE) {
@@ -1079,26 +1095,40 @@ export class VoiceService {
           // произошла, превращать весь undo в ok:false из-за одного
           // участника было бы неверно), но и для логов — диагностировать
           // такой сбой раньше было нечем. Теперь как минимум логируется.
+          //
+          // Находка №2 седьмого внешнего аудита (Stage 2, Phase N) —
+          // логирования одного было недостаточно: запись всё равно
+          // становилась COMPLETED, и пользователь видел "Отменено.", хотя
+          // откат участников прошёл не полностью. Теперь собираем сбои и
+          // ниже выставляем PARTIAL вместо COMPLETED, если хоть один был.
           const addedParticipantIds = (record.addedParticipantIds ?? []) as string[];
           const removedParticipantIds = (record.removedParticipantIds ?? []) as string[];
           for (const employeeId of addedParticipantIds) {
             await this.events.removeParticipant(record.entityId, employeeId).catch((err) => {
-              this.logger.warn(`undo: не удалось откатить добавленного участника ${employeeId} у события ${record.entityId}: ${toErrorMessage(err)}`);
+              const message = `не удалось откатить добавленного участника ${employeeId}: ${toErrorMessage(err)}`;
+              this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
+              participantFailures.push(message);
             });
           }
           for (const employeeId of removedParticipantIds) {
             await this.events.addParticipant(record.entityId, employeeId).catch((err) => {
-              this.logger.warn(`undo: не удалось восстановить снятого участника ${employeeId} у события ${record.entityId}: ${toErrorMessage(err)}`);
+              const message = `не удалось восстановить снятого участника ${employeeId}: ${toErrorMessage(err)}`;
+              this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
+              participantFailures.push(message);
             });
           }
         }
       }
-      await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.COMPLETED, consumedAt: new Date() } });
+      const warning = participantFailures.length > 0 ? participantFailures.join('; ') : null;
+      await this.prisma.undoRecord.update({
+        where: { id: record.id },
+        data: { status: warning ? UndoRecordStatus.PARTIAL : UndoRecordStatus.COMPLETED, consumedAt: new Date() },
+      });
       // Логирование подтверждения — вторичный эффект, не должен превращать
       // уже случившийся успешный откат в ok:false для клиента (тот же
       // принцип, что и graceful degradation в runParse, Phase H.1).
-      await this.logAssistantMessage('Отменено.', user).catch(() => {});
-      return { ok: true, error: null };
+      await this.logAssistantMessage(warning ? `Отменено частично. ${warning}` : 'Отменено.', user).catch(() => {});
+      return { ok: true, error: null, warning };
     } catch (err) {
       const error = toErrorMessage(err);
       // Откат не удался — возвращаем запись в AVAILABLE (best-effort, в
@@ -1107,7 +1137,7 @@ export class VoiceService {
       // раз в пределах expiresAt, а не получал "уже отменено" на ровном месте.
       await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.AVAILABLE } }).catch(() => {});
       await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
-      return { ok: false, error };
+      return { ok: false, error, warning: null };
     }
   }
 
