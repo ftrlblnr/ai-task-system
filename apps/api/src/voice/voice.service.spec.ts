@@ -758,7 +758,14 @@ function baseParseMocks() {
     timing: { fastMs: 10, strongMs: 0 },
     escalatedToStrongModel: false,
   });
-  return { whisperSpy, extractSpy };
+  // Hardening (22.09.2026, "voice ↔ text meeting Q&A parity") —
+  // type:'chat'-черновики теперь строят ответ через AssistantReplyService
+  // (тот же tool loop, что текстовый чат), не через draft.reply
+  // напрямую — см. её комментарий в voice.service.ts. Текст мока
+  // ('Ок') совпадает с draft.reply выше ровно для того, чтобы
+  // существующие ассерты на итоговый текст ответа не пришлось менять.
+  const assistantReplySpy = { reply: jest.fn().mockResolvedValue({ text: 'Ок', toolCalls: [] }) };
+  return { whisperSpy, extractSpy, assistantReplySpy };
 }
 
 describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)', () => {
@@ -804,7 +811,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
   it('FAILED — ничего ещё не выполнялось, retry безопасен и реально запускает Whisper/Claude заново', async () => {
     const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
     const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
-    const { whisperSpy, extractSpy } = baseParseMocks();
+    const { whisperSpy, extractSpy, assistantReplySpy } = baseParseMocks();
     const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
     const prisma = {
       voiceExecution: {
@@ -831,6 +838,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       assistantChat as any,
       {} as any,
       { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      assistantReplySpy as any,
     );
     const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
@@ -870,7 +878,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
   it.each([VoiceExecutionStatus.RECEIVED, VoiceExecutionStatus.PROCESSING])(
     '%s, но давно устарела (обновлена > STALE_VOICE_EXECUTION_MS назад) — reclaim, retry реально запускает Whisper/Claude',
     async (status) => {
-      const { whisperSpy, extractSpy } = baseParseMocks();
+      const { whisperSpy, extractSpy, assistantReplySpy } = baseParseMocks();
       const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
       const staleUpdatedAt = new Date(Date.now() - 5 * 60 * 1000); // 5 минут назад
       const prisma = {
@@ -888,7 +896,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
         },
         conversation: { update: jest.fn() },
       };
-      const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, { log: jest.fn() } as any, { findAll: jest.fn().mockResolvedValue([]) } as any, {} as any, assistantChat as any, {} as any, { getPrompt: jest.fn().mockResolvedValue('') } as any);
+      const service = new VoiceService({ transcribe: whisperSpy } as any, { extract: extractSpy } as any, prisma as any, { log: jest.fn() } as any, { findAll: jest.fn().mockResolvedValue([]) } as any, {} as any, assistantChat as any, {} as any, { getPrompt: jest.fn().mockResolvedValue('') } as any, assistantReplySpy as any);
       const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
       await service.parse(audio, makeUser(), undefined, 'req-1');
@@ -963,7 +971,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
   });
 
   it('успешный прогон — VoiceExecution помечается COMPLETED с реальным resultJson ДО попытки персистентности, переживает её сбой', async () => {
-    const { whisperSpy, extractSpy } = baseParseMocks();
+    const { whisperSpy, extractSpy, assistantReplySpy } = baseParseMocks();
     const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
     const updateSpy = jest.fn().mockResolvedValue({ id: 'exec-1' });
     const prisma = {
@@ -991,6 +999,7 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
       assistantChat as any,
       {} as any,
       { getPrompt: jest.fn().mockResolvedValue('Амир Жаксылыков, GLB, Plaud') } as any,
+      assistantReplySpy as any,
     );
     const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
 
@@ -1006,6 +1015,69 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     // Stage 2, Phase I (Company/STT vocabulary) — CompanyVocabularyService.getPrompt()
     // реально доходит до Whisper четвёртым аргументом, не только вызывается.
     expect(whisperSpy).toHaveBeenCalledWith(audio.buffer, audio.mimetype, audio.originalname, 'Амир Жаксылыков, GLB, Plaud');
+  });
+
+  // РЕГРЕССИЯ hardening-находки (22.09.2026, "voice ↔ text meeting Q&A
+  // parity", найдено владельцем в проде: "о чём последняя запись из
+  // Plaud" — голос ответил "встреч не вижу", хотя тот же вопрос текстом
+  // уже отвечался через search_meetings/get_recent_meetings/
+  // search_meeting_transcript). draft.reply (из DraftExtractionService,
+  // контекст которого ограничен tasks/events) для type:'chat' больше НЕ
+  // используется как есть — реальный текст ответа строит тот же tool
+  // loop, что и текстовый чат (AssistantReplyService.reply), с доступом к
+  // Meeting/Plaud-инструментам.
+  it('type:"chat" — реальный текст ответа строит AssistantReplyService.reply() (тот же tool loop, что текстовый чат), не draft.reply напрямую', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    extractSpy.mockResolvedValue({
+      // draft.reply здесь намеренно ДРУГОЙ текст, чем то, что вернёт
+      // assistantReplySpy ниже — тест ловит регресс, если код когда-нибудь
+      // снова начнёт использовать draft.reply напрямую вместо реального
+      // tool-loop ответа.
+      drafts: [{ type: 'chat', reply: 'СТАРЫЙ текст без доступа к Plaud' }],
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 10, strongMs: 0 },
+      escalatedToStrongModel: false,
+    });
+    const assistantReplySpy = {
+      reply: jest.fn().mockResolvedValue({ text: 'Последняя запись — про автоматизацию завода.', toolCalls: [] }),
+    };
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const prisma = {
+      voiceExecution: { create: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }), update: jest.fn().mockResolvedValue({ id: 'exec-1' }) },
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({ id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] }),
+      },
+      conversation: { update: jest.fn() },
+    };
+    const user = makeUser();
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      assistantReplySpy as any,
+    );
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    const response = await service.parse(audio, user, undefined, 'req-1');
+
+    expect(response.results).toEqual([{ type: 'chat', reply: 'Последняя запись — про автоматизацию завода.' }]);
+    // conversationId + executionId (не userMessage.id — она best-effort,
+    // см. соседний тест выше про graceful degradation при сбое
+    // персистентности) — стабильная identity для create_task_from_meeting's
+    // idempotency-claim'а, если tool loop решит вызвать write-tool.
+    expect(assistantReplySpy.reply).toHaveBeenCalledWith('Привет', [], user, 'c1', 'exec-1');
   });
 
   it('цикл исполнения черновиков падает непредвиденно — NEEDS_RECONCILIATION, не FAILED (FAILED разрешил бы повторную мутацию)', async () => {
@@ -1060,7 +1132,7 @@ describe('VoiceService.parse — exactly-once под конкурентными 
     const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
     const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
 
-    const { whisperSpy, extractSpy } = baseParseMocks();
+    const { whisperSpy, extractSpy, assistantReplySpy } = baseParseMocks();
     const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
     const prisma = {
       voiceExecution: {
@@ -1089,6 +1161,7 @@ describe('VoiceService.parse — exactly-once под конкурентными 
       assistantChat as any,
       {} as any,
       { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      assistantReplySpy as any,
     );
 
     const dto = { audio, user: makeUser(), clientRequestId: 'req-1' };
@@ -1141,6 +1214,7 @@ describe('VoiceService.parse — явный conversationId (Phase H.1, P2)', () 
       assistantChat as any,
       {} as any,
       { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      { reply: jest.fn().mockResolvedValue({ text: 'Ок', toolCalls: [] }) } as any,
     );
 
     const response = await service.parse(audio, makeUser(), undefined, 'req-1', 'c-explicit');

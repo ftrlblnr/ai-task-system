@@ -28,6 +28,11 @@ import { AssistantToolsService } from './assistant-tools.service';
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.
-  exports: [AssistantChatService],
+  // AssistantReplyService — hardening (22.09.2026, "voice ↔ text meeting
+  // Q&A parity"): VoiceService для type:'chat'-черновиков строит ответ
+  // тем же tool loop, что и текстовый чат (иначе голос не видел бы
+  // Meeting/Plaud данные вообще — DraftExtractionService's контекст
+  // ограничен tasks/events), не дублируя сам tool loop.
+  exports: [AssistantChatService, AssistantReplyService],
 })
 export class AssistantModule {}

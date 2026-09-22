@@ -14,7 +14,7 @@ import { formatLocalDateTime } from '../common/timezone';
 import { AssistantChatService, isUniqueConstraintError, serializeMessageForModelContext, type MessageWithParts } from '../assistant/assistant-chat.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
-import { stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
+import { AssistantReplyService, stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
 import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
@@ -146,6 +146,19 @@ export class VoiceService {
     // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
     // vocabulary") — тот же принцип, последний параметр.
     private readonly vocabulary: CompanyVocabularyService,
+    // Hardening (найдено владельцем в проде 22.09.2026: "о чём последняя
+    // запись из Plaud" — голос ответил "встреч не вижу", хотя тот же
+    // вопрос текстом уже отвечался через search_meetings/get_recent_meetings/
+    // search_meeting_transcript) — DraftExtractionService.extract()'s
+    // контекст ограничен tasks/events (см. её комментарий), Meeting/Plaud
+    // там нет вообще, только если diктовка идёт СО страницы конкретной
+    // встречи (meetingId). Для type:'chat'-черновиков (см. draft loop
+    // ниже) reply теперь строит ПОЛНЫЙ tool loop Assistant Core, тот же,
+    // что уже использует текстовый чат — та же формулировка ответа, тот
+    // же доступ к инструментам встреч, независимо от того, голосом или
+    // текстом задан вопрос. Последний параметр — тот же принцип, что у
+    // employeeResolver/vocabulary выше.
+    private readonly assistantReply: AssistantReplyService,
   ) {}
 
   // Exactly-once для голосовых мутаций (Stage 2, Phase H.1 → H.3, третий
@@ -450,7 +463,7 @@ export class VoiceService {
       requestId,
     );
 
-    return { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result };
+    return { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history };
   }
 
   // Тело фактического разбора — выполняется не более одного раза на
@@ -484,7 +497,7 @@ export class VoiceService {
         .catch(() => {});
       throw err;
     }
-    const { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result } = loaded;
+    const { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history } = loaded;
 
     // Реплика пользователя (Stage 2, Phase H) — пишется в ту же ленту, что и
     // текстовый чат, не в отдельную VoiceMessage. Запущено здесь, ДО цикла
@@ -590,7 +603,24 @@ export class VoiceService {
     try {
       for (const draft of drafts) {
         if (draft.type === 'chat') {
-          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
+          // Hardening (22.09.2026, "voice ↔ text meeting Q&A parity") —
+          // draft.reply здесь больше не используется как есть: он строился
+          // ТОЛЬКО из tasks/events-контекста (см. DraftExtractionService),
+          // без единого доступа к Meeting/Plaud. Полноценный ответ на
+          // информационный вопрос ("о чём последняя запись из Plaud", "что
+          // Жандос говорил про IDAT") строит тот же tool loop, что и
+          // текстовый чат (search_meetings/get_recent_meetings/
+          // search_meeting_transcript/create_task_from_meeting уже
+          // доступны через AssistantToolsService.buildTools(user)).
+          // executionId (не userMessagePromise!) — как userMessageId-
+          // идентичность для create_task_from_meeting's idempotency-
+          // claim'а: она уже гарантированно существует к этому моменту
+          // (durable claim VoiceExecution создан ДО этого цикла) и не
+          // зависит от best-effort персистентности userMessage ниже —
+          // если она провалится (Phase H.1, graceful degradation), чат-
+          // ответ всё равно должен успешно построиться, ровно как раньше.
+          const replyResult = await this.assistantReply.reply(transcript, history, user, conversation.id, executionId);
+          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(replyResult.text) }, entity: null });
         } else if (draft.type === 'task_action') {
           execResults.push(await this.executeTaskAction(draft, user));
         } else {
