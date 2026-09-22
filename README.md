@@ -536,3 +536,12 @@ workspaces при таком масштабе проекта.
    (`PlaudSyncService.forceSyncOne`) — пересинхронизация одной записи в
    обход курсора/`RETRY_LOOKBACK_MS`-окна обычного `/plaud/sync`.
    Подробности — раздел "Седьмой внешний аудит" в `CURRENT_STATE.md`.
+9. Phase O — Meeting → Task workflow (22.09.2026): первый write-tool
+   Assistant Core, `create_task_from_meeting` — прямо в чате, по явной
+   команде ("создай из второго пункта задачу Жандосу до пятницы"), можно
+   поставить задачу со ссылкой на встречу/сегмент транскрипта. Backend
+   перепроверяет meeting/segment/исполнителя сам (LLM — не security
+   boundary), своя durable-идемпотентность (`TaskFromMeetingExecution`,
+   тот же принцип, что `VoiceExecution`), новое поле `Task.sourceSegmentId`
+   и `TaskCardData.source` для отображения происхождения задачи в
+   карточке. Подробности — раздел "Phase O" в `CURRENT_STATE.md`.

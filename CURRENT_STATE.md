@@ -963,6 +963,83 @@ force-sync конкретной Plaud-записи — сознательно о
    Новый роут `POST /plaud/sync/:recordingId` (тот же `@Roles(OWNER)` на
    уровне контроллера, что и у остального модуля Plaud).
 
+**Phase O — Meeting → Task workflow (22.09.2026)** — пользователь прислал
+roadmap-документ на два больших этапа: "Phase L" (Meeting → Task) и
+"Phase M" (Web Assistant parity, полный SSE-стриминг паритет Web с
+Mini App). Названия "Phase L"/"Phase M" в самом документе конфликтовали с
+уже занятыми внутренними именами этой кодовой базы (см. "Пятый внешний
+аудит" и "Шестой внешний аудит" выше) — реализация помечена как Phase O
+во избежание путаницы; Phase M из документа (Web Assistant parity)
+сознательно отложена отдельным заходом (подтверждено пользователем) — это
+отдельный многодневный проект (стриминг-протокол на Web, conversation
+sidebar и т.д.), не входит в этот раунд.
+
+Перед реализацией код проверен против спеки — значительная часть уже
+существовала в другом виде:
+- `Task.sourceMeetingId`/`sourceTimestamp`/`sourceContext` уже были в
+  схеме (раздел 9 ТЗ, более ранний этап), уже отображались на Web
+  (`tasks/[id]/page.tsx`) и в Mini App (`task-detail-overlay.tsx`).
+- Отдельный REST-флоу "извлечь задачи из встречи" уже существовал
+  (`MeetingsService.extractTasks`/`createTasksFromMeeting`, ручная
+  модалка `task-extraction-modal.tsx`) — batch-предложение с explicit
+  подтверждением, не разговорный сценарий.
+- `apps/web` не имеет вообще никакого Assistant chat UI (только legacy
+  `/voice`) — "TaskCard UI" для Assistant-чата в этом раунде коснулась
+  только Mini App; Web получает отображение источника бесплатно через уже
+  существующую страницу задачи.
+
+Реализовано:
+1. **`create_task_from_meeting`** — первый write-tool Assistant Core (все
+   остальные тулы `assistant-tools.service.ts` — read-only). Видим только
+   OWNER, тот же принцип, что у остальных meeting-тулов. Backend
+   перепроверяет всё сам (LLM — не security boundary): `meetings.findOne`
+   для доступа к встрече, `MeetingSegment.meetingId === meetingId` для
+   сегмента (чужой/несуществующий segmentId — безопасный отказ, не
+   exception), `EmployeeResolverService.resolve` для `assigneeRawText`
+   (тот же резолвер, что уже используют voice/`updateSpeakers`) —
+   `AMBIGUOUS`/`NOT_FOUND` не создаёт задачу вовсе, без fallback в
+   `assigneeId: null`. Создание — только через `TasksService.create`, не
+   прямой `prisma.task.create`.
+2. **`Task.sourceSegmentId`** (новое поле, FK на `MeetingSegment`,
+   `onDelete: SetNull`) — машиночитаемая ссылка на точный сегмент, если
+   задача поставлена из конкретной реплики (`search_meeting_transcript`),
+   не из summary целиком. `sourceTimestamp`/`sourceContext` (уже
+   существовавшие поля) заполняются автоматически: `sourceTimestamp`
+   форматируется сервером из `segment.startMs` ("MM:SS"/"H:MM:SS", новый
+   `formatSegmentTimestamp`), не отдаётся на откуп модели.
+3. **`TaskFromMeetingExecution`** (новая модель) — durable exactly-once
+   idempotency для этого write-tool'а, тот же принцип, что
+   `VoiceExecution`/`claimAndRunDurable` (create → P2002 → посмотреть
+   status → `COMPLETED` возвращает кэш, `FAILED`/устаревший `CLAIMED`
+   можно повторить, свежий `CLAIMED` — отказ). `dedupeKey` — хэш от
+   `userMessageId` (стабилен при полном ретрае всего сообщения, в отличие
+   от `tool_use.id` Anthropic, который при повторном вызове Claude каждый
+   раз новый) + `meetingId`/`segmentId`/`title` — вторая, другая задача в
+   том же ответе модели (другой title) не дедуплицируется ошибочно.
+   Отдельная, маленькая, tool-specific модель, не общий
+   "ToolExecution"-фреймворк — второго write-tool'а пока не существует.
+4. **`conversationId`/`userMessageId` прокинуты через весь tool loop** —
+   `AssistantReplyService.reply()`/`streamReply()`/`runReply()` теперь
+   передают их в `AssistantToolsService.execute()` на каждом раунде (не
+   только для write-tool'а) — нужны для idempotency-claim'а выше.
+5. **`SYSTEM_PROMPT` получил date context** — раньше не содержал текущей
+   даты/времени вообще (в отличие от voice); `buildDateContext()`
+   переиспользует `nowInLocalTimezone()`/тот же паттерн, что уже был в
+   `draft-extraction.service.ts` — не новый парсер дат.
+6. **`TaskCardData.source`** (новое опциональное поле, тот же паттерн,
+   что `EventCardData.warning`) — заполнено только для карточек из
+   `create_task_from_meeting`. Mini App's `TaskCardView` показывает
+   заголовок встречи + таймкод под карточкой (`.assistant-card-source`).
+7. **Audit logging** — `AI_MEETING_TASK_CREATE` на успешное создание
+   (`meetingId`/`segmentId`/`assigneeId`/`dueDate`, без транскрипта
+   целиком).
+
+Осознанно не реализовано в этом раунде (см. план): `extract_meeting_tasks`
+как отдельный chat-tool (существующий REST-флоу уже закрывает batch-
+сценарий), точная навигация "клик → подсветка сегмента" (пока только
+заголовок+таймкод+цитата), `TaskSourceType`-enum (`sourceMeetingId != null`
+уже однозначно отличает MEETING от MANUAL).
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
