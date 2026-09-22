@@ -556,3 +556,13 @@ workspaces при таком масштабе проекта.
     (`sourceSegmentId`/`sourceMeetingId` согласованность) теперь
     проверяется внутри `TasksService.create()`, не только в вызывающем
     tool'е. Подробности — раздел "Phase O hardening" в `CURRENT_STATE.md`.
+11. Phase M — Web Assistant Parity (22.09.2026): перенос основного
+    AI-функционала Mini App на Web (backend не менялся — `apps/api`
+    контракт уже был платформо-независимым). Новая страница `/assistant`:
+    desktop-раскладка со списком разговоров слева (Web использует
+    `GET/POST /assistant/conversations` богаче, чем Mini App — несколько
+    Conversation на сотрудника, не один непрерывный тред) и почти
+    дословным портом стриминга/вложений/голоса из `apps/miniapp`'s
+    `assistant-screen.tsx` справа. TaskCard "Открыть" ведёт на уже
+    существующую `/tasks/[id]` вместо отдельного оверлея. Подробности —
+    раздел "Phase M" в `CURRENT_STATE.md`.

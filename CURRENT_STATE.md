@@ -1083,6 +1083,59 @@ hardening-отчёт по только что задеплоенному Phase O
 считается закрытым; следующий этап — Phase M (Web Assistant parity),
 отдельным заходом.
 
+**Phase M — Web Assistant Parity (22.09.2026)** — перенос основного
+AI-функционала Mini App на Web (раздел 36-58 присланного roadmap-
+документа), без переписывания Assistant Core. Проверено против реального
+кода перед реализацией: **backend уже полностью готов** —
+`AssistantChatController`/`AssistantChatService` (`GET/POST
+/assistant/conversations`, `.../messages`, `.../messages/stream`) ничем не
+завязаны на Telegram/Mini App, JWT-аутентификация и владение
+`Conversation` (по `employeeId`) уже общие для обеих платформ. Вся работа
+этого раунда — только `apps/web`, порт уже проверенного в проде
+клиентского паттерна из `apps/miniapp` (`assistant-screen.tsx`/
+`assistant-message-part.tsx`), передизайненного под desktop.
+
+Новое в `apps/web`:
+1. **`src/lib/api.ts`** — добавлены `postStream`/`downloadBlob`
+   (`postForm` уже был, см. `/voice`) — тот же 401/`localStorage`-паттерн,
+   что и у существующих `request()`/`requestForm()`.
+2. **`src/components/assistant-message-part.tsx`** (новый) — порт реестра
+   `MessagePartRenderer` из Mini App один в один (markdown/task_card/
+   event_card/tool_activity/error/file), с одним desktop-отличием:
+   `TaskCardView`'s "Открыть" ведёт на уже существующую
+   `/tasks/[id]`-страницу (`router.push`), не на модальный оверлей,
+   которого на Web нет и заводить не нужно — там уже показывается
+   `source`/`sourceTimestamp`/`sourceContext` (Phase O).
+3. **`src/app/assistant/page.tsx`** (новый) — desktop 2-колоночная
+   раскладка: слева список разговоров (`GET/POST /assistant/conversations`
+   — Mini App всегда берёт `conversations[0]`, Web использует то же API
+   богаче, раз оно уже поддерживает несколько `Conversation` на
+   сотрудника), справа — почти дословный порт `send()`/SSE-парсинга/
+   optimistic-сообщений/retry из `assistant-screen.tsx` (без Telegram-
+   хаптики/`SwipeShell`). Вложения — тот же `POST /files/upload`/`DELETE
+   /files/:id`. Голос — тот же `MediaRecorder`+`POST /voice/parse`
+   (multipart) флоу, desktop-формулировки ошибок доступа к микрофону — те
+   же, что уже в `apps/web/src/app/voice/page.tsx`.
+4. **`src/components/sidebar.tsx`** — новый пункт "Ассистент" (`/assistant`,
+   доступен всем, видимость tools уже решает backend).
+5. **CSS** — новые классы (`.assistant-layout`/`.assistant-conversations-
+   sidebar`/`.assistant-chat-pane` и т.д.), переиспользуют существующие
+   design-токены (`--accent-soft`/`--radius-md`/`--shadow-sm`), не копируют
+   mobile-специфичные классы Mini App буквально.
+
+Осознанно вне рамок этого раунда: drag & drop файлов (обычный клик по
+кнопке — как в Mini App, достаточно для MVP), редирект/депрекейт legacy
+`/voice` (остаётся как есть, рабочая фича, отдельное решение), GPT-Live/
+WebRTC (следующий этап дорожной карты).
+
+Верификация: `apps/api` не тронут (0 изменений, 300/300 тестов уже
+подтверждены в предыдущем раунде), `apps/web`/`apps/miniapp` по-прежнему
+без frontend-тестовой инфраструктуры (см. "Известные ограничения" ниже) —
+для новых файлов сделан точечный `eslint` (только изменённые файлы, с
+уменьшенным `--max-old-space-size`, полный прогон на всём `apps/web`
+гарантированно падает по OOM на этой VPS) — 0 errors. Живой смоук в
+браузере — после деплоя.
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
