@@ -65,6 +65,16 @@ export class CreateTaskDto {
   @IsString()
   sourceSegmentId?: string;
 
+  // Hardening-раунд Phase O (22.09.2026, P0 "crash-safe idempotency") —
+  // durable связь с TaskFromMeetingExecution (см. её комментарий и
+  // Task.sourceExecutionId в schema.prisma). Заполняется ТОЛЬКО
+  // create_task_from_meeting — тот же принцип защиты (OWNER-only через
+  // sourceMeetingId-проверку в TasksService.create), но отдельного смысла
+  // не несёт для любого другого caller'а.
+  @IsOptional()
+  @IsString()
+  sourceExecutionId?: string;
+
   // Заполняется при постановке задач из саммари встречи (владелец
   // 09.09.2026) — уверенность Claude в этом черновике (исполнитель/срок).
   // При обычном ручном создании не передаётся.

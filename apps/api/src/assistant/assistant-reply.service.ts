@@ -193,6 +193,16 @@ export class AssistantReplyService {
     ];
     const tools = this.tools.buildTools(user);
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
+    // Hardening-раунд Phase O (22.09.2026, P0/P1 "stable tool
+    // idempotency") — общий счётчик на ВЕСЬ вызов runReply, не сбрасывается
+    // между раундами. create_task_from_meeting строит dedupeKey из
+    // (userMessageId, toolCallIndex) — не из meetingId/title (LLM-текст),
+    // см. её комментарий. Позиционная identity: тот же порядок tool-вызовов
+    // при полном ретрае даёт тот же индекс на том же логическом действии
+    // (переживает перефразирование title моделью), а два РАЗНЫХ вызова в
+    // одном ответе (например, одна и та же формулировка для двух разных
+    // исполнителей) получают разные индексы — не схлопываются в один.
+    let toolCallIndex = 0;
 
     onEvent?.({ type: 'text-reset' });
     let response = await this.streamOnce(messages, tools, onEvent, signal);
@@ -216,7 +226,7 @@ export class AssistantReplyService {
       for (const block of toolUseBlocks) {
         onEvent?.({ type: 'tool-started', name: block.name });
         const toolStart = Date.now();
-        const result = await this.tools.execute(block.name, block.input, user, conversationId, userMessageId);
+        const result = await this.tools.execute(block.name, block.input, user, conversationId, userMessageId, toolCallIndex++);
         const durationMs = Date.now() - toolStart;
         toolCalls.push({ name: block.name, result, durationMs });
         onEvent?.({ type: 'tool-completed', name: block.name, result });

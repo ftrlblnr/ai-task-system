@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 import { EventStatus, Prisma, Role, TaskFromMeetingStatus } from '@prisma/client';
@@ -327,6 +326,7 @@ export class AssistantToolsService {
     user: AuthenticatedUser,
     conversationId?: string,
     userMessageId?: string,
+    toolCallIndex?: number,
   ): Promise<ToolExecutionResult> {
     try {
       if (name === 'get_tasks') {
@@ -357,13 +357,15 @@ export class AssistantToolsService {
         return await this.searchMeetingTranscript(query, meetingId, user);
       }
       if (name === 'create_task_from_meeting') {
-        if (!conversationId || !userMessageId) {
-          // Не должно случаться на практике — оба параметра прокидываются
-          // из runReply на каждый вызов (см. её комментарий про Phase O).
-          // Если всё же случилось (например, кто-то вызвал execute()
-          // напрямую в обход runReply) — безопасный явный отказ, не
-          // создаём задачу без идентичности для идемпотентности.
-          throw new Error('create_task_from_meeting: отсутствует conversationId/userMessageId');
+        if (!conversationId || !userMessageId || toolCallIndex === undefined) {
+          // Не должно случаться на практике — все три параметра
+          // прокидываются из runReply на каждый вызов (см. её комментарий
+          // про Phase O). toolCallIndex сравнивается с undefined явно, не
+          // через falsy-проверку — 0 (первый вызов) является легитимным
+          // значением. Если всё же случилось (например, кто-то вызвал
+          // execute() напрямую в обход runReply) — безопасный явный отказ,
+          // не создаём задачу без идентичности для идемпотентности.
+          throw new Error('create_task_from_meeting: отсутствует conversationId/userMessageId/toolCallIndex');
         }
         const typedInput = input as {
           meetingId?: unknown;
@@ -387,6 +389,7 @@ export class AssistantToolsService {
           user,
           conversationId,
           userMessageId,
+          toolCallIndex,
         );
       }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
@@ -586,6 +589,7 @@ export class AssistantToolsService {
     user: AuthenticatedUser,
     conversationId: string,
     userMessageId: string,
+    toolCallIndex: number,
   ): Promise<ToolExecutionResult> {
     const meetingId = input.meetingId.trim();
     const title = input.title.trim();
@@ -617,13 +621,22 @@ export class AssistantToolsService {
     }
 
     // Idempotency-claim ДО любой мутации (тот же pre/post-mutation
-    // boundary, что claimAndRunDurable в voice.service.ts) — dedupeKey
-    // завязан на userMessageId (стабилен при ретрае одного и того же
-    // сообщения, в отличие от tool_use.id от Anthropic, см. комментарий
-    // AssistantReplyService.runReply) + конкретные meetingId/segmentId/
-    // title, чтобы ВТОРАЯ, ДРУГАЯ задача в том же ответе модели (другой
-    // title/meeting) не задедуплировалась ошибочно.
-    const dedupeKey = createHash('sha256').update(`${userMessageId}|${meetingId}|${segmentId ?? ''}|${title.toLowerCase()}`).digest('hex');
+    // boundary, что claimAndRunDurable в voice.service.ts). Hardening-раунд
+    // (22.09.2026, P0/P1) — dedupeKey больше НЕ строится из meetingId/
+    // segmentId/title: title — LLM-generated текст, который модель может
+    // перефразировать между попытками одного и того же ретрая (ключ тогда
+    // менялся бы и ретрай не распознавался), а два РАЗНЫХ вызова в одном
+    // ответе с одинаковым meetingId/title (например, один и тот же пункт
+    // встречи, поставленный ДВУМ разным исполнителям) схлопывались бы в
+    // один — assigneeRawText в старом ключе не участвовал вовсе. Новый
+    // ключ — чисто позиционная identity: userMessageId (стабилен при
+    // полном ретрае сообщения, в отличие от tool_use.id от Anthropic, см.
+    // комментарий AssistantReplyService.runReply) + toolCallIndex (номер
+    // ЭТОГО конкретного tool-вызова внутри runReply, различает несколько
+    // вызовов в одном ответе). Без хэша — обе части уже безопасны как
+    // строка (userMessageId — cuid, toolCallIndex — число, разделитель
+    // ':' не может встретиться ни в одной из частей).
+    const dedupeKey = `${userMessageId}:${toolCallIndex}`;
 
     let executionId: string;
     try {
@@ -634,18 +647,35 @@ export class AssistantToolsService {
       const existing = await this.prisma.taskFromMeetingExecution.findUnique({ where: { conversationId_dedupeKey: { conversationId, dedupeKey } } });
       if (!existing) throw err;
 
-      if (existing.status === TaskFromMeetingStatus.COMPLETED && existing.taskId) {
-        const cached = await this.tasks.findOne(existing.taskId, user).catch(() => null);
-        if (cached) {
-          return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(cached, meeting, segment, input.sourceContext) };
+      // Hardening-раунд (22.09.2026, P0 "crash-safe idempotency") —
+      // проверяем САМУ Task через Task.sourceExecutionId (@unique — DB-
+      // гарантия "максимум одна Task на execution"), не только
+      // existing.status: если процесс упал МЕЖДУ prisma.task.create()
+      // (ниже) и обновлением execution в COMPLETED, execution мог остаться
+      // CLAIMED — но Task уже реально существует. Task-таблица надёжнее
+      // как источник истины, чем execution.status, который мог не успеть
+      // записаться до крэша.
+      const existingTask = await this.prisma.task.findUnique({
+        where: { sourceExecutionId: existing.id },
+        select: { id: true, title: true, status: true, dueDate: true, assignee: { select: { id: true, fullName: true } } },
+      });
+      if (existingTask) {
+        if (existing.status !== TaskFromMeetingStatus.COMPLETED || existing.taskId !== existingTask.id) {
+          // Самоисцеление — execution не успел обновиться до крэша,
+          // подтягиваем его в консистентное состояние заодно.
+          await this.prisma.taskFromMeetingExecution.update({
+            where: { id: existing.id },
+            data: { status: TaskFromMeetingStatus.COMPLETED, taskId: existingTask.id, errorMessage: null },
+          });
         }
-        // Задача из кэша не читается (например, удалена руками после
-        // создания) — не блокируем повторную попытку навсегда, создаём
-        // заново тем же путём, что и FAILED ниже.
+        return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(existingTask, meeting, segment, input.sourceContext) };
       }
 
+      // Task ещё нет — прежняя status-based reclaim-логика: FAILED или
+      // устаревший (брошенный процесс) CLAIMED можно повторить, свежий
+      // CLAIMED (реально конкурентный вызов) — безопасный отказ.
       const isStale = Date.now() - existing.updatedAt.getTime() > STALE_TASK_FROM_MEETING_MS;
-      const safeToReclaim = existing.status === TaskFromMeetingStatus.FAILED || (existing.status === TaskFromMeetingStatus.CLAIMED && isStale) || (existing.status === TaskFromMeetingStatus.COMPLETED && !existing.taskId);
+      const safeToReclaim = existing.status === TaskFromMeetingStatus.FAILED || (existing.status === TaskFromMeetingStatus.CLAIMED && isStale);
       if (!safeToReclaim) {
         return { tool: 'create_task_from_meeting', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся или недавно была создана — подождите немного' };
       }
@@ -685,6 +715,7 @@ export class AssistantToolsService {
           dueDate: input.dueDate ? withLocalOffset(input.dueDate) ?? undefined : undefined,
           sourceMeetingId: meetingId,
           sourceSegmentId: segment?.id,
+          sourceExecutionId: executionId,
           sourceTimestamp,
           sourceContext,
         },

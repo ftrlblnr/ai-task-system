@@ -190,9 +190,31 @@ export class TasksService {
   async create(dto: CreateTaskDto, creator: AuthenticatedUser) {
     // Задачи из Plaud-встречи ставит только руководитель (владелец,
     // 28.08.2026) — сотрудник и так не видит /meetings, но проверяем и
-    // здесь: sourceMeetingId не должен просачиваться в обход UI.
-    if (dto.sourceMeetingId && creator.role !== Role.OWNER) {
+    // здесь: source-поля не должны просачиваться в обход UI. Расширено на
+    // весь набор source-полей (hardening-раунд Phase O, 22.09.2026, P1) —
+    // раньше проверялся только sourceMeetingId, а sourceSegmentId/
+    // sourceExecutionId можно было теоретически передать отдельно от него.
+    if ((dto.sourceMeetingId || dto.sourceSegmentId || dto.sourceExecutionId) && creator.role !== Role.OWNER) {
       throw new ForbiddenException('Задачи из встречи может ставить только руководитель');
+    }
+
+    // Hardening-раунд Phase O (22.09.2026, P1 "source integrity") —
+    // раньше эти инварианты проверял только create_task_from_meeting
+    // (caller), не сам domain service: другой/будущий caller, не
+    // повторивший ту же проверку, мог передать sourceSegmentId без
+    // sourceMeetingId, либо sourceSegmentId из СОВСЕМ ДРУГОЙ встречи.
+    // create_task_from_meeting по-прежнему делает свою раннюю проверку
+    // (с конкретным дружелюбным кодом SEGMENT_MISMATCH до вызова этого
+    // метода) — эта проверка здесь ей не замена, а последний рубеж для
+    // любого другого пути создания задачи.
+    if (dto.sourceSegmentId) {
+      if (!dto.sourceMeetingId) {
+        throw new BadRequestException('sourceSegmentId указан без sourceMeetingId');
+      }
+      const segment = await this.prisma.meetingSegment.findUnique({ where: { id: dto.sourceSegmentId }, select: { meetingId: true } });
+      if (!segment || segment.meetingId !== dto.sourceMeetingId) {
+        throw new BadRequestException('sourceSegmentId не принадлежит указанной встрече');
+      }
     }
 
     // Подзадачи — один уровень вложенности (как в Jira/Asana): у подзадачи
@@ -219,6 +241,7 @@ export class TasksService {
         sourceTimestamp: dto.sourceTimestamp,
         sourceContext: dto.sourceContext,
         sourceSegmentId: dto.sourceSegmentId,
+        sourceExecutionId: dto.sourceExecutionId,
         aiConfidence: dto.aiConfidence,
         creatorId: creator.id,
         // Задачи из саммари встречи (владелец 09.09.2026) тоже идут через

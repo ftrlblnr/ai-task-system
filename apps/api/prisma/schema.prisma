@@ -566,7 +566,7 @@ model Task {
   sourceMeeting   Meeting? @relation(fields: [sourceMeetingId], references: [id])
   sourceTimestamp String?
   sourceContext   String?
-  // Phase L (Meeting → Task через Assistant-чат, create_task_from_meeting)
+  // Phase O (Meeting → Task через Assistant-чат, create_task_from_meeting)
   // — машиночитаемая ссылка на точный сегмент транскрипта, если задача
   // поставлена из конкретной реплики (search_meeting_transcript), не из
   // summary целиком. sourceTimestamp/sourceContext (выше) остаются
@@ -576,6 +576,23 @@ model Task {
   // встречи/сегмента не должно удалять уже поставленную задачу.
   sourceSegmentId String?
   sourceSegment   MeetingSegment? @relation(fields: [sourceSegmentId], references: [id], onDelete: SetNull)
+
+  // Hardening-раунд Phase O (22.09.2026, P0 "crash-safe idempotency") —
+  // durable связь с TaskFromMeetingExecution: до этого поля идемпотентность
+  // create_task_from_meeting опиралась ТОЛЬКО на то, что execution.status
+  // успел обновиться в COMPLETED синхронно после prisma.task.create — если
+  // процесс падал МЕЖДУ созданием Task и этим обновлением статуса, execution
+  // оставался CLAIMED, через STALE_TASK_FROM_MEETING_MS становился
+  // reclaimable, и retry создавал ВТОРУЮ Task для того же execution.
+  // @unique на уровне БД физически не даёт двум Task сослаться на один и
+  // тот же execution — retry сначала ищет Task по sourceExecutionId (сама
+  // таблица Task надёжнее, чем execution.status, который мог не успеть
+  // записаться), и только если её ещё нет — идёт по прежней
+  // status-based reclaim-логике. SetNull — тот же принцип, что у
+  // sourceMeetingId/sourceSegmentId: удаление execution-записи (её сейчас
+  // никто не удаляет, но на будущее) не должно удалять уже созданную Task.
+  sourceExecutionId String?                   @unique
+  sourceExecution   TaskFromMeetingExecution? @relation(fields: [sourceExecutionId], references: [id], onDelete: SetNull)
 
   // Подзадачи (владелец 08.09.2026, по образцу Linear/Asana/Jira):
   // подзадача — обычная Task с parentTaskId, не отдельная лёгкая
@@ -694,12 +711,23 @@ enum TaskFromMeetingStatus {
 // выше): tool_use.id от Anthropic непригоден как ключ идемпотентности —
 // при полном ретрае runReply (например, процесс упал после того, как тул
 // уже создал Task, но до того, как финальное Message сохранилось) Claude
-// вызывается заново и выдаёт новые tool_use id на каждый вызов. dedupeKey
-// — детерминированный хэш от clientRequestId сообщения + meetingId +
-// segmentId + нормализованного title (см. AssistantToolsService) —
-// отличает "тот же логический вызов повторился" (ретрай) от "модель в
-// этом же ответе создаёт вторую, другую задачу" (разные meetingId/title
-// → разный ключ, не дедупится).
+// вызывается заново и выдаёт новые tool_use id на каждый вызов.
+//
+// dedupeKey — hardening-раунд (22.09.2026, P0/P1): изначально был хэш от
+// userMessageId + meetingId + segmentId + нормализованного title, но это
+// схлопывало ДВЕ РАЗНЫЕ задачи с одинаковым title/meeting (например, один
+// и тот же пункт встречи, поставленный двум разным исполнителям в одном
+// ответе модели), и наоборот — не распознавало ретрай, если модель
+// перефразировала title между попытками. Теперь ключ — чисто позиционная
+// identity, не зависящая от LLM-generated текста: `userMessageId:
+// toolCallIndex` (см. AssistantReplyService.runReply) — стабилен при
+// полном ретрае одного и того же сообщения (тот же порядок вызовов даёт
+// тот же индекс), и различает несколько разных вызовов в одном ответе
+// (разный индекс на каждый).
+//
+// sourcedTask — обратная связь для Task.sourceExecutionId (hardening,
+// P0 "crash-safe"): физическая durable-гарантия "максимум одна Task на
+// execution" живёт как @unique на стороне Task, не здесь.
 //
 // Отдельная маленькая модель, не общий "ToolExecution"-фреймворк на все
 // будущие write-tools — второго write-tool'а пока не существует,
@@ -713,6 +741,8 @@ model TaskFromMeetingExecution {
   status    TaskFromMeetingStatus @default(CLAIMED)
   taskId    String?
   errorMessage String?
+
+  sourcedTask Task?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

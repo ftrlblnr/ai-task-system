@@ -136,6 +136,39 @@ describe('AssistantReplyService.reply — ограниченный многор�
     expect(result.text).toBe('Готово, задача создана.');
   });
 
+  // Hardening-раунд (22.09.2026, P0/P1 "stable tool idempotency") —
+  // toolCallIndex должен монотонно расти по ВСЕМ раундам одного вызова
+  // reply(), не сбрасываться между раундами и не зависеть от того, сколько
+  // tool_use было в предыдущем раунде.
+  it('toolCallIndex монотонно растёт по всем раундам одного reply(), включая несколько tool_use в одном раунде', async () => {
+    const twoToolsInOneRound = {
+      content: [
+        { type: 'tool_use', id: 'call-1', name: 'search_meetings', input: {} },
+        { type: 'tool_use', id: 'call-2', name: 'create_task_from_meeting', input: { meetingId: 'm1', title: 'A' } },
+      ],
+    };
+    const { service, tools } = makeService(
+      [
+        twoToolsInOneRound as any,
+        toolUseMessage('create_task_from_meeting', 'call-3', { meetingId: 'm1', title: 'B' }),
+        textMessage('Готово.'),
+      ],
+      [
+        { tool: 'search_meetings', items: [], totalCount: 0 },
+        { tool: 'create_task_from_meeting', task: { taskId: 't1', title: 'A', status: 'NEW', dueDate: null, assignee: null } },
+        { tool: 'create_task_from_meeting', task: { taskId: 't2', title: 'B', status: 'NEW', dueDate: null, assignee: null } },
+      ],
+    );
+
+    await service.reply('Создай две задачи', [], user(), 'conv1', 'userMsg1');
+
+    expect(tools.execute).toHaveBeenCalledTimes(3);
+    // Раунд 1: два вызова подряд получают 0 и 1 (не сбрасывается внутри
+    // раунда). Раунд 2: следующий вызов получает 2 (продолжает счёт, не
+    // начинает заново с 0 на новом раунде).
+    expect(tools.execute.mock.calls.map((c) => c[5])).toEqual([0, 1, 2]);
+  });
+
   it('инструмент возвращает error — is_error попадает в tool_result, следующий раунд всё равно выполняется', async () => {
     const { service, tools } = makeService(
       [toolUseMessage('get_tasks', 'call-1'), textMessage('Не получилось получить задачи.')],
