@@ -174,9 +174,10 @@ describe('AssistantToolsService.execute — инструменты встреч 
   it('search_meetings — ищет по title/rawSummary/latestSummary/enhancedSummary без учёта регистра', async () => {
     const found = [{ id: 'm1', title: 'Встреча про завод', meetingDate: new Date('2026-09-01') }];
     const prismaStub = { meeting: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
 
-    const result = await service.execute('search_meetings', { query: 'завод' }, user({ role: Role.OWNER }));
+    const result = await service.execute('search_meetings', { query: 'завод' }, user({ role: Role.OWNER, id: 'owner1' }));
 
     expect(result).toMatchObject({ tool: 'search_meetings', totalCount: 1 });
     expect(prismaStub.meeting.findMany).toHaveBeenCalledWith(
@@ -191,6 +192,30 @@ describe('AssistantToolsService.execute — инструменты встреч 
         },
       }),
     );
+  });
+
+  // Доп. P2-находка седьмого внешнего аудита — search_meetings раньше не
+  // оставлял следа в AuditLog вообще (в отличие от MeetingsService.findOne/
+  // extractTasks, где раздел 15 ТЗ уже соблюдался для отдельной встречи).
+  it('search_meetings — успешный непустой поиск логируется в AuditLog как AI_MEETING_SEARCH', async () => {
+    const found = [{ id: 'm1', title: 'Встреча про завод', meetingDate: new Date('2026-09-01') }];
+    const prismaStub = { meeting: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+
+    await service.execute('search_meetings', { query: 'завод' }, user({ role: Role.OWNER, id: 'owner1' }));
+
+    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_MEETING_SEARCH', 'Meeting', 'завод', { resultCount: 1 });
+  });
+
+  it('search_meetings — пустой query не пишет в AuditLog', async () => {
+    const prismaStub = { meeting: { findMany: jest.fn(), count: jest.fn() } };
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+
+    await service.execute('search_meetings', { query: '   ' }, user({ role: Role.OWNER }));
+
+    expect(auditStub.log).not.toHaveBeenCalled();
   });
 
   it('get_meeting — делегирует MeetingsService.findOne (тот же audit.log/404), предпочитает enhancedSummary', async () => {
@@ -251,7 +276,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
   it('search_meeting_transcript — находит реплики, опционально ограничивает одной встречей', async () => {
     const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
     const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
 
     const result = await service.execute('search_meeting_transcript', { query: 'договор', meetingId: 'm1' }, user({ role: Role.OWNER }));
 
@@ -263,6 +288,41 @@ describe('AssistantToolsService.execute — инструменты встреч 
     expect(prismaStub.meetingSegment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { text: { contains: 'договор', mode: 'insensitive' }, meetingId: 'm1' } }),
     );
+  });
+
+  // Доп. P2-находка седьмого внешнего аудита — search_meeting_transcript
+  // раньше не оставлял следа в AuditLog вообще. entityId — meetingId, если
+  // поиск сужен на конкретную встречу (есть реальная целевая запись).
+  it('search_meeting_transcript — успешный поиск по конкретной встрече логируется в AuditLog как AI_TRANSCRIPT_SEARCH с entityId=meetingId', async () => {
+    const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
+    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+
+    await service.execute('search_meeting_transcript', { query: 'договор', meetingId: 'm1' }, user({ role: Role.OWNER, id: 'owner1' }));
+
+    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TRANSCRIPT_SEARCH', 'Meeting', 'm1', { query: 'договор', meetingId: 'm1', resultCount: 1 });
+  });
+
+  it('search_meeting_transcript — поиск без ограничения встречей логирует entityId=запрос', async () => {
+    const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
+    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+
+    await service.execute('search_meeting_transcript', { query: 'договор' }, user({ role: Role.OWNER, id: 'owner1' }));
+
+    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TRANSCRIPT_SEARCH', 'Meeting', 'договор', { query: 'договор', meetingId: null, resultCount: 1 });
+  });
+
+  it('search_meeting_transcript — пустой query не пишет в AuditLog', async () => {
+    const prismaStub = { meetingSegment: { findMany: jest.fn(), count: jest.fn() } };
+    const auditStub = { log: jest.fn() };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+
+    await service.execute('search_meeting_transcript', { query: '' }, user({ role: Role.OWNER }));
+
+    expect(auditStub.log).not.toHaveBeenCalled();
   });
 
   // Находка №3 шестого внешнего аудита (Stage 2, Phase M) — раньше
@@ -283,7 +343,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
       },
     ];
     const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
 
     const result = await service.execute('search_meeting_transcript', { query: 'договор' }, user({ role: Role.OWNER }));
 
@@ -295,7 +355,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
   it('search_meeting_transcript — говорящий НЕ сопоставлен — speakerEmployeeId/speakerName оба null', async () => {
     const found = [{ meetingId: 'm1', speakerLabel: 'Speaker 1', speakerEmployeeId: null, speakerEmployee: null, startMs: 0, endMs: 1000, text: 'привет', meeting: { title: 'Встреча' } }];
     const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
 
     const result = await service.execute('search_meeting_transcript', { query: 'привет' }, user({ role: Role.OWNER }));
 
@@ -304,7 +364,7 @@ describe('AssistantToolsService.execute — инструменты встреч 
 
   it('search_meeting_transcript — без транскрипта (ничего не найдено) отдаёт пустой items, не бросает', async () => {
     const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
 
     const result = await service.execute('search_meeting_transcript', { query: 'что угодно' }, user({ role: Role.OWNER }));
 

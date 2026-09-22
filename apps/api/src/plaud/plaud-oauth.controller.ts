@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -49,6 +49,17 @@ export class PlaudOAuthController {
   @Post('sync')
   async syncNow(@CurrentUser() user: AuthenticatedUser) {
     await this.sync.pullChanges(user.id);
+    return { ok: true };
+  }
+
+  // Доп. P2-находка седьмого внешнего аудита ("targeted Plaud force-resync")
+  // — точечная пересинхронизация ОДНОЙ записи в обход курсора/
+  // RETRY_LOOKBACK_MS-окна (см. комментарий у forceSyncOne) — на случай,
+  // если Plaud дообработал/изменил запись старше 7 дней и штатный /sync её
+  // больше не пересматривает.
+  @Post('sync/:recordingId')
+  async forceSyncOne(@Param('recordingId') recordingId: string, @CurrentUser() user: AuthenticatedUser) {
+    await this.sync.forceSyncOne(user.id, recordingId);
     return { ok: true };
   }
 }

@@ -575,3 +575,88 @@ describe('PlaudSyncService.pullChanges', () => {
     });
   });
 });
+
+// Доп. P2-находка седьмого внешнего аудита ("targeted Plaud force-resync")
+// — pullChanges выше рассматривает запись, только если она попадает в
+// курсор (новые файлы) или в RETRY_LOOKBACK_MS-окно (7 дней). forceSyncOne
+// должен пересинхронизировать ОДНУ запись в обход и того, и другого — без
+// обращения к plaudConnection/listFiles вообще, единственный API-вызов —
+// getFile по явно переданному recordingId.
+describe('PlaudSyncService.forceSyncOne — точечный force-resync (доп. P2-находка седьмого аудита)', () => {
+  it('не трогает plaudConnection/listFiles — обходит курсор и RETRY_LOOKBACK_MS-окно полностью', async () => {
+    const rawSummary = 'Обновлённое саммари';
+    const title = 'Старая встреча';
+    // Запись синхронизирована 30 дней назад — далеко за пределами
+    // RETRY_LOOKBACK_MS (7 дней), обычный /sync её бы уже не пересмотрел.
+    const staleContentHash = createHash('sha256').update(`${title}\nстарое саммари`).digest('hex');
+    const tracking = {
+      plaudRecordingId: 'p1',
+      status: PlaudSyncStatus.SYNCED,
+      contentHash: staleContentHash,
+      meetingId: 'm1',
+      plaudCreatedAt: new Date('2026-08-01T10:00:00Z'),
+    };
+    const prisma = {
+      plaudConnection: { findUnique: jest.fn(), update: jest.fn() },
+      plaudSyncItem: { findUnique: jest.fn().mockResolvedValue(tracking), upsert: jest.fn() },
+      meeting: { findUnique: jest.fn(), update: jest.fn().mockResolvedValue({ id: 'm1' }) },
+    };
+    const api = {
+      listFiles: jest.fn(),
+      getFile: jest.fn().mockResolvedValue(makeDetail('p1', title, '2026-08-01T10:00:00Z', rawSummary)),
+      loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
+      findTranscriptNote: jest.fn().mockReturnValue(undefined),
+    };
+    const service = new PlaudSyncService(prisma as any, api as any);
+
+    await service.forceSyncOne('emp1', 'p1');
+
+    expect(prisma.plaudConnection.findUnique).not.toHaveBeenCalled();
+    expect(api.listFiles).not.toHaveBeenCalled();
+    expect(api.getFile).toHaveBeenCalledWith('emp1', 'p1');
+    expect(prisma.meeting.update).toHaveBeenCalledWith({
+      where: { id: 'm1' },
+      data: { title, latestSummary: rawSummary },
+    });
+  });
+
+  it('содержимое реально не изменилось — идемпотентна, ничего не перезаписывает (та же contentHash-проверка, что у syncItem)', async () => {
+    const rawSummary = 'Саммари без изменений';
+    const title = 'Встреча';
+    const hash = createHash('sha256').update(`${title}\n${rawSummary}`).digest('hex');
+    const tracking = { plaudRecordingId: 'p1', status: PlaudSyncStatus.SYNCED, contentHash: hash, meetingId: 'm1', plaudCreatedAt: new Date('2026-08-01T10:00:00Z') };
+    const prisma = {
+      plaudSyncItem: { findUnique: jest.fn().mockResolvedValue(tracking), upsert: jest.fn() },
+      meeting: { findUnique: jest.fn(), update: jest.fn() },
+    };
+    const api = {
+      getFile: jest.fn().mockResolvedValue(makeDetail('p1', title, '2026-08-01T10:00:00Z', rawSummary)),
+      loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
+      findTranscriptNote: jest.fn().mockReturnValue(undefined),
+    };
+    const service = new PlaudSyncService(prisma as any, api as any);
+
+    await service.forceSyncOne('emp1', 'p1');
+
+    expect(prisma.meeting.update).not.toHaveBeenCalled();
+  });
+
+  it('запись никогда не была синхронизирована (нет PlaudSyncItem) — создаёт Meeting напрямую, минуя pullChanges', async () => {
+    const prisma = {
+      plaudSyncItem: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn() },
+      meeting: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({ id: 'm-new' }) },
+    };
+    const api = {
+      getFile: jest.fn().mockResolvedValue(makeDetail('p2', 'Новая встреча', '2026-09-20T10:00:00Z', 'Саммари')),
+      loadNoteContent: jest.fn().mockImplementation((note: any) => Promise.resolve(note.data_content)),
+      findTranscriptNote: jest.fn().mockReturnValue(undefined),
+    };
+    const service = new PlaudSyncService(prisma as any, api as any);
+
+    await service.forceSyncOne('emp1', 'p2');
+
+    expect(prisma.meeting.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ title: 'Новая встреча', rawSummary: 'Саммари', plaudRecordingId: 'p2' }) }),
+    );
+  });
+});

@@ -111,6 +111,21 @@ export class PlaudSyncService {
     });
   }
 
+  // Доп. P2-находка седьмого внешнего аудита ("targeted Plaud force-resync")
+  // — pullChanges выше рассматривает запись только если она попадает в
+  // курсор (новые файлы) или в RETRY_LOOKBACK_MS-окно (pendingRetries/
+  // recentlySynced). Запись старше 7 дней, которую Plaud дообработал уже
+  // после этого окна, никаким штатным прогоном крона больше не
+  // пересматривается вовсе. forceSyncOne — точечный обход этой логики для
+  // ОДНОЙ конкретной записи по явному запросу руководителя: те же самые
+  // syncItem/contentHash-проверки (см. её комментарий — идемпотентна, если
+  // содержимое реально не изменилось), просто без курсора/окна ретраев
+  // вокруг них.
+  async forceSyncOne(employeeId: string, plaudRecordingId: string): Promise<void> {
+    const detail = await this.api.getFile(employeeId, plaudRecordingId);
+    await this.syncItem(employeeId, plaudRecordingId, detail.name, detail.created_at);
+  }
+
   // Единая точка для всех трёх источников работы (новая запись/ретрай
   // pending/перепроверка synced) — идемпотентна: без изменений на стороне
   // Plaud содержимое просто перезапишется тем же значением (contentHash

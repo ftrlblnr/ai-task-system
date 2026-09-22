@@ -6,6 +6,7 @@ import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
 import { MeetingsService } from '../meetings/meetings.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
 import { buildTasksWorkbookBuffer } from './task-export';
@@ -159,6 +160,7 @@ export class AssistantToolsService {
     private readonly files: FilesService,
     private readonly meetings: MeetingsService,
     private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
   ) {}
 
   buildTools(user: AuthenticatedUser): Anthropic.Tool[] {
@@ -273,7 +275,7 @@ export class AssistantToolsService {
       }
       if (name === 'search_meetings') {
         const query = (input as { query?: unknown } | null)?.query;
-        return await this.searchMeetings(typeof query === 'string' ? query : '');
+        return await this.searchMeetings(typeof query === 'string' ? query : '', user);
       }
       if (name === 'get_meeting') {
         const meetingId = (input as { meetingId?: unknown } | null)?.meetingId;
@@ -283,7 +285,7 @@ export class AssistantToolsService {
         const typedInput = input as { query?: unknown; meetingId?: unknown } | null;
         const query = typeof typedInput?.query === 'string' ? typedInput.query : '';
         const meetingId = typeof typedInput?.meetingId === 'string' ? typedInput.meetingId : undefined;
-        return await this.searchMeetingTranscript(query, meetingId);
+        return await this.searchMeetingTranscript(query, meetingId, user);
       }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
@@ -352,7 +354,7 @@ export class AssistantToolsService {
   // Поиск по подстроке (ILIKE через Prisma mode: 'insensitive'), не
   // полнотекстовый поиск — простой и достаточный для объёма встреч одной
   // компании, не требует отдельной tsvector-инфраструктуры.
-  private async searchMeetings(query: string): Promise<ToolExecutionResult> {
+  private async searchMeetings(query: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
     const trimmed = query.trim();
     if (!trimmed) return { tool: 'search_meetings', items: [], totalCount: 0 };
 
@@ -372,6 +374,15 @@ export class AssistantToolsService {
       this.prisma.meeting.count({ where }),
     ]);
     const items: MeetingSummaryData[] = meetings.map((m) => ({ meetingId: m.id, title: m.title, meetingDate: m.meetingDate.toISOString() }));
+
+    // Находка P2 (доп. пункт) седьмого внешнего аудита — поиск по встречам
+    // через AI-ассистента раньше не оставлял следа в AuditLog вообще (в
+    // отличие от MeetingsService.findOne/extractTasks, где раздел 15 ТЗ уже
+    // соблюдался). entityId — сам поисковый запрос: у поиска по всем
+    // встречам нет одной "целевой" записи, а по запросу можно найти, что
+    // именно искали.
+    await this.audit.log(user.id, 'AI_MEETING_SEARCH', 'Meeting', trimmed, { resultCount: totalCount });
+
     return { tool: 'search_meetings', items, totalCount };
   }
 
@@ -401,7 +412,7 @@ export class AssistantToolsService {
   // результат здесь означает либо "ничего не сказали по теме", либо
   // "транскрипт этой встречи ещё не синхронизирован", промпт инструмента
   // прямо просит модель не путать одно с другим и не выдумывать ответ.
-  private async searchMeetingTranscript(query: string, meetingId?: string): Promise<ToolExecutionResult> {
+  private async searchMeetingTranscript(query: string, meetingId: string | undefined, user: AuthenticatedUser): Promise<ToolExecutionResult> {
     const trimmed = query.trim();
     if (!trimmed) return { tool: 'search_meeting_transcript', items: [], totalCount: 0 };
 
@@ -437,6 +448,13 @@ export class AssistantToolsService {
       endMs: s.endMs,
       text: s.text,
     }));
+
+    // Находка P2 (доп. пункт) седьмого внешнего аудита — то же самое, что
+    // AI_MEETING_SEARCH выше, для поиска по транскриптам. entityId —
+    // meetingId, если поиск сужен на конкретную встречу (реальная целевая
+    // запись), иначе сам запрос (поиск по всем транскриптам).
+    await this.audit.log(user.id, 'AI_TRANSCRIPT_SEARCH', 'Meeting', meetingId ?? trimmed, { query: trimmed, meetingId: meetingId ?? null, resultCount: totalCount });
+
     return { tool: 'search_meeting_transcript', items, totalCount };
   }
 }
