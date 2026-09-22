@@ -884,6 +884,58 @@ access token через `SecretBoxService`'ный `ENCRYPTION_KEY` из окру
 проверенными по тому же протоколу "откатить → тест падает → восстановить →
 тест снова зелёный".
 
+**Седьмой внешний аудит — reliability/UX-фиксы (Stage 2, Phase N,
+21.09.2026)** — пересмотрел Phase M сразу после деплоя. Из 8 утверждений
+подтвердились 6 (проверено агентами-исследователями против реального кода);
+два не подтвердились:
+- "speaker mapping теряется, если задать `Meeting.speakerNames` до
+  появления транскрипта" — на деле `updateSpeakers` резолвит сегменты
+  сразу при каждом вызове, а вызвать его с реальными метками говорящих
+  можно только когда сегменты уже существуют (метки берутся из показанного
+  транскрипта) — сценария потери в реальности нет.
+- "CURRENT_STATE.md противоречив" — Phase K/Phase M корректно оформлены
+  как последовательная история, не как одновременные противоречия.
+
+Закрыты 4 P0/P1 находки (P2-находки — audit logging для meeting search,
+force-sync конкретной Plaud-записи — сознательно отложены владельцем):
+
+1. **Event participant partial-failure warning не доходил до UI.**
+   `VoiceEventActionResult.warning` (Phase M) строился backend'ом, но
+   `buildVoiceAssistantParts` строил `EVENT_CARD` только из `entity`,
+   `warning` нигде не читался; `EventCardData` не имела такого поля вовсе.
+   Теперь `EventCardData.warning?` прокидывается в те же данные, что
+   уходят в `MessagePart.data` (переживает перезагрузку истории без
+   отдельной работы), Mini App показывает `⚠ {warning}` под карточкой
+   (`.assistant-card-warning`), `apps/web`'s `/voice` (не использует
+   карточки, только текст) дописывает предупреждение к тексту результата.
+2. **Undo participant rollback мог быть частичным, но помечался
+   COMPLETED.** Новый статус `UndoRecordStatus.PARTIAL` — если хотя бы одна
+   операция отката участника (`addParticipant`/`removeParticipant`)
+   падает, запись помечается `PARTIAL`, не `COMPLETED`; `VoiceUndoResponse`
+   получает поле `warning`, `logAssistantMessage` пишет "Отменено
+   частично. <детали>" вместо "Отменено." — Mini App подхватывает текст
+   через обычную перезагрузку истории, `apps/web`'s `performUndo` (сам
+   строит текст, не читает лог) обновлён явно.
+3. **`VoiceExecution` зависал в `RECEIVED`/`PROCESSING` после краша
+   процесса.** `claimAndRunDurable` раньше отказывал в retry для любого
+   статуса, кроме `FAILED`, без учёта давности — если процесс падал ДО
+   того, как успевал дойти даже до `FAILED` (например, во время STT),
+   строка оставалась "якобы выполняется" навсегда. `STALE_VOICE_EXECUTION_MS`
+   (3 минуты, используя уже существующее `VoiceExecution.updatedAt`) —
+   `RECEIVED`/`PROCESSING` старше этого порога reclaim'ятся тем же путём,
+   что и `FAILED` (business-мутация до этой точки ещё не начиналась,
+   retry безопасен). `EXECUTING`/`NEEDS_RECONCILIATION` — поведение НЕ
+   изменено (мутация могла уже случиться, автоматический retry небезопасен
+   независимо от давности).
+4. **Plaud summary freshness — новая версия с Plaud нигде не сохранялась.**
+   `rawSummary` осознанно неизменна (раздел 8.1 ТЗ), но новое содержимое
+   при обнаруженном изменении (`contentHash` не совпал) просто
+   отбрасывалось после обновления `title`. Новое поле `Meeting.latestSummary`
+   хранит то, что Plaud реально отдаёт сейчас; потребители саммари
+   (`AssistantToolsService.getMeeting`/`searchMeetings`,
+   `MeetingsService.extractTasks`) переведены на цепочку
+   `enhancedSummary ?? latestSummary ?? rawSummary`.
+
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
 - Нет frontend-тестовой инфраструктуры вообще (ни `apps/miniapp`, ни
