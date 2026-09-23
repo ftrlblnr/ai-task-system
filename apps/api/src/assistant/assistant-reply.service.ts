@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { nowInLocalTimezone } from '../common/timezone';
-import { AssistantToolsService, type ToolExecutionResult } from './assistant-tools.service';
+import { AssistantToolsService, isWriteTool, type ToolExecutionResult } from './assistant-tools.service';
 
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
 // вызов. Phase C: один раунд tool use (LLM решает вызвать get_tasks/
@@ -194,15 +194,23 @@ export class AssistantReplyService {
     const tools = await this.tools.buildTools(user);
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
     // Hardening-раунд Phase O (22.09.2026, P0/P1 "stable tool
-    // idempotency") — общий счётчик на ВЕСЬ вызов runReply, не сбрасывается
-    // между раундами. create_task_from_meeting строит dedupeKey из
-    // (userMessageId, toolCallIndex) — не из meetingId/title (LLM-текст),
-    // см. её комментарий. Позиционная identity: тот же порядок tool-вызовов
-    // при полном ретрае даёт тот же индекс на том же логическом действии
-    // (переживает перефразирование title моделью), а два РАЗНЫХ вызова в
-    // одном ответе (например, одна и та же формулировка для двух разных
-    // исполнителей) получают разные индексы — не схлопываются в один.
-    let toolCallIndex = 0;
+    // idempotency"), уточнено roadmap v13 MUST-FIX #2 (23.09.2026) —
+    // счётчик на ВЕСЬ вызов runReply, не сбрасывается между раундами, НО
+    // растёт только на write-tool'ах (isWriteTool, сейчас только
+    // create_task_from_meeting) — read-tool'ы (search_meetings/get_meeting/
+    // search_meeting_transcript/...) его не двигают. Раньше счётчик рос на
+    // КАЖДОМ tool-вызове без разбора — ретрай с другим числом read-вызовов
+    // перед тем же write-вызовом получал другой индекс → другой dedupeKey →
+    // защита от дублей не срабатывала. create_task_from_meeting строит
+    // dedupeKey из (userMessageId, writeToolCallIndex) — не из meetingId/
+    // title (LLM-текст), см. её комментарий. Позиционная identity среди
+    // write-вызовов: тот же порядок write-вызовов при полном ретрае даёт
+    // тот же индекс на том же логическом действии (переживает и
+    // перефразирование title моделью, и разное число read-вызовов вокруг),
+    // а два РАЗНЫХ write-вызова в одном ответе (например, одна и та же
+    // формулировка для двух разных исполнителей) получают разные индексы —
+    // не схлопываются в один.
+    let writeToolCallIndex = 0;
 
     onEvent?.({ type: 'text-reset' });
     let response = await this.streamOnce(messages, tools, onEvent, signal);
@@ -226,7 +234,14 @@ export class AssistantReplyService {
       for (const block of toolUseBlocks) {
         onEvent?.({ type: 'tool-started', name: block.name });
         const toolStart = Date.now();
-        const result = await this.tools.execute(block.name, block.input, user, conversationId, userMessageId, toolCallIndex++);
+        const result = await this.tools.execute(
+          block.name,
+          block.input,
+          user,
+          conversationId,
+          userMessageId,
+          isWriteTool(block.name) ? writeToolCallIndex++ : undefined,
+        );
         const durationMs = Date.now() - toolStart;
         toolCalls.push({ name: block.name, result, durationMs });
         onEvent?.({ type: 'tool-completed', name: block.name, result });

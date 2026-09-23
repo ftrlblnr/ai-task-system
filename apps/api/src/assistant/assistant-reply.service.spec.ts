@@ -136,11 +136,14 @@ describe('AssistantReplyService.reply — ограниченный многор�
     expect(result.text).toBe('Готово, задача создана.');
   });
 
-  // Hardening-раунд (22.09.2026, P0/P1 "stable tool idempotency") —
-  // toolCallIndex должен монотонно расти по ВСЕМ раундам одного вызова
-  // reply(), не сбрасываться между раундами и не зависеть от того, сколько
-  // tool_use было в предыдущем раунде.
-  it('toolCallIndex монотонно растёт по всем раундам одного reply(), включая несколько tool_use в одном раунде', async () => {
+  // Hardening-раунд (22.09.2026, P0/P1 "stable tool idempotency"),
+  // уточнено roadmap v13 MUST-FIX #2 (23.09.2026) — writeToolCallIndex
+  // должен монотонно расти по ВСЕМ раундам одного вызова reply(), не
+  // сбрасываться между раундами, не зависеть от того, сколько tool_use
+  // было в предыдущем раунде, И НЕ ДВИГАТЬСЯ на read-tool'ах (регрессия
+  // самого MUST-FIX #2 — раньше search_meetings тоже получал числовой
+  // индекс, из-за чего порядок read/write вызовов влиял на dedupeKey).
+  it('writeToolCallIndex монотонно растёт только на write-tool\'ах, read-tool получает undefined', async () => {
     const twoToolsInOneRound = {
       content: [
         { type: 'tool_use', id: 'call-1', name: 'search_meetings', input: {} },
@@ -163,10 +166,12 @@ describe('AssistantReplyService.reply — ограниченный многор�
     await service.reply('Создай две задачи', [], user(), 'conv1', 'userMsg1');
 
     expect(tools.execute).toHaveBeenCalledTimes(3);
-    // Раунд 1: два вызова подряд получают 0 и 1 (не сбрасывается внутри
-    // раунда). Раунд 2: следующий вызов получает 2 (продолжает счёт, не
-    // начинает заново с 0 на новом раунде).
-    expect(tools.execute.mock.calls.map((c) => c[5])).toEqual([0, 1, 2]);
+    // Раунд 1: read-tool (search_meetings) получает undefined (счётчик не
+    // трогается), следующий за ним write-tool получает 0. Раунд 2:
+    // следующий write-tool получает 1 (продолжает счёт среди write-tool'ов,
+    // не начинает заново с 0 на новом раунде, и не "видит" read-tool из
+    // раунда 1 как сдвиг индекса).
+    expect(tools.execute.mock.calls.map((c) => c[5])).toEqual([undefined, 0, 1]);
   });
 
   it('инструмент возвращает error — is_error попадает в tool_result, следующий раунд всё равно выполняется', async () => {

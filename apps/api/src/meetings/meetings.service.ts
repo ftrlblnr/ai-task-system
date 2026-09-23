@@ -29,8 +29,19 @@ export class MeetingsService {
     private readonly employeeResolver: EmployeeResolverService,
   ) {}
 
-  findAll() {
-    return this.prisma.meeting.findMany({ select: LIST_SELECT, orderBy: { meetingDate: 'desc' } });
+  // roadmap v13, MUST-FIX #1 (23.09.2026) — "О чём последняя запись из
+  // Plaud?" раньше мог выбрать вручную заведённую встречу вместо реальной
+  // последней Plaud-записи, поскольку findAll() отдавал все Meeting без
+  // разбора источника. source='plaud' фильтрует по уже существующему
+  // Meeting.plaudRecordingId (заполняется только PlaudSyncService).
+  // Единственный другой caller (MeetingsController → GET /meetings) не
+  // передаёт аргумент — поведение для него не меняется.
+  findAll(source: 'all' | 'plaud' = 'all') {
+    return this.prisma.meeting.findMany({
+      where: source === 'plaud' ? { plaudRecordingId: { not: null } } : undefined,
+      select: LIST_SELECT,
+      orderBy: { meetingDate: 'desc' },
+    });
   }
 
   async findOne(id: string, viewerId: string) {

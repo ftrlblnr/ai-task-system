@@ -193,6 +193,30 @@ describe('AssistantToolsService.execute — инструменты встреч 
     expect('items' in result && result.items).toHaveLength(10);
   });
 
+  // roadmap v13, MUST-FIX #1 (23.09.2026) — source прокидывается в
+  // MeetingsService.findAll как есть; любой мусор от модели безопасно
+  // трактуется как 'all', не 'plaud' (иначе можно было бы случайно
+  // спрятать все не-Plaud встречи от честного вопроса "все встречи").
+  it("get_recent_meetings — source='plaud' доходит до MeetingsService.findAll('plaud')", async () => {
+    const meetingsStub = { findAll: jest.fn().mockResolvedValue([]) };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+
+    await service.execute('get_recent_meetings', { source: 'plaud' }, user({ role: Role.OWNER }));
+
+    expect(meetingsStub.findAll).toHaveBeenCalledWith('plaud');
+  });
+
+  it("get_recent_meetings — source отсутствует/невалиден → MeetingsService.findAll('all')", async () => {
+    const meetingsStub = { findAll: jest.fn().mockResolvedValue([]) };
+    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+
+    await service.execute('get_recent_meetings', {}, user({ role: Role.OWNER }));
+    await service.execute('get_recent_meetings', { source: 'garbage' }, user({ role: Role.OWNER }));
+
+    expect(meetingsStub.findAll).toHaveBeenNthCalledWith(1, 'all');
+    expect(meetingsStub.findAll).toHaveBeenNthCalledWith(2, 'all');
+  });
+
   it('search_meetings — пустой query не бьёт в БД, сразу пустой результат', async () => {
     const prismaStub = { meeting: { findMany: jest.fn(), count: jest.fn() } };
     const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);

@@ -129,3 +129,38 @@ describe('MeetingsService.extractTasks — источник саммари (Stag
     expect(extraction.extract).toHaveBeenCalledWith('обновлённое с Plaud', 'Встреча', expect.any(String), []);
   });
 });
+
+// roadmap v13, MUST-FIX #1 (23.09.2026) — "О чём последняя запись из
+// Plaud?" раньше мог получить вручную заведённую встречу, потому что
+// findAll() не различал источник вообще.
+describe('MeetingsService.findAll — фильтр по источнику (roadmap v13, MUST-FIX #1)', () => {
+  function makeFindAllDeps() {
+    const prisma = { meeting: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new MeetingsService(prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { service, prisma };
+  }
+
+  it('без аргумента (как вызывает MeetingsController) — без where, все встречи', async () => {
+    const { service, prisma } = makeFindAllDeps();
+
+    await service.findAll();
+
+    expect(prisma.meeting.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: undefined }));
+  });
+
+  it("source='all' — явно то же самое, без where", async () => {
+    const { service, prisma } = makeFindAllDeps();
+
+    await service.findAll('all');
+
+    expect(prisma.meeting.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: undefined }));
+  });
+
+  it("source='plaud' — where на plaudRecordingId IS NOT NULL", async () => {
+    const { service, prisma } = makeFindAllDeps();
+
+    await service.findAll('plaud');
+
+    expect(prisma.meeting.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { plaudRecordingId: { not: null } } }));
+  });
+});

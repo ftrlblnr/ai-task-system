@@ -120,6 +120,17 @@ function resolveToolName(name: string): KnownToolName {
   return 'get_tasks';
 }
 
+// roadmap v13, MUST-FIX #2 (23.09.2026) — единственное место, регистрирующее
+// write-tool'ы (сейчас один, roadmap'а Phase P "Corporate Write Tools"
+// добавит больше). AssistantReplyService.runReply использует это, чтобы
+// считать write-only индекс для идемпотентности (см. её комментарий) —
+// read-tool'ы (search_meetings/get_meeting/...) не должны сдвигать этот
+// счётчик, иначе ретрай с другим числом read-вызовов даёт другой dedupeKey.
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting']);
+export function isWriteTool(name: string): boolean {
+  return WRITE_TOOL_NAMES.has(name);
+}
+
 // Безопасные коды для tool_result (аудит 16.09.2026, Phase F.1, P2.1) —
 // расширено третьим инструментом в Phase G, тем же приёмом расширено
 // четырьмя инструментами встреч/Plaud в Phase K. create_task_from_meeting
@@ -270,10 +281,14 @@ export class AssistantToolsService {
       // ТЗ) — не отдельная копия видимости, тот же MeetingsService.
       tools.push({
         name: 'get_recent_meetings',
-        description: 'Получить список последних встреч (протоколов), от новых к старым.',
+        description:
+          'Получить список последних встреч (протоколов), от новых к старым. Если пользователь явно говорит "Plaud" ("последняя запись из Plaud", "записи из Plaud") — используй source="plaud", чтобы отдать только встречи, реально импортированные из Plaud, а не вообще последнюю встречу любого происхождения. Для обычных вопросов вроде "какая была последняя встреча" оставляй source="all" (по умолчанию).',
         input_schema: {
           type: 'object',
-          properties: { limit: { type: 'integer', description: 'Сколько встреч вернуть (по умолчанию 5)' } },
+          properties: {
+            limit: { type: 'integer', description: 'Сколько встреч вернуть (по умолчанию 5)' },
+            source: { type: 'string', enum: ['all', 'plaud'], description: 'all (по умолчанию) — любые встречи; plaud — только импортированные из Plaud' },
+          },
           required: [],
         },
       });
@@ -360,7 +375,7 @@ export class AssistantToolsService {
     user: AuthenticatedUser,
     conversationId?: string,
     userMessageId?: string,
-    toolCallIndex?: number,
+    writeToolCallIndex?: number,
   ): Promise<ToolExecutionResult> {
     try {
       if (name === 'get_tasks') {
@@ -373,8 +388,10 @@ export class AssistantToolsService {
         return await this.exportTasksXlsx(user, filter === 'overdue' ? 'overdue' : 'all');
       }
       if (name === 'get_recent_meetings') {
-        const rawLimit = Number((input as { limit?: unknown } | null)?.limit);
-        return await this.getRecentMeetings(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 5);
+        const typedInput = input as { limit?: unknown; source?: unknown } | null;
+        const rawLimit = Number(typedInput?.limit);
+        const source = typedInput?.source === 'plaud' ? 'plaud' : 'all';
+        return await this.getRecentMeetings(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 5, source);
       }
       if (name === 'search_meetings') {
         const query = (input as { query?: unknown } | null)?.query;
@@ -391,15 +408,15 @@ export class AssistantToolsService {
         return await this.searchMeetingTranscript(query, meetingId, user);
       }
       if (name === 'create_task_from_meeting') {
-        if (!conversationId || !userMessageId || toolCallIndex === undefined) {
-          // Не должно случаться на практике — все три параметра
-          // прокидываются из runReply на каждый вызов (см. её комментарий
-          // про Phase O). toolCallIndex сравнивается с undefined явно, не
-          // через falsy-проверку — 0 (первый вызов) является легитимным
-          // значением. Если всё же случилось (например, кто-то вызвал
-          // execute() напрямую в обход runReply) — безопасный явный отказ,
-          // не создаём задачу без идентичности для идемпотентности.
-          throw new Error('create_task_from_meeting: отсутствует conversationId/userMessageId/toolCallIndex');
+        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+          // Не должно случаться на практике — runReply прокидывает
+          // writeToolCallIndex на каждый write-tool вызов (см. её
+          // комментарий, roadmap v13 MUST-FIX #2). Сравнивается с undefined
+          // явно, не через falsy-проверку — 0 (первый write-вызов) является
+          // легитимным значением. Если всё же случилось (например, кто-то
+          // вызвал execute() напрямую в обход runReply) — безопасный явный
+          // отказ, не создаём задачу без идентичности для идемпотентности.
+          throw new Error('create_task_from_meeting: отсутствует conversationId/userMessageId/writeToolCallIndex');
         }
         const typedInput = input as {
           meetingId?: unknown;
@@ -423,7 +440,7 @@ export class AssistantToolsService {
           user,
           conversationId,
           userMessageId,
-          toolCallIndex,
+          writeToolCallIndex,
         );
       }
       if (name === 'find_employee_by_competency') {
@@ -483,8 +500,11 @@ export class AssistantToolsService {
 
   // MeetingsService.findAll() уже сортирует по meetingDate desc — "recent"
   // значит просто первые limit элементов, без отдельной сортировки здесь.
-  private async getRecentMeetings(limit: number): Promise<ToolExecutionResult> {
-    const meetings = await this.meetings.findAll();
+  // roadmap v13, MUST-FIX #1 — source прокидывается как есть в
+  // findAll(), фильтрация по Meeting.plaudRecordingId живёт там же, где
+  // и остальная логика видимости встреч.
+  private async getRecentMeetings(limit: number, source: 'all' | 'plaud' = 'all'): Promise<ToolExecutionResult> {
+    const meetings = await this.meetings.findAll(source);
     const capped = Math.min(limit, MAX_TOOL_ITEMS);
     const items: MeetingSummaryData[] = meetings.slice(0, capped).map((m) => ({
       meetingId: m.id,
@@ -627,7 +647,7 @@ export class AssistantToolsService {
     user: AuthenticatedUser,
     conversationId: string,
     userMessageId: string,
-    toolCallIndex: number,
+    writeToolCallIndex: number,
   ): Promise<ToolExecutionResult> {
     const meetingId = input.meetingId.trim();
     const title = input.title.trim();
@@ -669,12 +689,20 @@ export class AssistantToolsService {
     // один — assigneeRawText в старом ключе не участвовал вовсе. Новый
     // ключ — чисто позиционная identity: userMessageId (стабилен при
     // полном ретрае сообщения, в отличие от tool_use.id от Anthropic, см.
-    // комментарий AssistantReplyService.runReply) + toolCallIndex (номер
-    // ЭТОГО конкретного tool-вызова внутри runReply, различает несколько
-    // вызовов в одном ответе). Без хэша — обе части уже безопасны как
-    // строка (userMessageId — cuid, toolCallIndex — число, разделитель
-    // ':' не может встретиться ни в одной из частей).
-    const dedupeKey = `${userMessageId}:${toolCallIndex}`;
+    // комментарий AssistantReplyService.runReply) + writeToolCallIndex
+    // (номер ЭТОГО конкретного write-вызова внутри runReply, различает
+    // несколько вызовов в одном ответе). roadmap v13, MUST-FIX #2
+    // (23.09.2026) — раньше это был индекс СРЕДИ ВСЕХ tool-вызовов
+    // (включая read-tool'ы вроде search_meetings/get_meeting), из-за чего
+    // ретрай с другим числом read-вызовов перед этим же write-вызовом менял
+    // индекс и ломал распознавание дубликата. Теперь runReply считает
+    // отдельный счётчик, увеличивающийся только на write-tool'ах (см.
+    // isWriteTool/WRITE_TOOL_NAMES выше и её комментарий) — число
+    // read-вызовов между ними больше не влияет на ключ. Без хэша — обе
+    // части уже безопасны как строка (userMessageId — cuid,
+    // writeToolCallIndex — число, разделитель ':' не может встретиться ни
+    // в одной из частей).
+    const dedupeKey = `${userMessageId}:${writeToolCallIndex}`;
 
     let executionId: string;
     try {
