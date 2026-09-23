@@ -589,3 +589,16 @@ workspaces при таком масштабе проекта.
     обычный `assigneeRawText` в уже захардененный (Phase O) путь — новое
     доверие к модели не добавляется. Без миграции. Подробности — раздел
     "Competency-based assignee routing" в `CURRENT_STATE.md`.
+14. MUST-FIX #1 + #2 — roadmap v13 (23.09.2026): пользователь прислал
+    полный текст дорожной карты, до этого выпавший из контекста —
+    выяснилось, что перед Phase O (GPT-Live/WebRTC) документ ставит два
+    `MUST-FIX`. (1) Plaud source filter — `get_recent_meetings` получил
+    `source: 'all' | 'plaud'`, чтобы "О чём последняя запись из Plaud?"
+    не выбирал вручную заведённую встречу вместо реальной Plaud-записи.
+    (2) Write-only idempotency index — `create_task_from_meeting`'s
+    dedupeKey раньше зависел от ОБЩЕГО счётчика tool-вызовов (включая
+    read-tool'ы вроде `search_meetings`), из-за чего ретрай с другим
+    числом read-вызовов ломал распознавание дубликата; новый
+    `writeToolCallIndex` (`AssistantToolsService.isWriteTool`) растёт
+    только на write-tool'ах. Оба без миграции. Подробности — раздел
+    "MUST-FIX #1 + #2 — roadmap v13" в `CURRENT_STATE.md`.

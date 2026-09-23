@@ -1,4 +1,4 @@
-# CURRENT_STATE — фактическое состояние системы (22.09.2026)
+# CURRENT_STATE — фактическое состояние системы (23.09.2026)
 
 Этот файл описывает, что в системе реально реализовано и как оно работает
 сейчас, а не то, что запланировано (см. README для истории решений и планов).
@@ -1225,6 +1225,58 @@ hardening выше). Прямая ("не meeting-sourced") голосовая/т
 компетенций, `ACTIVE`-фильтр в запросе) подтвердили падение ожидаемых
 тестов при временном откате. Точечный `eslint` (только изменённые файлы)
 — 0 ошибок.
+
+**MUST-FIX #1 + #2 — roadmap v13 (23.09.2026)** — пользователь прислал
+полный текст дорожной карты версии (13) целиком (документ ранее выпал из
+контекста при более раннем сжатии разговора). Она явно указывает: после
+Phase M/Phase N (Competency Routing, здесь — Stage 2, Phase P) следующий
+шаг — не Phase O (GPT-Live/WebRTC), а два `MUST-FIX`, изначально
+задуманные ДО Phase M/N ("BACKEND HARDENING STOP" сразу после них). Раз
+Phase M/N уже сделаны без них — оба всё равно остаются нужны как реальные
+корректностные баги, подтверждённые чтением кода перед фиксом:
+
+1. **Plaud source filter.** `get_recent_meetings` принимал только
+   `limit` — `MeetingsService.findAll()` отдавала вообще все `Meeting`,
+   хотя `Meeting.plaudRecordingId` (`String? @unique`) уже существовал и
+   уже выбирался. "О чём последняя запись из Plaud?" мог выбрать вручную
+   заведённую встречу вместо реальной последней Plaud-записи. Новый
+   параметр `findAll(source: 'all' | 'plaud' = 'all')` — `'plaud'`
+   фильтрует `plaudRecordingId: { not: null }`; единственный другой
+   caller (`MeetingsController` → `GET /meetings`) вызывает без
+   аргумента, поведение не меняется. Схема тула `get_recent_meetings`
+   получила `source: 'all' | 'plaud'` с явной инструкцией модели ("если
+   пользователь говорит 'Plaud' — используй source='plaud'"), взятой
+   почти дословно из формулировки самого roadmap-документа.
+2. **Write-only idempotency index.** `AssistantReplyService.runReply()`
+   растил один общий счётчик (`toolCallIndex`) на КАЖДЫЙ tool-вызов, а
+   `create_task_from_meeting` (единственный write-tool) строил из него
+   `dedupeKey = userMessageId:toolCallIndex` (hardening-раунд Phase O,
+   22.09.2026). Баг: ретрай с ДРУГИМ числом read-tool вызовов
+   (`search_meetings`/`get_meeting`/`search_meeting_transcript`) перед
+   тем же write-вызовом получал другой индекс → другой dedupeKey → защита
+   от дублей не срабатывала, хотя это логически тот же write-вызов.
+   Новое: `AssistantToolsService.isWriteTool(name)`/`WRITE_TOOL_NAMES`
+   (сейчас — только `create_task_from_meeting`, единственное место
+   регистрации будущих write-tool'ов Phase P roadmap'а "Corporate Write
+   Tools") — `runReply()` теперь ведёт отдельный `writeToolCallIndex`,
+   увеличивающийся ТОЛЬКО на write-tool'ах; read-tool'ам в `execute()`
+   передаётся `undefined` (параметр им и не нужен). Переименовано
+   `toolCallIndex` → `writeToolCallIndex` во всей цепочке
+   (`execute()`/`createTaskFromMeeting()`) для ясности терминологии.
+   `Task.sourceExecutionId @unique` остаётся последней DB-гарантией
+   независимо от этого фикса, не тронут.
+
+Оба фикса — чистая application-логика, без миграции. Верификация:
+`cd apps/api && npx jest --silent` — 312/312 (было 307/307 до раунда).
+Оба revert-check'а подтвердили падение соответствующих тестов при
+временном откате (source-фильтр — 3 новых теста в
+`meetings.service.spec.ts`; write-only индекс — обновлённый тест
+`assistant-reply.service.spec.ts`, ожидавший `[undefined, 0, 1]` вместо
+старого `[0, 1, 2]` для `[search_meetings, create_task_from_meeting,
+create_task_from_meeting]` — именно это изменение ожидания и фиксирует
+закрытие бага). Точечный `eslint` — 0 ошибок. По roadmap-документу,
+следующий шаг после этого раунда — Phase O (GPT-Live/WebRTC), отдельным
+заходом.
 
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
