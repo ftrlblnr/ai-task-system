@@ -1,4 +1,4 @@
-# CURRENT_STATE — фактическое состояние системы (23.09.2026)
+# CURRENT_STATE — фактическое состояние системы (24.09.2026)
 
 Этот файл описывает, что в системе реально реализовано и как оно работает
 сейчас, а не то, что запланировано (см. README для истории решений и планов).
@@ -1277,6 +1277,60 @@ create_task_from_meeting]` — именно это изменение ожида
 закрытие бага). Точечный `eslint` — 0 ошибок. По roadmap-документу,
 следующий шаг после этого раунда — Phase O (GPT-Live/WebRTC), отдельным
 заходом.
+
+**GPT-Live — живой голос по WebRTC (Stage 2, Phase Q, 24.09.2026, `apps/web` only)** —
+"Phase O" roadmap'а v13 (внутренняя буква — следующая свободная). Цель roadmap'а:
+`WebRTC → GPT-Live → Assistant Core → те же tools`, без нового слоя бизнес-
+логики. GPT-Live делит роли: Live-модель (`gpt-live-1`) ведёт разговор
+голосом и решает, когда делегировать; всё, что требует данных/действий,
+делегируется бэкенду (`delegation.type = "client"`). Бэкенд — существующий
+Assistant Core: **делегированная задача превращается в обычное сообщение чата**
+(`AssistantChatService.sendMessage`) — те же tools и RBAC, идемпотентность по
+`(conversationId, clientRequestId)`, exactly-once, запись реплики и ответа с
+карточками в общую ленту (видна в текстовом чате и Mini App). Responses-
+делегация OpenAI (второй набор tools на другой модели) сознательно не
+используется — это и был бы новый слой логики.
+
+`apps/api/src/live/` (`LiveService`/`LiveController`, флаг `LIVE_VOICE_ENABLED`):
+- `POST /live/sessions {sdp, conversationId?}` — сервер сам обменивает SDP с
+  OpenAI (`POST /v1/live/sessions`), ключ браузеру не отдаётся. Проверка
+  владения разговором — ДО обращения к OpenAI. Права data channel браузера
+  урезаны (`allowed_client_events: ['session.close']`, серверные события —
+  только транскрипты/делегации/started/closed): браузер untrusted. Одна живая
+  сессия на сотрудника (биллинг посекундный — предыдущая закрывается),
+  потолок `LIVE_MAX_SESSION_MS` (10 мин). `DELETE /live/sessions/:id`,
+  `GET /live/status`.
+- Sideband-WebSocket (`wss://api.openai.com/v1/live/sessions/{id}/attach`,
+  зависимость `ws`): копит `session.input_transcript.delta`; на
+  `session.delegation.created` (событие НЕ содержит текста запроса) после
+  короткой «усадки» (400 мс — хвост транскрипта приходит позже события) берёт
+  накопленный текст, ставит в очередь сессии (делегации строго по порядку),
+  дедуп по `delegation.id`, `sendMessage(..., clientRequestId="live:<id>")`,
+  ответ → `session.commentary.append` (очищен от markdown, ≤900 символов с
+  пометкой «подробности в чате»). Ошибка/FAILED — безопасная фраза без
+  `err.message`, никогда «успех». Логи: только исходы/тайминги/usage, без
+  транскриптов.
+- Write-действия в живом голосе — автоматически, как в тексте (решение
+  пользователя; roadmap: low-risk create → automatic); ассистент проговаривает,
+  что создал.
+
+`apps/web`: `src/lib/live-voice.ts` (`LiveVoiceClient`: getUserMedia →
+RTCPeerConnection → data channel `oai-events` → SDP через наш API), кнопка
+«Живой голос» и панель с субтитрами на `/assistant`; пока сессия живая, лента
+подтягивается раз в 2 с (браузер не получает сигнала «делегация завершена» —
+sideband серверный). Push-to-talk `/voice/parse` не тронут. Mini App — вне
+рамок (риск WebRTC в Telegram WebView).
+
+**Не подтверждено доками (проверяется живым прогоном):** доставка
+`session.delegation.created` на sideband для WebRTC-сессии (страницы доков
+противоречат друг другу), точные имена client-событий (`session.commentary.
+append`), качество русского у `gpt-live-1`. Поэтому фича за флагом, неизвестные
+типы sideband-событий логируются по имени. Карта сессий — in-memory (один
+процесс API, как остальные координаторы): рестарт API рвёт живые сессии.
+Верификация: `cd apps/api && npx jest --silent` — 332/332 (было 312/312),
+20 тестов `live.service.spec.ts`; revert-check'и (дедуп делегаций, обрезка,
+одна сессия на сотрудника, проверка владения) подтверждены; `tsc --noEmit`
+api чист, scoped `eslint` api/web — 0 ошибок.
 
 **Известные ограничения этого этапа** (сознательно не сделано, см. планы
 стабилизации от 16.09.2026, 17.09.2026 и генерации файлов от 16.09.2026):
