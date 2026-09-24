@@ -1237,3 +1237,136 @@ describe('VoiceService.parse — явный conversationId (Phase H.1, P2)', () 
     expect(whisperSpy).not.toHaveBeenCalled();
   });
 });
+
+// Stage 2, Phase Q (24.09.2026) — делегация GPT-Live: тот же голосовой пайплайн,
+// но транскрипт уже готов (без Whisper). Регресс: живой режим шёл в текстовый
+// Assistant Core и не умел создавать задачи/события.
+describe('VoiceService.parseTranscript — делегация GPT-Live без STT (Stage 2, Phase Q)', () => {
+  function makeLiveService(drafts: unknown[]) {
+    const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'live:del_1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const whisperSpy = jest.fn();
+    const extractSpy = jest.fn().mockResolvedValue({
+      drafts,
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 1, strongMs: 0 },
+      escalatedToStrongModel: false,
+    });
+    const assistantReply = { reply: jest.fn().mockResolvedValue({ text: 'Ответ', toolCalls: [] }) };
+    const assistantChat = {
+      assertOwnedConversation: jest.fn().mockResolvedValue(undefined),
+      getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }),
+    };
+    const prisma = {
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Азамат' }]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      conversation: { update: jest.fn() },
+      voiceExecution: { create: jest.fn().mockResolvedValue({ id: 'exec-1' }), update: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      assistantChat as any,
+      { resolve: jest.fn() } as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      assistantReply as any,
+    ) as any;
+    return { service, whisperSpy, extractSpy, assistantReply, prisma, assistantChat };
+  }
+
+  it('«поставь задачу Азамату»: Whisper НЕ вызывается, черновик исполняется через executeTaskAction, ответ несёт результат', async () => {
+    const { service, whisperSpy } = makeLiveService([taskDraft({ action: 'create', targetTaskId: '', title: 'Купить мясо', assigneeId: 'e1' })]);
+    service.executeTaskAction = jest.fn().mockResolvedValue({
+      result: { type: 'task_action', draft: {}, ok: true, error: null, taskId: 't1', undoToken: null },
+      entity: { id: 't1', title: 'Купить мясо', status: 'NEW', dueDate: null, assignee: { id: 'e1', fullName: 'Азамат' }, priority: null },
+    });
+
+    const response = await service.parseTranscript(makeUser({ role: Role.OWNER }), {
+      transcript: 'Поставь задачу Азамату купить мясо',
+      clientRequestId: 'live:del_1',
+      conversationId: 'c1',
+    });
+
+    expect(whisperSpy).not.toHaveBeenCalled();
+    expect(service.executeTaskAction).toHaveBeenCalledTimes(1);
+    expect(response.results[0]).toMatchObject({ type: 'task_action', ok: true, taskId: 't1' });
+    expect(response.transcript).toBe('Поставь задачу Азамату купить мясо');
+  });
+
+  it('событие в календаре: черновик event_action исполняется через executeEventAction', async () => {
+    const { service } = makeLiveService([eventDraft({ title: 'Встреча с IDAT' })]);
+    service.executeEventAction = jest.fn().mockResolvedValue({
+      result: { type: 'event_action', draft: {}, ok: true, error: null, eventId: 'e1', undoToken: null, warning: null },
+      entity: { id: 'e1', title: 'Встреча с IDAT', description: null, location: null, startAt: new Date(), endAt: new Date(), allDay: false, status: 'CONFIRMED', participants: [] },
+    });
+
+    const response = await service.parseTranscript(makeUser({ role: Role.OWNER }), { transcript: 'Запись в календаре на завтра в 15:00 встреча с IDAT', clientRequestId: 'live:del_2' });
+
+    expect(service.executeEventAction).toHaveBeenCalledTimes(1);
+    expect(response.results[0]).toMatchObject({ type: 'event_action', ok: true, eventId: 'e1' });
+  });
+
+  it('liveContext доходит до извлечения черновиков и до chat-ответа, но в сохранённое сообщение НЕ попадает', async () => {
+    const { service, extractSpy, assistantReply, prisma } = makeLiveService([{ type: 'chat', reply: 'Ок' }]);
+
+    await service.parseTranscript(makeUser({ role: Role.OWNER }), {
+      transcript: 'Создай из этого задачу Жандосу',
+      clientRequestId: 'live:del_3',
+      liveContext: 'User: Мы обсуждали IDAT.\nAssistant: Да.',
+    });
+
+    expect(extractSpy.mock.calls[0][0]).toBe('Создай из этого задачу Жандосу');
+    expect(extractSpy.mock.calls[0][8]).toBe('User: Мы обсуждали IDAT.\nAssistant: Да.');
+    expect(assistantReply.reply.mock.calls[0][0]).toBe('[live_context]\nUser: Мы обсуждали IDAT.\nAssistant: Да.\n[/live_context]\n\nСоздай из этого задачу Жандосу');
+    const savedUserContent = prisma.message.create.mock.calls[0][0].data.parts.create[0].data.content;
+    expect(savedUserContent).toBe('Создай из этого задачу Жандосу');
+    expect(savedUserContent).not.toContain('live_context');
+  });
+
+  it('без liveContext chat-ответ получает чистый транскрипт (поведение push-to-talk не изменилось)', async () => {
+    const { service, assistantReply, extractSpy } = makeLiveService([{ type: 'chat', reply: 'Ок' }]);
+
+    await service.parseTranscript(makeUser(), { transcript: 'Какие у меня задачи?', clientRequestId: 'live:del_4' });
+
+    expect(assistantReply.reply.mock.calls[0][0]).toBe('Какие у меня задачи?');
+    expect(extractSpy.mock.calls[0][8]).toBeUndefined();
+  });
+
+  it('повтор той же делегации (COMPLETED) — реальный сохранённый результат, без повторного извлечения/исполнения', async () => {
+    const { service, extractSpy, prisma } = makeLiveService([]);
+    const err = new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: '6.19.3' });
+    prisma.voiceExecution.create = jest.fn().mockRejectedValue(err);
+    (prisma.voiceExecution as any).findUnique = jest.fn().mockResolvedValue({
+      id: 'exec-1',
+      conversationId: 'c1',
+      status: VoiceExecutionStatus.COMPLETED,
+      userMessageId: null,
+      assistantMessageId: null,
+      resultJson: { transcript: 'x', confidence: 'HIGH', clarificationNeeded: false, clarificationReason: null, results: [{ type: 'chat', reply: 'было' }] },
+    });
+
+    const response = await service.parseTranscript(makeUser(), { transcript: 'x', clientRequestId: 'live:del_1' });
+
+    expect(extractSpy).not.toHaveBeenCalled();
+    expect(response.results).toEqual([{ type: 'chat', reply: 'было' }]);
+  });
+
+  it('пустой транскрипт — BadRequest, пайплайн не запускается', async () => {
+    const { service, extractSpy } = makeLiveService([]);
+
+    await expect(service.parseTranscript(makeUser(), { transcript: '   ', clientRequestId: 'live:del_5' })).rejects.toThrow('Пустая команда');
+    expect(extractSpy).not.toHaveBeenCalled();
+  });
+});

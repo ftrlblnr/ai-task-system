@@ -101,7 +101,7 @@ export function serializeMessageForModelContext(parts: MessagePart[]): string {
 // ТОЛЬКО модели, отдельным блоком [live_context], тем же приёмом, что
 // [attached_file]: сохранённый текст сообщения остаётся чистой командой, а
 // "из этого/ему/там" модель раскрывает по блоку. Приходит только из
-// внутреннего кода (LiveService), не из HTTP DTO.
+// внутреннего кода (VoiceService при делегации GPT-Live), не из HTTP DTO.
 export function serializeCurrentUserTurn(text: string, attachments: FilePartData[], liveContext?: string): string {
   const blocks = attachments.map((a) => `[attached_file]\nid=${a.fileId}\nname=${a.name}\nmimeType=${a.mimeType}\nsize=${a.size}`);
   const context = liveContext?.trim() ? [`[live_context]\n${liveContext.trim()}\n[/live_context]`] : [];
@@ -507,7 +507,6 @@ export class AssistantChatService {
     user: AuthenticatedUser,
     conversationId: string,
     dto: SendMessageDto,
-    options?: { liveContext?: string },
   ): Promise<{ userMessage: MessageWithParts; assistantMessage: MessageWithParts }> {
     await this.findOwnedConversation(user, conversationId);
 
@@ -529,7 +528,7 @@ export class AssistantChatService {
     // же userMessage, присоединяемся к его результату вместо повторного
     // вызова Anthropic/tools.
     const { result } = this.claimOrJoin(userMessage, () =>
-      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto, options?.liveContext),
+      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto),
     );
     const assistantMessage = await result;
 
@@ -545,13 +544,12 @@ export class AssistantChatService {
     userMessage: MessageWithParts,
     existingAssistantMessage: MessageWithParts | undefined,
     dto: SendMessageDto,
-    liveContext?: string,
   ): Promise<MessageWithParts> {
     const requestId = randomUUID();
     const t0 = Date.now();
 
     const history = await this.loadHistory(conversationId, userMessage.id);
-    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts), liveContext);
+    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];

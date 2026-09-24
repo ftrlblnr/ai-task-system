@@ -11,7 +11,13 @@ import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
 import type { CreateEventDto } from '../calendar/dto/create-event.dto';
 import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { formatLocalDateTime } from '../common/timezone';
-import { AssistantChatService, isUniqueConstraintError, serializeMessageForModelContext, type MessageWithParts } from '../assistant/assistant-chat.service';
+import {
+  AssistantChatService,
+  isUniqueConstraintError,
+  serializeCurrentUserTurn,
+  serializeMessageForModelContext,
+  type MessageWithParts,
+} from '../assistant/assistant-chat.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
 import { AssistantReplyService, stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
@@ -89,6 +95,14 @@ function isRecordNotFoundError(err: unknown): boolean {
 }
 
 type MulterFile = Express.Multer.File;
+
+// Stage 2, Phase Q (24.09.2026) — вход голосового пайплайна: либо аудио (STT
+// через Whisper, как раньше), либо УЖЕ готовый транскрипт (делегация GPT-Live:
+// речь распознана самим Live, поэтому Whisper не нужен). Всё остальное —
+// классификация, валидация, исполнение, durable exactly-once, undo — общее.
+// liveContext — недавний голосовой разговор Live: уходит только моделям
+// (извлечение черновиков и chat-ответ), в ленту сохраняется чистый транскрипт.
+type VoiceInput = { kind: 'audio'; audio: MulterFile } | { kind: 'text'; transcript: string; liveContext?: string };
 
 // Сколько задач/событий максимум класть в контекст модели — не весь архив,
 // иначе на компании с историей в сотни задач промпт (и, соответственно,
@@ -192,7 +206,34 @@ export class VoiceService {
     if (!audio) {
       throw new BadRequestException('Аудио не получено или формат файла не поддерживается');
     }
+    return this.dispatch({ kind: 'audio', audio }, user, meetingId, clientRequestId, conversationId);
+  }
 
+  // Делегация GPT-Live (Stage 2, Phase Q): транскрипт уже есть — тот же
+  // пайплайн без Whisper. clientRequestId = "live:<delegationId>" даёт тот же
+  // durable exactly-once, что у обычной голосовой записи.
+  async parseTranscript(
+    user: AuthenticatedUser,
+    params: { transcript: string; clientRequestId: string; conversationId?: string; liveContext?: string },
+  ): Promise<VoiceParseResponse> {
+    const transcript = params.transcript.trim();
+    if (!transcript) throw new BadRequestException('Пустая команда');
+    return this.dispatch(
+      { kind: 'text', transcript, liveContext: params.liveContext },
+      user,
+      undefined,
+      params.clientRequestId,
+      params.conversationId,
+    );
+  }
+
+  private async dispatch(
+    input: VoiceInput,
+    user: AuthenticatedUser,
+    meetingId: string | undefined,
+    clientRequestId: string,
+    conversationId?: string,
+  ): Promise<VoiceParseResponse> {
     // Замеры по этапам (владелец 10.09.2026, по итогам анализа задержки
     // голосового пути; расширено 15.09.2026, observability-этап — раздел 2
     // ТЗ этапа) — без них любая дальнейшая оптимизация промпта или модели
@@ -201,7 +242,7 @@ export class VoiceService {
     // draft-extraction ниже) — по нему грепается весь путь одной записи.
     const t0 = Date.now();
     const requestId = randomUUID();
-    const audioBytes = audio.buffer.length;
+    const audioBytes = input.kind === 'audio' ? input.audio.buffer.length : 0;
 
     // Stage 2, Phase H — голос и текст пишут в один и тот же разговор
     // сотрудника. Резолвится до общего Promise.all ниже (а не внутри него):
@@ -232,7 +273,7 @@ export class VoiceService {
     const existingInFlight = this.inFlightParseRequests.get(claimKey);
     if (existingInFlight) return existingInFlight;
 
-    const promise = this.claimAndRunDurable(audio, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
+    const promise = this.claimAndRunDurable(input, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
       if (this.inFlightParseRequests.get(claimKey) === promise) {
         this.inFlightParseRequests.delete(claimKey);
       }
@@ -260,7 +301,7 @@ export class VoiceService {
   // первым, второй получит P2002 и уйдёт в ветку ниже вместо повторного
   // исполнения.
   private async claimAndRunDurable(
-    audio: MulterFile,
+    input: VoiceInput,
     user: AuthenticatedUser,
     meetingId: string | undefined,
     clientRequestId: string,
@@ -314,7 +355,7 @@ export class VoiceService {
       });
     }
 
-    return this.runParse(audio, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId, execution.id);
+    return this.runParse(input, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId, execution.id);
   }
 
   // Реконструкция ответа на COMPLETED (Stage 2, Phase H.3) — resultJson
@@ -364,7 +405,7 @@ export class VoiceService {
   // FAILED, если она упадёт: до этой точки НИКАКИХ бизнес-мутаций ещё не
   // было, значит retry с тем же clientRequestId безопасен (см. claimAndRunDurable).
   private async loadContextAndExtract(
-    audio: MulterFile,
+    input: VoiceInput,
     user: AuthenticatedUser,
     meetingId: string | undefined,
     conversation: { id: string },
@@ -386,13 +427,15 @@ export class VoiceService {
     const [{ text: transcript, durationMs: audioDurationMs }, [meetingContext, employees, visibleTasks, visibleEvents, history]] =
       await Promise.all([
         (async () => {
+          // Готовый транскрипт (делегация GPT-Live) — STT не нужен.
+          if (input.kind === 'text') return { text: input.transcript, durationMs: undefined } as Awaited<ReturnType<WhisperService['transcribe']>>;
           const start = Date.now();
           // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
           // vocabulary") — обычно кэшировано (CompanyVocabularyService,
           // TTL 10 минут), поэтому не превращает эту ветку в дорогой
           // последовательный запрос к БД перед каждой транскрипцией.
           const prompt = await this.vocabulary.getPrompt();
-          const result = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname, prompt);
+          const result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname, prompt);
           sttMs = Date.now() - start;
           return result;
         })(),
@@ -461,6 +504,7 @@ export class VoiceService {
         : null,
       history,
       requestId,
+      input.kind === 'text' ? input.liveContext : undefined,
     );
 
     return { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history };
@@ -473,7 +517,7 @@ export class VoiceService {
   // recovery на гонку — см. userMessagePromise ниже), сам разбор от них
   // не зависит.
   private async runParse(
-    audio: MulterFile,
+    input: VoiceInput,
     user: AuthenticatedUser,
     meetingId: string | undefined,
     conversation: { id: string },
@@ -488,7 +532,7 @@ export class VoiceService {
       .catch(() => {});
     let loaded: Awaited<ReturnType<typeof this.loadContextAndExtract>>;
     try {
-      loaded = await this.loadContextAndExtract(audio, user, meetingId, conversation, requestId);
+      loaded = await this.loadContextAndExtract(input, user, meetingId, conversation, requestId);
     } catch (err) {
       // Ничего не выполнено — retry с тем же clientRequestId безопасен
       // (claimAndRunDurable разрешает повтор только на FAILED).
@@ -619,7 +663,10 @@ export class VoiceService {
           // зависит от best-effort персистентности userMessage ниже —
           // если она провалится (Phase H.1, graceful degradation), чат-
           // ответ всё равно должен успешно построиться, ровно как раньше.
-          const replyResult = await this.assistantReply.reply(transcript, history, user, conversation.id, executionId);
+          // liveContext (только делегация GPT-Live) — блок [live_context] ПЕРЕД
+          // командой, только для модели; в ленту сохраняется чистый транскрипт.
+          const replyText = serializeCurrentUserTurn(transcript, [], input.kind === 'text' ? input.liveContext : undefined);
+          const replyResult = await this.assistantReply.reply(replyText, history, user, conversation.id, executionId);
           execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(replyResult.text) }, entity: null });
         } else if (draft.type === 'task_action') {
           execResults.push(await this.executeTaskAction(draft, user));

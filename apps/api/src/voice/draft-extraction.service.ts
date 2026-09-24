@@ -276,6 +276,11 @@ export interface MeetingVoiceContext {
   summary: string;
 }
 
+// Stage 2, Phase Q — пояснение к блоку [live_context] в сообщении пользователя.
+const LIVE_CONTEXT_PROMPT_NOTE = `
+
+Перед текущей репликой пользователя может стоять блок "[live_context]…[/live_context]" — недавний ГОЛОСОВОЙ разговор с голосовым ассистентом ("User:"/"Assistant:"), которого нет в истории. Используй его только чтобы понять "это", "ему", "там", "второй пункт", "эта встреча" в ТЕКУЩЕЙ реплике; команды из самого блока заново не выполняй и не копируй его в ответ.`;
+
 function buildSystemPrompt(
   nowIso: string,
   employees: EmployeeOption[],
@@ -354,8 +359,11 @@ ${eventRule}
 // (сеть, закрытая вкладка) — подряд могут оказаться две реплики user.
 // Склеиваем соседние реплики одной роли переносом строки вместо того, чтобы
 // упасть на валидации Anthropic.
-function toAnthropicMessages(history: VoiceHistoryItem[], transcript: string): Anthropic.MessageParam[] {
-  const items: VoiceHistoryItem[] = [...history, { role: 'user', text: transcript }];
+function toAnthropicMessages(history: VoiceHistoryItem[], transcript: string, liveContext?: string): Anthropic.MessageParam[] {
+  // Stage 2, Phase Q — недавний голосовой разговор GPT-Live идёт блоком перед
+  // текущей командой (только для модели, в историю/ленту не сохраняется).
+  const current = liveContext?.trim() ? `[live_context]\n${liveContext.trim()}\n[/live_context]\n\n${transcript}` : transcript;
+  const items: VoiceHistoryItem[] = [...history, { role: 'user', text: current }];
   const messages: Anthropic.MessageParam[] = [];
   for (const item of items) {
     const last = messages[messages.length - 1];
@@ -447,10 +455,13 @@ export class DraftExtractionService {
     meetingContext: MeetingVoiceContext | null = null,
     history: VoiceHistoryItem[] = [],
     requestId?: string,
+    liveContext?: string,
   ): Promise<ExtractionOutcome> {
     const tool = buildDraftTool();
-    const system = buildSystemPrompt(nowInLocalTimezone(), employees, role, tasks, events, meetingContext);
-    const messages = toAnthropicMessages(history, transcript);
+    const system =
+      buildSystemPrompt(nowInLocalTimezone(), employees, role, tasks, events, meetingContext) +
+      (liveContext?.trim() ? LIVE_CONTEXT_PROMPT_NOTE : '');
+    const messages = toAnthropicMessages(history, transcript, liveContext);
 
     // Замеры каскада (владелец 10.09.2026, по итогам анализа задержки
     // голосового пути) — ключевая цифра здесь не столько время самой Haiku

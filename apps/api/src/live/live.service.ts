@@ -1,13 +1,14 @@
 import { BadGatewayException, Injectable, Logger, NotFoundException, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MessagePartType, MessageStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import WebSocket from 'ws';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { AssistantChatService, type MessageWithParts } from '../assistant/assistant-chat.service';
+import { AssistantChatService } from '../assistant/assistant-chat.service';
+import { VoiceService } from '../voice/voice.service';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
 import { LiveTranscriptBuffer } from './live-transcript-buffer';
 import { buildSessionInput, LIVE_INPUT_MAX_MESSAGES } from './live-session-input';
+import { toSpokenLiveReply } from './live-spoken-reply';
 
 // Stage 2, Phase Q (roadmap v13 "Phase O — GPT-Live/WebRTC", 24.09.2026).
 // GPT-Live ведёт живой разговор голосом, а всё, что требует данных/действий,
@@ -35,13 +36,8 @@ const SETTLE_POLL_MS = 50;
 // Браузер получает SDP только когда серверный наблюдатель (sideband) готов.
 export const SIDEBAND_OPEN_TIMEOUT_MS = 4000;
 const MAX_REQUEST_CHARS = 4000; // SendMessageDto.text
-// Лимит append у GPT-Live — 500 токенов; кириллица токенизируется хуже
-// латиницы, берём консервативно.
-export const MAX_COMMENTARY_CHARS = 900;
-const TRUNCATION_SUFFIX = ' Подробности в чате.';
 const FAILURE_COMMENTARY = 'Не удалось выполнить запрос, подробности в чате.';
 const EMPTY_REQUEST_COMMENTARY = 'Не расслышал запрос, повторите, пожалуйста.';
-const EMPTY_ANSWER_COMMENTARY = 'Готово, подробности в чате.';
 
 // Короткая инструкция для Live-модели: разговорный стиль и КОГДА делегировать.
 // Детальные правила, tools и бизнес-логика остаются на бэкенде (Assistant Core).
@@ -74,6 +70,7 @@ export class LiveService implements OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly assistantChat: AssistantChatService,
+    private readonly voice: VoiceService,
   ) {}
 
   isEnabled(): boolean {
@@ -362,27 +359,29 @@ export class LiveService implements OnModuleDestroy {
     const startedAt = Date.now();
     let commentary: string;
     let outcome = 'ok';
+    let actions = '-';
     if (!turn.command) {
       commentary = EMPTY_REQUEST_COMMENTARY;
       outcome = 'empty';
     } else {
       try {
-        // clientRequestId привязан к delegation.id — повторная доставка той же
-        // делегации не выполнит действие второй раз (тот же exactly-once, что
-        // у текстового чата). Персистится только команда; недавний голосовой
-        // контекст уходит ТОЛЬКО модели (options.liveContext).
-        const { assistantMessage } = await this.assistantChat.sendMessage(
-          session.user,
-          session.conversationId,
-          { text: turn.command.slice(0, MAX_REQUEST_CHARS), clientRequestId: `live:${delegationId}` },
-          { liveContext: turn.context || undefined },
-        );
-        if (assistantMessage.status === MessageStatus.FAILED) {
-          commentary = FAILURE_COMMENTARY;
-          outcome = 'failed';
-        } else {
-          commentary = toSpokenCommentary(assistantMessage);
-        }
+        // Делегация выполняется ТЕМ ЖЕ голосовым пайплайном, что и push-to-talk
+        // (VoiceService: классификация задача/событие/вопрос → валидация →
+        // исполнение), только без STT — транскрипт уже готов. Поэтому Live
+        // умеет то же, что голос: создавать/менять/удалять задачи и события,
+        // а вопросы уходят в tool loop Assistant Core. clientRequestId привязан
+        // к delegation.id — повторная доставка не выполнит действие второй раз
+        // (VoiceExecution). Недавний голосовой контекст уходит ТОЛЬКО моделям,
+        // в ленту сохраняется чистая команда.
+        const response = await this.voice.parseTranscript(session.user, {
+          transcript: turn.command.slice(0, MAX_REQUEST_CHARS),
+          clientRequestId: `live:${delegationId}`,
+          conversationId: session.conversationId,
+          liveContext: turn.context || undefined,
+        });
+        commentary = toSpokenLiveReply(response);
+        if (response.results.some((r) => r.type !== 'chat' && !r.ok)) outcome = 'partial';
+        actions = response.results.map((r) => (r.type === 'chat' ? 'chat' : `${r.type}:${r.ok ? 'ok' : 'err'}`)).join(',');
       } catch (err) {
         // Текст ошибки не пробрасываем в речь (и не в лог целиком) — тот же
         // принцип, что TOOL_ERROR_MESSAGES: наружу только безопасная фраза.
@@ -391,7 +390,7 @@ export class LiveService implements OnModuleDestroy {
         outcome = 'failed';
       }
     }
-    this.logger.log(`live delegation session=${session.id} outcome=${outcome} settle=${turn.settle} delegationMs=${Date.now() - startedAt}`);
+    this.logger.log(`live delegation session=${session.id} outcome=${outcome} actions=${actions} settle=${turn.settle} delegationMs=${Date.now() - startedAt}`);
     this.sendCommentary(session, delegationId, commentary);
   }
 
@@ -409,23 +408,4 @@ function rawDataToString(data: WebSocket.RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
   return data.toString('utf8');
-}
-
-// Ответ ассистента для озвучивания: только текстовые части, без разметки, с
-// жёстким потолком длины (append у GPT-Live ограничен по токенам).
-export function toSpokenCommentary(message: MessageWithParts): string {
-  const text = message.parts
-    .filter((p) => p.type === MessagePartType.MARKDOWN)
-    .map((p) => (p.data as { content?: unknown } | null)?.content)
-    .filter((c): c is string => typeof c === 'string')
-    .join(' ')
-    .replace(/[*_`#>]+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!text) return EMPTY_ANSWER_COMMENTARY;
-  if (text.length <= MAX_COMMENTARY_CHARS) return text;
-  const budget = MAX_COMMENTARY_CHARS - TRUNCATION_SUFFIX.length;
-  const cut = text.slice(0, budget);
-  const lastSentenceEnd = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
-  return (lastSentenceEnd > budget / 2 ? cut.slice(0, lastSentenceEnd + 1) : cut.trimEnd()) + TRUNCATION_SUFFIX;
 }

@@ -22,5 +22,8 @@ import { DraftExtractionService } from './draft-extraction.service';
   imports: [TasksModule, CalendarModule, AssistantModule, EmployeesModule],
   controllers: [VoiceController],
   providers: [VoiceService, WhisperService, DraftExtractionService],
+  // Stage 2, Phase Q — LiveModule исполняет делегации GPT-Live через
+  // VoiceService.parseTranscript (тот же пайплайн, что голос, без STT).
+  exports: [VoiceService],
 })
 export class VoiceModule {}

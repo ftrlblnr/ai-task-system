@@ -1,13 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { EventEmitter } from 'events';
-import {
-  LiveService,
-  SETTLE_MAX_MS,
-  SETTLE_QUIET_MS,
-  SIDEBAND_OPEN_TIMEOUT_MS,
-  MAX_COMMENTARY_CHARS,
-  toSpokenCommentary,
-} from './live.service';
+import { LiveService, SETTLE_MAX_MS, SETTLE_QUIET_MS, SIDEBAND_OPEN_TIMEOUT_MS } from './live.service';
+import { MAX_COMMENTARY_CHARS } from './live-spoken-reply';
 
 // ws мокается целиком — реальный OpenAI/сокет в тестах не участвует.
 const sockets: FakeSocket[] = [];
@@ -38,8 +32,9 @@ function user(id = 'emp1') {
   return { id, email: `${id}@x.kz`, role: 'OWNER', isProfileAdmin: true } as any;
 }
 
-function assistantMessage(content: string, status = 'COMPLETED') {
-  return { status, parts: [{ type: 'MARKDOWN', data: { content } }] };
+// Ответ VoiceService.parseTranscript: выполненные results[] (см. VoiceParseResponse).
+function chatResponse(reply: string) {
+  return { results: [{ type: 'chat', reply }], clarificationReason: null };
 }
 
 function makeService(env: Record<string, string> = {}) {
@@ -49,10 +44,10 @@ function makeService(env: Record<string, string> = {}) {
     assertOwnedConversation: jest.fn().mockResolvedValue(undefined),
     getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'conv1' }),
     getRecentMessages: jest.fn().mockResolvedValue([]),
-    sendMessage: jest.fn().mockResolvedValue({ assistantMessage: assistantMessage('Готово.') }),
   };
-  const service = new LiveService(config as any, chat as any);
-  return { service, chat };
+  const voice = { parseTranscript: jest.fn().mockResolvedValue(chatResponse('Готово.')) };
+  const service = new LiveService(config as any, chat as any, voice as any);
+  return { service, chat, voice };
 }
 
 let fetchMock: jest.Mock;
@@ -158,8 +153,8 @@ describe('LiveService.createSession', () => {
 });
 
 describe('LiveService — делегации GPT-Live → Assistant Core', () => {
-  it('транскрипт + delegation.created → sendMessage с собранным текстом и clientRequestId=live:<id> → commentary.append с delegation_id', async () => {
-    const { service, chat } = makeService();
+  it('транскрипт + delegation.created → voice.parseTranscript с собранным текстом и clientRequestId=live:<id> → commentary.append с delegation_id', async () => {
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
     const socket = sockets[0];
 
@@ -168,11 +163,9 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     emit(socket, { type: 'session.input_transcript.delta', delta: 'задачи?' }); // хвост после события
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage).toHaveBeenCalledWith(
+    expect(voice.parseTranscript).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'emp1' }),
-      'conv1',
-      { text: 'Какие у меня задачи?', clientRequestId: 'live:del_1' },
-      expect.anything(),
+      expect.objectContaining({ transcript: 'Какие у меня задачи?', clientRequestId: 'live:del_1', conversationId: 'conv1' }),
     );
     const [c] = commentaries(socket);
     expect(c).toMatchObject({ type: 'session.commentary.append', delegation_id: 'del_1', content: 'Готово.' });
@@ -180,7 +173,7 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
   });
 
   it('повторная доставка того же delegation.id не даёт второго вызова ассистента', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
     const socket = sockets[0];
 
@@ -189,24 +182,24 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     emit(socket, { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+    expect(voice.parseTranscript).toHaveBeenCalledTimes(1);
     expect(commentaries(socket)).toHaveLength(1);
   });
 
   it('делегация не для клиента (target != client) игнорируется', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
 
     await speakAndDelegate(sockets[0], 'del_1', 'привет');
     emit(sockets[0], { type: 'session.delegation.created', delegation: { id: 'del_2', target: 'responses' } });
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+    expect(voice.parseTranscript).toHaveBeenCalledTimes(1);
   });
 
   it('ошибка ассистента → безопасная фраза, err.message в речь не попадает', async () => {
-    const { service, chat } = makeService();
-    chat.sendMessage.mockRejectedValue(new Error('db down: password=secret'));
+    const { service, voice } = makeService();
+    voice.parseTranscript.mockRejectedValue(new Error('db down: password=secret'));
     await service.createSession(user(), { sdp: 'x' });
 
     await speakAndDelegate(sockets[0], 'del_1', 'покажи задачи');
@@ -216,40 +209,44 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     expect(JSON.stringify(c)).not.toContain('secret');
   });
 
-  it('ответ ассистента со статусом FAILED → фраза о сбое, не «успех»', async () => {
-    const { service, chat } = makeService();
-    chat.sendMessage.mockResolvedValue({ assistantMessage: assistantMessage('Частичный текст', 'FAILED') });
+  it('действие не выполнилось (ok=false) → честная фраза о сбое, не «успех», без текста ошибки', async () => {
+    const { service, voice } = makeService();
+    voice.parseTranscript.mockResolvedValue({
+      results: [{ type: 'task_action', ok: false, error: 'db down: password=secret', draft: { action: 'create', title: 'Купить мясо' } }],
+      clarificationReason: null,
+    });
     await service.createSession(user(), { sdp: 'x' });
 
     await speakAndDelegate(sockets[0], 'del_1', 'поставь задачу');
 
-    expect(commentaries(sockets[0])[0].content).toBe('Не удалось выполнить запрос, подробности в чате.');
+    expect(commentaries(sockets[0])[0].content).toBe('Не удалось создать задачу «Купить мясо», подробности в чате.');
+    expect(JSON.stringify(commentaries(sockets[0]))).not.toContain('secret');
   });
 
   it('пустой транскрипт — просьба повторить, ассистент не вызывается', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
 
     emit(sockets[0], { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage).not.toHaveBeenCalled();
+    expect(voice.parseTranscript).not.toHaveBeenCalled();
     expect(commentaries(sockets[0])[0].content).toContain('Не расслышал');
   });
 
   it('две делегации подряд обрабатываются строго по порядку', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     const order: string[] = [];
     let releaseFirst!: () => void;
-    chat.sendMessage.mockImplementationOnce(async (_u: unknown, _c: unknown, dto: { text: string }) => {
-      order.push('start:' + dto.text);
+    voice.parseTranscript.mockImplementationOnce(async (_u: unknown, params: { transcript: string }) => {
+      order.push('start:' + params.transcript);
       await new Promise<void>((r) => (releaseFirst = r));
-      order.push('end:' + dto.text);
-      return { assistantMessage: assistantMessage('первый') };
+      order.push('end:' + params.transcript);
+      return chatResponse('первый');
     });
-    chat.sendMessage.mockImplementationOnce((_u: unknown, _c: unknown, dto: { text: string }) => {
-      order.push('start:' + dto.text);
-      return Promise.resolve({ assistantMessage: assistantMessage('второй') });
+    voice.parseTranscript.mockImplementationOnce((_u: unknown, params: { transcript: string }) => {
+      order.push('start:' + params.transcript);
+      return Promise.resolve(chatResponse('второй'));
     });
     await service.createSession(user(), { sdp: 'x' });
 
@@ -265,8 +262,8 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
   });
 
   it('длинный ответ обрезается до лимита с пометкой про чат', async () => {
-    const { service, chat } = makeService();
-    chat.sendMessage.mockResolvedValue({ assistantMessage: assistantMessage('Предложение номер один. '.repeat(200)) });
+    const { service, voice } = makeService();
+    voice.parseTranscript.mockResolvedValue(chatResponse('Предложение номер один. '.repeat(200)));
     await service.createSession(user(), { sdp: 'x' });
 
     await speakAndDelegate(sockets[0], 'del_1', 'расскажи всё');
@@ -320,28 +317,11 @@ describe('LiveService — жизненный цикл', () => {
   });
 });
 
-describe('toSpokenCommentary', () => {
-  it('убирает markdown-разметку и склеивает только текстовые части', () => {
-    const message = {
-      parts: [
-        { type: 'MARKDOWN', data: { content: '**Найдено** 3 задачи' } },
-        { type: 'TASK_CARD', data: { title: 'не читать' } },
-      ],
-    } as any;
-
-    expect(toSpokenCommentary(message)).toBe('Найдено 3 задачи');
-  });
-
-  it('нет текста — нейтральная фраза', () => {
-    expect(toSpokenCommentary({ parts: [] } as any)).toBe('Готово, подробности в чате.');
-  });
-});
-
 // ---- Stage 2, Phase Q hardening (24.09.2026) ----
 
 describe('LiveService — контекст живого разговора уходит в Assistant Core', () => {
-  it('«создай из этого…»: sendMessage получает ЧИСТУЮ команду и liveContext с прошлым ходом пользователя и прошлой репликой Live', async () => {
-    const { service, chat } = makeService();
+  it('«создай из этого…»: parseTranscript получает ЧИСТУЮ команду и liveContext с прошлым ходом пользователя и прошлой репликой Live', async () => {
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
     const socket = sockets[0];
 
@@ -353,15 +333,15 @@ describe('LiveService — контекст живого разговора ух�
     emit(socket, { type: 'session.delegation.created', offset_ms: 6600, delegation: { id: 'del_2', target: 'client' } });
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    const [, , dto, options] = chat.sendMessage.mock.calls[1];
-    expect(dto).toEqual({ text: 'Создай из этого задачу Жандосу.', clientRequestId: 'live:del_2' });
-    expect(options.liveContext).toContain('User: Мы обсуждали предложение IDAT.');
-    expect(options.liveContext).toContain('Assistant: Да, речь шла о стоимости автоматизации.');
-    expect(options.liveContext).not.toContain('Создай из этого');
+    const [, params] = voice.parseTranscript.mock.calls[1];
+    expect(params).toMatchObject({ transcript: 'Создай из этого задачу Жандосу.', clientRequestId: 'live:del_2' });
+    expect(params.liveContext).toContain('User: Мы обсуждали предложение IDAT.');
+    expect(params.liveContext).toContain('Assistant: Да, речь шла о стоимости автоматизации.');
+    expect(params.liveContext).not.toContain('Создай из этого');
   });
 
   it('не зависит от фиксированной паузы: хвост речи, пришедший через 600 мс после события (дельты идут непрерывно), входит в команду', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
     const socket = sockets[0];
 
@@ -375,11 +355,11 @@ describe('LiveService — контекст живого разговора ух�
     emit(socket, { type: 'session.input_transcript.delta', delta: 'пятницы' });
     await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage.mock.calls[0][2].text).toBe('Поставь Жандосу задачу до пятницы');
+    expect(voice.parseTranscript.mock.calls[0][1].transcript).toBe('Поставь Жандосу задачу до пятницы');
   });
 
   it('покрытие user-речи дошло до offset_ms — ответ не ждёт тишины', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
     const socket = sockets[0];
 
@@ -387,16 +367,16 @@ describe('LiveService — контекст живого разговора ух�
     emit(socket, { type: 'session.delegation.created', offset_ms: 900, delegation: { id: 'del_1', target: 'client' } });
     await jest.advanceTimersByTimeAsync(SETTLE_QUIET_MS - 100);
 
-    expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+    expect(voice.parseTranscript).toHaveBeenCalledTimes(1);
   });
 
   it('пустой контекст (первая реплика) — liveContext не передаётся', async () => {
-    const { service, chat } = makeService();
+    const { service, voice } = makeService();
     await service.createSession(user(), { sdp: 'x' });
 
     await speakAndDelegate(sockets[0], 'del_1', 'Привет');
 
-    expect(chat.sendMessage.mock.calls[0][3].liveContext).toBeUndefined();
+    expect(voice.parseTranscript.mock.calls[0][1].liveContext).toBeUndefined();
   });
 });
 
@@ -506,5 +486,41 @@ describe('LiveService — sideband готов до ответа клиенту',
     await jest.advanceTimersByTimeAsync(10);
 
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/live_1/hangup'))).toBe(true);
+  });
+});
+
+// Регресс живого режима (24.09.2026): «Поставь задачу Азамату…» и «сделай запись в
+// календаре…» уходили в текстовый Assistant Core без tools создания задач/событий.
+describe('LiveService — делегации исполняются голосовым пайплайном (создание задач и событий)', () => {
+  it('«поставь задачу … и сделай запись в календаре»: одна делегация → parseTranscript, ответ озвучивает ОБА созданных объекта', async () => {
+    const { service, voice } = makeService();
+    voice.parseTranscript.mockResolvedValue({
+      results: [
+        { type: 'task_action', ok: true, error: null, taskId: 't1', undoToken: null, draft: { action: 'create', title: 'Купить мясо', assigneeName: 'Азамат', dueDate: '2026-09-25T18:00:00' } },
+        { type: 'event_action', ok: true, error: null, eventId: 'e1', undoToken: null, warning: null, draft: { action: 'create', title: 'Встреча с IDAT', startAt: '2026-09-25T15:00:00', allDay: false } },
+      ],
+      clarificationReason: null,
+    });
+    await service.createSession(user(), { sdp: 'x' });
+
+    await speakAndDelegate(sockets[0], 'del_1', 'Поставь задачу на завтра на Азамата купить мясо, и сделай запись в календаре на завтра в 15:00 встреча с IDAT');
+
+    expect(voice.parseTranscript).toHaveBeenCalledTimes(1);
+    const content = commentaries(sockets[0])[0].content as string;
+    expect(content).toContain('Создал задачу «Купить мясо»');
+    expect(content).toContain('Добавил в календарь «Встреча с IDAT» на 25 сентября в 15:00');
+  });
+
+  it('один из результатов не выполнен — озвучивается сбой, а не «успех»', async () => {
+    const { service, voice } = makeService();
+    voice.parseTranscript.mockResolvedValue({
+      results: [{ type: 'event_action', ok: false, error: 'boom', warning: null, draft: { action: 'create', title: 'Встреча' } }],
+      clarificationReason: null,
+    });
+    await service.createSession(user(), { sdp: 'x' });
+
+    await speakAndDelegate(sockets[0], 'del_1', 'Добавь встречу');
+
+    expect(commentaries(sockets[0])[0].content).toBe('Не удалось добавить встречу «Встреча», подробности в чате.');
   });
 });
