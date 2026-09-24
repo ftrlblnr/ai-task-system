@@ -1278,7 +1278,7 @@ create_task_from_meeting]` — именно это изменение ожида
 следующий шаг после этого раунда — Phase O (GPT-Live/WebRTC), отдельным
 заходом.
 
-**GPT-Live — живой голос по WebRTC (Stage 2, Phase Q, 24.09.2026, `apps/web` only)** —
+**GPT-Live — живой голос по WebRTC (Stage 2, Phase Q, 24.09.2026; Web, с 24.09.2026 также Mini App)** —
 "Phase O" roadmap'а v13 (внутренняя буква — следующая свободная). Цель roadmap'а:
 `WebRTC → GPT-Live → Assistant Core → те же tools`, без нового слоя бизнес-
 логики. GPT-Live делит роли: Live-модель (`gpt-live-1`) ведёт разговор
@@ -1318,8 +1318,20 @@ Assistant Core: **делегированная задача превращает
 RTCPeerConnection → data channel `oai-events` → SDP через наш API), кнопка
 «Живой голос» и панель с субтитрами на `/assistant`; пока сессия живая, лента
 подтягивается раз в 2 с (браузер не получает сигнала «делегация завершена» —
-sideband серверный). Push-to-talk `/voice/parse` не тронут. Mini App — вне
-рамок (риск WebRTC в Telegram WebView).
+sideband серверный). Push-to-talk `/voice/parse` не тронут.
+
+**Mini App (24.09.2026)** — тот же backend без изменений (`/live/status`,
+`/live/sessions`); клиент `apps/miniapp/src/lib/live-voice.ts` — порт
+web-версии (дублирование между приложениями — как у остальных клиентских
+модулей) с поправками под мобильный WebView: `playsinline` и явный
+`audio.play()` с понятной ошибкой (autoplay в WebView удаётся не всегда).
+`assistant-screen.tsx`: кнопка с наушниками рядом с микрофоном (по
+`GET /live/status`), панель «Идёт разговор» с субтитрами и «Завершить» над
+composer'ом, haptic на старт/стоп/ошибку, тихая подтяжка ленты раз в 2 с, пока
+сессия живая. Разговор — единственный тред Mini App (`conversations[0]`), то
+есть та же лента, что в Web. **Не проверено:** реальное поведение микрофона/
+WebRTC/звука в Telegram WebView на iOS и Android — только сборка (tsc, eslint);
+нужен ручной прогон на телефоне.
 
 **GPT-Live hardening — закрытие Phase O (24.09.2026)** — внешний анализ назвал
 три must-fix; все проверены по докам OpenAI и коду, затем исправлены:
