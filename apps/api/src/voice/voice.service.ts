@@ -428,7 +428,7 @@ export class VoiceService {
       await Promise.all([
         (async () => {
           // Готовый транскрипт (делегация GPT-Live) — STT не нужен.
-          if (input.kind === 'text') return { text: input.transcript, durationMs: undefined } as Awaited<ReturnType<WhisperService['transcribe']>>;
+          if (input.kind === 'text') return { text: input.transcript, durationMs: null };
           const start = Date.now();
           // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
           // vocabulary") — обычно кэшировано (CompanyVocabularyService,
