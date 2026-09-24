@@ -219,7 +219,7 @@ describe('VoiceService.enforceEventRbac (граница безопасности
 
   it('не-руководителю event_action update/delete превращается в отказ (chat), календарь ему недоступен', () => {
     const result = service.enforceEventRbac(eventDraft({ action: 'update' }), Role.EMPLOYEE);
-    expect(result).toEqual([{ type: 'chat', reply: expect.stringContaining('руководителю') }]);
+    expect(result).toEqual([{ type: 'chat', reply: expect.stringContaining('руководителю'), origin: 'server' }]);
   });
 
   it('task_action не трогается независимо от роли', () => {
@@ -1368,5 +1368,137 @@ describe('VoiceService.parseTranscript — делегация GPT-Live без ST
 
     await expect(service.parseTranscript(makeUser(), { transcript: '   ', clientRequestId: 'live:del_5' })).rejects.toThrow('Пустая команда');
     expect(extractSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Инцидент 24.09.2026: Whisper вернул словарь-подсказку вместо речи, а уточнения
+// пайплайна подменялись ответом Assistant Core («не умею создавать задачи»).
+describe('VoiceService.parse — эхо подсказки Whisper и подмена уточнений (24.09.2026)', () => {
+  const PROMPT = 'Мухамедкаримов Азамат, GLB, Plaud, IDAT, Revit, BIM';
+  const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+  function makeAudioService(whisper: jest.Mock, drafts: unknown[], extraction: Record<string, unknown> = {}) {
+    const userMessage = { id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', conversationId: 'c1', role: MessageRole.ASSISTANT, status: 'COMPLETED', clientRequestId: null, createdAt: new Date(), updatedAt: new Date(), parts: [] };
+    const extractSpy = jest.fn().mockResolvedValue({
+      drafts,
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 1, strongMs: 0 },
+      escalatedToStrongModel: false,
+      ...extraction,
+    });
+    const assistantReply = { reply: jest.fn().mockResolvedValue({ text: 'ОТВЕТ ASSISTANT CORE', toolCalls: [] }) };
+    const prisma = {
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Мухамедкаримов Азамат' }]) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage),
+      },
+      conversation: { update: jest.fn() },
+      voiceExecution: { create: jest.fn().mockResolvedValue({ id: 'exec-1' }), update: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new VoiceService(
+      { transcribe: whisper } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) } as any,
+      { resolve: jest.fn().mockResolvedValue({ status: 'NOT_FOUND', employeeId: null }) } as any,
+      { getPrompt: jest.fn().mockResolvedValue(PROMPT) } as any,
+      assistantReply as any,
+    ) as any;
+    return { service, extractSpy, assistantReply, prisma };
+  }
+
+  it('Whisper вернул подсказку вместо речи — повтор БЕЗ подсказки, в разбор уходит настоящий транскрипт', async () => {
+    const whisper = jest
+      .fn()
+      .mockResolvedValueOnce({ text: PROMPT, durationMs: 800 })
+      .mockResolvedValueOnce({ text: 'Поставь задачу Азамату купить мясо', durationMs: 800 });
+    const { service, extractSpy } = makeAudioService(whisper, [{ type: 'chat', reply: 'Ок' }]);
+
+    const response = await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(whisper).toHaveBeenCalledTimes(2);
+    expect(whisper.mock.calls[0][3]).toBe(PROMPT);
+    expect(whisper.mock.calls[1][3]).toBeUndefined();
+    expect(extractSpy.mock.calls[0][0]).toBe('Поставь задачу Азамату купить мясо');
+    expect(response.transcript).toBe('Поставь задачу Азамату купить мясо');
+  });
+
+  it('обычный транскрипт — повторного запроса к Whisper нет', async () => {
+    const whisper = jest.fn().mockResolvedValue({ text: 'Создай встречу с IDAT завтра в 15:00', durationMs: 900 });
+    const { service } = makeAudioService(whisper, [{ type: 'chat', reply: 'Ок' }]);
+
+    await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(whisper).toHaveBeenCalledTimes(1);
+  });
+
+  it('и без подсказки речи нет (пустой транскрипт) — явная ошибка, ничего не пишется в ленту и не уходит в разбор', async () => {
+    const whisper = jest.fn().mockResolvedValueOnce({ text: PROMPT, durationMs: 300 }).mockResolvedValueOnce({ text: '   ', durationMs: 300 });
+    const { service, extractSpy, prisma } = makeAudioService(whisper, []);
+
+    await expect(service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1')).rejects.toThrow('Не удалось разобрать речь');
+
+    expect(extractSpy).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it('уточнение самого пайплайна («не нашёл сотрудника») НЕ заменяется ответом Assistant Core', async () => {
+    const whisper = jest.fn().mockResolvedValue({ text: 'Поставь задачу Иванову', durationMs: 900 });
+    const { service, assistantReply } = makeAudioService(whisper, [
+      { ...taskDraft({ action: 'create', targetTaskId: '', title: 'Задача', assigneeMentioned: true, assigneeRawText: 'Иванову' }) },
+    ]);
+
+    const response = await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(assistantReply.reply).not.toHaveBeenCalled();
+    expect(response.results[0]).toEqual({ type: 'chat', reply: expect.stringContaining('Не нашёл сотрудника') });
+  });
+
+  it('смешанная реплика (действие + chat модели): chat-текст модели сохраняется, Assistant Core не зовётся', async () => {
+    const whisper = jest.fn().mockResolvedValue({ text: 'Поставь задачу и добавь встречу', durationMs: 900 });
+    const { service, assistantReply } = makeAudioService(whisper, [{ type: 'chat', reply: 'Кому поставить задачу?' }, eventDraft({ title: 'Встреча' })]);
+    service.executeEventAction = jest.fn().mockResolvedValue({
+      result: { type: 'event_action', draft: {}, ok: true, error: null, eventId: 'e1', undoToken: null, warning: null },
+      entity: { id: 'e1', title: 'Встреча', description: null, location: null, startAt: new Date(), endAt: new Date(), allDay: false, status: 'CONFIRMED', participants: [] },
+    });
+
+    const response = await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(assistantReply.reply).not.toHaveBeenCalled();
+    expect(response.results[0]).toEqual({ type: 'chat', reply: 'Кому поставить задачу?' });
+    expect(response.results[1]).toMatchObject({ type: 'event_action', ok: true });
+  });
+
+  it('чистый информационный вопрос по-прежнему отвечает Assistant Core (паритет с текстом, Plaud/встречи)', async () => {
+    const whisper = jest.fn().mockResolvedValue({ text: 'О чём последняя запись из Plaud?', durationMs: 900 });
+    const { service, assistantReply } = makeAudioService(whisper, [{ type: 'chat', reply: 'черновик модели' }]);
+
+    const response = await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(assistantReply.reply).toHaveBeenCalledTimes(1);
+    expect(response.results[0]).toEqual({ type: 'chat', reply: 'ОТВЕТ ASSISTANT CORE' });
+  });
+
+  it('модель сама просит уточнение (clarificationNeeded) — её вопрос сохраняется, Assistant Core не зовётся', async () => {
+    const whisper = jest.fn().mockResolvedValue({ text: 'Поставь задачу', durationMs: 900 });
+    const { service, assistantReply } = makeAudioService(whisper, [{ type: 'chat', reply: 'Какую задачу и кому?' }], {
+      clarificationNeeded: true,
+      clarificationReason: 'Не хватает деталей',
+    });
+
+    const response = await service.parse(audio, makeUser({ role: Role.OWNER }), undefined, 'req-1');
+
+    expect(assistantReply.reply).not.toHaveBeenCalled();
+    expect(response.results[0]).toEqual({ type: 'chat', reply: 'Какую задачу и кому?' });
   });
 });

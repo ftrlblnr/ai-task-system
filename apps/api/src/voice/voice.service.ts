@@ -25,10 +25,12 @@ import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
 import { buildVoiceAssistantParts, resolveClarificationReason } from './voice-render';
+import { isPromptEcho } from './stt-echo';
 import type {
   EventRevertPayload,
   TaskRevertPayload,
   VoiceActionResult,
+  VoiceChatReply,
   VoiceDraft,
   VoiceEventActionDraft,
   VoiceParseResponse,
@@ -95,6 +97,16 @@ function isRecordNotFoundError(err: unknown): boolean {
 }
 
 type MulterFile = Express.Multer.File;
+
+// Chat-черновик, созданный САМИМ СЕРВЕРОМ (уточнение при валидации: не найден
+// сотрудник/задача/встреча, не названо время, календарь закрыт для не-
+// руководителя) — а не вопрос пользователя к ассистенту. Такой текст нельзя
+// подменять ответом Assistant Core: он не знает, что именно пайплайн только что
+// решил уточнить, и отвечал «не могу создавать» (24.09.2026).
+type ServerNotice = VoiceChatReply & { origin: 'server' };
+function serverNotice(reply: string): ServerNotice {
+  return { type: 'chat', reply, origin: 'server' };
+}
 
 // Stage 2, Phase Q (24.09.2026) — вход голосового пайплайна: либо аудио (STT
 // через Whisper, как раньше), либо УЖЕ готовый транскрипт (делегация GPT-Live:
@@ -423,6 +435,7 @@ export class VoiceService {
     // причиной отказа от Promise.all (смешение Promise<Event[]> и [])
     // схлопывало тип в never.
     let sttMs = 0;
+    let sttRetried = false;
     let contextDbMs = 0;
     const [{ text: transcript, durationMs: audioDurationMs }, [meetingContext, employees, visibleTasks, visibleEvents, history]] =
       await Promise.all([
@@ -435,8 +448,19 @@ export class VoiceService {
           // TTL 10 минут), поэтому не превращает эту ветку в дорогой
           // последовательный запрос к БД перед каждой транскрипцией.
           const prompt = await this.vocabulary.getPrompt();
-          const result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname, prompt);
+          let result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname, prompt);
+          // Whisper иногда возвращает саму подсказку вместо речи (неразборчивая/
+          // тихая запись) — повторяем БЕЗ подсказки: без неё эхо невозможно.
+          if (prompt && isPromptEcho(result.text, prompt)) {
+            sttRetried = true;
+            result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname);
+          }
           sttMs = Date.now() - start;
+          // Пустой транскрипт — не команда: явная ошибка вместо мусорной записи в
+          // общую ленту (которая потом попадала в контекст следующей команды).
+          if (!result.text.trim()) {
+            throw new BadRequestException('Не удалось разобрать речь — повторите, пожалуйста, ближе к микрофону.');
+          }
           return result;
         })(),
         (async () => {
@@ -507,7 +531,7 @@ export class VoiceService {
       input.kind === 'text' ? input.liveContext : undefined,
     );
 
-    return { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history };
+    return { transcript, audioDurationMs, sttMs, sttRetried, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history };
   }
 
   // Тело фактического разбора — выполняется не более одного раза на
@@ -541,7 +565,7 @@ export class VoiceService {
         .catch(() => {});
       throw err;
     }
-    const { transcript, audioDurationMs, sttMs, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history } = loaded;
+    const { transcript, audioDurationMs, sttMs, sttRetried, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history } = loaded;
 
     // Реплика пользователя (Stage 2, Phase H) — пишется в ту же ленту, что и
     // текстовый чат, не в отдельную VoiceMessage. Запущено здесь, ДО цикла
@@ -619,7 +643,7 @@ export class VoiceService {
     // комментарий) пустой drafts теоретически возможен — без этой защиты
     // пользователь получил бы полную тишину в чате вместо какого-либо ответа.
     if (drafts.length === 0) {
-      drafts.push({ type: 'chat', reply: 'Не расслышал — повторите, пожалуйста.' });
+      drafts.push(serverNotice('Не расслышал — повторите, пожалуйста.'));
     }
 
     // Выполняем каждый черновик (владелец 10.09.2026, аудит п. 2.11) — не
@@ -642,11 +666,25 @@ export class VoiceService {
       .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } })
       .catch(() => {});
 
+    // Чистый информационный вопрос: все черновики — обычный chat модели (не
+    // уточнение сервера), без запроса уточнения. Только тогда ответ строит
+    // Assistant Core с его tools (Plaud/встречи/задачи) — паритет с текстом.
+    const isInformationalTurn = !result.clarificationNeeded && drafts.every((d) => d.type === 'chat' && !('origin' in d));
+
     const t2 = Date.now();
     const execResults: ExecutedVoiceAction[] = [];
     try {
       for (const draft of drafts) {
-        if (draft.type === 'chat') {
+        if (draft.type === 'chat' && !isInformationalTurn) {
+          // Уточнение/объяснение самого пайплайна (serverNotice) или вопрос
+          // внутри РАЗБОРА КОМАНДЫ (в одной реплике есть и действия, либо модель
+          // сама просит уточнить) — текст черновика остаётся как есть. Раньше
+          // (Phase M hardening, 22.09.2026) ЛЮБОЙ chat заменялся ответом
+          // Assistant Core, и уточнение «не нашёл сотрудника…» превращалось в
+          // «я не умею создавать задачи» — при том что событие из той же реплики
+          // реально создавалось (инцидент 24.09.2026).
+          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
+        } else if (draft.type === 'chat') {
           // Hardening (22.09.2026, "voice ↔ text meeting Q&A parity") —
           // draft.reply здесь больше не используется как есть: он строился
           // ТОЛЬКО из tasks/events-контекста (см. DraftExtractionService),
@@ -765,7 +803,7 @@ export class VoiceService {
     // попадают (раздел 3 ТЗ этапа — запрет на transcript/raw audio/секреты
     // в performance-логах).
     this.logger.log(
-      `voice parse reqId=${requestId} audioBytes=${audioBytes} audioDurationMs=${audioDurationMs ?? 'n/a'} ` +
+      `voice parse reqId=${requestId} audioBytes=${audioBytes} audioDurationMs=${audioDurationMs ?? 'n/a'} sttRetriedWithoutPrompt=${sttRetried} ` +
         `sttMs=${sttMs} contextDbMs=${contextDbMs} llmFastMs=${result.timing.fastMs} ` +
         `llmStrongMs=${result.timing.strongMs} escalatedToStrongModel=${result.escalatedToStrongModel} ` +
         `executionMs=${executionMs} persistenceMs=${persistenceMs} totalMs=${totalMs} draftsCount=${drafts.length}`,
@@ -1226,10 +1264,10 @@ export class VoiceService {
   // исполнителя/без этого участника", а не в ошибку).
   private validateTarget(draft: VoiceDraft, taskIds: Set<string>, eventIds: Set<string>): VoiceDraft {
     if (draft.type === 'task_action' && draft.action !== 'create' && !taskIds.has(draft.targetTaskId)) {
-      return { type: 'chat', reply: `Не нашёл задачу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.` };
+      return serverNotice(`Не нашёл задачу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`);
     }
     if (draft.type === 'event_action' && draft.action !== 'create' && !eventIds.has(draft.targetEventId)) {
-      return { type: 'chat', reply: `Не нашёл встречу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.` };
+      return serverNotice(`Не нашёл встречу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`);
     }
     return draft;
   }
@@ -1243,10 +1281,7 @@ export class VoiceService {
   // уточняющий вопрос вместо попытки создать битое событие.
   private validateEventCreateCompleteness(draft: VoiceDraft): VoiceDraft {
     if (draft.type === 'event_action' && draft.action === 'create' && !draft.startAt) {
-      return {
-        type: 'chat',
-        reply: `Не расслышал, на какое время поставить встречу «${draft.title || 'без названия'}» — уточните дату и время.`,
-      };
+      return serverNotice(`Не расслышал, на какое время поставить встречу «${draft.title || 'без названия'}» — уточните дату и время.`);
     }
     return draft;
   }
@@ -1294,7 +1329,7 @@ export class VoiceService {
       resolution.status === 'AMBIGUOUS'
         ? `Уточните, пожалуйста, кого вы имели в виду под «${draft.assigneeRawText}» — нашлось несколько похожих сотрудников.`
         : `Не нашёл сотрудника «${draft.assigneeRawText}» среди видимых вам — уточните, пожалуйста, имя.`;
-    return { type: 'chat', reply: question };
+    return serverNotice(question);
   }
 
   // assigneeId/addParticipantIds/removeParticipantIds на этом этапе уже
@@ -1368,17 +1403,11 @@ export class VoiceService {
         priority: null,
         sourceMeetingId: null,
       };
-      const explanation: VoiceDraft = {
-        type: 'chat',
-        reply: 'Похоже на событие календаря, но календарь доступен только руководителю — создал как задачу.',
-      };
+      const explanation: VoiceDraft = serverNotice('Похоже на событие календаря, но календарь доступен только руководителю — создал как задачу.');
       return [taskDraft, explanation];
     }
     return [
-      {
-        type: 'chat',
-        reply: 'Календарь доступен только руководителю — изменить или удалить встречу я не могу.',
-      },
+      serverNotice('Календарь доступен только руководителю — изменить или удалить встречу я не могу.'),
     ];
   }
 }
