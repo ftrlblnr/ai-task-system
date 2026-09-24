@@ -1846,3 +1846,51 @@ select {
 .voice-confirm-actions {
   margin-top: 2px;
 }
+
+/* Stage 2, Phase Q — панель живого голоса (GPT-Live) над composer'ом */
+.assistant-live-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border, #e2e2e2);
+  border-radius: var(--radius-md, 10px);
+  background: var(--accent-soft, #eef3ff);
+}
+.assistant-live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: assistant-live-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes assistant-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.assistant-live-status {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.assistant-live-caption {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-live-stop {
+  border: 1px solid var(--border, #e2e2e2);
+  border-radius: var(--radius-md, 10px);
+  background: var(--surface, #fff);
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.assistant-live-stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { Mic, Paperclip, Plus, Send, Square, X } from 'lucide-react';
+import { Headphones, Mic, Paperclip, Plus, Send, Square, X } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
@@ -15,6 +15,7 @@ import type {
   VoiceUndoResponse,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
+import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
 import { Protected } from '@/components/protected';
 import { MessagePartRenderer, FilePartView } from '@/components/assistant-message-part';
 
@@ -44,6 +45,9 @@ const NEAR_BOTTOM_THRESHOLD_PX = 80;
 const MAX_VOICE_DURATION_MS = 100_000;
 const VOICE_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 const VOICE_UNDO_WINDOW_MS = 30_000;
+// Пока идёт живой разговор (GPT-Live), реплики/карточки появляются на сервере
+// без участия браузера — лента подтягивается раз в несколько секунд.
+const LIVE_POLL_INTERVAL_MS = 2_000;
 
 function pickVoiceMimeType(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
@@ -163,6 +167,77 @@ function AssistantView() {
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceAutoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceTickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stage 2, Phase Q — живой голос (GPT-Live по WebRTC). Кнопка видна, только
+  // если бэкенд включил фичу (GET /live/status).
+  const [liveEnabled, setLiveEnabled] = useState(false);
+  const [livePhase, setLivePhase] = useState<LiveVoicePhase>('idle');
+  const [liveCaption, setLiveCaption] = useState<{ who: 'user' | 'assistant'; text: string } | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const liveClientRef = useRef<LiveVoiceClient | null>(null);
+  const liveActive = livePhase !== 'idle';
+  const conversationIdRef = useRef<string | null>(null);
+  conversationIdRef.current = conversationId;
+
+  useEffect(() => {
+    api
+      .get<{ enabled: boolean }>('/live/status')
+      .then((s) => setLiveEnabled(s.enabled))
+      .catch(() => setLiveEnabled(false));
+  }, []);
+
+  // Тихое обновление ленты (без setMessages(null) — без «мигающего» Loading).
+  function refreshMessagesSilently() {
+    const id = conversationIdRef.current;
+    if (!id) return;
+    api
+      .get<ConversationMessage[]>(`/assistant/conversations/${id}/messages`)
+      .then((msgs) => {
+        if (conversationIdRef.current !== id) return;
+        setMessages((prev) => {
+          const last = (list: ConversationMessage[] | null) => list?.[list.length - 1];
+          const a = last(prev);
+          const b = last(msgs);
+          const unchanged = prev && prev.length === msgs.length && a?.id === b?.id && a?.updatedAt === b?.updatedAt;
+          return unchanged ? prev : msgs;
+        });
+      })
+      .catch(() => undefined);
+  }
+
+  useEffect(() => {
+    if (livePhase !== 'live') return;
+    const timer = setInterval(refreshMessagesSilently, LIVE_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [livePhase]);
+
+  useEffect(() => {
+    return () => {
+      void liveClientRef.current?.stop();
+    };
+  }, []);
+
+  function startLive() {
+    setLiveError(null);
+    setLiveCaption(null);
+    if (!liveClientRef.current) {
+      liveClientRef.current = new LiveVoiceClient({
+        onPhase: (phase) => {
+          setLivePhase(phase);
+          // Финальная подтяжка ленты после завершения разговора.
+          if (phase === 'idle') refreshMessagesSilently();
+        },
+        onCaption: (who, delta) =>
+          setLiveCaption((prev) => (prev && prev.who === who ? { who, text: (prev.text + delta).slice(-300) } : { who, text: delta })),
+        onError: setLiveError,
+      });
+    }
+    void liveClientRef.current.start(conversationIdRef.current);
+  }
+
+  function stopLive() {
+    void liveClientRef.current?.stop();
+  }
 
   useEffect(() => {
     return () => {
@@ -622,12 +697,29 @@ function AssistantView() {
             <span className="error">{voiceError}</span>
           </div>
         )}
+        {liveError && (
+          <div className="assistant-pending-attachments">
+            <span className="error">{liveError}</span>
+          </div>
+        )}
+        {liveActive && (
+          <div className="assistant-live-panel">
+            <span className="assistant-live-dot" aria-hidden />
+            <span className="assistant-live-status">
+              {livePhase === 'connecting' ? 'Подключаюсь…' : livePhase === 'closing' ? 'Завершаю…' : 'Идёт разговор'}
+            </span>
+            <span className="hint assistant-live-caption">{liveCaption ? `${liveCaption.who === 'user' ? 'Вы' : 'Ассистент'}: ${liveCaption.text}` : ''}</span>
+            <button type="button" className="assistant-live-stop" onClick={stopLive} disabled={livePhase === 'closing'}>
+              Завершить
+            </button>
+          </div>
+        )}
         <div className="assistant-composer">
           <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
           <button
             type="button"
             className="assistant-attach-btn"
-            disabled={sending || uploading || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS || !conversationId}
+            disabled={sending || uploading || liveActive || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS || !conversationId}
             onClick={() => fileInputRef.current?.click()}
             aria-label="Прикрепить файл"
           >
@@ -637,7 +729,7 @@ function AssistantView() {
             rows={1}
             placeholder="Спросите что-нибудь…"
             value={text}
-            disabled={sending || voicePhase !== 'idle' || !conversationId}
+            disabled={sending || liveActive || voicePhase !== 'idle' || !conversationId}
             maxLength={MAX_TEXT_LENGTH}
             onChange={(e) => setText(e.target.value)}
             onInput={onTextareaInput}
@@ -657,11 +749,23 @@ function AssistantView() {
             <button
               type="button"
               className="assistant-attach-btn"
-              disabled={sending || uploading || voicePhase === 'processing' || !conversationId}
+              disabled={sending || uploading || liveActive || voicePhase === 'processing' || !conversationId}
               onClick={voicePhase === 'recording' ? stopVoiceRecording : startVoiceRecording}
               aria-label={voicePhase === 'recording' ? 'Остановить запись' : 'Надиктовать'}
             >
               {voicePhase === 'recording' ? <Square size={16} strokeWidth={2} /> : <Mic size={18} strokeWidth={2} />}
+            </button>
+          )}
+          {liveEnabled && !text.trim() && voicePhase === 'idle' && (
+            <button
+              type="button"
+              className="assistant-attach-btn"
+              disabled={sending || uploading || liveActive || !conversationId}
+              onClick={startLive}
+              aria-label="Живой голос"
+              title="Живой голос"
+            >
+              <Headphones size={18} strokeWidth={2} />
             </button>
           )}
           {!!text.trim() && (
