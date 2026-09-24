@@ -1284,10 +1284,16 @@ create_task_from_meeting]` — именно это изменение ожида
 логики. GPT-Live делит роли: Live-модель (`gpt-live-1`) ведёт разговор
 голосом и решает, когда делегировать; всё, что требует данных/действий,
 делегируется бэкенду (`delegation.type = "client"`). Бэкенд — существующий
-Assistant Core: **делегированная задача превращается в обычное сообщение чата**
-(`AssistantChatService.sendMessage`) — те же tools и RBAC, идемпотентность по
-`(conversationId, clientRequestId)`, exactly-once, запись реплики и ответа с
-карточками в общую ленту (видна в текстовом чате и Mini App). Responses-
+бэкенд: **делегированная задача исполняется тем же голосовым пайплайном, что и
+push-to-talk, только без STT** (`VoiceService.parseTranscript` — транскрипт уже
+готов): классификация задача/событие/вопрос, валидация, `EmployeeResolver`, RBAC,
+исполнение `executeTaskAction/executeEventAction` (создание/изменение/удаление
+задач и событий календаря), вопросы — tool loop Assistant Core; durable
+exactly-once (`VoiceExecution`, `clientRequestId="live:<delegationId>"`),
+запись реплики и ответа с карточками в общую ленту (видна в текстовом чате и
+Mini App). (Первая версия шла через `AssistantChatService.sendMessage` — текстовый
+Assistant Core без tools создания задач/событий: живой режим отвечал «не могу
+создать»; исправлено 24.09.2026.) Responses-
 делегация OpenAI (второй набор tools на другой модели) сознательно не
 используется — это и был бы новый слой логики.
 
@@ -1305,10 +1311,12 @@ Assistant Core: **делегированная задача превращает
   `session.delegation.created` (событие НЕ содержит текста запроса) собирает
   запрос из ring buffer транскрипта (см. «Hardening» ниже), ставит в очередь
   сессии (делегации строго по порядку),
-  дедуп по `delegation.id`, `sendMessage(..., clientRequestId="live:<id>")`,
-  ответ → `session.commentary.append` (очищен от markdown, ≤900 символов с
-  пометкой «подробности в чате»). Ошибка/FAILED — безопасная фраза без
-  `err.message`, никогда «успех». Логи: только исходы/тайминги/usage, без
+  дедуп по `delegation.id`, `VoiceService.parseTranscript(..., "live:<id>")`,
+  итог озвучивает `toSpokenLiveReply` (`live/live-spoken-reply.ts`) из выполненных
+  `results[]`: «Создал задачу «X», исполнитель …, срок …», «Добавил в календарь «Y»
+  на … в …», ответы на вопросы; очищено от markdown, ≤900 символов с пометкой
+  «подробности в чате» → `session.commentary.append`. `ok=false`/исключение —
+  безопасная фраза без `err.message`, никогда «успех». Логи: только исходы/тайминги/usage, без
   транскриптов.
 - Write-действия в живом голосе — автоматически, как в тексте (решение
   пользователя; roadmap: low-risk create → automatic); ассистент проговаривает,
@@ -1346,9 +1354,10 @@ WebRTC/звука в Telegram WebView на iOS и Android — только сб�
    реплики Live-ассистента). Ожидание хвоста — адаптивное, не фиксированное:
    `coverage` (покрытие user-речи дошло до `offset_ms`) или `quiet` (250 мс без
    новых user-дельт), потолок 2000 мс (`cap`); исход логируется — это эвристика.
-   Контекст уходит в Assistant Core **только модели**: внутренний параметр
-   `sendMessage(..., {liveContext})` → блок `[live_context]…[/live_context]` перед
-   командой (как `[attached_file]`); в ленту сохраняется чистая команда. В
+   Контекст уходит **только моделям**: `parseTranscript(..., {liveContext})` →
+   блок `[live_context]…[/live_context]` перед командой и в извлечении
+   черновиков (`DraftExtractionService`), и в chat-ответе (как `[attached_file]`);
+   в ленту сохраняется чистая команда. В
    `SYSTEM_PROMPT` описан блок, `stripLeakedContextMarkers` вырезает его утечку.
 2. **`session.input`.** Поле принимается при создании сессии (≤128 сообщений и
    ≤8192 токенов, роли user/assistant, только текст). `AssistantChatService.
@@ -1378,6 +1387,19 @@ Telegram Live. Верификация: `cd apps/api && npx jest --silent` — 36
 Пробел: в `apps/web` нет тест-раннера, поэтому «Stop во время POST» и «поздний
 ответ» автотестом не покрыты — проверяются ручным прогоном (Start → мгновенный
 Stop → повторный Start; в логах api нет висящих сессий).
+
+**Регресс «Live не создаёт задачи/события» (24.09.2026):** первый живой прогон
+пользователя («поставь задачу Азамату… и запись в календаре») получил «нет
+инструмента создания задач без встречи / нет доступа к событиям» — делегации шли в
+текстовый Assistant Core (у него только `create_task_from_meeting` и нет
+календарных write-tools). Теперь `VoiceService` принимает вход `audio | text`
+(`VoiceInput`), `LiveService` зовёт `parseTranscript`. Undo-кнопок для
+live-действий нет (токены приходят только в ответе `/voice/parse`). Создание
+задач/событий в **текстовом** чате Assistant по-прежнему недоступно — roadmap
+«Phase P — Corporate Write Tools». Отдельная мелочь: Whisper на тишине в
+push-to-talk вернул словарь-подсказку как транскрипт (эффект `prompt`).
+Верификация: jest 380/380 (exit 0); локальные api `tsc`/`eslint` на VPS не
+завершаются — вердикт CI.
 
 **Не подтверждено доками (проверяется живым прогоном):** доставка
 `session.delegation.created` на sideband для WebRTC-сессии (страницы доков
