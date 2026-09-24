@@ -6,6 +6,8 @@ import WebSocket from 'ws';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AssistantChatService, type MessageWithParts } from '../assistant/assistant-chat.service';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
+import { LiveTranscriptBuffer } from './live-transcript-buffer';
+import { buildSessionInput, LIVE_INPUT_MAX_MESSAGES } from './live-session-input';
 
 // Stage 2, Phase Q (roadmap v13 "Phase O — GPT-Live/WebRTC", 24.09.2026).
 // GPT-Live ведёт живой разговор голосом, а всё, что требует данных/действий,
@@ -21,9 +23,17 @@ const DEFAULT_MODEL = 'gpt-live-1';
 const DEFAULT_MAX_SESSION_MS = 10 * 60 * 1000;
 
 // session.delegation.created не содержит текста запроса — он собирается из
-// транскрипта; хвост последних дельт может прийти чуть ПОСЛЕ самого события.
-export const DELEGATION_SETTLE_MS = 400;
-const MAX_PENDING_INPUT_CHARS = 3000;
+// транскрипта, а транскрипт — фрагменты без границ ходов и без события done
+// (доки), хвост может прийти ПОСЛЕ самого события. Вместо фиксированной паузы —
+// адаптивное ожидание: команда готова, когда покрытие user-речи дошло до
+// offset_ms делегации ('coverage') или новых user-дельт нет уже SETTLE_QUIET_MS
+// ('quiet'); жёсткий потолок SETTLE_MAX_MS ('cap'). Это эвристика — связь
+// offset_ms и start_ms доки не гарантируют, поэтому исход логируется.
+export const SETTLE_QUIET_MS = 250;
+export const SETTLE_MAX_MS = 2000;
+const SETTLE_POLL_MS = 50;
+// Браузер получает SDP только когда серверный наблюдатель (sideband) готов.
+export const SIDEBAND_OPEN_TIMEOUT_MS = 4000;
 const MAX_REQUEST_CHARS = 4000; // SendMessageDto.text
 // Лимит append у GPT-Live — 500 токенов; кириллица токенизируется хуже
 // латиницы, берём консервативно.
@@ -45,7 +55,8 @@ interface LiveSession {
   user: AuthenticatedUser;
   conversationId: string;
   socket: WebSocket;
-  pendingInput: string;
+  transcript: LiveTranscriptBuffer;
+  lastUserDeltaAt: number;
   seenDelegations: Set<string>;
   queue: Promise<void>;
   unknownEventTypes: Set<string>;
@@ -90,6 +101,16 @@ export class LiveService implements OnModuleDestroy {
     const previous = this.sessionByEmployee.get(user.id);
     if (previous) this.closeSession(previous, 'replaced');
 
+    // session.input — недавняя переписка этого разговора (только текст), чтобы
+    // «Живой голос» продолжал диалог, а не начинал с нуля. Сбой чтения истории
+    // не должен блокировать живой голос — тогда стартуем без неё.
+    let sessionInput: ReturnType<typeof buildSessionInput> = [];
+    try {
+      sessionInput = buildSessionInput(await this.assistantChat.getRecentMessages(user, conversationId, LIVE_INPUT_MAX_MESSAGES));
+    } catch (err) {
+      this.logger.error(`live session.input history failed: ${err instanceof Error ? err.name : 'unknown'}`);
+    }
+
     const response = await fetch(LIVE_API_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -97,6 +118,7 @@ export class LiveService implements OnModuleDestroy {
         session: {
           model: this.config.get<string>('LIVE_MODEL') || DEFAULT_MODEL,
           instructions: LIVE_INSTRUCTIONS,
+          ...(sessionInput.length > 0 ? { input: sessionInput } : {}),
           audio: { output: { voice: 'marin' } },
           delegation: { type: 'client' },
           // Браузер — untrusted: только закрыть сессию; ни append'ов, ни
@@ -137,7 +159,8 @@ export class LiveService implements OnModuleDestroy {
       user,
       conversationId,
       socket,
-      pendingInput: '',
+      transcript: new LiveTranscriptBuffer(),
+      lastUserDeltaAt: 0,
       seenDelegations: new Set(),
       queue: Promise.resolve(),
       unknownEventTypes: new Set(),
@@ -145,17 +168,74 @@ export class LiveService implements OnModuleDestroy {
       startedAt: Date.now(),
       closed: false,
     };
+    socket.on('message', (data) => this.onSocketMessage(session, data));
+    socket.on('close', () => this.cleanup(session));
+    socket.on('error', (err) => this.logger.error(`live sideband error session=${sessionId}: ${err instanceof Error ? err.name : 'unknown'}`));
+
+    // Успешный ответ клиенту — только после того, как sideband реально открыт:
+    // иначе пользователь может начать говорить раньше, чем серверный
+    // слушатель готов, и первый голосовой ход потеряется.
+    try {
+      await this.waitForSidebandOpen(socket);
+    } catch (err) {
+      this.logger.error(`live sideband not ready session=${sessionId}: ${err instanceof Error ? err.message : 'unknown'}`);
+      try {
+        socket.close();
+      } catch {
+        // сокет уже мёртв
+      }
+      this.cleanup(session);
+      await this.hangup(sessionId, apiKey);
+      throw new BadGatewayException('Не удалось запустить живой голос');
+    }
+
+    // Пока ждали sideband, параллельный create того же сотрудника мог успеть
+    // зарегистрироваться — закрываем его, чтобы не осталось двух живых сессий.
+    const concurrent = this.sessionByEmployee.get(user.id);
+    if (concurrent && concurrent !== sessionId) this.closeSession(concurrent, 'replaced');
     this.sessions.set(sessionId, session);
     this.sessionByEmployee.set(user.id, sessionId);
 
     const maxMs = Number(this.config.get<string>('LIVE_MAX_SESSION_MS')) || DEFAULT_MAX_SESSION_MS;
     session.maxDurationTimer = setTimeout(() => this.closeSession(sessionId, 'max-duration'), maxMs);
 
-    socket.on('message', (data) => this.onSocketMessage(session, data));
-    socket.on('close', () => this.cleanup(session));
-    socket.on('error', (err) => this.logger.error(`live sideband error session=${sessionId}: ${err instanceof Error ? err.name : 'unknown'}`));
-
     return { sessionId, sdp: answerSdp };
+  }
+
+  private waitForSidebandOpen(socket: WebSocket): Promise<void> {
+    if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => finish(new Error('timeout')), SIDEBAND_OPEN_TIMEOUT_MS);
+      const onOpen = () => finish();
+      const onError = (err: Error) => finish(new Error(err.name || 'error'));
+      const onClose = () => finish(new Error('closed'));
+      const finish = (err?: Error) => {
+        clearTimeout(timer);
+        socket.off('open', onOpen);
+        socket.off('error', onError);
+        socket.off('close', onClose);
+        if (err) reject(err);
+        else resolve();
+      };
+      socket.once('open', onOpen);
+      socket.once('error', onError);
+      socket.once('close', onClose);
+    });
+  }
+
+  // Серверное закрытие сессии (REST) — fallback, когда sideband не открыт/мёртв
+  // и session.close отправить некуда. Best-effort: ошибки только в лог (без тела).
+  private async hangup(sessionId: string, apiKey: string | undefined): Promise<void> {
+    if (!apiKey) return;
+    try {
+      const res = await fetch(`${LIVE_API_URL}/${encodeURIComponent(sessionId)}/hangup`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) this.logger.error(`live hangup failed session=${sessionId} status=${res.status}`);
+    } catch (err) {
+      this.logger.error(`live hangup failed session=${sessionId}: ${err instanceof Error ? err.name : 'unknown'}`);
+    }
   }
 
   // Только владелец; чужой/несуществующий id — молча ничего (идемпотентно, не
@@ -174,15 +254,15 @@ export class LiveService implements OnModuleDestroy {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     this.logger.log(`live session closing session=${sessionId} reason=${reason}`);
+    const socketOpen = session.socket.readyState === WebSocket.OPEN;
     try {
-      if (session.socket.readyState === WebSocket.OPEN) {
-        session.socket.send(JSON.stringify({ type: 'session.close' }));
-      }
+      if (socketOpen) session.socket.send(JSON.stringify({ type: 'session.close' }));
       session.socket.close();
     } catch {
       // сокет уже мёртв — cleanup ниже всё равно вычистит состояние
     }
     this.cleanup(session);
+    if (!socketOpen) void this.hangup(session.id, this.config.get<string>('OPENAI_API_KEY'));
   }
 
   private cleanup(session: LiveSession): void {
@@ -194,7 +274,15 @@ export class LiveService implements OnModuleDestroy {
   }
 
   private onSocketMessage(session: LiveSession, data: WebSocket.RawData): void {
-    let event: { type?: unknown; delta?: unknown; delegation?: { id?: unknown; target?: unknown }; usage?: unknown };
+    let event: {
+      type?: unknown;
+      delta?: unknown;
+      start_ms?: unknown;
+      end_ms?: unknown;
+      offset_ms?: unknown;
+      delegation?: { id?: unknown; target?: unknown };
+      usage?: unknown;
+    };
     try {
       event = JSON.parse(rawDataToString(data)) as typeof event;
     } catch {
@@ -202,9 +290,13 @@ export class LiveService implements OnModuleDestroy {
     }
     const type = typeof event.type === 'string' ? event.type : '';
 
-    if (type === 'session.input_transcript.delta') {
+    if (type === 'session.input_transcript.delta' || type === 'session.output_transcript.delta') {
       if (typeof event.delta === 'string') {
-        session.pendingInput = (session.pendingInput + event.delta).slice(-MAX_PENDING_INPUT_CHARS);
+        const speaker = type === 'session.input_transcript.delta' ? 'user' : 'assistant';
+        const startMs = typeof event.start_ms === 'number' ? event.start_ms : undefined;
+        const endMs = typeof event.end_ms === 'number' ? event.end_ms : undefined;
+        session.transcript.addFragment(speaker, event.delta, startMs, endMs);
+        if (speaker === 'user') session.lastUserDeltaAt = Date.now();
       }
       return;
     }
@@ -213,7 +305,7 @@ export class LiveService implements OnModuleDestroy {
       if (typeof id !== 'string' || event.delegation?.target !== 'client') return;
       if (session.seenDelegations.has(id)) return;
       session.seenDelegations.add(id);
-      this.enqueueDelegation(session, id);
+      this.enqueueDelegation(session, id, typeof event.offset_ms === 'number' ? event.offset_ms : Number.POSITIVE_INFINITY);
       return;
     }
     if (type === 'session.closed') {
@@ -231,37 +323,60 @@ export class LiveService implements OnModuleDestroy {
   }
 
   // Делегации одной сессии обрабатываются строго по порядку (порядок команд в
-  // одном разговоре имеет смысл). Текст запроса снимается после короткой
-  // «усадки» — хвост транскрипта может прийти после самого события.
-  private enqueueDelegation(session: LiveSession, delegationId: string): void {
-    const requestText = new Promise<string>((resolve) => {
-      setTimeout(() => {
-        const text = session.pendingInput.trim();
-        session.pendingInput = '';
-        resolve(text);
-      }, DELEGATION_SETTLE_MS);
-    });
+  // одном разговоре имеет смысл). Ожидание хвоста транскрипта стартует сразу
+  // по событию (не когда дойдёт очередь), а очередь ждёт уже готовый снимок.
+  private enqueueDelegation(session: LiveSession, delegationId: string, offsetMs: number): void {
+    const turn = this.settleAndTakeTurn(session, offsetMs);
     session.queue = session.queue.then(async () => {
-      await this.processDelegation(session, delegationId, await requestText);
+      await this.processDelegation(session, delegationId, await turn);
     });
   }
 
-  private async processDelegation(session: LiveSession, delegationId: string, requestText: string): Promise<void> {
+  private async settleAndTakeTurn(
+    session: LiveSession,
+    offsetMs: number,
+  ): Promise<{ command: string; context: string; settle: 'coverage' | 'quiet' | 'cap' }> {
+    const startedAt = Date.now();
+    let settle: 'coverage' | 'quiet' | 'cap' = 'cap';
+    while (Date.now() - startedAt < SETTLE_MAX_MS) {
+      if (session.transcript.hasUnconsumedUserText()) {
+        if (Number.isFinite(offsetMs) && session.transcript.userCoverageMs >= offsetMs) {
+          settle = 'coverage';
+          break;
+        }
+        if (Date.now() - session.lastUserDeltaAt >= SETTLE_QUIET_MS) {
+          settle = 'quiet';
+          break;
+        }
+      }
+      await new Promise<void>((r) => setTimeout(r, SETTLE_POLL_MS));
+    }
+    return { ...session.transcript.takeTurn(offsetMs), settle };
+  }
+
+  private async processDelegation(
+    session: LiveSession,
+    delegationId: string,
+    turn: { command: string; context: string; settle: string },
+  ): Promise<void> {
     const startedAt = Date.now();
     let commentary: string;
     let outcome = 'ok';
-    if (!requestText) {
+    if (!turn.command) {
       commentary = EMPTY_REQUEST_COMMENTARY;
       outcome = 'empty';
     } else {
       try {
         // clientRequestId привязан к delegation.id — повторная доставка той же
         // делегации не выполнит действие второй раз (тот же exactly-once, что
-        // у текстового чата).
-        const { assistantMessage } = await this.assistantChat.sendMessage(session.user, session.conversationId, {
-          text: requestText.slice(0, MAX_REQUEST_CHARS),
-          clientRequestId: `live:${delegationId}`,
-        });
+        // у текстового чата). Персистится только команда; недавний голосовой
+        // контекст уходит ТОЛЬКО модели (options.liveContext).
+        const { assistantMessage } = await this.assistantChat.sendMessage(
+          session.user,
+          session.conversationId,
+          { text: turn.command.slice(0, MAX_REQUEST_CHARS), clientRequestId: `live:${delegationId}` },
+          { liveContext: turn.context || undefined },
+        );
         if (assistantMessage.status === MessageStatus.FAILED) {
           commentary = FAILURE_COMMENTARY;
           outcome = 'failed';
@@ -276,7 +391,7 @@ export class LiveService implements OnModuleDestroy {
         outcome = 'failed';
       }
     }
-    this.logger.log(`live delegation session=${session.id} outcome=${outcome} delegationMs=${Date.now() - startedAt}`);
+    this.logger.log(`live delegation session=${session.id} outcome=${outcome} settle=${turn.settle} delegationMs=${Date.now() - startedAt}`);
     this.sendCommentary(session, delegationId, commentary);
   }
 

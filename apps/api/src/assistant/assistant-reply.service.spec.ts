@@ -1,6 +1,6 @@
 import { Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { AssistantReplyService, buildDateContext } from './assistant-reply.service';
+import { AssistantReplyService, buildDateContext, stripLeakedContextMarkers } from './assistant-reply.service';
 
 // Stage 2, Phase L (внешний аудит 21.09.2026, находка №5) — раньше tool
 // loop был жёстко ограничен ОДНИМ раундом (второй запрос инструмента от
@@ -221,5 +221,19 @@ describe('AssistantReplyService.streamOnce — system-промпт (Stage 2, Pha
     expect(payload.system).toContain('ассистент корпоративной системы задач');
     expect(payload.system).toContain('create_task_from_meeting');
     expect(payload.system).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+});
+
+describe('stripLeakedContextMarkers — блок [live_context] (Stage 2, Phase Q hardening)', () => {
+  it('вырезает утёкший блок [live_context]…[/live_context] из ответа модели', () => {
+    const leaked = 'Готово.\n[live_context]\nUser: Мы обсуждали IDAT.\nAssistant: Да.\n[/live_context]\nЗадача создана.';
+
+    expect(stripLeakedContextMarkers(leaked)).not.toContain('live_context');
+    expect(stripLeakedContextMarkers(leaked)).not.toContain('Мы обсуждали');
+    expect(stripLeakedContextMarkers(leaked)).toContain('Задача создана.');
+  });
+
+  it('обычный текст с квадратными скобками не трогает', () => {
+    expect(stripLeakedContextMarkers('Смотри [1] и [2].')).toBe('Смотри [1] и [2].');
   });
 });

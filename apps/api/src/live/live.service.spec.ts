@@ -1,12 +1,20 @@
 import { NotFoundException } from '@nestjs/common';
 import { EventEmitter } from 'events';
-import { LiveService, DELEGATION_SETTLE_MS, MAX_COMMENTARY_CHARS, toSpokenCommentary } from './live.service';
+import {
+  LiveService,
+  SETTLE_MAX_MS,
+  SETTLE_QUIET_MS,
+  SIDEBAND_OPEN_TIMEOUT_MS,
+  MAX_COMMENTARY_CHARS,
+  toSpokenCommentary,
+} from './live.service';
 
 // ws мокается целиком — реальный OpenAI/сокет в тестах не участвует.
 const sockets: FakeSocket[] = [];
 class FakeSocket extends EventEmitter {
   static OPEN = 1;
-  readyState = 1;
+  static startOpen = true;
+  readyState = FakeSocket.startOpen ? 1 : 0;
   send = jest.fn();
   close = jest.fn(() => {
     this.readyState = 3;
@@ -40,6 +48,7 @@ function makeService(env: Record<string, string> = {}) {
   const chat = {
     assertOwnedConversation: jest.fn().mockResolvedValue(undefined),
     getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'conv1' }),
+    getRecentMessages: jest.fn().mockResolvedValue([]),
     sendMessage: jest.fn().mockResolvedValue({ assistantMessage: assistantMessage('Готово.') }),
   };
   const service = new LiveService(config as any, chat as any);
@@ -49,6 +58,7 @@ function makeService(env: Record<string, string> = {}) {
 let fetchMock: jest.Mock;
 let sessionCounter = 0;
 beforeEach(() => {
+  FakeSocket.startOpen = true;
   sockets.length = 0;
   sessionCounter = 0;
   jest.useFakeTimers();
@@ -72,7 +82,7 @@ function emit(socket: FakeSocket, event: unknown) {
 async function speakAndDelegate(socket: FakeSocket, delegationId: string, text: string) {
   emit(socket, { type: 'session.input_transcript.delta', delta: text });
   emit(socket, { type: 'session.delegation.created', delegation: { id: delegationId, target: 'client' } });
-  await jest.advanceTimersByTimeAsync(DELEGATION_SETTLE_MS + 50);
+  await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 }
 
 function commentaries(socket: FakeSocket) {
@@ -156,12 +166,14 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     emit(socket, { type: 'session.input_transcript.delta', delta: 'Какие у меня ' });
     emit(socket, { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
     emit(socket, { type: 'session.input_transcript.delta', delta: 'задачи?' }); // хвост после события
-    await jest.advanceTimersByTimeAsync(DELEGATION_SETTLE_MS + 50);
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
-    expect(chat.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 'emp1' }), 'conv1', {
-      text: 'Какие у меня задачи?',
-      clientRequestId: 'live:del_1',
-    });
+    expect(chat.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'emp1' }),
+      'conv1',
+      { text: 'Какие у меня задачи?', clientRequestId: 'live:del_1' },
+      expect.anything(),
+    );
     const [c] = commentaries(socket);
     expect(c).toMatchObject({ type: 'session.commentary.append', delegation_id: 'del_1', content: 'Готово.' });
     expect(typeof c.event_id).toBe('string');
@@ -175,7 +187,7 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     emit(socket, { type: 'session.input_transcript.delta', delta: 'Сделай Excel' });
     emit(socket, { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
     emit(socket, { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
-    await jest.advanceTimersByTimeAsync(DELEGATION_SETTLE_MS + 50);
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
     expect(chat.sendMessage).toHaveBeenCalledTimes(1);
     expect(commentaries(socket)).toHaveLength(1);
@@ -187,7 +199,7 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
 
     await speakAndDelegate(sockets[0], 'del_1', 'привет');
     emit(sockets[0], { type: 'session.delegation.created', delegation: { id: 'del_2', target: 'responses' } });
-    await jest.advanceTimersByTimeAsync(DELEGATION_SETTLE_MS + 50);
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
     expect(chat.sendMessage).toHaveBeenCalledTimes(1);
   });
@@ -219,7 +231,7 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
     await service.createSession(user(), { sdp: 'x' });
 
     emit(sockets[0], { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
-    await jest.advanceTimersByTimeAsync(DELEGATION_SETTLE_MS + 50);
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
 
     expect(chat.sendMessage).not.toHaveBeenCalled();
     expect(commentaries(sockets[0])[0].content).toContain('Не расслышал');
@@ -322,5 +334,177 @@ describe('toSpokenCommentary', () => {
 
   it('нет текста — нейтральная фраза', () => {
     expect(toSpokenCommentary({ parts: [] } as any)).toBe('Готово, подробности в чате.');
+  });
+});
+
+// ---- Stage 2, Phase Q hardening (24.09.2026) ----
+
+describe('LiveService — контекст живого разговора уходит в Assistant Core', () => {
+  it('«создай из этого…»: sendMessage получает ЧИСТУЮ команду и liveContext с прошлым ходом пользователя и прошлой репликой Live', async () => {
+    const { service, chat } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+    const socket = sockets[0];
+
+    emit(socket, { type: 'session.input_transcript.delta', delta: 'Мы обсуждали предложение IDAT. ', start_ms: 0, end_ms: 2000 });
+    emit(socket, { type: 'session.output_transcript.delta', delta: 'Да, речь шла о стоимости автоматизации. ', start_ms: 2100, end_ms: 4000 });
+    emit(socket, { type: 'session.delegation.created', offset_ms: 2000, delegation: { id: 'del_1', target: 'client' } });
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
+    emit(socket, { type: 'session.input_transcript.delta', delta: 'Создай из этого задачу Жандосу.', start_ms: 4500, end_ms: 6500 });
+    emit(socket, { type: 'session.delegation.created', offset_ms: 6600, delegation: { id: 'del_2', target: 'client' } });
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
+
+    const [, , dto, options] = chat.sendMessage.mock.calls[1];
+    expect(dto).toEqual({ text: 'Создай из этого задачу Жандосу.', clientRequestId: 'live:del_2' });
+    expect(options.liveContext).toContain('User: Мы обсуждали предложение IDAT.');
+    expect(options.liveContext).toContain('Assistant: Да, речь шла о стоимости автоматизации.');
+    expect(options.liveContext).not.toContain('Создай из этого');
+  });
+
+  it('не зависит от фиксированной паузы: хвост речи, пришедший через 600 мс после события (дельты идут непрерывно), входит в команду', async () => {
+    const { service, chat } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+    const socket = sockets[0];
+
+    emit(socket, { type: 'session.input_transcript.delta', delta: 'Поставь ' });
+    emit(socket, { type: 'session.delegation.created', delegation: { id: 'del_1', target: 'client' } });
+    for (const part of ['Жандосу ', 'задачу ', 'до ']) {
+      await jest.advanceTimersByTimeAsync(200);
+      emit(socket, { type: 'session.input_transcript.delta', delta: part });
+    }
+    await jest.advanceTimersByTimeAsync(200);
+    emit(socket, { type: 'session.input_transcript.delta', delta: 'пятницы' });
+    await jest.advanceTimersByTimeAsync(SETTLE_MAX_MS + 50);
+
+    expect(chat.sendMessage.mock.calls[0][2].text).toBe('Поставь Жандосу задачу до пятницы');
+  });
+
+  it('покрытие user-речи дошло до offset_ms — ответ не ждёт тишины', async () => {
+    const { service, chat } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+    const socket = sockets[0];
+
+    emit(socket, { type: 'session.input_transcript.delta', delta: 'Покажи задачи', start_ms: 0, end_ms: 1000 });
+    emit(socket, { type: 'session.delegation.created', offset_ms: 900, delegation: { id: 'del_1', target: 'client' } });
+    await jest.advanceTimersByTimeAsync(SETTLE_QUIET_MS - 100);
+
+    expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('пустой контекст (первая реплика) — liveContext не передаётся', async () => {
+    const { service, chat } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+
+    await speakAndDelegate(sockets[0], 'del_1', 'Привет');
+
+    expect(chat.sendMessage.mock.calls[0][3].liveContext).toBeUndefined();
+  });
+});
+
+describe('LiveService — session.input из истории разговора', () => {
+  function postedSession() {
+    return JSON.parse(fetchMock.mock.calls[0][1].body).session;
+  }
+
+  it('последние сообщения чата передаются в session.input', async () => {
+    const { service, chat } = makeService();
+    chat.getRecentMessages.mockResolvedValue([
+      { role: 'user', text: 'Мы обсуждали вчера IDAT.' },
+      { role: 'assistant', text: 'Да, помню.' },
+    ]);
+
+    await service.createSession(user(), { sdp: 'x' });
+
+    expect(chat.getRecentMessages).toHaveBeenCalledWith(expect.objectContaining({ id: 'emp1' }), 'conv1', 20);
+    expect(postedSession().input).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Мы обсуждали вчера IDAT.' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Да, помню.' }] },
+    ]);
+  });
+
+  it('пустой разговор — поле input не передаётся, сессия создаётся', async () => {
+    const { service } = makeService();
+
+    await service.createSession(user(), { sdp: 'x' });
+
+    expect('input' in postedSession()).toBe(false);
+  });
+
+  it('сбой чтения истории не блокирует живой голос', async () => {
+    const { service, chat } = makeService();
+    chat.getRecentMessages.mockRejectedValue(new Error('db down'));
+
+    await expect(service.createSession(user(), { sdp: 'x' })).resolves.toMatchObject({ sessionId: 'live_1' });
+    expect('input' in postedSession()).toBe(false);
+  });
+});
+
+describe('LiveService — sideband готов до ответа клиенту', () => {
+  it('createSession не резолвится, пока sideband не открылся', async () => {
+    FakeSocket.startOpen = false;
+    const { service } = makeService();
+    let resolved = false;
+
+    const promise = service.createSession(user(), { sdp: 'x' }).then((r) => {
+      resolved = true;
+      return r;
+    });
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(resolved).toBe(false);
+
+    sockets[0].readyState = 1;
+    sockets[0].emit('open');
+    await expect(promise).resolves.toEqual({ sessionId: 'live_1', sdp: 'ANSWER_SDP' });
+  });
+
+  it('sideband не открылся за таймаут — hangup через REST, состояние очищено, контролируемая ошибка', async () => {
+    FakeSocket.startOpen = false;
+    const { service } = makeService();
+
+    const promise = service.createSession(user(), { sdp: 'x' });
+    const assertion = expect(promise).rejects.toThrow('Не удалось запустить живой голос');
+    await jest.advanceTimersByTimeAsync(SIDEBAND_OPEN_TIMEOUT_MS + 100);
+    await assertion;
+
+    const hangupCall = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/live_1/hangup'));
+    expect(hangupCall).toBeDefined();
+    expect(hangupCall![1].headers.Authorization).toBe('Bearer sk-test');
+    expect(sockets[0].close).toHaveBeenCalled();
+    // состояние очищено: следующая сессия не пытается закрывать «призрак»
+    FakeSocket.startOpen = true;
+    await service.createSession(user(), { sdp: 'y' });
+    expect(sockets[1].close).not.toHaveBeenCalled();
+  });
+
+  it('ошибка сокета до open — тот же cleanup и hangup', async () => {
+    FakeSocket.startOpen = false;
+    const { service } = makeService();
+
+    const promise = service.createSession(user(), { sdp: 'x' });
+    const assertion = expect(promise).rejects.toThrow('Не удалось запустить живой голос');
+    await jest.advanceTimersByTimeAsync(10);
+    sockets[0].emit('error', new Error('ECONNREFUSED'));
+    await assertion;
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/live_1/hangup'))).toBe(true);
+  });
+
+  it('успешный путь: sideband уже открыт — ответ без ожидания', async () => {
+    const { service } = makeService();
+
+    const result = await service.createSession(user(), { sdp: 'x' });
+
+    expect(result.sessionId).toBe('live_1');
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/hangup'))).toBe(false);
+  });
+
+  it('закрытие сессии с мёртвым sideband использует hangup', async () => {
+    const { service } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+    sockets[0].readyState = 3; // сокет уже мёртв, но карта ещё помнит сессию
+
+    service.closeForUser(user(), 'live_1');
+    await jest.advanceTimersByTimeAsync(10);
+
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/live_1/hangup'))).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { MessageStatus, Prisma, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { AssistantChatService } from './assistant-chat.service';
+import { AssistantChatService, serializeCurrentUserTurn } from './assistant-chat.service';
 
 function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
@@ -595,5 +595,74 @@ describe('AssistantChatService — транзакционная линковка
     expect(updateManySpy).toHaveBeenCalledWith({ where: { id: { in: ['gen1'] } }, data: { conversationId: 'c1', messageId: 'm2' } });
     // $transaction реально обёртывал оба вызова, не два независимых.
     expect(prisma.$transaction).toHaveBeenCalled();
+  });
+});
+
+// Stage 2, Phase Q hardening (24.09.2026) — session.input GPT-Live и
+// liveContext. Live получает только текст завершённых сообщений: карточки,
+// статусы инструментов, файлы и ошибки в него не попадают.
+describe('AssistantChatService.getRecentMessages — история для session.input GPT-Live', () => {
+  function makeChat(rows: unknown[]) {
+    const prisma = {
+      conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'u1' }) },
+      message: { findMany: jest.fn().mockResolvedValue(rows) },
+    };
+    return { service: new AssistantChatService(prisma as any, {} as any, {} as any), prisma };
+  }
+
+  it('запрашивает только COMPLETED-сообщения и только MARKDOWN-части (tool internals не попадают)', async () => {
+    const { service, prisma } = makeChat([]);
+
+    await service.getRecentMessages(user(), 'c1', 20);
+
+    expect(prisma.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { conversationId: 'c1', status: 'COMPLETED' },
+        take: 20,
+        include: { parts: { where: { type: 'MARKDOWN' }, orderBy: { order: 'asc' } } },
+      }),
+    );
+  });
+
+  it('возвращает от старых к новым, склеивает markdown-текст, пропускает пустые', async () => {
+    const { service } = makeChat([
+      { role: 'ASSISTANT', parts: [{ data: { content: 'Вот задачи.' } }, { data: { content: 'Всего 6.' } }] },
+      { role: 'USER', parts: [{ data: { content: 'Мы обсуждали вчера IDAT.' } }] },
+      { role: 'ASSISTANT', parts: [] }, // только карточки — MARKDOWN-частей нет
+    ]);
+
+    const result = await service.getRecentMessages(user(), 'c1', 20);
+
+    expect(result).toEqual([
+      { role: 'user', text: 'Мы обсуждали вчера IDAT.' },
+      { role: 'assistant', text: 'Вот задачи. Всего 6.' },
+    ]);
+  });
+
+  it('чужой разговор — NotFoundException, сообщения не читаются', async () => {
+    const prisma = {
+      conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'someone-else' }) },
+      message: { findMany: jest.fn() },
+    };
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any);
+
+    await expect(service.getRecentMessages(user(), 'c1', 20)).rejects.toThrow(NotFoundException);
+    expect(prisma.message.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('serializeCurrentUserTurn — liveContext только для модели', () => {
+  it('без liveContext и вложений — текст как есть', () => {
+    expect(serializeCurrentUserTurn('Привет', [])).toBe('Привет');
+  });
+
+  it('liveContext идёт отдельным блоком ПЕРЕД командой', () => {
+    const turn = serializeCurrentUserTurn('Создай из этого задачу Жандосу.', [], 'User: Мы обсуждали IDAT.\nAssistant: Да.');
+
+    expect(turn).toBe('[live_context]\nUser: Мы обсуждали IDAT.\nAssistant: Да.\n[/live_context]\n\nСоздай из этого задачу Жандосу.');
+  });
+
+  it('пустой liveContext игнорируется', () => {
+    expect(serializeCurrentUserTurn('Привет', [], '   ')).toBe('Привет');
   });
 });

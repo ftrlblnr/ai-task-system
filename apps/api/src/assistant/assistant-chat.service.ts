@@ -94,10 +94,18 @@ export function serializeMessageForModelContext(parts: MessagePart[]): string {
 // выше) — чтобы не путать "показано в истории" с "прикреплено только что
 // в этом же сообщении". Только метаданные — содержимое файла не читается
 // и не передаётся, это осознанно вне рамок этого шага.
-function serializeCurrentUserTurn(text: string, attachments: FilePartData[]): string {
-  if (!attachments.length) return text;
+//
+// Stage 2, Phase Q hardening (24.09.2026) — liveContext: недавний голосовой
+// разговор GPT-Live ("Мы обсуждали IDAT" / ответ Live), который нигде больше
+// не сохраняется (в ленту попадает только делегированная команда). Уходит
+// ТОЛЬКО модели, отдельным блоком [live_context], тем же приёмом, что
+// [attached_file]: сохранённый текст сообщения остаётся чистой командой, а
+// "из этого/ему/там" модель раскрывает по блоку. Приходит только из
+// внутреннего кода (LiveService), не из HTTP DTO.
+export function serializeCurrentUserTurn(text: string, attachments: FilePartData[], liveContext?: string): string {
   const blocks = attachments.map((a) => `[attached_file]\nid=${a.fileId}\nname=${a.name}\nmimeType=${a.mimeType}\nsize=${a.size}`);
-  return [text, ...blocks].join('\n\n');
+  const context = liveContext?.trim() ? [`[live_context]\n${liveContext.trim()}\n[/live_context]`] : [];
+  return [...context, text, ...blocks].join('\n\n');
 }
 
 function attachmentPartsOf(parts: MessagePart[]): FilePartData[] {
@@ -187,6 +195,35 @@ export class AssistantChatService {
   // полностью — тот же уровень гарантий, что уже есть у owner-проверки).
   async assertAttachmentsAvailable(user: AuthenticatedUser, attachmentIds: string[] | undefined): Promise<void> {
     await this.resolveAttachments(user, attachmentIds);
+  }
+
+  // Stage 2, Phase Q hardening — недавняя переписка для session.input GPT-Live.
+  // Только завершённые сообщения и только MARKDOWN-части: карточки, статусы
+  // инструментов, файлы и ошибки (то есть "внутренности" tool-вызовов) в Live
+  // не уходят. Владение разговором проверяется как везде.
+  async getRecentMessages(
+    user: AuthenticatedUser,
+    conversationId: string,
+    limit: number,
+  ): Promise<{ role: 'user' | 'assistant'; text: string }[]> {
+    await this.findOwnedConversation(user, conversationId);
+    const rows = await this.prisma.message.findMany({
+      where: { conversationId, status: MessageStatus.COMPLETED },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { parts: { where: { type: MessagePartType.MARKDOWN }, orderBy: { order: 'asc' } } },
+    });
+    return rows
+      .reverse()
+      .map((m) => ({
+        role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
+        text: m.parts
+          .map((p) => (p.data as unknown as MarkdownPartData).content)
+          .filter((c): c is string => typeof c === 'string')
+          .join(' ')
+          .trim(),
+      }))
+      .filter((m) => m.text);
   }
 
   async getMessages(user: AuthenticatedUser, conversationId: string): Promise<MessageWithParts[]> {
@@ -470,6 +507,7 @@ export class AssistantChatService {
     user: AuthenticatedUser,
     conversationId: string,
     dto: SendMessageDto,
+    options?: { liveContext?: string },
   ): Promise<{ userMessage: MessageWithParts; assistantMessage: MessageWithParts }> {
     await this.findOwnedConversation(user, conversationId);
 
@@ -491,7 +529,7 @@ export class AssistantChatService {
     // же userMessage, присоединяемся к его результату вместо повторного
     // вызова Anthropic/tools.
     const { result } = this.claimOrJoin(userMessage, () =>
-      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto),
+      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto, options?.liveContext),
     );
     const assistantMessage = await result;
 
@@ -507,12 +545,13 @@ export class AssistantChatService {
     userMessage: MessageWithParts,
     existingAssistantMessage: MessageWithParts | undefined,
     dto: SendMessageDto,
+    liveContext?: string,
   ): Promise<MessageWithParts> {
     const requestId = randomUUID();
     const t0 = Date.now();
 
     const history = await this.loadHistory(conversationId, userMessage.id);
-    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
+    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts), liveContext);
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
