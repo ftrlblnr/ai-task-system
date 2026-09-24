@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { Mic, Paperclip, Send, Square, X } from 'lucide-react';
+import { Headphones, Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
@@ -16,6 +16,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
+import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
 import { MessagePartRenderer, FilePartView } from './assistant-message-part';
 
 const MAX_TEXTAREA_HEIGHT = 140;
@@ -24,6 +25,9 @@ const MAX_TEXTAREA_HEIGHT = 140;
 // (@ArrayMaxSize(10)) в apps/api/src/assistant/dto/send-message.dto.ts.
 // Дублирование чисел, а не общий пакет ради двух констант — тот же
 // компромисс, что уже принят для ALLOWED_UPLOAD_MIME_TYPES ниже.
+// Пока идёт живой разговор (GPT-Live), реплики/карточки появляются на сервере
+// без участия приложения — лента подтягивается раз в несколько секунд.
+const LIVE_POLL_INTERVAL_MS = 2_000;
 const MAX_ATTACHMENTS = 10;
 const MAX_TEXT_LENGTH = 4000;
 // Зеркало apps/api/src/files/dto/upload-file.dto.ts — accept на <input
@@ -196,6 +200,83 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const voiceChunksRef = useRef<Blob[]>([]);
   const voiceAutoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceTickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stage 2, Phase Q — живой голос (GPT-Live по WebRTC). Кнопка видна, только
+  // если бэкенд включил фичу (GET /live/status). Backend общий с Web.
+  const [liveEnabled, setLiveEnabled] = useState(false);
+  const [livePhase, setLivePhase] = useState<LiveVoicePhase>('idle');
+  const [liveCaption, setLiveCaption] = useState<{ who: 'user' | 'assistant'; text: string } | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const liveClientRef = useRef<LiveVoiceClient | null>(null);
+  const liveActive = livePhase !== 'idle';
+  const conversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
+
+  useEffect(() => {
+    api
+      .get<{ enabled: boolean }>('/live/status')
+      .then((s) => setLiveEnabled(s.enabled))
+      .catch(() => setLiveEnabled(false));
+  }, []);
+
+  // Тихое обновление ленты (без сброса в «загрузку» — экран не мигает).
+  function refreshMessagesSilently() {
+    const id = conversationIdRef.current;
+    if (!id) return;
+    api
+      .get<ConversationMessage[]>(`/assistant/conversations/${id}/messages`)
+      .then((msgs) => {
+        if (conversationIdRef.current !== id) return;
+        setMessages((prev) => {
+          const a = prev?.[prev.length - 1];
+          const b = msgs[msgs.length - 1];
+          const unchanged = prev && prev.length === msgs.length && a?.id === b?.id && a?.updatedAt === b?.updatedAt;
+          return unchanged ? prev : msgs;
+        });
+      })
+      .catch(() => undefined);
+  }
+
+  useEffect(() => {
+    if (livePhase !== 'live') return;
+    const timer = setInterval(refreshMessagesSilently, LIVE_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [livePhase]);
+
+  useEffect(() => {
+    return () => {
+      void liveClientRef.current?.stop();
+    };
+  }, []);
+
+  function startLive() {
+    haptic('medium');
+    setLiveError(null);
+    setLiveCaption(null);
+    if (!liveClientRef.current) {
+      liveClientRef.current = new LiveVoiceClient({
+        onPhase: (phase) => {
+          setLivePhase(phase);
+          // Финальная подтяжка ленты после завершения разговора.
+          if (phase === 'idle') refreshMessagesSilently();
+        },
+        onCaption: (who, delta) =>
+          setLiveCaption((prev) => (prev && prev.who === who ? { who, text: (prev.text + delta).slice(-200) } : { who, text: delta })),
+        onError: (message) => {
+          notificationHaptic('error');
+          setLiveError(message);
+        },
+      });
+    }
+    void liveClientRef.current.start(conversationIdRef.current);
+  }
+
+  function stopLive() {
+    haptic('light');
+    void liveClientRef.current?.stop();
+  }
 
   useEffect(() => {
     return () => {
@@ -668,12 +749,31 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           <span className="error">{voiceError}</span>
         </div>
       )}
+      {liveError && (
+        <div className="assistant-pending-attachments">
+          <span className="error">{liveError}</span>
+        </div>
+      )}
+      {liveActive && (
+        <div className="assistant-live-panel">
+          <span className="assistant-live-dot" aria-hidden />
+          <span className="assistant-live-status">
+            {livePhase === 'connecting' ? 'Подключаюсь…' : livePhase === 'closing' ? 'Завершаю…' : 'Идёт разговор'}
+          </span>
+          <span className="hint assistant-live-caption">
+            {liveCaption ? `${liveCaption.who === 'user' ? 'Вы' : 'Ассистент'}: ${liveCaption.text}` : ''}
+          </span>
+          <button type="button" className="assistant-live-stop" onClick={stopLive} disabled={livePhase === 'closing'}>
+            Завершить
+          </button>
+        </div>
+      )}
       <div className="assistant-composer">
         <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
         <button
           type="button"
           className="assistant-attach-btn"
-          disabled={sending || uploading || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS}
+          disabled={sending || uploading || liveActive || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Прикрепить файл"
         >
@@ -683,7 +783,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           rows={1}
           placeholder="Спросите что-нибудь…"
           value={text}
-          disabled={sending || voicePhase !== 'idle'}
+          disabled={sending || liveActive || voicePhase !== 'idle'}
           maxLength={MAX_TEXT_LENGTH}
           onChange={(e) => setText(e.target.value)}
           onInput={onTextareaInput}
@@ -703,11 +803,22 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           <button
             type="button"
             className="assistant-attach-btn"
-            disabled={sending || uploading || voicePhase === 'processing'}
+            disabled={sending || uploading || liveActive || voicePhase === 'processing'}
             onClick={voicePhase === 'recording' ? stopVoiceRecording : startVoiceRecording}
             aria-label={voicePhase === 'recording' ? 'Остановить запись' : 'Надиктовать'}
           >
             {voicePhase === 'recording' ? <Square size={16} strokeWidth={2} /> : <Mic size={18} strokeWidth={2} />}
+          </button>
+        )}
+        {liveEnabled && !text.trim() && voicePhase === 'idle' && (
+          <button
+            type="button"
+            className="assistant-attach-btn"
+            disabled={sending || uploading || liveActive || !conversationId}
+            onClick={startLive}
+            aria-label="Живой голос"
+          >
+            <Headphones size={18} strokeWidth={2} />
           </button>
         )}
         {!!text.trim() && (
