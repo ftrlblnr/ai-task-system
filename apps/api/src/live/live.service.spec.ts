@@ -52,11 +52,13 @@ beforeEach(() => {
   sockets.length = 0;
   sessionCounter = 0;
   jest.useFakeTimers();
-  fetchMock = jest.fn().mockImplementation(async () => ({
-    ok: true,
-    status: 201,
-    json: async () => ({ session: { id: `live_${++sessionCounter}` }, transport: { sdp: 'ANSWER_SDP' } }),
-  }));
+  fetchMock = jest.fn().mockImplementation(() =>
+    Promise.resolve({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve({ session: { id: `live_${++sessionCounter}` }, transport: { sdp: 'ANSWER_SDP' } }),
+    }),
+  );
   (global as any).fetch = fetchMock;
 });
 afterEach(() => {
@@ -137,7 +139,7 @@ describe('LiveService.createSession', () => {
 
   it('OpenAI ответил ошибкой — BadGateway без утечки деталей, сокет не открывается', async () => {
     const { service } = makeService();
-    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: 'secret detail' }) });
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: () => Promise.resolve({ error: 'secret detail' }) });
 
     await expect(service.createSession(user(), { sdp: 'x' })).rejects.toThrow('Не удалось запустить живой голос');
 
@@ -233,9 +235,9 @@ describe('LiveService — делегации GPT-Live → Assistant Core', () =>
       order.push('end:' + dto.text);
       return { assistantMessage: assistantMessage('первый') };
     });
-    chat.sendMessage.mockImplementationOnce(async (_u: unknown, _c: unknown, dto: { text: string }) => {
+    chat.sendMessage.mockImplementationOnce((_u: unknown, _c: unknown, dto: { text: string }) => {
       order.push('start:' + dto.text);
-      return { assistantMessage: assistantMessage('второй') };
+      return Promise.resolve({ assistantMessage: assistantMessage('второй') });
     });
     await service.createSession(user(), { sdp: 'x' });
 

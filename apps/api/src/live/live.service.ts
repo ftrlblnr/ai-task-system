@@ -196,7 +196,7 @@ export class LiveService implements OnModuleDestroy {
   private onSocketMessage(session: LiveSession, data: WebSocket.RawData): void {
     let event: { type?: unknown; delta?: unknown; delegation?: { id?: unknown; target?: unknown }; usage?: unknown };
     try {
-      event = JSON.parse(data.toString());
+      event = JSON.parse(rawDataToString(data)) as typeof event;
     } catch {
       return;
     }
@@ -286,6 +286,14 @@ export class LiveService implements OnModuleDestroy {
       JSON.stringify({ type: 'session.commentary.append', event_id: `commentary_${randomUUID()}`, delegation_id: delegationId, content }),
     );
   }
+}
+
+// ws отдаёт Buffer | ArrayBuffer | Buffer[] — явная склейка вместо неявного
+// toString() (у ArrayBuffer/массива он дал бы "[object ...]").
+function rawDataToString(data: WebSocket.RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
+  return data.toString('utf8');
 }
 
 // Ответ ассистента для озвучивания: только текстовые части, без разметки, с
