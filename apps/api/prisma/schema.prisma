@@ -68,6 +68,7 @@ model Employee {
   eventsCreated            Event[]
   googleCalendarConnection GoogleCalendarConnection?
   plaudConnection          PlaudConnection?
+  mailbox                  Mailbox?
   conversations            Conversation[]
   fileArtifacts            FileArtifact[]
   aliases                  EmployeeAlias[]
@@ -1013,4 +1014,236 @@ model PlaudConnection {
   connectedAt DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   lastSyncAt  DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2, Phase R — Mail.ru Email Intelligence (roadmap «Phase P», 25.09.2026).
+// Почта синхронизируется в локальную БД (IMAP → PostgreSQL), Assistant Core
+// работает по ней, а не ходит в Mail.ru на каждый вопрос. Провайдер абстрагирован
+// (EmailProvider), сейчас единственная реализация — MAIL_RU (IMAP, пароль
+// приложения, хранится только зашифрованным — SecretBoxService).
+// ---------------------------------------------------------------------------
+
+enum MailProvider {
+  MAIL_RU
+}
+
+enum MailboxSyncState {
+  IDLE
+  SYNCING
+  ERROR
+  PAUSED // после нескольких подряд ошибок авторизации — не долбим Mail.ru неверным паролем
+}
+
+enum EmailFolderRole {
+  INBOX
+  SENT
+  OTHER
+}
+
+enum EmailReplyStatus {
+  AWAITING_MY_REPLY
+  REPLIED
+  NO_REPLY_REQUIRED
+  AWAITING_THEIR_REPLY
+  UNKNOWN
+}
+
+enum EmailRecipientType {
+  TO
+  CC
+  BCC
+}
+
+enum EmailImportance {
+  CRITICAL
+  IMPORTANT
+  NORMAL
+  LOW
+}
+
+enum EmailCategory {
+  ACTION_REQUIRED
+  DECISION_REQUIRED
+  INFORMATION
+  DOCUMENT
+  COMMERCIAL
+  LEGAL
+  FINANCE
+  PROJECT
+  MEETING
+  NEWSLETTER
+  OTHER
+}
+
+model Mailbox {
+  id                      String           @id @default(cuid())
+  employeeId              String           @unique
+  employee                Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  emailAddress            String
+  provider                MailProvider     @default(MAIL_RU)
+  // Пароль ПРИЛОЖЕНИЯ Mail.ru (не обычный пароль) — только зашифрованным,
+  // никогда не отдаётся через API, не логируется, не попадает в промпт.
+  appPasswordEncrypted    String
+  syncEnabled             Boolean          @default(true)
+  syncState               MailboxSyncState @default(IDLE)
+  // Безопасный КОД последней ошибки (INVALID_CREDENTIALS/IMAP_DISABLED/...),
+  // не текст исключения.
+  lastError               String?
+  consecutiveAuthFailures Int              @default(0)
+  lastSyncedAt            DateTime?
+  initialDays             Int              @default(30)
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  folders  EmailFolder[]
+  threads  EmailThread[]
+  messages EmailMessage[]
+  digests  EmailDigest[]
+}
+
+model EmailFolder {
+  id          String          @id @default(cuid())
+  mailboxId   String
+  mailbox     Mailbox         @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  path        String
+  role        EmailFolderRole
+  // UIDVALIDITY меняется, когда сервер перенумеровал UID — курсор lastUid тогда
+  // недействителен, окно синхронизируется заново.
+  uidValidity String?
+  lastUid     Int             @default(0)
+
+  messages EmailMessage[]
+
+  @@unique([mailboxId, path])
+}
+
+model EmailThread {
+  id             String           @id @default(cuid())
+  mailboxId      String
+  mailbox        Mailbox          @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  subjectNorm    String
+  lastMessageAt  DateTime?
+  lastIncomingAt DateTime?
+  lastOutgoingAt DateTime?
+  // Производный статус (см. reply-status.ts), пересчитывается после синка/анализа.
+  replyStatus    EmailReplyStatus @default(UNKNOWN)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  messages EmailMessage[]
+
+  @@index([mailboxId, lastMessageAt])
+  @@index([mailboxId, replyStatus])
+}
+
+model EmailMessage {
+  id        String      @id @default(cuid())
+  mailboxId String
+  mailbox   Mailbox     @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  folderId  String
+  folder    EmailFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  uid       Int
+
+  providerMessageId String?
+  internetMessageId String?
+
+  subject     String?
+  fromAddress String
+  fromName    String?
+  sentAt      DateTime?
+  receivedAt  DateTime?
+
+  textBody      String?
+  htmlBody      String?
+  // Тело обрезано (слишком большое письмо) — в БД только начало/заголовки.
+  bodyTruncated Boolean @default(false)
+
+  isRead         Boolean @default(false)
+  isOutgoing     Boolean @default(false)
+  hasAttachments Boolean @default(false)
+  // Рассылка/автоответ по заголовкам (List-Unsubscribe, Precedence: bulk, noreply) —
+  // правила без LLM (экономия токенов на анализе).
+  isAutomated    Boolean @default(false)
+
+  inReplyTo     String?
+  referencesIds String[]
+  threadId      String?
+  thread        EmailThread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  // Письмо исчезло на сервере — не удаляем физически (traceability).
+  providerMissing Boolean   @default(false)
+  deletedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recipients  EmailRecipient[]
+  attachments EmailAttachment[]
+  analysis    EmailAnalysis?
+
+  @@unique([folderId, uid])
+  @@index([mailboxId, receivedAt])
+  @@index([mailboxId, internetMessageId])
+  @@index([threadId])
+}
+
+model EmailRecipient {
+  id             String             @id @default(cuid())
+  emailMessageId String
+  emailMessage   EmailMessage       @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+  type           EmailRecipientType
+  address        String
+  name           String?
+
+  @@index([emailMessageId])
+  @@index([address])
+}
+
+// P1: только метаданные вложений (какие документы пришли). Содержимое/разбор — P2.
+model EmailAttachment {
+  id             String       @id @default(cuid())
+  emailMessageId String
+  emailMessage   EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+  fileName       String
+  mimeType       String?
+  sizeBytes      Int?
+  providerPartId String?
+  fileArtifactId String?
+  extractedText  String?
+  summary        String?
+
+  @@index([emailMessageId])
+}
+
+model EmailAnalysis {
+  id             String       @id @default(cuid())
+  emailMessageId String       @unique
+  emailMessage   EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  summary       String?
+  importance    EmailImportance
+  category      EmailCategory
+  needsReply    Boolean
+  needsAction   Boolean
+  actionSummary String?
+  deadline      DateTime?
+
+  // Хэш входа анализа — повторный анализ только если состояние существенно
+  // изменилось (контроль стоимости).
+  inputHash  String?
+  model      String?
+  analyzedAt DateTime @default(now())
+}
+
+model EmailDigest {
+  id          String   @id @default(cuid())
+  mailboxId   String
+  mailbox     Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  periodFrom  DateTime
+  periodTo    DateTime
+  content     Json
+  generatedAt DateTime @default(now())
+
+  @@unique([mailboxId, periodFrom, periodTo])
 }

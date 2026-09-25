@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, LogOut } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, LogOut } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Avatar } from './avatar';
 
@@ -21,6 +21,8 @@ const NAV_ITEMS = [
   { href: '/voice', label: 'Голос', icon: Mic, ownerOnly: false },
   { href: '/calendar', label: 'Календарь', icon: CalendarDays, ownerOnly: true },
   { href: '/meetings', label: 'Встречи', icon: FileAudio, ownerOnly: true },
+  // Stage 2, Phase R — почта Mail.ru (личная интеграция руководителя, как Plaud/календарь).
+  { href: '/mail', label: 'Почта', icon: Mail, ownerOnly: true },
   { href: '/employees', label: 'Сотрудники', icon: Users, ownerOnly: true },
 ];
 

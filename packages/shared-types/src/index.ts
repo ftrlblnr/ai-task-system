@@ -641,3 +641,65 @@ export interface LoginResponse {
     isProfileAdmin: boolean;
   };
 }
+
+// Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — GET /mail/*.
+// Почта синхронизируется в локальную БД; API/ассистент работают по ней.
+export type MailSyncState = 'IDLE' | 'SYNCING' | 'ERROR' | 'PAUSED';
+
+export type MailStatus =
+  | { connected: false }
+  | {
+      connected: true;
+      id: string;
+      emailAddress: string;
+      syncEnabled: boolean;
+      syncState: MailSyncState;
+      // Безопасный код последней ошибки (INVALID_CREDENTIALS/IMAP_DISABLED/TIMEOUT/SYNC_FAILED/...).
+      lastError: string | null;
+      lastSyncedAt: string | null;
+      initialDays: number;
+      messageCount: number;
+    };
+
+export type EmailReplyStatus = 'AWAITING_MY_REPLY' | 'REPLIED' | 'NO_REPLY_REQUIRED' | 'AWAITING_THEIR_REPLY' | 'UNKNOWN';
+export type EmailImportance = 'CRITICAL' | 'IMPORTANT' | 'NORMAL' | 'LOW';
+
+export interface EmailAnalysisSummary {
+  summary: string | null;
+  importance: EmailImportance;
+  category: string;
+  needsReply: boolean;
+  needsAction: boolean;
+  actionSummary: string | null;
+  deadline: string | null;
+}
+
+export interface EmailListItem {
+  id: string;
+  threadId: string | null;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: string | null;
+  isRead: boolean;
+  isOutgoing: boolean;
+  hasAttachments: boolean;
+  thread: { replyStatus: EmailReplyStatus } | null;
+  analysis: EmailAnalysisSummary | null;
+}
+
+export interface EmailListResponse {
+  items: EmailListItem[];
+  totalCount: number;
+}
+
+export interface EmailDetail extends EmailListItem {
+  internetMessageId: string | null;
+  sentAt: string | null;
+  textBody: string | null;
+  bodyTruncated: boolean;
+  recipients: { type: 'TO' | 'CC' | 'BCC'; address: string; name: string | null }[];
+  attachments: { id: string; fileName: string; mimeType: string | null; sizeBytes: number | null }[];
+  threadMessages: { id: string; subject: string | null; fromAddress: string; fromName: string | null; receivedAt: string | null; isOutgoing: boolean; isRead: boolean }[];
+}
+

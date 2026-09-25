@@ -18,6 +18,7 @@ import { PlaudModule } from './plaud/plaud.module';
 import { VoiceModule } from './voice/voice.module';
 import { AssistantModule } from './assistant/assistant.module';
 import { LiveModule } from './live/live.module';
+import { MailModule } from './mail/mail.module';
 import { FilesModule } from './files/files.module';
 
 @Module({
@@ -40,6 +41,7 @@ import { FilesModule } from './files/files.module';
     VoiceModule,
     AssistantModule,
     LiveModule,
+    MailModule,
     FilesModule,
   ],
   controllers: [AppController],
