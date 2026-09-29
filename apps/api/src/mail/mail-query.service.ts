@@ -25,6 +25,10 @@ export interface EmailFilters {
 }
 
 export const MAX_LIST_LIMIT = 50;
+// Потолок писем в утренней сводке (mail-digest.cron.ts) — на объём одного
+// личного ящика с запасом; текст сообщения дополнительно обрезается по
+// длине (см. MAX_DIGEST_TEXT_CHARS в mail-digest.cron.ts).
+export const MAX_DIGEST_ITEMS = 100;
 
 // Чистая функция — покрыта тестами без БД.
 export function buildEmailWhere(mailboxId: string, f: EmailFilters): Prisma.EmailMessageWhereInput {
@@ -149,27 +153,24 @@ export class MailQueryService {
     return { fileArtifactId: attachment.fileArtifactId };
   }
 
-  // Release 2 — важное/требующее реакции за период (дайджест): OR
-  // по важности/needsReply/needsAction, а не AND, как в buildEmailWhere
-  // (там фильтры сочетаются — здесь наоборот, любое из трёх условий уже
-  // повод показать письмо в сводке).
-  findImportantForDigest(mailboxId: string, periodFrom: Date, periodTo: Date) {
+  // Дайджест (владелец 29.09.2026: "аналитика по всей почте за сутки", не
+  // только важное) — ВСЕ входящие за период, полный набор полей анализа
+  // (может быть null — письмо ещё не проанализировано на момент сборки
+  // сводки). Сортировка по времени получения — хронология дня, не важность:
+  // сама важность уже видна в тексте каждой строки.
+  findAllForDigest(mailboxId: string, periodFrom: Date, periodTo: Date) {
     return this.prisma.emailMessage.findMany({
-      where: {
-        mailboxId,
-        providerMissing: false,
-        isOutgoing: false,
-        receivedAt: { gte: periodFrom, lt: periodTo },
-        analysis: {
-          is: {
-            status: 'COMPLETED',
-            OR: [{ importance: { in: ['CRITICAL', 'IMPORTANT'] } }, { needsReply: true }, { needsAction: true }],
-          },
-        },
+      where: { mailboxId, providerMissing: false, isOutgoing: false, receivedAt: { gte: periodFrom, lt: periodTo } },
+      select: {
+        id: true,
+        subject: true,
+        fromAddress: true,
+        fromName: true,
+        receivedAt: true,
+        analysis: { select: { status: true, summary: true, importance: true, category: true, needsReply: true, needsAction: true } },
       },
-      select: { id: true, subject: true, fromAddress: true, fromName: true, receivedAt: true, analysis: { select: { summary: true } } },
-      orderBy: { receivedAt: 'desc' },
-      take: 30,
+      orderBy: { receivedAt: 'asc' },
+      take: MAX_DIGEST_ITEMS,
     });
   }
 }
