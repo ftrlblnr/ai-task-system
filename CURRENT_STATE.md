@@ -1478,6 +1478,64 @@ special-use, точный текст ошибки «IMAP выключен», л�
 пауза после ошибок, защита от массового «пропало», треды по заголовкам) подтверждены;
 локальные api `tsc`/`eslint` на VPS не завершаются — вердикт CI.
 
+Выкат 1 проверен на реальном ящике владельца (`azamat.mukhamedkarimov@mail.ru`,
+подключён 28.09.2026): синк, треды, вложения-метаданные — без ошибок.
+
+**Mail.ru Email Intelligence — выкат 2 «интеллект» (Release 2, 29.09.2026).**
+AI-анализ, tools ассистента, Telegram-сводка, реальное содержимое вложений (PDF) —
+поверх заготовок выката 1 (`EmailAnalysis`/`EmailDigest`/поля вложений в схеме
+существовали, но код их не заполнял).
+- **AI-анализ** (`mail-analysis.ts`+`mail-analysis.service.ts`): один forced
+  tool-use вызов Haiku (`claude-haiku-4-5-20251001`, та же модель, что уже в
+  проде через `draft-extraction.service.ts`) на новое **входящее** не-рассылочное
+  письмо — summary/importance/category/needsReply/needsAction/actionSummary/
+  deadline; вызывается из `mail-sync.cron.ts` сразу после синка того же ящика
+  (не отдельным cron'ом). ≤20 писем/10 мин/ящик (контроль стоимости), ретраи
+  «битых» писем ограничены `attempts<3`. Успех → `MailStore.refreshThread()`
+  пересчитывает `EmailThread.replyStatus` через уже существующий
+  `deriveReplyStatus`. Схема: `EmailAnalysis.status` (COMPLETED|FAILED) +
+  `attempts`, `importance/category/needsReply/needsAction` стали nullable
+  (null = проваленная попытка, не «ещё не анализировалось») — миграция
+  `20260928061700_email_analysis_status`, таблица была пустой (0 строк), без
+  бэкенда.
+- **Вложения** (только PDF — решение владельца 28.09.2026, .docx/OCR отложены):
+  `mailru-imap.provider.ts` больше не выбрасывает декодированные mailparser
+  байты, `MailSyncService.resolveAttachments()` сохраняет их через
+  `FilesService.createMailAttachment` (переиспользует `FileArtifact`/
+  `FileStorage`, новый `FileArtifactSource.INTERNAL`) и извлекает текст через
+  `attachment-extraction.ts`. Библиотека — **`pdfjs-dist`** напрямую, не
+  `pdf-parse` (тот вендорит pdf.js 2018 года — не смог разобрать даже
+  свежесгенерированный тестовый PDF). Извлечённый текст уходит в промпт
+  анализа письма. Скачивание — `GET /mail/attachments/:id/download`
+  (`mail-query.service.ts`, 404 не 403). **Обязательный попутный фикс**:
+  `FilesCleanupCron` удалял бы вложения почты через сутки (`messageId` у них
+  всегда `null`, они привязаны через `EmailAttachment.fileArtifactId`, не
+  через `Message`) — исключены запросом `source != INTERNAL`.
+- **Tools ассистента** (`assistant-tools.service.ts`): `search_emails`/
+  `get_email`, read-only, видны только OWNER (как календарь) — тот же паттерн
+  регистрации, что у остальных tools; без ящика — явный `MAIL_NOT_CONNECTED`,
+  не exception. Нет write-tool'а — у провайдера нет SMTP.
+- **Утренняя сводка** (`mail-digest.cron.ts`, 08:05 Алматы — через 5 минут после
+  дайджеста задач): важные/требующие ответа письма за предыдущие календарные
+  сутки, та же политика «без шума» (пусто → ни строки в `EmailDigest`, ни
+  сообщения). Идемпотентность — через уникальный индекс
+  `[mailboxId,periodFrom,periodTo]`.
+- Веб (`apps/web/src/app/mail/page.tsx`): вложения — кликабельные ссылки на
+  скачивание (когда сохранены), иначе просто имя файла.
+- Тесты: jest api 481/481 (+21 к выкату 1); `tsc -p tsconfig.build.json` и
+  `next build` (web) — оба чистые.
+
+Задеплоено и проверено на реальном ящике владельца 29.09.2026: первый же тик
+крона (10:10 по МСК/09:10 UTC) проанализировал оба письма без сбоев
+(`analyzed=2 failed=0`) — рассылка Mail.ru корректно определена как
+`LOW`/`needsReply=false`, письмо о просроченном счёте — как `IMPORTANT`/
+`needsAction=true` с точным summary (сумма, назначение платежа), деталей не
+выдумано там, где их не было (`deadline=null`, срок в письме не назван).
+`EmailThread.replyStatus` пересчитался через уже готовый `deriveReplyStatus` —
+подтверждает, что выкат 1 был не зря спроектирован с заделом под это. Утренняя
+сводка (08:05 Алматы) ещё не наступала на момент проверки — сработает на
+следующие сутки, дальнейший мониторинг не требуется (логика прогнана тестами).
+
 **Не подтверждено доками (проверяется живым прогоном):** доставка
 `session.delegation.created` на sideband для WebRTC-сессии (страницы доков
 противоречат друг другу), точные имена client-событий (`session.commentary.
