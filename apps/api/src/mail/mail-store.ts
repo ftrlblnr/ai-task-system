@@ -36,12 +36,24 @@ export interface LocalMessageRef {
   providerMissing: boolean;
 }
 
+// Release 2 — байты/извлечённый текст вложений разрешаются на уровне
+// MailSyncService (FilesService/attachment-extraction.ts), не здесь: MailStore
+// остаётся тонким Prisma-слоем, не знающим про FileStorage/pdfjs.
+export interface ResolvedAttachment {
+  fileName: string;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  fileArtifactId: string | null;
+  extractedText: string | null;
+}
+
 export interface NewMessageRecord {
   mailboxId: string;
   folderId: string;
   isOutgoing: boolean;
   threadId: string;
   message: NormalizedMessage;
+  attachments: ResolvedAttachment[];
 }
 
 export interface MailboxStatePatch {
@@ -156,7 +168,13 @@ export class MailStore {
           threadId: record.threadId,
           recipients: { create: recipients },
           attachments: {
-            create: m.attachments.map((a) => ({ fileName: a.fileName, mimeType: a.mimeType ?? null, sizeBytes: a.sizeBytes ?? null, providerPartId: a.partId ?? null })),
+            create: record.attachments.map((a) => ({
+              fileName: a.fileName,
+              mimeType: a.mimeType,
+              sizeBytes: a.sizeBytes,
+              fileArtifactId: a.fileArtifactId,
+              extractedText: a.extractedText,
+            })),
           },
         },
         select: { id: true },
@@ -268,4 +286,73 @@ export class MailStore {
   countMessages(mailboxId: string): Promise<number> {
     return this.prisma.emailMessage.count({ where: { mailboxId, providerMissing: false } });
   }
+
+  // Входящие, не рассылки, не пропавшие — ещё не проанализированные или
+  // провалившиеся анализом менее maxAttempts раз (см. MailAnalysisService).
+  listMessagesForAnalysis(mailboxId: string, maxAttempts: number, limit: number): Promise<MessageForAnalysis[]> {
+    return this.prisma.emailMessage.findMany({
+      where: {
+        mailboxId,
+        isOutgoing: false,
+        isAutomated: false,
+        providerMissing: false,
+        OR: [{ analysis: null }, { analysis: { is: { status: 'FAILED', attempts: { lt: maxAttempts } } } }],
+      },
+      select: {
+        id: true,
+        threadId: true,
+        subject: true,
+        fromAddress: true,
+        fromName: true,
+        sentAt: true,
+        receivedAt: true,
+        textBody: true,
+        recipients: { select: { type: true, address: true } },
+        attachments: { select: { fileName: true, extractedText: true } },
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: limit,
+    });
+  }
+
+  async recordAnalysisSuccess(emailMessageId: string, data: AnalysisSuccessData): Promise<void> {
+    await this.prisma.emailAnalysis.upsert({
+      where: { emailMessageId },
+      create: { emailMessageId, status: 'COMPLETED', ...data },
+      update: { status: 'COMPLETED', ...data },
+    });
+  }
+
+  async recordAnalysisFailure(emailMessageId: string): Promise<void> {
+    await this.prisma.emailAnalysis.upsert({
+      where: { emailMessageId },
+      create: { emailMessageId, status: 'FAILED', attempts: 1 },
+      update: { status: 'FAILED', attempts: { increment: 1 } },
+    });
+  }
+}
+
+export interface MessageForAnalysis {
+  id: string;
+  threadId: string | null;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  sentAt: Date | null;
+  receivedAt: Date | null;
+  textBody: string | null;
+  recipients: { type: 'TO' | 'CC' | 'BCC'; address: string }[];
+  attachments: { fileName: string; extractedText: string | null }[];
+}
+
+export interface AnalysisSuccessData {
+  summary: string;
+  importance: Prisma.EmailAnalysisCreateInput['importance'];
+  category: Prisma.EmailAnalysisCreateInput['category'];
+  needsReply: boolean;
+  needsAction: boolean;
+  actionSummary: string | null;
+  deadline: Date | null;
+  inputHash: string;
+  model: string;
 }

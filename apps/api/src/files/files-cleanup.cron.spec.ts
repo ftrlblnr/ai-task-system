@@ -36,7 +36,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     expect(prisma.fileArtifact.delete).toHaveBeenCalledWith({ where: { id: 'f2' } });
   });
 
-  it('запрос к БД фильтрует по messageId:null и возрасту — сам крон не решает, что orphan, а что нет', async () => {
+  it('запрос к БД фильтрует по messageId:null, возрасту и исключает вложения почты (source=INTERNAL) — сам крон не решает, что orphan, а что нет', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const prisma = { fileArtifact: { findMany, delete: jest.fn() } };
     const storage = { delete: jest.fn() };
@@ -45,7 +45,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     await cron.cleanupOrphanUploads();
 
     expect(findMany).toHaveBeenCalledWith({
-      where: { messageId: null, createdAt: { lt: expect.any(Date) } },
+      where: { messageId: null, createdAt: { lt: expect.any(Date) }, source: { not: 'INTERNAL' } },
     });
     expect(storage.delete).not.toHaveBeenCalled();
   });

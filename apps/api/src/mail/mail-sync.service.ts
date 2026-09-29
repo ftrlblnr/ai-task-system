@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailFolderRole } from '@prisma/client';
 import { SecretBoxService } from '../crypto/secret-box.service';
-import { MailStore, type MailboxRecord, type StoredFolder } from './mail-store';
+import { FilesService } from '../files/files.service';
+import { extractAttachmentText } from './attachment-extraction';
+import { MailStore, type MailboxRecord, type ResolvedAttachment, type StoredFolder } from './mail-store';
 import { MailProviderRegistry } from './mail-provider.registry';
-import { MailConnectError, type EmailSession, type NormalizedMessage } from './providers/email-provider';
+import { MailConnectError, type EmailSession, type NormalizedAttachment, type NormalizedMessage } from './providers/email-provider';
 import { normalizeSubject, resolveThread } from './thread-resolver';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -33,6 +35,7 @@ export class MailSyncService {
     private readonly store: MailStore,
     private readonly secretBox: SecretBoxService,
     private readonly registry: MailProviderRegistry,
+    private readonly files: FilesService,
   ) {}
 
   async syncMailbox(mailboxId: string): Promise<SyncOutcome> {
@@ -161,15 +164,41 @@ export class MailSyncService {
     }
 
     const threadId = await this.assignThread(mailbox, m);
+    const attachments = await this.resolveAttachments(mailbox.employeeId, m.attachments);
     const id = await this.store.createMessage({
       mailboxId: mailbox.id,
       folderId: folder.id,
       isOutgoing: folder.role === EmailFolderRole.SENT,
       threadId,
       message: m,
+      attachments,
     });
     touchedThreads.add(threadId);
     return id !== null;
+  }
+
+  // Release 2 — сохранение байт вложения (FileArtifact) + извлечение текста
+  // (PDF) во время синка: mailparser уже декодирует байты при разборе
+  // письма (providers/mailru-imap.provider.ts), здесь они не выбрасываются,
+  // а сохраняются. Best-effort по КАЖДОМУ вложению отдельно — сбой одного
+  // (нечитаемый PDF, ошибка диска) не должен блокировать создание письма
+  // целиком, тот же принцип, что уже в reconcileFlags.
+  private async resolveAttachments(employeeId: string, attachments: NormalizedAttachment[]): Promise<ResolvedAttachment[]> {
+    const resolved: ResolvedAttachment[] = [];
+    for (const a of attachments) {
+      let fileArtifactId: string | null = null;
+      try {
+        const artifact = await this.files.createMailAttachment(employeeId, a.content, a.fileName, a.mimeType ?? 'application/octet-stream');
+        fileArtifactId = artifact.id;
+      } catch (err) {
+        this.logger.warn(`mail attachment store failed fileName=${a.fileName}: ${err instanceof Error ? err.name : 'unknown'}`);
+      }
+      // extractAttachmentText никогда не бросает — любая проблема разбора
+      // (не PDF, битый файл) уже возвращает null внутри неё.
+      const extractedText = await extractAttachmentText(a.content, a.mimeType);
+      resolved.push({ fileName: a.fileName, mimeType: a.mimeType ?? null, sizeBytes: a.sizeBytes ?? null, fileArtifactId, extractedText });
+    }
+    return resolved;
   }
 
   private async assignThread(mailbox: MailboxRecord, m: NormalizedMessage): Promise<string> {

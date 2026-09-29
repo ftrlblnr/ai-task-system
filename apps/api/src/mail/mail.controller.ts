@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, StreamableFile, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { IsEmail, IsIn, IsInt, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -6,6 +6,8 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { contentDisposition } from '../common/http/content-disposition';
+import { FilesService } from '../files/files.service';
 import { MailConnectionService } from './mail-connection.service';
 import { MailQueryService, parseEmailFilters } from './mail-query.service';
 import { MailStore } from './mail-store';
@@ -40,6 +42,7 @@ export class MailController {
     private readonly sync: MailSyncService,
     private readonly store: MailStore,
     private readonly query: MailQueryService,
+    private readonly files: FilesService,
   ) {}
 
   @Get('status')
@@ -79,6 +82,20 @@ export class MailController {
   async getOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     const mailbox = await this.requireMailbox(user);
     return this.query.getMessage(mailbox.id, id);
+  }
+
+  // Release 2 — скачивание вложения. Владение проверяется дважды: сначала
+  // вложение принадлежит ящику пользователя (getAttachmentForDownload,
+  // 404 если нет), затем FilesService.getDownloadStream сверяет
+  // FileArtifact.employeeId === user.id — совпадает естественно, т.к.
+  // MailSyncService сохранял вложение с employeeId = mailbox.employeeId,
+  // а mailbox принадлежит этому же user.
+  @Get('attachments/:id/download')
+  async downloadAttachment(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
+    const mailbox = await this.requireMailbox(user);
+    const { fileArtifactId } = await this.query.getAttachmentForDownload(mailbox.id, id);
+    const { stream, file } = await this.files.getDownloadStream(user, fileArtifactId);
+    return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
   }
 
   private async requireMailbox(user: AuthenticatedUser) {

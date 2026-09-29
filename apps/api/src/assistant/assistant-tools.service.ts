@@ -4,6 +4,8 @@ import { EventStatus, Prisma, Role, TaskFromMeetingStatus } from '@prisma/client
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
+import { MailQueryService, type EmailFilters } from '../mail/mail-query.service';
+import { MailStore } from '../mail/mail-store';
 import { MeetingsService } from '../meetings/meetings.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -106,7 +108,9 @@ type KnownToolName =
   | 'get_meeting'
   | 'search_meeting_transcript'
   | 'create_task_from_meeting'
-  | 'find_employee_by_competency';
+  | 'find_employee_by_competency'
+  | 'search_emails'
+  | 'get_email';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -117,6 +121,8 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'search_meeting_transcript') return 'search_meeting_transcript';
   if (name === 'create_task_from_meeting') return 'create_task_from_meeting';
   if (name === 'find_employee_by_competency') return 'find_employee_by_competency';
+  if (name === 'search_emails') return 'search_emails';
+  if (name === 'get_email') return 'get_email';
   return 'get_tasks';
 }
 
@@ -148,6 +154,8 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   search_meeting_transcript: 'MEETING_LOOKUP_FAILED: не удалось найти в транскриптах',
   create_task_from_meeting: 'TASK_CREATE_FAILED: не удалось создать задачу',
   find_employee_by_competency: 'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
+  search_emails: 'MAIL_LOOKUP_FAILED: не удалось найти письма',
+  get_email: 'MAIL_LOOKUP_FAILED: не удалось получить письмо',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -168,6 +176,25 @@ export interface MeetingDetailData {
   meetingDate: string;
   summary: string;
 }
+// Release 2 (Mail.ru Email Intelligence) — те же принципы, что Meeting-tools
+// выше: чтение только через MailQueryService (источник правды — локальная
+// БД, не runtime-запрос к Mail.ru), никакого write-tool'а (у провайдера нет
+// SMTP — нечего писать).
+export interface MailToolEmailSummary {
+  emailId: string;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: string | null;
+  importance: string | null;
+  needsReply: boolean | null;
+  summary: string | null;
+}
+export interface MailToolEmailDetail extends MailToolEmailSummary {
+  textBody: string | null;
+  actionSummary: string | null;
+}
+
 export interface MeetingTranscriptMatchData {
   meetingId: string;
   meetingTitle: string;
@@ -196,6 +223,8 @@ export type ToolExecutionResult =
   | { tool: 'search_meeting_transcript'; items: MeetingTranscriptMatchData[]; totalCount: number }
   | { tool: 'create_task_from_meeting'; task: TaskCardData }
   | { tool: 'find_employee_by_competency'; competencyId: string; employees: { id: string; fullName: string }[] }
+  | { tool: 'search_emails'; items: MailToolEmailSummary[]; totalCount: number }
+  | { tool: 'get_email'; email: MailToolEmailDetail }
   | { tool: KnownToolName; error: true; message: string };
 
 // Инструменты, которые Assistant Core (assistant-reply.service.ts) может
@@ -220,6 +249,8 @@ export class AssistantToolsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly employeeResolver: EmployeeResolverService,
+    private readonly mailStore: MailStore,
+    private readonly mailQuery: MailQueryService,
   ) {}
 
   // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
@@ -364,6 +395,38 @@ export class AssistantToolsService {
           },
         });
       }
+
+      // Release 2 (Mail.ru Email Intelligence) — почта личная (один
+      // MailStore-ящик на владельца, весь MailController закрыт на OWNER,
+      // как календарь) — те же условия видимости, что у get_events выше,
+      // не отдельная проверка.
+      tools.push({
+        name: 'search_emails',
+        description:
+          'Найти письма в подключённой почте руководителя по фильтрам — отправитель, тема/текст, важность, статус ответа, дата. Используй для вопросов вида "есть что-то важное в почте", "что писал X", "какие письма ждут ответа". Если почта не подключена — инструмент честно сообщит об этом, не выдумывай письма.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Поиск по теме/тексту/отправителю' },
+            sender: { type: 'string', description: 'Отправитель — адрес или имя (подстрока)' },
+            dateFrom: { type: 'string', format: 'date-time' },
+            dateTo: { type: 'string', format: 'date-time' },
+            importance: { type: 'array', items: { type: 'string', enum: ['CRITICAL', 'IMPORTANT', 'NORMAL', 'LOW'] } },
+            needsReply: { type: 'boolean', description: 'true — только письма, требующие ответа руководителя' },
+            readStatus: { type: 'string', enum: ['read', 'unread', 'all'] },
+          },
+          required: [],
+        },
+      });
+      tools.push({
+        name: 'get_email',
+        description: 'Получить полный текст и AI-анализ одного письма по его id (обычно из search_emails).',
+        input_schema: {
+          type: 'object',
+          properties: { emailId: { type: 'string' } },
+          required: ['emailId'],
+        },
+      });
     }
 
     return tools;
@@ -446,6 +509,11 @@ export class AssistantToolsService {
       if (name === 'find_employee_by_competency') {
         const competencyId = (input as { competencyId?: unknown } | null)?.competencyId;
         return await this.findEmployeeByCompetency(typeof competencyId === 'string' ? competencyId : '');
+      }
+      if (name === 'search_emails') return await this.searchEmails(input, user);
+      if (name === 'get_email') {
+        const emailId = (input as { emailId?: unknown } | null)?.emailId;
+        return await this.getEmail(typeof emailId === 'string' ? emailId : '', user);
       }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
@@ -842,5 +910,88 @@ export class AssistantToolsService {
     });
     const employees = rows.map((r) => r.employee);
     return { tool: 'find_employee_by_competency', competencyId, employees };
+  }
+
+  // Release 2 — "почта не подключена" это ожидаемое состояние (не у
+  // каждого владельца ящик подключён в данный момент), не исключение —
+  // тот же принцип, что INVALID_INPUT/ASSIGNEE_NOT_FOUND в
+  // createTaskFromMeeting выше: явный { error: true } результат, а не
+  // throw, чтобы модель могла честно сказать пользователю, а не показать
+  // общую "TOOL_ERROR".
+  private async requireMailboxId(user: AuthenticatedUser): Promise<string | { error: true; message: string }> {
+    const mailbox = await this.mailStore.getMailboxStatusByEmployee(user.id);
+    if (!mailbox) return { error: true, message: 'MAIL_NOT_CONNECTED: почта не подключена' };
+    return mailbox.id;
+  }
+
+  private toMailToolSummary(item: {
+    id: string;
+    subject: string | null;
+    fromAddress: string;
+    fromName: string | null;
+    receivedAt: Date | null;
+    analysis: { summary: string | null; importance: string | null; needsReply: boolean | null } | null;
+  }): MailToolEmailSummary {
+    return {
+      emailId: item.id,
+      subject: item.subject,
+      fromAddress: item.fromAddress,
+      fromName: item.fromName,
+      receivedAt: item.receivedAt ? item.receivedAt.toISOString() : null,
+      importance: item.analysis?.importance ?? null,
+      needsReply: item.analysis?.needsReply ?? null,
+      summary: item.analysis?.summary ?? null,
+    };
+  }
+
+  private async searchEmails(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    const mailboxId = await this.requireMailboxId(user);
+    if (typeof mailboxId !== 'string') return { tool: 'search_emails', ...mailboxId };
+
+    const typed = input as {
+      query?: unknown;
+      sender?: unknown;
+      dateFrom?: unknown;
+      dateTo?: unknown;
+      importance?: unknown;
+      needsReply?: unknown;
+      readStatus?: unknown;
+    } | null;
+    const date = (v: unknown) => (typeof v === 'string' && !Number.isNaN(new Date(v).getTime()) ? new Date(v) : undefined);
+    const importances = ['CRITICAL', 'IMPORTANT', 'NORMAL', 'LOW'];
+    const rawReadStatus = typed?.readStatus;
+    const filters: EmailFilters = {
+      query: typeof typed?.query === 'string' ? typed.query : undefined,
+      sender: typeof typed?.sender === 'string' ? typed.sender : undefined,
+      dateFrom: date(typed?.dateFrom),
+      dateTo: date(typed?.dateTo),
+      importance: Array.isArray(typed?.importance)
+        ? (typed.importance.filter((i): i is string => typeof i === 'string' && importances.includes(i)) as EmailFilters['importance'])
+        : undefined,
+      needsReply: typeof typed?.needsReply === 'boolean' ? typed.needsReply : undefined,
+      readStatus: rawReadStatus === 'read' || rawReadStatus === 'unread' ? rawReadStatus : undefined,
+      direction: 'incoming',
+    };
+
+    const { items, totalCount } = await this.mailQuery.search(mailboxId, filters, { limit: MAX_TOOL_ITEMS });
+    await this.audit.log(user.id, 'AI_MAIL_SEARCH', 'EmailMessage', filters.query || filters.sender || 'all', { resultCount: totalCount });
+    return { tool: 'search_emails', items: items.map((i) => this.toMailToolSummary(i)), totalCount };
+  }
+
+  private async getEmail(emailId: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    const mailboxId = await this.requireMailboxId(user);
+    if (typeof mailboxId !== 'string') return { tool: 'get_email', ...mailboxId };
+    if (!emailId) return { tool: 'get_email', error: true, message: 'INVALID_INPUT: не указан id письма' };
+
+    const message = await this.mailQuery.getMessage(mailboxId, emailId);
+    await this.audit.log(user.id, 'AI_MAIL_READ', 'EmailMessage', emailId, {});
+    return {
+      tool: 'get_email',
+      email: {
+        ...this.toMailToolSummary(message),
+        textBody: message.textBody,
+        actionSummary: message.analysis?.actionSummary ?? null,
+      },
+    };
   }
 }

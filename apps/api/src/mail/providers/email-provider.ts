@@ -36,6 +36,10 @@ export interface NormalizedAttachment {
   mimeType?: string | null;
   sizeBytes?: number | null;
   partId?: string | null;
+  // Байты вложения — mailparser уже декодирует их при разборе письма
+  // (Release 2); сохранение/извлечение текста — забота вызывающего кода
+  // (MailSyncService), провайдер только отдаёт то, что у него уже есть.
+  content: Buffer;
 }
 
 // Письмо в нормализованном виде — то, что синк кладёт в PostgreSQL.

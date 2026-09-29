@@ -103,7 +103,12 @@ describe('MailQueryService', () => {
   it('getMessage: возвращает письмо с тредом', async () => {
     const prisma = {
       emailMessage: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'm1', threadId: 't1', subject: 'Тема' }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'm1',
+          threadId: 't1',
+          subject: 'Тема',
+          attachments: [{ id: 'a1', fileName: 'file.pdf', mimeType: 'application/pdf', sizeBytes: 100, fileArtifactId: 'fa1' }],
+        }),
         findMany: jest.fn().mockResolvedValue([{ id: 'm0' }, { id: 'm1' }]),
       },
     };
@@ -113,5 +118,60 @@ describe('MailQueryService', () => {
 
     expect(result.threadMessages).toHaveLength(2);
     expect(prisma.emailMessage.findMany.mock.calls[0][0].where).toMatchObject({ threadId: 't1', mailboxId: 'mb1' });
+  });
+
+  // Release 2 — fileArtifactId не должен уходить наружу как есть, только
+  // производный флаг downloadable (см. mail.controller.ts.downloadAttachment,
+  // который строит ссылку по EmailAttachment.id, а не по FileArtifact.id).
+  it('getMessage: вложение с fileArtifactId — downloadable=true, без него — false, сам fileArtifactId не отдаётся клиенту', async () => {
+    const prisma = {
+      emailMessage: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'm1',
+          threadId: null,
+          subject: 'Тема',
+          attachments: [
+            { id: 'a1', fileName: 'saved.pdf', mimeType: 'application/pdf', sizeBytes: 100, fileArtifactId: 'fa1' },
+            { id: 'a2', fileName: 'lost.pdf', mimeType: 'application/pdf', sizeBytes: 50, fileArtifactId: null },
+          ],
+        }),
+        findMany: jest.fn(),
+      },
+    };
+    const service = new MailQueryService(prisma as any);
+
+    const result = await service.getMessage('mb1', 'm1');
+
+    expect(result.attachments).toEqual([
+      { id: 'a1', fileName: 'saved.pdf', mimeType: 'application/pdf', sizeBytes: 100, downloadable: true },
+      { id: 'a2', fileName: 'lost.pdf', mimeType: 'application/pdf', sizeBytes: 50, downloadable: false },
+    ]);
+  });
+});
+
+describe('MailQueryService.getAttachmentForDownload', () => {
+  it('вложение чужого/несуществующего письма — 404', async () => {
+    const prisma = { emailAttachment: { findFirst: jest.fn().mockResolvedValue(null) } };
+    const service = new MailQueryService(prisma as any);
+
+    await expect(service.getAttachmentForDownload('mb1', 'a1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('вложение без сохранённых байт (fileArtifactId=null) — тоже 404, нечего скачивать', async () => {
+    const prisma = { emailAttachment: { findFirst: jest.fn().mockResolvedValue({ fileArtifactId: null }) } };
+    const service = new MailQueryService(prisma as any);
+
+    await expect(service.getAttachmentForDownload('mb1', 'a1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('вложение своего письма с сохранёнными байтами — возвращает fileArtifactId', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ fileArtifactId: 'fa1' });
+    const prisma = { emailAttachment: { findFirst } };
+    const service = new MailQueryService(prisma as any);
+
+    const result = await service.getAttachmentForDownload('mb1', 'a1');
+
+    expect(result).toEqual({ fileArtifactId: 'fa1' });
+    expect(findFirst.mock.calls[0][0].where).toMatchObject({ id: 'a1', emailMessage: { is: { mailboxId: 'mb1' } } });
   });
 });

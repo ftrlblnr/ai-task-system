@@ -34,6 +34,8 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       'get_meeting',
       'search_meeting_transcript',
       'create_task_from_meeting',
+      'search_emails',
+      'get_email',
     ]);
   });
 
@@ -164,6 +166,80 @@ describe('AssistantToolsService.execute export_tasks_xlsx (Stage 2, Phase G)', (
     expect(result).toMatchObject({ tool: 'export_tasks_xlsx', error: true });
     expect('message' in result && result.message).not.toContain('disk full');
     expect('message' in result && result.message).toContain('EXPORT_FAILED');
+  });
+});
+
+// Release 2 (Mail.ru Email Intelligence) — search_emails/get_email:
+// "почта не подключена" — ожидаемый явный {error:true}, не exception (тот
+// же приём, что INVALID_INPUT/ASSIGNEE_NOT_FOUND в create_task_from_meeting).
+describe('AssistantToolsService.execute search_emails/get_email (Release 2)', () => {
+  function serviceWithMail(mailStore: unknown, mailQuery: unknown) {
+    return new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { log: jest.fn() } as any,
+      {} as any,
+      mailStore as any,
+      mailQuery as any,
+    );
+  }
+
+  it('search_emails: без подключённого ящика — MAIL_NOT_CONNECTED, поиск не вызывается', async () => {
+    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue(null) };
+    const mailQuery = { search: jest.fn() };
+    const service = serviceWithMail(mailStore, mailQuery);
+
+    const result = await service.execute('search_emails', {}, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ tool: 'search_emails', error: true });
+    expect('message' in result && result.message).toContain('MAIL_NOT_CONNECTED');
+    expect(mailQuery.search).not.toHaveBeenCalled();
+  });
+
+  it('search_emails: подключённый ящик — маппит письма в компактные карточки', async () => {
+    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue({ id: 'mb1' }) };
+    const items = [
+      {
+        id: 'e1',
+        subject: 'Тема',
+        fromAddress: 'a@x.com',
+        fromName: 'A',
+        receivedAt: new Date('2026-09-27T10:00:00Z'),
+        analysis: { summary: 'Кратко', importance: 'IMPORTANT', needsReply: true },
+      },
+    ];
+    const mailQuery = { search: jest.fn().mockResolvedValue({ items, totalCount: 1 }) };
+    const service = serviceWithMail(mailStore, mailQuery);
+
+    const result = await service.execute('search_emails', { query: 'тема' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ tool: 'search_emails', totalCount: 1 });
+    expect('items' in result && result.items[0]).toMatchObject({ emailId: 'e1', importance: 'IMPORTANT', needsReply: true });
+    expect(mailQuery.search).toHaveBeenCalledWith('mb1', expect.objectContaining({ query: 'тема', direction: 'incoming' }), { limit: expect.any(Number) });
+  });
+
+  it('get_email: без подключённого ящика — MAIL_NOT_CONNECTED', async () => {
+    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue(null) };
+    const service = serviceWithMail(mailStore, {});
+
+    const result = await service.execute('get_email', { emailId: 'e1' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ tool: 'get_email', error: true });
+    expect('message' in result && result.message).toContain('MAIL_NOT_CONNECTED');
+  });
+
+  it('get_email: письмо не найдено/чужое — общий MAIL_LOOKUP_FAILED, не пробрасывает детали (404)', async () => {
+    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue({ id: 'mb1' }) };
+    const mailQuery = { getMessage: jest.fn().mockRejectedValue(new Error('Письмо не найдено')) };
+    const service = serviceWithMail(mailStore, mailQuery);
+
+    const result = await service.execute('get_email', { emailId: 'e404' }, user({ role: Role.OWNER }));
+
+    expect(result).toMatchObject({ tool: 'get_email', error: true });
+    expect('message' in result && result.message).toContain('MAIL_LOOKUP_FAILED');
   });
 });
 

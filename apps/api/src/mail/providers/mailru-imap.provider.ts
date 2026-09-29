@@ -81,7 +81,7 @@ export function normalizeParsedMail(
   const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
   const attachments = (parsed.attachments ?? [])
     .filter((a) => a.contentDisposition !== 'inline' || a.filename)
-    .map((a) => ({ fileName: a.filename || 'attachment', mimeType: a.contentType ?? null, sizeBytes: a.size ?? null, partId: null }));
+    .map((a) => ({ fileName: a.filename || 'attachment', mimeType: a.contentType ?? null, sizeBytes: a.size ?? null, partId: null, content: a.content }));
 
   const rawText = parsed.text ?? (typeof parsed.html === 'string' ? htmlToText(parsed.html) : '');
   const textBody = rawText ? rawText.slice(0, MAX_TEXT_CHARS) : null;

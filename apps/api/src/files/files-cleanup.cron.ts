@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { FileArtifactSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageRegistry } from './storage-registry.service';
 
@@ -28,7 +29,14 @@ export class FilesCleanupCron {
   async cleanupOrphanUploads(): Promise<void> {
     const cutoff = new Date(Date.now() - ORPHAN_MAX_AGE_MS);
     const orphans = await this.prisma.fileArtifact.findMany({
-      where: { messageId: null, createdAt: { lt: cutoff } },
+      // Release 2 (Mail.ru Email Intelligence) — вложения почты
+      // (FileArtifactSource.INTERNAL) тоже имеют messageId === null (они
+      // привязаны через EmailAttachment.fileArtifactId, другую связь, а не
+      // через Message), но НЕ являются "непрокреплёнными загрузками
+      // чата" — без этого исключения синхронное вложение удалялось бы
+      // отсюда же через сутки после синка, а EmailAttachment.fileArtifactId
+      // тихо повисал бы на несуществующий файл.
+      where: { messageId: null, createdAt: { lt: cutoff }, source: { not: FileArtifactSource.INTERNAL } },
     });
     let deleted = 0;
     for (const file of orphans) {

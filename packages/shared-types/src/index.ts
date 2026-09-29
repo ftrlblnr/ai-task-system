@@ -664,12 +664,16 @@ export type MailStatus =
 export type EmailReplyStatus = 'AWAITING_MY_REPLY' | 'REPLIED' | 'NO_REPLY_REQUIRED' | 'AWAITING_THEIR_REPLY' | 'UNKNOWN';
 export type EmailImportance = 'CRITICAL' | 'IMPORTANT' | 'NORMAL' | 'LOW';
 
+// Release 2 — importance/category/needsReply/needsAction теперь nullable:
+// null означает провалившуюся попытку анализа (EmailAnalysis.status=FAILED),
+// не "ещё не анализировалось" (это отдельно — analysis: null на самом
+// EmailListItem/EmailDetail ниже).
 export interface EmailAnalysisSummary {
   summary: string | null;
-  importance: EmailImportance;
-  category: string;
-  needsReply: boolean;
-  needsAction: boolean;
+  importance: EmailImportance | null;
+  category: string | null;
+  needsReply: boolean | null;
+  needsAction: boolean | null;
   actionSummary: string | null;
   deadline: string | null;
 }
@@ -699,7 +703,11 @@ export interface EmailDetail extends EmailListItem {
   textBody: string | null;
   bodyTruncated: boolean;
   recipients: { type: 'TO' | 'CC' | 'BCC'; address: string; name: string | null }[];
-  attachments: { id: string; fileName: string; mimeType: string | null; sizeBytes: number | null }[];
+  // downloadable=false — байты вложения не сохранились (сбой при синке,
+  // или письмо синхронизировано ещё в Release 1, где вложения не
+  // скачивались вовсе) — UI показывает имя файла как обычный текст, не
+  // ссылку.
+  attachments: { id: string; fileName: string; mimeType: string | null; sizeBytes: number | null; downloadable: boolean }[];
   threadMessages: { id: string; subject: string | null; fromAddress: string; fromName: string | null; receivedAt: string | null; isOutgoing: boolean; isRead: boolean }[];
 }
 

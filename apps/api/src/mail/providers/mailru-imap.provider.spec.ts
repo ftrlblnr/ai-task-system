@@ -95,19 +95,20 @@ describe('normalizeParsedMail — нормализация разобранно�
     expect(m.isAutomated).toBe(false);
   });
 
-  it('вложения — только метаданные; inline без имени не считаются', () => {
+  it('вложения — метаданные + декодированные байты; inline без имени не считаются', () => {
+    const content = Buffer.from('PDF-BYTES');
     const m = normalizeParsedMail(
       base({
         attachments: [
-          { filename: 'Contract_v3.docx', contentType: 'application/x', contentDisposition: 'attachment', size: 1234 },
-          { filename: undefined, contentType: 'image/png', contentDisposition: 'inline', size: 10 },
+          { filename: 'Contract_v3.docx', contentType: 'application/x', contentDisposition: 'attachment', size: 1234, content },
+          { filename: undefined, contentType: 'image/png', contentDisposition: 'inline', size: 10, content: Buffer.from('') },
         ],
       }),
       meta,
     );
 
     expect(m.hasAttachments).toBe(true);
-    expect(m.attachments).toEqual([{ fileName: 'Contract_v3.docx', mimeType: 'application/x', sizeBytes: 1234, partId: null }]);
+    expect(m.attachments).toEqual([{ fileName: 'Contract_v3.docx', mimeType: 'application/x', sizeBytes: 1234, partId: null, content }]);
   });
 
   it('рассылка/автоматика распознаётся по заголовкам и адресу (без LLM)', () => {

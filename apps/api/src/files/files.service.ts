@@ -71,7 +71,7 @@ export class FilesService {
     if (isSuspiciousUpload(buffer, mimeType)) {
       throw new BadRequestException('Файл не прошёл проверку типа — содержимое не соответствует заявленному формату');
     }
-    return this.persist(user, buffer, sanitizeFileName(originalName), mimeType, FileArtifactSource.UPLOADED);
+    return this.persist(user.id, buffer, sanitizeFileName(originalName), mimeType, FileArtifactSource.UPLOADED);
   }
 
   // Stage 2, Phase G — файл, сформированный самим сервером (например,
@@ -81,7 +81,24 @@ export class FilesService {
   // и не совпадающих с заявленным типом; здесь байты формирует сам сервер
   // (exceljs), сверять их с собой же нет смысла.
   async createGenerated(user: AuthenticatedUser, buffer: Buffer, name: string, mimeType: string): Promise<FileArtifact> {
-    return this.persist(user, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.GENERATED);
+    return this.persist(user.id, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.GENERATED);
+  }
+
+  // Release 2 (Mail.ru Email Intelligence) — байты вложения, уже
+  // декодированные MailSyncService при синке письма. В отличие от
+  // createGenerated, источник — внешний отправитель (не сам сервер), так
+  // что isSuspiciousUpload здесь нужен (ловит исполняемый файл под видом
+  // PDF/изображения); в отличие от upload(), НЕ применяется
+  // ALLOWED_UPLOAD_MIME_TYPES/extensionMatchesMimeType — тот allowlist
+  // рассчитан на вложения чата и отклонил бы легитимные .docx/.zip/иные
+  // деловые вложения, которых allowlist не предвидел. Ошибка проверки —
+  // best-effort: вызывающий код (MailSyncService) ловит исключение и
+  // просто оставляет вложение без fileArtifactId, не блокируя синк письма.
+  async createMailAttachment(employeeId: string, buffer: Buffer, name: string, mimeType: string): Promise<FileArtifact> {
+    if (isSuspiciousUpload(buffer, mimeType)) {
+      throw new BadRequestException('Вложение не прошло проверку типа — содержимое не соответствует заявленному формату');
+    }
+    return this.persist(employeeId, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.INTERNAL);
   }
 
   // Phase F.2 (аудит 17.09.2026, P0 — storage/DB consistency) — раньше
@@ -94,7 +111,7 @@ export class FilesService {
   // обе ошибки логируются, наружу уходит исходная ошибка операции (сбой
   // БД важнее для вызывающего кода, чем то, что чистка не удалась).
   private async persist(
-    user: AuthenticatedUser,
+    employeeId: string,
     buffer: Buffer,
     name: string,
     mimeType: string,
@@ -104,7 +121,7 @@ export class FilesService {
     try {
       return await this.prisma.fileArtifact.create({
         data: {
-          employeeId: user.id,
+          employeeId,
           name,
           mimeType,
           size: buffer.length,

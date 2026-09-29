@@ -4,17 +4,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { contentDisposition } from '../common/http/content-disposition';
 import { FilesService } from './files.service';
 import { ALLOWED_UPLOAD_MIME_TYPES, MAX_UPLOAD_FILE_SIZE } from './dto/upload-file.dto';
-
-// Content-Disposition с не-ASCII именем (кириллица — обычный случай в
-// этом проекте) — classic filename="" ломается на не-ASCII, RFC 5987
-// filename*=UTF-8''... рядом с ASCII-фолбэком — то же самое расширение,
-// каким уже сегодня пользуются браузеры/curl.
-function contentDisposition(name: string): string {
-  const ascii = name.replace(/[^\x20-\x7e]/g, '_');
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
-}
 
 // Busboy/Multer декодируют имя файла из multipart-заголовка как latin1
 // (исторический дефолт HTTP multipart, RFC 7578 не требует UTF-8) — не-

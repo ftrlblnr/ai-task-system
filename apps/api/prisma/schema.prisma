@@ -1216,23 +1216,32 @@ model EmailAttachment {
   @@index([emailMessageId])
 }
 
+enum EmailAnalysisStatus {
+  COMPLETED
+  FAILED
+}
+
 model EmailAnalysis {
   id             String       @id @default(cuid())
   emailMessageId String       @unique
   emailMessage   EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
 
+  status        EmailAnalysisStatus
   summary       String?
-  importance    EmailImportance
-  category      EmailCategory
-  needsReply    Boolean
-  needsAction   Boolean
+  // Null когда status=FAILED — попытка не выдумывает значения при сбое.
+  importance    EmailImportance?
+  category      EmailCategory?
+  needsReply    Boolean?
+  needsAction   Boolean?
   actionSummary String?
   deadline      DateTime?
 
   // Хэш входа анализа — повторный анализ только если состояние существенно
   // изменилось (контроль стоимости).
-  inputHash  String?
-  model      String?
+  inputHash String?
+  model     String?
+  // Ограничивает ретраи структурно «битых» писем (см. MAX_ANALYSIS_ATTEMPTS).
+  attempts   Int      @default(1)
   analyzedAt DateTime @default(now())
 }
 

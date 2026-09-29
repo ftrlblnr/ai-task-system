@@ -109,7 +109,11 @@ export class MailQueryService {
         textBody: true,
         bodyTruncated: true,
         recipients: { select: { type: true, address: true, name: true } },
-        attachments: { select: { id: true, fileName: true, mimeType: true, sizeBytes: true } },
+        // fileArtifactId читается только чтобы посчитать downloadable ниже —
+        // сам id FileArtifact наружу клиенту не отдаётся (ссылка на
+        // скачивание строится по EmailAttachment.id, см. downloadAttachment
+        // в mail.controller.ts).
+        attachments: { select: { id: true, fileName: true, mimeType: true, sizeBytes: true, fileArtifactId: true } },
       },
     });
     if (!message) throw new NotFoundException('Письмо не найдено');
@@ -121,7 +125,52 @@ export class MailQueryService {
           take: 100,
         })
       : [];
-    return { ...message, threadMessages };
+    const attachments = message.attachments.map((a) => ({
+      id: a.id,
+      fileName: a.fileName,
+      mimeType: a.mimeType,
+      sizeBytes: a.sizeBytes,
+      downloadable: a.fileArtifactId !== null,
+    }));
+    return { ...message, attachments, threadMessages };
+  }
+
+  // Release 2 — владение вложением проверяется через владение ПИСЬМОМ
+  // (тот же принцип 404-не-403, что у getMessage): чужое/несуществующее
+  // вложение не подтверждает даже факт существования. fileArtifactId может
+  // быть null (сохранение при синке не удалось best-effort) — тогда
+  // вложение существует, но нечего скачивать.
+  async getAttachmentForDownload(mailboxId: string, attachmentId: string): Promise<{ fileArtifactId: string }> {
+    const attachment = await this.prisma.emailAttachment.findFirst({
+      where: { id: attachmentId, emailMessage: { is: { mailboxId } } },
+      select: { fileArtifactId: true },
+    });
+    if (!attachment || !attachment.fileArtifactId) throw new NotFoundException('Вложение не найдено');
+    return { fileArtifactId: attachment.fileArtifactId };
+  }
+
+  // Release 2 — важное/требующее реакции за период (дайджест): OR
+  // по важности/needsReply/needsAction, а не AND, как в buildEmailWhere
+  // (там фильтры сочетаются — здесь наоборот, любое из трёх условий уже
+  // повод показать письмо в сводке).
+  findImportantForDigest(mailboxId: string, periodFrom: Date, periodTo: Date) {
+    return this.prisma.emailMessage.findMany({
+      where: {
+        mailboxId,
+        providerMissing: false,
+        isOutgoing: false,
+        receivedAt: { gte: periodFrom, lt: periodTo },
+        analysis: {
+          is: {
+            status: 'COMPLETED',
+            OR: [{ importance: { in: ['CRITICAL', 'IMPORTANT'] } }, { needsReply: true }, { needsAction: true }],
+          },
+        },
+      },
+      select: { id: true, subject: true, fromAddress: true, fromName: true, receivedAt: true, analysis: { select: { summary: true } } },
+      orderBy: { receivedAt: 'desc' },
+      take: 30,
+    });
   }
 }
 

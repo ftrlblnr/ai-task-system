@@ -22,6 +22,7 @@ interface StoredMsg {
   at: Date;
   threadId: string;
   providerMissing: boolean;
+  attachments: { fileName: string; fileArtifactId: string | null; extractedText: string | null }[];
 }
 
 class FakeStore {
@@ -83,6 +84,7 @@ class FakeStore {
       at: m.receivedAt ?? new Date(),
       threadId: r.threadId,
       providerMissing: false,
+      attachments: r.attachments.map((a: any) => ({ fileName: a.fileName, fileArtifactId: a.fileArtifactId, extractedText: a.extractedText })),
     });
     return id;
   }
@@ -144,6 +146,7 @@ interface RemoteMsg {
   inReplyTo?: string;
   references?: string[];
   automated?: boolean;
+  attachments?: { fileName: string; mimeType?: string | null; content: Buffer }[];
 }
 
 class FakeServer {
@@ -180,7 +183,7 @@ class FakeServer {
       isAutomated: m.automated ?? false,
       inReplyTo: m.inReplyTo ?? null,
       references: m.references ?? [],
-      attachments: [],
+      attachments: (m.attachments ?? []).map((a) => ({ fileName: a.fileName, mimeType: a.mimeType ?? null, sizeBytes: a.content.length, partId: null, content: a.content })),
     };
   }
   provider = {
@@ -213,8 +216,12 @@ function setup() {
   const server = new FakeServer();
   const secretBox = { decrypt: jest.fn().mockReturnValue('app-password') };
   const registry = { get: () => server.provider };
-  const service = new MailSyncService(store as any, secretBox as any, registry as any);
-  return { store, server, service, secretBox };
+  // FilesService — не вызывается в этих тестах (все NormalizedMessage
+  // фикстуры без вложений, см. FakeServer.toNormalized), заглушка нужна
+  // только чтобы конструктор не падал на неопределённом параметре.
+  const files = { createMailAttachment: jest.fn() };
+  const service = new MailSyncService(store as any, secretBox as any, registry as any, files as any);
+  return { store, server, service, secretBox, files };
 }
 
 describe('MailSyncService — Inbox и Sent', () => {
@@ -230,6 +237,28 @@ describe('MailSyncService — Inbox и Sent', () => {
     expect(store.messages.filter((m) => m.isOutgoing)).toHaveLength(1);
     expect(secretBox.decrypt).toHaveBeenCalledWith('ENC');
     expect(store.mailbox).toMatchObject({ syncState: 'IDLE', lastError: null });
+  });
+
+  it('Release 2: байты вложения сохраняются через FilesService.createMailAttachment', async () => {
+    const { store, server, service, files } = setup();
+    files.createMailAttachment.mockResolvedValue({ id: 'fa1' });
+    server.inbox.push(remote({ uid: 1, attachments: [{ fileName: 'photo.png', mimeType: 'image/png', content: Buffer.from('PNGDATA') }] }));
+
+    await service.syncMailbox('mb1');
+
+    expect(files.createMailAttachment).toHaveBeenCalledWith('e1', Buffer.from('PNGDATA'), 'photo.png', 'image/png');
+    expect(store.messages[0].attachments).toEqual([{ fileName: 'photo.png', fileArtifactId: 'fa1', extractedText: null }]);
+  });
+
+  it('Release 2: сбой сохранения вложения не блокирует создание письма — fileArtifactId остаётся null', async () => {
+    const { store, server, service, files } = setup();
+    files.createMailAttachment.mockRejectedValue(new Error('disk full'));
+    server.inbox.push(remote({ uid: 1, attachments: [{ fileName: 'contract.pdf', mimeType: 'application/pdf', content: Buffer.from('not a real pdf') }] }));
+
+    const result = await service.syncMailbox('mb1');
+
+    expect(result).toMatchObject({ status: 'ok', created: 1 });
+    expect(store.messages[0].attachments[0].fileArtifactId).toBeNull();
   });
 
   it('ИДЕМПОТЕНТНОСТЬ: повторный синк тех же писем не создаёт дублей', async () => {

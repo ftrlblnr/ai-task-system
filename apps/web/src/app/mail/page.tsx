@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
+import { Download, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
 import type { EmailDetail, EmailListItem, EmailListResponse, EmailReplyStatus, MailStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
@@ -38,6 +38,59 @@ function formatDate(value: string | null): string {
 
 function senderLabel(m: { fromName: string | null; fromAddress: string }): string {
   return m.fromName?.trim() || m.fromAddress;
+}
+
+// Release 2 — вложение с сохранённым содержимым скачивается тем же
+// приёмом, что assistant-message-part.tsx.FilePartView (авторизованный
+// fetch → Blob → временный <a download>, обычная <a href> не отправит
+// Bearer-токен). Без сохранённых байт (downloadable=false — не удалось
+// сохранить при синке, или письмо ещё с релиза 1) — просто имя файла.
+function AttachmentItem({ attachment }: { attachment: EmailDetail['attachments'][number] }) {
+  const [downloading, setDownloading] = useState(false);
+
+  if (!attachment.downloadable) {
+    return <span>{attachment.fileName}</span>;
+  }
+
+  async function download() {
+    setDownloading(true);
+    try {
+      const blob = await api.downloadBlob(`/mail/attachments/${attachment.id}/download`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = attachment.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      disabled={downloading}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        font: 'inherit',
+        color: 'var(--accent, inherit)',
+        textDecoration: 'underline',
+        cursor: downloading ? 'default' : 'pointer',
+      }}
+    >
+      {attachment.fileName}
+      <Download size={12} strokeWidth={2} />
+    </button>
+  );
 }
 
 function ConnectCard({ onConnected }: { onConnected: () => void }) {
@@ -196,7 +249,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
           </p>
           {detail.analysis && (
             <p style={{ marginBottom: 10 }}>
-              <strong>{IMPORTANCE_LABELS[detail.analysis.importance] || 'Кратко'}:</strong> {detail.analysis.summary}
+              <strong>{(detail.analysis.importance && IMPORTANCE_LABELS[detail.analysis.importance]) || 'Кратко'}:</strong> {detail.analysis.summary}
               {detail.analysis.actionSummary && (
                 <>
                   <br />
@@ -206,8 +259,14 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
             </p>
           )}
           {detail.attachments.length > 0 && (
-            <p style={{ marginBottom: 10 }}>
-              <Paperclip size={13} strokeWidth={2} style={{ verticalAlign: -2 }} /> {detail.attachments.map((a) => a.fileName).join(', ')}
+            <p style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Paperclip size={13} strokeWidth={2} style={{ verticalAlign: -2 }} />
+              {detail.attachments.map((a, i) => (
+                <span key={a.id}>
+                  <AttachmentItem attachment={a} />
+                  {i < detail.attachments.length - 1 && ','}
+                </span>
+              ))}
             </p>
           )}
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, maxHeight: 420, overflow: 'auto' }}>
@@ -307,7 +366,7 @@ function MessageList() {
             <tbody>
               {data.items.map((m: EmailListItem) => {
                 const replyLabel = m.thread ? REPLY_STATUS_LABELS[m.thread.replyStatus] : '';
-                const importanceLabel = m.analysis ? IMPORTANCE_LABELS[m.analysis.importance] : '';
+                const importanceLabel = m.analysis?.importance ? IMPORTANCE_LABELS[m.analysis.importance] : '';
                 return (
                   <tr key={m.id} onClick={() => setOpenId(m.id)} style={{ cursor: 'pointer', fontWeight: m.isRead ? 400 : 600 }}>
                     <td>{senderLabel(m)}</td>

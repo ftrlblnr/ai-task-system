@@ -41,6 +41,8 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
       return { label: 'Не удалось проверить встречи' };
     }
     if (result.tool === 'find_employee_by_competency') return { label: 'Не удалось найти сотрудников по компетенции' };
+    // Release 2 (Mail.ru Email Intelligence).
+    if (result.tool === 'search_emails' || result.tool === 'get_email') return { label: 'Не удалось проверить почту' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -54,6 +56,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
   // Stage 2, Phase P — find_employee_by_competency, единственный оставшийся
   // read-only-инструмент этого этапа.
   if (result.tool === 'find_employee_by_competency') return { label: `Нашёл сотрудников по компетенции: ${result.employees.length}` };
+  // Release 2 (Mail.ru Email Intelligence).
+  if (result.tool === 'search_emails') return { label: `Проверил почту: найдено ${result.totalCount}` };
+  if (result.tool === 'get_email') return { label: 'Открыл письмо' };
   // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
   return { label: `Поставил задачу «${result.task.title}»` };
 }
