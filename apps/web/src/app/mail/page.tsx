@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Download, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
 import type { EmailDetail, EmailListItem, EmailListResponse, EmailReplyStatus, MailStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
@@ -298,8 +298,15 @@ function MessageList() {
   const [data, setData] = useState<EmailListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  // Переключение вкладки/поиска до того, как ответил предыдущий запрос,
+  // могло применить более старый ответ (пришёл позже из-за сети), если он
+  // разрешился ПОСЛЕ нового — список тогда показывал письма не той вкладки
+  // (например, "Ответ не нужен" под вкладкой «Ждут ответа»). requestId —
+  // применяем только самый свежий по порядку запуска ответ.
+  const requestIdRef = useRef(0);
 
   const load = useCallback(() => {
+    const requestId = ++requestIdRef.current;
     const params = new URLSearchParams({ limit: '30' });
     if (filter === 'unread') params.set('readStatus', 'unread');
     if (filter === 'awaiting') params.set('replyStatus', 'AWAITING_MY_REPLY');
@@ -308,10 +315,14 @@ function MessageList() {
     api
       .get<EmailListResponse>(`/mail/messages?${params.toString()}`)
       .then((r) => {
+        if (requestId !== requestIdRef.current) return;
         setData(r);
         setError(null);
       })
-      .catch((err) => setError(err instanceof ApiError ? err.message : 'Не удалось загрузить письма'));
+      .catch((err) => {
+        if (requestId !== requestIdRef.current) return;
+        setError(err instanceof ApiError ? err.message : 'Не удалось загрузить письма');
+      });
   }, [filter, submittedQuery]);
 
   useEffect(load, [load]);
