@@ -338,7 +338,14 @@ function MessageList() {
     <>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
         {filters.map((f) => (
-          <button key={f.key} className={filter === f.key ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setFilter(f.key)}>
+          <button
+            key={f.key}
+            className={filter === f.key ? 'btn btn-small' : 'btn-secondary btn-small'}
+            onClick={() => {
+              setFilter(f.key);
+              setOpenId(null);
+            }}
+          >
             {f.label}
           </button>
         ))}
@@ -346,6 +353,7 @@ function MessageList() {
           onSubmit={(e) => {
             e.preventDefault();
             setSubmittedQuery(query.trim());
+            setOpenId(null);
           }}
           style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}
         >
