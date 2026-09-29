@@ -78,7 +78,9 @@ export class MailStore {
   getMailboxStatusByEmployee(employeeId: string) {
     return this.prisma.mailbox.findUnique({
       where: { employeeId },
-      select: { id: true, emailAddress: true, syncEnabled: true, syncState: true, lastError: true, lastSyncedAt: true, initialDays: true },
+      // provider — не часть MailStatus (shared-types), нужен только
+      // mail.controller.ts для источника на вкладке «Дайджест».
+      select: { id: true, emailAddress: true, provider: true, syncEnabled: true, syncState: true, lastError: true, lastSyncedAt: true, initialDays: true },
     });
   }
 

@@ -161,18 +161,105 @@ export class MailQueryService {
   findAllForDigest(mailboxId: string, periodFrom: Date, periodTo: Date) {
     return this.prisma.emailMessage.findMany({
       where: { mailboxId, providerMissing: false, isOutgoing: false, receivedAt: { gte: periodFrom, lt: periodTo } },
-      select: {
-        id: true,
-        subject: true,
-        fromAddress: true,
-        fromName: true,
-        receivedAt: true,
-        analysis: { select: { status: true, summary: true, importance: true, category: true, needsReply: true, needsAction: true } },
-      },
+      select: DIGEST_SELECT,
       orderBy: { receivedAt: 'asc' },
       take: MAX_DIGEST_ITEMS,
     });
   }
+
+  // Вкладка «Дайджест» в вебе (владелец 29.09.2026) — список сохранённых
+  // сводок (EmailDigest уже пишется каждое утро, см. mail-digest.cron.ts);
+  // importantCount — тот же критерий, что раньше фильтровал саму сводку
+  // (CRITICAL/IMPORTANT/needsReply/needsAction), теперь только для бейджа в
+  // превью списка, не для отбора писем.
+  async listDigests(mailboxId: string, limit: number): Promise<DigestListItem[]> {
+    const digests = await this.prisma.emailDigest.findMany({
+      where: { mailboxId },
+      orderBy: { periodFrom: 'desc' },
+      take: limit,
+      select: { id: true, periodFrom: true, periodTo: true, generatedAt: true, content: true },
+    });
+    return digests.map((d) => {
+      const items = parseDigestContent(d.content);
+      return {
+        id: d.id,
+        periodFrom: d.periodFrom,
+        periodTo: d.periodTo,
+        generatedAt: d.generatedAt,
+        totalCount: items.length,
+        importantCount: items.filter(isImportantDigestItem).length,
+      };
+    });
+  }
+
+  // 404, не 403 — тот же принцип, что getMessage/getAttachmentForDownload.
+  async getDigest(mailboxId: string, id: string): Promise<DigestDetail> {
+    const digest = await this.prisma.emailDigest.findFirst({
+      where: { id, mailboxId },
+      select: { id: true, periodFrom: true, periodTo: true, generatedAt: true, content: true },
+    });
+    if (!digest) throw new NotFoundException('Сводка не найдена');
+    return { id: digest.id, periodFrom: digest.periodFrom, periodTo: digest.periodTo, generatedAt: digest.generatedAt, items: parseDigestContent(digest.content) };
+  }
+}
+
+const DIGEST_SELECT = {
+  id: true,
+  subject: true,
+  fromAddress: true,
+  fromName: true,
+  receivedAt: true,
+  analysis: { select: { status: true, summary: true, importance: true, category: true, needsReply: true, needsAction: true } },
+} satisfies Prisma.EmailMessageSelect;
+
+// Форма живого запроса (findAllForDigest, receivedAt — настоящий Date) —
+// используется при СБОРКЕ сводки (mail-digest.cron.ts форматирует Telegram-
+// текст по этой форме). После сохранения в EmailDigest.content (Postgres
+// Json) и обратного чтения (StoredDigestItem ниже) receivedAt уже не Date, а
+// ISO-строка — Postgres не хранит тип Date внутри jsonb, только то, во что
+// он сериализовался при записи.
+export type DigestEmailItem = Prisma.EmailMessageGetPayload<{ select: typeof DIGEST_SELECT }>;
+
+export interface StoredDigestItem {
+  id: string;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: string | null;
+  analysis: {
+    status: string;
+    summary: string | null;
+    importance: string | null;
+    category: string | null;
+    needsReply: boolean | null;
+    needsAction: boolean | null;
+  } | null;
+}
+
+export interface DigestListItem {
+  id: string;
+  periodFrom: Date;
+  periodTo: Date;
+  generatedAt: Date;
+  totalCount: number;
+  importantCount: number;
+}
+
+export interface DigestDetail {
+  id: string;
+  periodFrom: Date;
+  periodTo: Date;
+  generatedAt: Date;
+  items: StoredDigestItem[];
+}
+
+function parseDigestContent(content: Prisma.JsonValue): StoredDigestItem[] {
+  return Array.isArray(content) ? (content as unknown as StoredDigestItem[]) : [];
+}
+
+function isImportantDigestItem(i: StoredDigestItem): boolean {
+  if (!i.analysis || i.analysis.status !== 'COMPLETED') return false;
+  return i.analysis.importance === 'CRITICAL' || i.analysis.importance === 'IMPORTANT' || i.analysis.needsReply === true || i.analysis.needsAction === true;
 }
 
 // Разбор query-параметров веб-списка (значения из URL — строки).

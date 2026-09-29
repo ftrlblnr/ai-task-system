@@ -711,3 +711,47 @@ export interface EmailDetail extends EmailListItem {
   threadMessages: { id: string; subject: string | null; fromAddress: string; fromName: string | null; receivedAt: string | null; isOutgoing: boolean; isRead: boolean }[];
 }
 
+// Вкладка «Дайджест» (владелец 29.09.2026) — GET /mail/digests[/:id].
+// importance/status здесь — строки, не EmailImportance/EmailAnalysisStatus:
+// это содержимое EmailDigest.content (jsonb), записанное на момент сборки
+// сводки, значения могут пережить будущее расширение enum'ов на бэкенде без
+// правки этого типа.
+export interface MailDigestListItem {
+  id: string;
+  periodFrom: string;
+  periodTo: string;
+  generatedAt: string;
+  totalCount: number;
+  importantCount: number;
+}
+
+export interface MailDigestListResponse {
+  source: string;
+  digests: MailDigestListItem[];
+}
+
+export interface MailDigestEmailItem {
+  id: string;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: string | null;
+  analysis: {
+    status: string;
+    summary: string | null;
+    importance: string | null;
+    category: string | null;
+    needsReply: boolean | null;
+    needsAction: boolean | null;
+  } | null;
+}
+
+export interface MailDigestDetail {
+  source: string;
+  id: string;
+  periodFrom: string;
+  periodTo: string;
+  generatedAt: string;
+  items: MailDigestEmailItem[];
+}
+

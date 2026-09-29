@@ -1,4 +1,7 @@
-import { formatItem, formatTime, type DigestItem } from './mail-digest.cron';
+import { formatItem, formatTime } from './mail-digest.cron';
+import type { DigestEmailItem } from './mail-query.service';
+
+type DigestItem = Pick<DigestEmailItem, 'subject' | 'fromAddress' | 'fromName' | 'receivedAt' | 'analysis'>;
 
 describe('formatTime', () => {
   it('переводит UTC в местное время Алматы (+5)', () => {

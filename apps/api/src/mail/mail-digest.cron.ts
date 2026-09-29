@@ -4,16 +4,17 @@ import { MailProvider, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import { localDateString, TIMEZONE_OFFSET_STRING } from '../common/timezone';
-import { MailQueryService } from './mail-query.service';
+import { MailQueryService, type DigestEmailItem } from './mail-query.service';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 }
 
-// Источник в сообщении (владелец 29.09.2026: сейчас только Mail.ru, дальше
-// планируются другие провайдеры) — единственное место, где заводить label
-// для нового значения MailProvider при расширении.
-const PROVIDER_LABELS: Record<MailProvider, string> = {
+// Источник (владелец 29.09.2026: сейчас только Mail.ru, дальше планируются
+// другие провайдеры) — и в Telegram-сообщении, и на вкладке «Дайджест» в
+// вебе (mail.controller.ts переиспользует этот же экспорт). Единственное
+// место, где заводить label для нового значения MailProvider при расширении.
+export const PROVIDER_LABELS: Record<MailProvider, string> = {
   MAIL_RU: 'Mail.ru',
 };
 
@@ -30,22 +31,7 @@ export function formatTime(date: Date | null): string {
   return new Date(localMs).toISOString().slice(11, 16);
 }
 
-export interface DigestItem {
-  subject: string | null;
-  fromAddress: string;
-  fromName: string | null;
-  receivedAt: Date | null;
-  analysis: {
-    status: string;
-    summary: string | null;
-    importance: string | null;
-    category: string | null;
-    needsReply: boolean | null;
-    needsAction: boolean | null;
-  } | null;
-}
-
-export function formatItem(i: DigestItem): string {
+export function formatItem(i: Pick<DigestEmailItem, 'subject' | 'fromAddress' | 'fromName' | 'receivedAt' | 'analysis'>): string {
   const time = formatTime(i.receivedAt);
   const who = i.fromName || i.fromAddress;
   const subject = i.subject || '(без темы)';

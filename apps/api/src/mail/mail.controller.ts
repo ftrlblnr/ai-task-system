@@ -9,6 +9,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { contentDisposition } from '../common/http/content-disposition';
 import { FilesService } from '../files/files.service';
 import { MailConnectionService } from './mail-connection.service';
+import { PROVIDER_LABELS } from './mail-digest.cron';
 import { MailQueryService, parseEmailFilters } from './mail-query.service';
 import { MailStore } from './mail-store';
 import { MailSyncService } from './mail-sync.service';
@@ -96,6 +97,31 @@ export class MailController {
     const { fileArtifactId } = await this.query.getAttachmentForDownload(mailbox.id, id);
     const { stream, file } = await this.files.getDownloadStream(user, fileArtifactId);
     return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
+  }
+
+  // Вкладка «Дайджест» (владелец 29.09.2026) — сохранённые ежедневные сводки
+  // (пишутся mail-digest.cron.ts каждое утро), список + деталь по образцу
+  // messages/messages/:id выше. source строится тут же, не хранится в
+  // EmailDigest — провайдер/адрес читаются из самого ящика (актуальны на
+  // момент открытия, не на момент генерации сводки, что и правильно: тот же
+  // ящик, просто более свежие метаданные).
+  @Get('digests')
+  async listDigests(@Query('limit') rawLimit: string | undefined, @CurrentUser() user: AuthenticatedUser) {
+    const mailbox = await this.requireMailbox(user);
+    const limit = Number(rawLimit);
+    const digests = await this.query.listDigests(mailbox.id, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 90) : 30);
+    return { source: this.digestSource(mailbox), digests };
+  }
+
+  @Get('digests/:id')
+  async getDigest(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    const mailbox = await this.requireMailbox(user);
+    const digest = await this.query.getDigest(mailbox.id, id);
+    return { source: this.digestSource(mailbox), ...digest };
+  }
+
+  private digestSource(mailbox: { provider: string; emailAddress: string }): string {
+    return `${PROVIDER_LABELS[mailbox.provider as keyof typeof PROVIDER_LABELS] ?? mailbox.provider}, ${mailbox.emailAddress}`;
   }
 
   private async requireMailbox(user: AuthenticatedUser) {

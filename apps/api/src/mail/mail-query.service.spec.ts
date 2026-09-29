@@ -175,3 +175,51 @@ describe('MailQueryService.getAttachmentForDownload', () => {
     expect(findFirst.mock.calls[0][0].where).toMatchObject({ id: 'a1', emailMessage: { is: { mailboxId: 'mb1' } } });
   });
 });
+
+describe('MailQueryService.listDigests/getDigest (вкладка «Дайджест»)', () => {
+  function completedAnalysis(overrides: Partial<{ importance: string | null; needsReply: boolean; needsAction: boolean }> = {}) {
+    return { status: 'COMPLETED', summary: 'Кратко.', importance: null, category: 'INFORMATION', needsReply: false, needsAction: false, ...overrides };
+  }
+
+  it('listDigests: totalCount/importantCount считаются по содержимому content (importance CRITICAL/IMPORTANT или needsReply/needsAction)', async () => {
+    const content = [
+      { id: 'm1', subject: 'A', fromAddress: 'a@x.com', fromName: null, receivedAt: '2026-09-28T05:00:00.000Z', analysis: completedAnalysis({ importance: 'IMPORTANT' }) },
+      { id: 'm2', subject: 'B', fromAddress: 'b@x.com', fromName: null, receivedAt: '2026-09-28T06:00:00.000Z', analysis: completedAnalysis({ needsReply: true }) },
+      { id: 'm3', subject: 'C', fromAddress: 'c@x.com', fromName: null, receivedAt: '2026-09-28T07:00:00.000Z', analysis: completedAnalysis() },
+      { id: 'm4', subject: 'D', fromAddress: 'd@x.com', fromName: null, receivedAt: '2026-09-28T08:00:00.000Z', analysis: null },
+    ];
+    const findMany = jest.fn().mockResolvedValue([{ id: 'dg1', periodFrom: new Date('2026-09-28'), periodTo: new Date('2026-09-29'), generatedAt: new Date('2026-09-29T01:00:00Z'), content }]);
+    const service = new MailQueryService({ emailDigest: { findMany } } as any);
+
+    const result = await service.listDigests('mb1', 30);
+
+    expect(result).toEqual([{ id: 'dg1', periodFrom: new Date('2026-09-28'), periodTo: new Date('2026-09-29'), generatedAt: new Date('2026-09-29T01:00:00Z'), totalCount: 4, importantCount: 2 }]);
+  });
+
+  it('listDigests: content не массив (не должно случаться, но не должно падать) → totalCount=0', async () => {
+    const findMany = jest.fn().mockResolvedValue([{ id: 'dg1', periodFrom: new Date(), periodTo: new Date(), generatedAt: new Date(), content: null }]);
+    const service = new MailQueryService({ emailDigest: { findMany } } as any);
+
+    const result = await service.listDigests('mb1', 30);
+
+    expect(result[0]).toMatchObject({ totalCount: 0, importantCount: 0 });
+  });
+
+  it('getDigest: чужая/несуществующая сводка → 404', async () => {
+    const findFirst = jest.fn().mockResolvedValue(null);
+    const service = new MailQueryService({ emailDigest: { findFirst } } as any);
+
+    await expect(service.getDigest('mb1', 'foreign')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('getDigest: возвращает items из content как есть', async () => {
+    const content = [{ id: 'm1', subject: 'Тема', fromAddress: 'a@x.com', fromName: 'A', receivedAt: '2026-09-28T05:00:00.000Z', analysis: completedAnalysis() }];
+    const findFirst = jest.fn().mockResolvedValue({ id: 'dg1', periodFrom: new Date('2026-09-28'), periodTo: new Date('2026-09-29'), generatedAt: new Date('2026-09-29T01:00:00Z'), content });
+    const service = new MailQueryService({ emailDigest: { findFirst } } as any);
+
+    const result = await service.getDigest('mb1', 'dg1');
+
+    expect(result.items).toEqual(content);
+    expect(findFirst.mock.calls[0][0].where).toEqual({ id: 'dg1', mailboxId: 'mb1' });
+  });
+});

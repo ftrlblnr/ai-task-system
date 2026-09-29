@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Download, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
-import type { EmailDetail, EmailListItem, EmailListResponse, EmailReplyStatus, MailStatus } from '@ai-task-system/shared-types';
+import type {
+  EmailDetail,
+  EmailListItem,
+  EmailListResponse,
+  EmailReplyStatus,
+  MailDigestDetail,
+  MailDigestEmailItem,
+  MailDigestListItem,
+  MailDigestListResponse,
+  MailStatus,
+} from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 
@@ -410,9 +420,140 @@ function MessageList() {
   );
 }
 
+function formatDay(value: string): string {
+  return new Date(value).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function digestItemBadges(item: Pick<MailDigestEmailItem, 'analysis'>): string[] {
+  const badges: string[] = [];
+  if (item.analysis?.status === 'COMPLETED') {
+    const label = item.analysis.importance ? IMPORTANCE_LABELS[item.analysis.importance] : '';
+    if (label) badges.push(label);
+    if (item.analysis.needsReply) badges.push('нужен ответ');
+    if (item.analysis.needsAction) badges.push('нужно действие');
+  }
+  return badges;
+}
+
+function DigestDetailView({ id, onClose }: { id: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<MailDigestDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<MailDigestDetail>(`/mail/digests/${id}`)
+      .then(setDetail)
+      .catch((err) => setError(err instanceof ApiError ? err.message : 'Не удалось открыть сводку'));
+  }, [id]);
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <h2 style={{ marginBottom: 6 }}>{detail ? `Сводка за ${formatDay(detail.periodFrom)}` : 'Сводка'}</h2>
+        <button className="btn-secondary btn-small" onClick={onClose}>
+          Закрыть
+        </button>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {!detail && !error && <p className="hint">Загрузка…</p>}
+      {detail && (
+        <>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Источник: {detail.source}
+          </p>
+          {detail.items.length === 0 && <p className="hint">Писем за эти сутки не было.</p>}
+          {detail.items.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {detail.items.map((item, i) => {
+                const badges = digestItemBadges(item);
+                return (
+                  <li key={item.id ?? i} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
+                    <div>
+                      <span className="hint">{formatDate(item.receivedAt)}</span>{' '}
+                      <strong>{item.fromName || item.fromAddress}</strong> — {item.subject || '(без темы)'}
+                      {badges.map((b) => (
+                        <span key={b} className="badge badge-muted" style={{ marginLeft: 8 }}>
+                          {b}
+                        </span>
+                      ))}
+                    </div>
+                    {item.analysis?.summary && <div className="hint">{item.analysis.summary}</div>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function DigestList() {
+  const [data, setData] = useState<MailDigestListResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<MailDigestListResponse>('/mail/digests')
+      .then((r) => {
+        setData(r);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof ApiError ? err.message : 'Не удалось загрузить сводки'));
+  }, []);
+
+  return (
+    <>
+      {error && <p className="error">{error}</p>}
+      {!data && !error && <p className="hint">Загрузка…</p>}
+      {data && data.digests.length === 0 && (
+        <div className="empty-state">
+          <strong>Сводок пока нет</strong>
+          <p className="hint">Первая ежедневная сводка появится завтра в 06:00 по Алматы.</p>
+        </div>
+      )}
+      {data && data.digests.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Источник</th>
+                <th>Писем</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.digests.map((d: MailDigestListItem) => (
+                <tr key={d.id} onClick={() => setOpenId(d.id)} style={{ cursor: 'pointer' }}>
+                  <td>{formatDay(d.periodFrom)}</td>
+                  <td>{data.source}</td>
+                  <td>
+                    {d.totalCount}
+                    {d.importantCount > 0 && (
+                      <span className="badge badge-muted" style={{ marginLeft: 8 }}>
+                        важных: {d.importantCount}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {openId && <DigestDetailView key={openId} id={openId} onClose={() => setOpenId(null)} />}
+    </>
+  );
+}
+
+type MailTab = 'messages' | 'digests';
+
 function MailView() {
   const [status, setStatus] = useState<MailStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<MailTab>('messages');
 
   const load = useCallback(() => {
     api
@@ -441,7 +582,15 @@ function MailView() {
   return (
     <>
       <StatusBar status={status} onChange={load} />
-      <MessageList />
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button className={tab === 'messages' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setTab('messages')}>
+          Письма
+        </button>
+        <button className={tab === 'digests' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setTab('digests')}>
+          Дайджест
+        </button>
+      </div>
+      {tab === 'messages' ? <MessageList /> : <DigestList />}
     </>
   );
 }
