@@ -38,7 +38,28 @@ const REPLY_STATUS_LABELS: Record<EmailReplyStatus, string> = {
   UNKNOWN: '',
 };
 
-const IMPORTANCE_LABELS: Record<string, string> = { CRITICAL: 'Критично', IMPORTANT: 'Важно', NORMAL: '', LOW: '' };
+// Владелец 30.09.2026: цветовой индикатор в подписях писем — Важно/Критично
+// красным-оранжевым, Вы ответили зелёным, Ответ не нужен/Не важно серым.
+// badge-danger/badge-warn/badge-ok переиспользуют ту же палитру, что уже
+// красит приоритет задач (globals.css, --danger/--warn/--ok).
+const REPLY_STATUS_BADGE_CLASS: Record<EmailReplyStatus, string> = {
+  AWAITING_MY_REPLY: 'badge badge-warn',
+  REPLIED: 'badge badge-ok',
+  NO_REPLY_REQUIRED: 'badge badge-muted',
+  AWAITING_THEIR_REPLY: 'badge',
+  UNKNOWN: 'badge badge-muted',
+};
+
+// NORMAL/LOW теперь тоже подписаны (владелец 30.09.2026: индикатор важности
+// должен быть виден у каждого проанализированного письма, не только у
+// критичных/важных).
+const IMPORTANCE_LABELS: Record<string, string> = { CRITICAL: 'Критично', IMPORTANT: 'Важно', NORMAL: 'Обычно', LOW: 'Не важно' };
+const IMPORTANCE_BADGE_CLASS: Record<string, string> = {
+  CRITICAL: 'badge badge-danger',
+  IMPORTANT: 'badge badge-warn',
+  NORMAL: 'badge badge-muted',
+  LOW: 'badge badge-muted',
+};
 
 type Filter = 'all' | 'unread' | 'awaiting' | 'important';
 
@@ -402,8 +423,16 @@ function MessageList() {
                     <td>
                       {m.subject || '(без темы)'}
                       {m.hasAttachments && <Paperclip size={12} strokeWidth={2} style={{ marginLeft: 6, verticalAlign: -1 }} />}
-                      {importanceLabel && <span className="badge badge-muted" style={{ marginLeft: 8 }}>{importanceLabel}</span>}
-                      {replyLabel && <span className="badge badge-muted" style={{ marginLeft: 8 }}>{replyLabel}</span>}
+                      {importanceLabel && m.analysis?.importance && (
+                        <span className={IMPORTANCE_BADGE_CLASS[m.analysis.importance]} style={{ marginLeft: 8 }}>
+                          {importanceLabel}
+                        </span>
+                      )}
+                      {replyLabel && m.thread && (
+                        <span className={REPLY_STATUS_BADGE_CLASS[m.thread.replyStatus]} style={{ marginLeft: 8 }}>
+                          {replyLabel}
+                        </span>
+                      )}
                       {m.analysis?.summary && <div className="hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
                     </td>
                     <td>{formatDate(m.receivedAt)}</td>

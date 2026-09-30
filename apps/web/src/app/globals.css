@@ -627,6 +627,22 @@ select {
   font-weight: 500;
   border: 1px solid var(--border);
 }
+/* Цветовые варианты бейджа (mail/page.tsx — важность/статус ответа письма,
+   владелец 30.09.2026) — переиспользуют ту же палитру, что уже красит
+   приоритет задач (--danger/--warn/--ok, см. --priority-* выше), не новые
+   цвета ради одного экрана. */
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.badge-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
 .status-done {
   background: var(--ok-soft);
   color: var(--ok);
