@@ -3,7 +3,7 @@
 import { use, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import type { EmployeeDetail, PasswordResetLink, TelegramInvite } from '@ai-task-system/shared-types';
+import type { Direction, EmployeeDetail, PasswordResetLink, TelegramInvite } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
@@ -289,6 +289,84 @@ function PasswordResetSection({ employeeId }: { employeeId: string }) {
   );
 }
 
+// Владелец 30.09.2026: направление (отдел, например «Маркетинг») — один на
+// сотрудника, нужен для фильтрации задач по org-unit (kanban-board.tsx), не
+// путать с компетенциями выше (многие-ко-многим, для AI-подбора
+// исполнителя). В отличие от должности (только при создании сотрудника),
+// направление можно менять и после — сохраняется сразу при выборе, без
+// отдельной кнопки.
+function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; onChange: () => void }) {
+  const [directions, setDirections] = useState<Direction[]>([]);
+  const [directionId, setDirectionId] = useState(employee.directionId ?? '');
+  const [newTitle, setNewTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<Direction[]>('/directions').then(setDirections).catch(() => {});
+  }, []);
+
+  async function save(nextDirectionId: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      await api.patch(`/employees/${employee.id}`, { directionId: nextDirectionId || null });
+      onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить направление');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSelect(value: string) {
+    setDirectionId(value);
+    if (value !== NEW_ITEM_VALUE) await save(value);
+  }
+
+  async function createAndSave(e: FormEvent) {
+    e.preventDefault();
+    if (!newTitle.trim()) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const created = await api.post<Direction>('/directions', { title: newTitle.trim() });
+      setNewTitle('');
+      setDirectionId(created.id);
+      await save(created.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать направление');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Направление</h2>
+      <label>
+        <select value={directionId} onChange={(e) => handleSelect(e.target.value)} disabled={busy}>
+          <option value="">—</option>
+          {directions.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.title}
+            </option>
+          ))}
+          <option value={NEW_ITEM_VALUE}>+ Новое направление…</option>
+        </select>
+      </label>
+      {directionId === NEW_ITEM_VALUE && (
+        <form onSubmit={createAndSave} className="input-row" style={{ marginTop: 8 }}>
+          <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Название направления" required />
+          <button type="submit" className="btn-secondary" disabled={busy}>
+            Создать
+          </button>
+        </form>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
 function EmployeeDetailView({ id }: { id: string }) {
   const [employee, setEmployee] = useState<EmployeeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -365,6 +443,8 @@ function EmployeeDetailView({ id }: { id: string }) {
           onAdded={load}
         />
       </div>
+
+      <DirectionSection employee={employee} onChange={load} />
 
       <TelegramSection employee={employee} onChange={load} />
       <PasswordResetSection employeeId={employee.id} />

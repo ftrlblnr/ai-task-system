@@ -21,6 +21,8 @@ const EMPLOYEE_SELECT = {
   isProfileAdmin: true,
   positionId: true,
   position: { select: { id: true, title: true } },
+  directionId: true,
+  direction: { select: { id: true, title: true } },
   createdAt: true,
 } as const;
 
@@ -73,6 +75,7 @@ export class EmployeesService {
         email: dto.email,
         passwordHash,
         positionId: dto.positionId,
+        directionId: dto.directionId,
         role: dto.role,
         isProfileAdmin: dto.isProfileAdmin ?? false,
       },

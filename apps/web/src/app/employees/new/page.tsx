@@ -4,16 +4,18 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import type { CreateEmployeeInput, EmployeeProfile, Position, Role } from '@ai-task-system/shared-types';
+import type { CreateEmployeeInput, Direction, EmployeeProfile, Position, Role } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { generatePassword } from '@/lib/generate-password';
 
 const NEW_POSITION_VALUE = '__new__';
+const NEW_DIRECTION_VALUE = '__new__';
 
 function NewEmployeeForm() {
   const router = useRouter();
   const [positions, setPositions] = useState<Position[]>([]);
+  const [directions, setDirections] = useState<Direction[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -22,11 +24,14 @@ function NewEmployeeForm() {
   const [password, setPassword] = useState(() => generatePassword());
   const [positionId, setPositionId] = useState('');
   const [newPositionTitle, setNewPositionTitle] = useState('');
+  const [directionId, setDirectionId] = useState('');
+  const [newDirectionTitle, setNewDirectionTitle] = useState('');
   const [role, setRole] = useState<Role>('EMPLOYEE');
   const [isProfileAdmin, setIsProfileAdmin] = useState(false);
 
   useEffect(() => {
     api.get<Position[]>('/positions').then(setPositions).catch(() => {});
+    api.get<Direction[]>('/directions').then(setDirections).catch(() => {});
   }, []);
 
   async function handleSubmit(e: FormEvent) {
@@ -41,11 +46,19 @@ function NewEmployeeForm() {
         finalPositionId = created.id;
       }
 
+      let finalDirectionId = directionId || undefined;
+      if (directionId === NEW_DIRECTION_VALUE) {
+        if (!newDirectionTitle.trim()) throw new ApiError('Укажите название нового направления', 400);
+        const created = await api.post<Direction>('/directions', { title: newDirectionTitle.trim() });
+        finalDirectionId = created.id;
+      }
+
       const payload: CreateEmployeeInput = {
         fullName,
         email,
         password,
         positionId: finalPositionId,
+        directionId: finalDirectionId,
         role,
         isProfileAdmin,
       };
@@ -101,6 +114,26 @@ function NewEmployeeForm() {
         <label>
           Название новой должности
           <input value={newPositionTitle} onChange={(e) => setNewPositionTitle(e.target.value)} required />
+        </label>
+      )}
+
+      <label>
+        Направление
+        <select value={directionId} onChange={(e) => setDirectionId(e.target.value)}>
+          <option value="">—</option>
+          {directions.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.title}
+            </option>
+          ))}
+          <option value={NEW_DIRECTION_VALUE}>+ Новое направление…</option>
+        </select>
+      </label>
+
+      {directionId === NEW_DIRECTION_VALUE && (
+        <label>
+          Название нового направления
+          <input value={newDirectionTitle} onChange={(e) => setNewDirectionTitle(e.target.value)} required />
         </label>
       )}
 

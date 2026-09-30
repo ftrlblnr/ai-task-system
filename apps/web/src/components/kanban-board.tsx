@@ -84,6 +84,9 @@ export function KanbanBoard() {
   // это ломается быстрее всего остального в приложении.
   const [searchQuery, setSearchQuery] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
+  // Фильтр по направлению (владелец 30.09.2026) — тот же принцип, что
+  // assigneeFilter: из уже загруженных задач, без отдельного запроса.
+  const [directionFilter, setDirectionFilter] = useState('');
 
   useEffect(() => {
     api
@@ -102,6 +105,13 @@ export function KanbanBoard() {
     return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
   }, [tasks]);
 
+  const directionOptions = useMemo(() => {
+    if (!tasks) return [];
+    const byId = new Map<string, string>();
+    for (const t of tasks) if (t.assignee?.direction) byId.set(t.assignee.direction.id, t.assignee.direction.title);
+    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
+  }, [tasks]);
+
   // Фильтруем ДО построения колонок/drag-состояния — доска целиком (поиск
   // по названию/имени исполнителя, счётчики в шапках колонок, drag-and-drop
   // reorder) работает уже с видимым подмножеством, не с полным списком.
@@ -110,10 +120,11 @@ export function KanbanBoard() {
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
       if (assigneeFilter && t.assignee?.id !== assigneeFilter) return false;
+      if (directionFilter && t.assignee?.direction?.id !== directionFilter) return false;
       if (!q) return true;
       return t.title.toLowerCase().includes(q) || (t.assignee?.fullName.toLowerCase().includes(q) ?? false);
     });
-  }, [tasks, searchQuery, assigneeFilter]);
+  }, [tasks, searchQuery, assigneeFilter, directionFilter]);
 
   const draggedTask = useMemo(
     () => visibleTasks?.find((t) => t.id === draggedId) ?? null,
@@ -283,6 +294,16 @@ export function KanbanBoard() {
             {assigneeOptions.map(([id, fullName]) => (
               <option key={id} value={id}>
                 {fullName}
+              </option>
+            ))}
+          </select>
+        )}
+        {directionOptions.length > 0 && (
+          <select value={directionFilter} onChange={(e) => setDirectionFilter(e.target.value)}>
+            <option value="">Все направления</option>
+            {directionOptions.map(([id, title]) => (
+              <option key={id} value={id}>
+                {title}
               </option>
             ))}
           </select>

@@ -17,6 +17,10 @@ export class CreateEmployeeDto {
   positionId?: string;
 
   @IsOptional()
+  @IsString()
+  directionId?: string;
+
+  @IsOptional()
   @IsEnum(Role)
   role?: Role;
 

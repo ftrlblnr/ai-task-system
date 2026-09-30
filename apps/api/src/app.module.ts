@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { EmployeesModule } from './employees/employees.module';
 import { CompetenciesModule } from './competencies/competencies.module';
 import { PositionsModule } from './positions/positions.module';
+import { DirectionsModule } from './directions/directions.module';
 import { MeetingsModule } from './meetings/meetings.module';
 import { TaskProfilesModule } from './task-profiles/task-profiles.module';
 import { TasksModule } from './tasks/tasks.module';
@@ -32,6 +33,7 @@ import { FilesModule } from './files/files.module';
     EmployeesModule,
     CompetenciesModule,
     PositionsModule,
+    DirectionsModule,
     MeetingsModule,
     TaskProfilesModule,
     TasksModule,

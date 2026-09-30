@@ -26,6 +26,14 @@ export interface EmployeeSummary {
   fullName: string;
 }
 
+// TaskListItem.assignee (владелец 30.09.2026) — направление нужно только
+// для клиентского фильтра задач по org-unit в kanban-board.tsx; creator/
+// author/watchers остаются на обычном EmployeeSummary, им direction не
+// нужен.
+export interface TaskAssigneeSummary extends EmployeeSummary {
+  direction: { id: string; title: string } | null;
+}
+
 export interface TaskProfileSummary {
   id: string;
   category: string;
@@ -41,7 +49,7 @@ export interface TaskListItem {
   aiConfidence: ConfidenceLevel | null;
   createdAt: string;
   taskProfile: TaskProfileSummary | null;
-  assignee: EmployeeSummary | null;
+  assignee: TaskAssigneeSummary | null;
   creator: EmployeeSummary;
   // Подзадачи (владелец 08.09.2026) — только счётчики в списке, полный
   // список только в TaskDetail.subtasks.
@@ -115,10 +123,17 @@ export interface EmployeeProfile {
   isProfileAdmin: boolean;
   positionId: string | null;
   position: { id: string; title: string } | null;
+  directionId: string | null;
+  direction: { id: string; title: string } | null;
   createdAt: string;
 }
 
 export interface Position {
+  id: string;
+  title: string;
+}
+
+export interface Direction {
   id: string;
   title: string;
 }
@@ -143,6 +158,7 @@ export interface CreateEmployeeInput {
   email: string;
   password: string;
   positionId?: string;
+  directionId?: string;
   role?: Role;
   isProfileAdmin?: boolean;
 }

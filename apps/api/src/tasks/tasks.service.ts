@@ -18,7 +18,10 @@ const TASK_LIST_SELECT = {
   aiConfidence: true,
   createdAt: true,
   taskProfile: { select: { id: true, category: true, type: true } },
-  assignee: { select: { id: true, fullName: true } },
+  // direction — для клиентского фильтра задач по направлению (владелец
+  // 30.09.2026, kanban-board.tsx), тот же принцип, что assignee-фильтр:
+  // без отдельного запроса, из уже загруженных задач.
+  assignee: { select: { id: true, fullName: true, direction: { select: { id: true, title: true } } } },
   creator: { select: { id: true, fullName: true } },
   // Только статусы — достаточно посчитать subtaskCount/subtaskDoneCount
   // (см. toListItem), полный список полей отдаёт только TASK_DETAIL_SELECT.

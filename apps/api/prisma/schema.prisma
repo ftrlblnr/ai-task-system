@@ -34,6 +34,22 @@ model Position {
   updatedAt DateTime @updatedAt
 }
 
+// Направление/отдел (владелец 30.09.2026) — для фильтрации задач по
+// org-unit, не по конкретному человеку. Та же лёгкая структура, что
+// Position (создаётся владельцем на лету при добавлении/редактировании
+// сотрудника — "можно создавать или выбирать из списка"), сознательно НЕ
+// объединено с Competency: Competency — многие-ко-многим навык/компетенция
+// для AI-подбора исполнителя (раздел 6.4 ТЗ), Direction — один на
+// сотрудника орг-признак для фильтров в UI, разные оси.
+model Direction {
+  id        String     @id @default(cuid())
+  title     String
+  employees Employee[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Employee {
   id             String         @id @default(cuid())
   fullName       String
@@ -49,6 +65,14 @@ model Employee {
 
   positionId String?
   position   Position? @relation(fields: [positionId], references: [id])
+
+  // Направление (владелец 30.09.2026, раздел фильтрации задач) — отдел/
+  // подразделение (например «Маркетинг»), не путать с Position (должность,
+  // например «Менеджер») и не путать с Competency (навык/компетенция для
+  // AI-подбора исполнителя, many-to-many). Направление — org-unit, один на
+  // сотрудника, нужен для фильтрации задач в интерфейсе руководителя.
+  directionId String?
+  direction   Direction? @relation(fields: [directionId], references: [id])
 
   competencies EmployeeCompetency[]
 
