@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Download, ExternalLink, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
+import { Download, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
 import type {
   EmailDetail,
   EmailListItem,
@@ -390,7 +390,6 @@ function MessageList() {
                 <th>От</th>
                 <th>Тема</th>
                 <th>Дата</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -408,31 +407,6 @@ function MessageList() {
                       {m.analysis?.summary && <div className="hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
                     </td>
                     <td>{formatDate(m.receivedAt)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenId(m.id);
-                        }}
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          whiteSpace: 'nowrap',
-                          background: 'none',
-                          border: 'none',
-                          padding: 0,
-                          font: 'inherit',
-                          fontWeight: 400,
-                          color: 'var(--accent, inherit)',
-                          textDecoration: 'underline',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Открыть <ExternalLink size={12} strokeWidth={2} />
-                      </button>
-                    </td>
                   </tr>
                 );
               })}
@@ -464,7 +438,6 @@ function digestItemBadges(item: Pick<MailDigestEmailItem, 'analysis'>): string[]
 function DigestDetailView({ id, onClose }: { id: string; onClose: () => void }) {
   const [detail, setDetail] = useState<MailDigestDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [openMessageId, setOpenMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -474,69 +447,45 @@ function DigestDetailView({ id, onClose }: { id: string; onClose: () => void }) 
   }, [id]);
 
   return (
-    <>
-      <div className="card" style={{ marginTop: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-          <h2 style={{ marginBottom: 6 }}>{detail ? `Сводка за ${formatDay(detail.periodFrom)}` : 'Сводка'}</h2>
-          <button className="btn-secondary btn-small" onClick={onClose}>
-            Закрыть
-          </button>
-        </div>
-        {error && <p className="error">{error}</p>}
-        {!detail && !error && <p className="hint">Загрузка…</p>}
-        {detail && (
-          <>
-            <p className="hint" style={{ marginBottom: 12 }}>
-              Источник: {detail.source}
-            </p>
-            {detail.items.length === 0 && <p className="hint">Писем за эти сутки не было.</p>}
-            {detail.items.length > 0 && (
-              <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {detail.items.map((item, i) => {
-                  const badges = digestItemBadges(item);
-                  return (
-                    <li key={item.id ?? i} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                        <div>
-                          <span className="hint">{formatDate(item.receivedAt)}</span>{' '}
-                          <strong>{item.fromName || item.fromAddress}</strong> — {item.subject || '(без темы)'}
-                          {badges.map((b) => (
-                            <span key={b} className="badge badge-muted" style={{ marginLeft: 8 }}>
-                              {b}
-                            </span>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setOpenMessageId(item.id)}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            flexShrink: 0,
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
-                            font: 'inherit',
-                            color: 'var(--accent, inherit)',
-                            textDecoration: 'underline',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Открыть <ExternalLink size={12} strokeWidth={2} />
-                        </button>
-                      </div>
-                      {item.analysis?.summary && <div className="hint">{item.analysis.summary}</div>}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </>
-        )}
+    <div className="card" style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <h2 style={{ marginBottom: 6 }}>{detail ? `Сводка за ${formatDay(detail.periodFrom)}` : 'Сводка'}</h2>
+        <button className="btn-secondary btn-small" onClick={onClose}>
+          Закрыть
+        </button>
       </div>
-      {openMessageId && <MessageDetail key={openMessageId} id={openMessageId} onClose={() => setOpenMessageId(null)} />}
-    </>
+      {error && <p className="error">{error}</p>}
+      {!detail && !error && <p className="hint">Загрузка…</p>}
+      {detail && (
+        <>
+          <p className="hint" style={{ marginBottom: 12 }}>
+            Источник: {detail.source}
+          </p>
+          {detail.items.length === 0 && <p className="hint">Писем за эти сутки не было.</p>}
+          {detail.items.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {detail.items.map((item, i) => {
+                const badges = digestItemBadges(item);
+                return (
+                  <li key={item.id ?? i} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
+                    <div>
+                      <span className="hint">{formatDate(item.receivedAt)}</span>{' '}
+                      <strong>{item.fromName || item.fromAddress}</strong> — {item.subject || '(без темы)'}
+                      {badges.map((b) => (
+                        <span key={b} className="badge badge-muted" style={{ marginLeft: 8 }}>
+                          {b}
+                        </span>
+                      ))}
+                    </div>
+                    {item.analysis?.summary && <div className="hint">{item.analysis.summary}</div>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
