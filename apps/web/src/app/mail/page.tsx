@@ -390,6 +390,7 @@ function MessageList() {
                 <th>От</th>
                 <th>Тема</th>
                 <th>Дата</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -407,6 +408,31 @@ function MessageList() {
                       {m.analysis?.summary && <div className="hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
                     </td>
                     <td>{formatDate(m.receivedAt)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenId(m.id);
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          whiteSpace: 'nowrap',
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          font: 'inherit',
+                          fontWeight: 400,
+                          color: 'var(--accent, inherit)',
+                          textDecoration: 'underline',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Открыть <ExternalLink size={12} strokeWidth={2} />
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
