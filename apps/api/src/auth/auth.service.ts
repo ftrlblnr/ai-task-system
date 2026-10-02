@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Prisma, Role } from '@prisma/client';
+import { Employee, Prisma, Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -86,7 +86,11 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    let employee;
+    // Тип указан явно (тот же паттерн, что verified в telegram.service.ts,
+    // аудит 10.09.2026, п. 5.2) — `let employee;` без аннотации и без
+    // инициализатора TS выводит как any, из-за чего .id/.role ниже проходили
+    // бы мимо @typescript-eslint/no-unsafe-* незамеченными.
+    let employee: Employee;
     try {
       employee = await this.prisma.employee.create({
         data: {
