@@ -52,8 +52,6 @@ const DETAIL_SELECT = {
   updatedAt: true,
 } satisfies Prisma.ReceptionRequestSelect;
 
-type RequestRow = Prisma.ReceptionRequestGetPayload<{ select: typeof DETAIL_SELECT }>;
-
 // Общая форма перехода CALLED/REJECTED/COMPLETED/RETURNED_TO_QUEUE — раздел 6
 // ТЗ (таблица переходов), каждый со своим ровно ОДНИМ допустимым исходным
 // статусом. create/edit/withdraw/move-to-end построены отдельно ниже —
