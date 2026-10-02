@@ -98,6 +98,10 @@ model Employee {
   aliases                  EmployeeAlias[]
   meetingSegmentsSpoken    MeetingSegment[]
 
+  receptionRequestsAuthored    ReceptionRequest[]
+  receptionEventsActed         ReceptionEvent[]
+  receptionNotificationsToMe   ReceptionNotification[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -1279,4 +1283,185 @@ model EmailDigest {
   generatedAt DateTime @default(now())
 
   @@unique([mailboxId, periodFrom, periodTo])
+}
+
+// ============ Приёмная руководителя (ТЗ v1.0, 02.10.2026) ============
+// Самостоятельный модуль: обращение сотрудника к руководителю для личного
+// приёма — НЕ задача таск-трекера (не создаёт Task автоматически, раздел 13
+// ТЗ). Одна общая очередь на организацию (один OWNER-таргет), MVP.
+
+enum ReceptionRequestType {
+  DECISION // Решение
+  APPROVAL // Согласование
+  DISCUSSION // Обсуждение
+  HELP // Помощь
+}
+
+enum ReceptionRequestStatus {
+  WAITING
+  CALLED
+  COMPLETED
+  REJECTED
+  WITHDRAWN
+}
+
+enum ReceptionEventType {
+  CREATED
+  EDITED
+  MOVED_TO_END
+  CALLED
+  REJECTED
+  WITHDRAWN
+  COMPLETED
+  RETURNED_TO_QUEUE
+}
+
+enum ReceptionNotificationKind {
+  CALLED
+  REJECTED
+  RETURNED_TO_QUEUE
+}
+
+enum ReceptionNotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+  SUPERSEDED
+}
+
+// Единственная запись в MVP (раздел 11.1 ТЗ) — bootstrap фиксированным id в
+// сервисе (upsert по PK, без гонки). nextOrder — монотонный счётчик порядка,
+// назначается под транзакционной блокировкой этой строки (SELECT ... FOR
+// UPDATE), не SELECT MAX(order)+1 (раздел 7.1 ТЗ — гонка под конкурентной
+// подачей).
+model ReceptionQueue {
+  id        String   @id @default(cuid())
+  nextOrder BigInt   @default(1)
+  requests  ReceptionRequest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ReceptionRequest {
+  id      String         @id @default(cuid())
+  queueId String
+  queue   ReceptionQueue @relation(fields: [queueId], references: [id])
+
+  authorId String
+  author   Employee @relation(fields: [authorId], references: [id])
+
+  title           String
+  description     String
+  requestType     ReceptionRequestType
+  expectedMinutes Int?
+  desiredBy       DateTime?
+  urgencyReason   String?
+
+  status     ReceptionRequestStatus @default(WAITING)
+  queueOrder BigInt
+  // Optimistic concurrency (раздел 7.1/11.2 ТЗ) — каждое изменение передаёт
+  // ожидаемую version, несовпадение → 409 VERSION_CONFLICT. Инкрементируется
+  // сервисом на каждый успешный переход/правку, не триггером БД (нужен тот
+  // же счётчик в одной транзакции с проверкой + в ReceptionEvent.requestVersion).
+  version Int @default(1)
+
+  lastCalledAt    DateTime?
+  closedAt        DateTime?
+  rejectionReason String?
+  resolution      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events        ReceptionEvent[]
+  notifications ReceptionNotification[]
+
+  @@index([queueId, status, queueOrder, id])
+  @@index([authorId, status, createdAt])
+  @@index([queueId, closedAt, id])
+}
+
+model ReceptionEvent {
+  id        String           @id @default(cuid())
+  requestId String
+  request   ReceptionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  actorId String
+  actor   Employee @relation(fields: [actorId], references: [id])
+
+  type           ReceptionEventType
+  // null только для CREATED — у создания нет исходного статуса.
+  fromStatus     ReceptionRequestStatus?
+  toStatus       ReceptionRequestStatus
+  requestVersion Int
+  // Изменённые поля / причина / результат — раздел 11.3 ТЗ. Содержимое
+  // обращений сюда попадает (журнал — не технический лог, доступен OWNER и
+  // автору), но не в обычные технические логи приложения.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  notifications ReceptionNotification[]
+
+  @@index([requestId, createdAt])
+}
+
+// Durable outbox (раздел 10.2/11.4 ТЗ) — доставка уведомлений асинхронна и
+// отделена от HTTP-запроса изменения обращения, в той же транзакции, что
+// ReceptionEvent. lockedAt/lockedBy — атомарный захват воркером (SELECT ...
+// FOR UPDATE SKIP LOCKED), короткий TTL блокировки — упавший воркер не
+// держит запись вечно.
+model ReceptionNotification {
+  id        String         @id @default(cuid())
+  eventId   String
+  event     ReceptionEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  requestId String
+  request   ReceptionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  recipientId String
+  recipient   Employee @relation(fields: [recipientId], references: [id])
+
+  channel String                      @default("TELEGRAM")
+  kind    ReceptionNotificationKind
+  status  ReceptionNotificationStatus @default(PENDING)
+
+  attemptCount      Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  lastErrorCode     String?
+  providerMessageId String?
+  lockedAt          DateTime?
+  lockedBy          String?
+
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  // Один intent на событие+получателя+канал+вид (раздел 11.4 ТЗ) — защита
+  // от задвоения намерения уведомления при повторе операции.
+  @@unique([eventId, recipientId, channel, kind])
+  @@index([status, nextAttemptAt])
+}
+
+// Раздел 11.5 ТЗ — обобщённая идемпотентность HTTP-действий (не только
+// Reception, но заведена для него первым модулем, который требует общего
+// Idempotency-Key на мутирующих запросах). bodyHash — сверка, что повтор
+// пришёл с ТЕМ ЖЕ телом (иначе 409 IDEMPOTENCY_CONFLICT, не тихая подмена
+// результата). response — сохранённый ответ для точного повтора.
+model IdempotencyKey {
+  id         String   @id @default(cuid())
+  actorId    String
+  key        String
+  action     String
+  bodyHash   String
+  // null, пока обработка не завершена — claim-паттерн (тот же принцип, что
+  // TaskFromMeetingExecution.CLAIMED): строка создаётся ДО выполнения
+  // обработчика, чтобы второй одновременный запрос с тем же ключом увидел
+  // "уже в процессе", а не выполнил side-эффект дважды.
+  statusCode  Int?
+  response    Json?
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@unique([actorId, key])
 }

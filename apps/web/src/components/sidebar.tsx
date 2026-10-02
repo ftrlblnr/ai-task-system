@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, LogOut } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Avatar } from './avatar';
 
@@ -19,6 +19,10 @@ const NAV_ITEMS = [
   // убран и не редиректится в этом раунде — отдельное решение по спеке.
   { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false },
   { href: '/voice', label: 'Голос', icon: Mic, ownerOnly: false },
+  // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем (сотрудник
+  // подаёт обращение, руководитель управляет очередью), видимость действий
+  // внутри страницы решает backend по роли, не пункт меню.
+  { href: '/reception', label: 'Приёмная', icon: DoorOpen, ownerOnly: false },
   { href: '/calendar', label: 'Календарь', icon: CalendarDays, ownerOnly: true },
   { href: '/meetings', label: 'Встречи', icon: FileAudio, ownerOnly: true },
   // Stage 2, Phase R — почта Mail.ru (личная интеграция руководителя, как Plaud/календарь).

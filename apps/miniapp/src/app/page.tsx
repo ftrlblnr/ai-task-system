@@ -6,6 +6,7 @@ import { SwipeShell, type SwipeScreen } from '@/components/swipe-shell';
 import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { AssistantScreen } from '@/components/assistant-screen';
+import { ReceptionScreen } from '@/components/reception-screen';
 
 export default function Home() {
   const { user, loading, error, isTelegram } = useAuth();
@@ -49,6 +50,11 @@ export default function Home() {
   if (user.role === 'OWNER') {
     screens.push({ key: 'calendar', label: 'Календарь', content: <CalendarScreen /> });
   }
+  // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем, подать
+  // вопрос может и OWNER (раздел 4 ТЗ: "Да" для обеих ролей), очередь
+  // руководителя — только Web App (раздел 13 ТЗ не описывает её для
+  // Mini App).
+  screens.push({ key: 'reception', label: 'Приёмная', content: <ReceptionScreen /> });
   screens.push({ key: 'assistant', label: 'Ассистент', content: <AssistantScreen /> });
 
   return <SwipeShell screens={screens} />;

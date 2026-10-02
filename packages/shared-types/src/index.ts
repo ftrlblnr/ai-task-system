@@ -771,3 +771,89 @@ export interface MailDigestDetail {
   items: MailDigestEmailItem[];
 }
 
+// ============ Приёмная руководителя (ТЗ v1.0, 02.10.2026) ============
+
+export type ReceptionRequestType = 'DECISION' | 'APPROVAL' | 'DISCUSSION' | 'HELP';
+export type ReceptionRequestStatus = 'WAITING' | 'CALLED' | 'COMPLETED' | 'REJECTED' | 'WITHDRAWN';
+export type ReceptionEventType =
+  | 'CREATED'
+  | 'EDITED'
+  | 'MOVED_TO_END'
+  | 'CALLED'
+  | 'REJECTED'
+  | 'WITHDRAWN'
+  | 'COMPLETED'
+  | 'RETURNED_TO_QUEUE';
+
+export interface ReceptionRequestItem {
+  id: string;
+  authorId: string;
+  author: { id: string; fullName: string; status: EmployeeStatus };
+  title: string;
+  description: string;
+  requestType: ReceptionRequestType;
+  expectedMinutes: number | null;
+  desiredBy: string | null;
+  urgencyReason: string | null;
+  status: ReceptionRequestStatus;
+  // BigInt на бэкенде — отдаётся строкой, не числом (риск потери точности
+  // в JS, раздел 11.2 ТЗ). Сравнивать через BigInt(a) > BigInt(b), не как
+  // строки/числа напрямую.
+  queueOrder: string;
+  version: number;
+  lastCalledAt: string | null;
+  closedAt: string | null;
+  rejectionReason: string | null;
+  resolution: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ReceptionNotificationStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED' | 'SUPERSEDED';
+
+export interface ReceptionQueueView {
+  // notificationStatus — раздел 9.1 ТЗ ("состояние уведомления" в блоке
+  // текущего вызова): null, если ещё ни одной попытки доставки не было.
+  current: (ReceptionRequestItem & { notificationStatus: ReceptionNotificationStatus | null }) | null;
+  items: ReceptionRequestItem[];
+  totalCount: number;
+  totalWaiting: number;
+}
+
+export interface ReceptionListResponse {
+  items: ReceptionRequestItem[];
+  totalCount: number;
+}
+
+export interface ReceptionEventItem {
+  id: string;
+  type: ReceptionEventType;
+  fromStatus: ReceptionRequestStatus | null;
+  toStatus: ReceptionRequestStatus;
+  createdAt: string;
+  actor: { id: string; fullName: string };
+}
+
+export interface CreateReceptionRequestInput {
+  title: string;
+  description: string;
+  requestType: ReceptionRequestType;
+  expectedMinutes?: number;
+  desiredBy?: string;
+  urgencyReason?: string;
+}
+
+export interface EditReceptionRequestInput extends Partial<CreateReceptionRequestInput> {
+  version: number;
+}
+
+export interface RejectReceptionRequestInput {
+  version: number;
+  reason?: string;
+}
+
+export interface CompleteReceptionRequestInput {
+  version: number;
+  resolution?: string;
+}
+

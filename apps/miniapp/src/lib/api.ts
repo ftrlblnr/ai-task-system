@@ -114,12 +114,16 @@ async function downloadBlob(path: string): Promise<Blob> {
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  // headers — раздел 12 ТЗ «Приёмная»: мутирующие запросы требуют
+  // Idempotency-Key, обычный заголовок, не часть тела — остальные вызовы
+  // api.post/api.patch не передают 3-й аргумент, ничего не меняется (тот
+  // же приём, что в apps/web/src/lib/api.ts).
+  post: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
+    request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
   postStream: (path: string, body: unknown) => requestStream(path, body),
   downloadBlob: (path: string) => downloadBlob(path),
-  patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
+  patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
+    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };

@@ -21,6 +21,7 @@ import { AssistantModule } from './assistant/assistant.module';
 import { LiveModule } from './live/live.module';
 import { MailModule } from './mail/mail.module';
 import { FilesModule } from './files/files.module';
+import { ReceptionModule } from './reception/reception.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { FilesModule } from './files/files.module';
     LiveModule,
     MailModule,
     FilesModule,
+    ReceptionModule,
   ],
   controllers: [AppController],
 })
