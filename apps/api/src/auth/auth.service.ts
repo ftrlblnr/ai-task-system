@@ -1,7 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,6 +24,10 @@ const SALT_ROUNDS = 12;
 // прямым вмешательством в БД.
 const RESET_TTL_MINUTES = 30;
 
+// Та же singleton-строка с фиксированным id, что ReceptionQueue (владелец
+// 02.10.2026) — единственная запись в MVP, bootstrap через upsert по PK.
+const REGISTRATION_WINDOW_ID = 'default';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -33,14 +37,77 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string) {
-    const employee = await this.prisma.employee.findUnique({ where: { email } });
-    if (!employee || employee.status !== 'ACTIVE') {
+    const employee = await this.validateCredentials(email, password);
+    if (!employee) {
       throw new UnauthorizedException('Неверный email или пароль');
     }
+    return this.issueTokenFor(employee);
+  }
+
+  // Общая проверка логин+пароль — используется и обычным входом (login), и
+  // привязкой Telegram через пароль внутри самостоятельной регистрации (см.
+  // TelegramService.authenticate), чтобы не дублировать bcrypt.compare и
+  // проверку status в двух местах. Возвращает null вместо throw — вызывающая
+  // сторона формулирует сообщение об ошибке под свой контекст (обычный вход
+  // vs привязка Telegram).
+  async validateCredentials(email: string, password: string) {
+    const employee = await this.prisma.employee.findUnique({ where: { email } });
+    if (!employee || employee.status !== 'ACTIVE') return null;
 
     const passwordValid = await bcrypt.compare(password, employee.passwordHash);
-    if (!passwordValid) {
-      throw new UnauthorizedException('Неверный email или пароль');
+    if (!passwordValid) return null;
+
+    return employee;
+  }
+
+  // Владелец 02.10.2026: временное окно, когда человек сам заводит логин
+  // (любая строка, не обязательно похожая на email — поле нигде не
+  // используется для отправки писем) и пароль, минуя приглашение
+  // руководителя. Публичный эндпоинт — но ничего не создаёт, пока окно не
+  // открыто явным переключателем на странице «Сотрудники».
+  async getRegistrationWindow() {
+    const window = await this.prisma.registrationWindow.findUnique({ where: { id: REGISTRATION_WINDOW_ID } });
+    return { isOpen: window?.isOpen ?? false };
+  }
+
+  async setRegistrationWindow(isOpen: boolean) {
+    const window = await this.prisma.registrationWindow.upsert({
+      where: { id: REGISTRATION_WINDOW_ID },
+      create: { id: REGISTRATION_WINDOW_ID, isOpen },
+      update: { isOpen },
+    });
+    return { isOpen: window.isOpen };
+  }
+
+  async register(login: string, password: string, fullName: string, positionId?: string, directionId?: string) {
+    const window = await this.getRegistrationWindow();
+    if (!window.isOpen) {
+      throw new UnauthorizedException('Самостоятельная регистрация сейчас закрыта — обратитесь к руководителю');
+    }
+
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    let employee;
+    try {
+      employee = await this.prisma.employee.create({
+        data: {
+          fullName,
+          email: login,
+          passwordHash,
+          positionId: positionId || undefined,
+          directionId: directionId || undefined,
+          // Роль всегда EMPLOYEE — самостоятельная регистрация не даёт
+          // прав руководителя ни при каких условиях, значение из запроса
+          // клиента сюда никогда не попадает (его там и нет в DTO).
+          role: Role.EMPLOYEE,
+          isProfileAdmin: false,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        if (err.code === 'P2002') throw new ConflictException('Этот логин уже занят — выберите другой');
+        if (err.code === 'P2003') throw new BadRequestException('Указанная должность или направление не найдены');
+      }
+      throw err;
     }
 
     return this.issueTokenFor(employee);

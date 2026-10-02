@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException, UnauthorizedException
 import { ConfigService } from '@nestjs/config';
 import { randomBytes, createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthService } from '../auth/auth.service';
 import {
   InvalidTelegramInitDataError,
   verifyTelegramInitData,
@@ -24,6 +25,7 @@ export class TelegramService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly authService: AuthService,
   ) {}
 
   // Руководитель не знает telegram id сотрудника заранее — генерируем
@@ -67,9 +69,13 @@ export class TelegramService {
   // Вызывается Mini App при каждом открытии. Источник доверия — подпись
   // initData (проверяется bot token'ом), а не отдельный секрет.
   // Если в initData есть start_param — это приглашение, привязываем Telegram
-  // к указанному в нём сотруднику. Если нет — это обычный вход уже
-  // привязанного сотрудника.
-  async authenticate(rawInitData: string) {
+  // к указанному в нём сотруднику. Если нет и credentials не переданы — это
+  // обычный вход уже привязанного сотрудника. Если нет и credentials
+  // переданы (владелец 02.10.2026, самостоятельная регистрация) — логин
+  // проверяется как обычный пароль (см. AuthService.validateCredentials), и
+  // при успехе этот Telegram-аккаунт привязывается тут же, одним действием —
+  // отдельного приглашения руководителя не требуется.
+  async authenticate(rawInitData: string, credentials?: { login: string; password: string }) {
     const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN');
     if (!botToken) {
       throw new UnauthorizedException('Вход через Telegram не настроен (TELEGRAM_BOT_TOKEN)');
@@ -93,7 +99,7 @@ export class TelegramService {
 
     const employee = verified.startParam
       ? await this.consumeInvite(verified.startParam, telegramUserId)
-      : await this.findByTelegramId(telegramUserId);
+      : await this.findByTelegramId(telegramUserId, credentials);
 
     if (employee.status !== 'ACTIVE') {
       throw new UnauthorizedException('Учётная запись отключена — обратитесь к руководителю');
@@ -102,17 +108,39 @@ export class TelegramService {
     return employee;
   }
 
-  private async findByTelegramId(telegramUserId: string) {
+  private async findByTelegramId(telegramUserId: string, credentials?: { login: string; password: string }) {
     const employee = await this.prisma.employee.findUnique({
       where: { telegramId: telegramUserId },
       select: AUTH_SELECT,
     });
-    if (!employee) {
-      throw new UnauthorizedException(
-        'Этот Telegram-аккаунт не привязан ни к одному сотруднику — запросите приглашение у руководителя',
-      );
+    if (employee) return employee;
+
+    if (credentials) {
+      return this.linkViaCredentials(credentials.login, credentials.password, telegramUserId);
     }
-    return employee;
+
+    // Код NO_EMPLOYEE_LINKED в начале сообщения — Mini App (auth-context.tsx)
+    // распознаёт именно эту причину 401, чтобы вместо голого текста ошибки
+    // показать форму входа логином/паролем (тот же приём, что RECEPTION_BUSY
+    // в reception.service.ts).
+    throw new UnauthorizedException(
+      'NO_EMPLOYEE_LINKED: этот Telegram-аккаунт не привязан ни к одному сотруднику',
+    );
+  }
+
+  private async linkViaCredentials(login: string, password: string, telegramUserId: string) {
+    const employee = await this.authService.validateCredentials(login, password);
+    if (!employee) {
+      throw new UnauthorizedException('Неверный логин или пароль');
+    }
+
+    await this.ensureTelegramFree(telegramUserId, employee.id);
+
+    return this.prisma.employee.update({
+      where: { id: employee.id },
+      data: { telegramId: telegramUserId },
+      select: AUTH_SELECT,
+    });
   }
 
   private async consumeInvite(token: string, telegramUserId: string) {
@@ -123,10 +151,7 @@ export class TelegramService {
       throw new UnauthorizedException('Приглашение недействительно или истекло — запросите новую ссылку');
     }
 
-    const existingLink = await this.prisma.employee.findUnique({ where: { telegramId: telegramUserId } });
-    if (existingLink && existingLink.id !== invite.employeeId) {
-      throw new ConflictException('Этот Telegram-аккаунт уже привязан к другому сотруднику');
-    }
+    await this.ensureTelegramFree(telegramUserId, invite.employeeId);
 
     const [employee] = await this.prisma.$transaction([
       this.prisma.employee.update({
@@ -138,6 +163,16 @@ export class TelegramService {
     ]);
 
     return employee;
+  }
+
+  // Общая проверка для обоих путей привязки (invite-токен и пароль
+  // самостоятельной регистрации) — этот Telegram-аккаунт не должен уже
+  // принадлежать ДРУГОМУ сотруднику.
+  private async ensureTelegramFree(telegramUserId: string, employeeId: string) {
+    const existingLink = await this.prisma.employee.findUnique({ where: { telegramId: telegramUserId } });
+    if (existingLink && existingLink.id !== employeeId) {
+      throw new ConflictException('Этот Telegram-аккаунт уже привязан к другому сотруднику');
+    }
   }
 
   async unlink(employeeId: string) {

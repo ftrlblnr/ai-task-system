@@ -3,10 +3,57 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { UserPlus } from 'lucide-react';
-import type { EmployeeProfile } from '@ai-task-system/shared-types';
-import { api } from '@/lib/api';
+import type { EmployeeProfile, RegistrationWindowStatus } from '@ai-task-system/shared-types';
+import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
+
+// Переключатель временного окна самостоятельной регистрации (владелец
+// 02.10.2026) — человек сам заводит логин/пароль на /register, пока окно
+// открыто; по умолчанию закрыто, руководитель открывает точечно, когда
+// нужно принять новых людей, и закрывает обратно.
+function RegistrationWindowToggle() {
+  const [status, setStatus] = useState<RegistrationWindowStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<RegistrationWindowStatus>('/auth/registration-window').then(setStatus).catch(() => {});
+  }, []);
+
+  async function toggle() {
+    if (!status) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.patch<RegistrationWindowStatus>('/auth/registration-window', { isOpen: !status.isOpen });
+      setStatus(next);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось изменить окно регистрации');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!status) return null;
+
+  return (
+    <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+      <div>
+        <strong>Самостоятельная регистрация</strong>
+        <p className="hint" style={{ margin: 0 }}>
+          {status.isOpen
+            ? 'Открыта — любой человек может завести логин/пароль на /register'
+            : 'Закрыта — новые учётки заводит только руководитель'}
+        </p>
+        {error && <p className="error">{error}</p>}
+      </div>
+      <button className={status.isOpen ? 'btn-secondary' : 'btn'} onClick={toggle} disabled={busy}>
+        {status.isOpen ? 'Закрыть' : 'Открыть'}
+      </button>
+    </div>
+  );
+}
 
 function EmployeesList() {
   const [employees, setEmployees] = useState<EmployeeProfile[] | null>(null);
@@ -77,6 +124,7 @@ export default function EmployeesPage() {
           Добавить сотрудника
         </Link>
       </div>
+      <RegistrationWindowToggle />
       <EmployeesList />
     </Protected>
   );

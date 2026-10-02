@@ -1330,6 +1330,21 @@ enum ReceptionNotificationStatus {
   SUPERSEDED
 }
 
+// Временное окно самостоятельной регистрации (владелец 02.10.2026) —
+// человек сам заводит логин/пароль на сайте, затем тем же логином/паролем
+// входит в Mini App внутри Telegram, и это автоматически привязывает его
+// telegramId (см. TelegramService.authenticate) — без приглашения от
+// руководителя. По умолчанию закрыто; руководитель открывает/закрывает
+// переключателем на странице «Сотрудники», когда нужно принять новых людей,
+// и закрывает обратно. Единственная запись в MVP, тот же bootstrap-паттерн
+// фиксированным id, что ReceptionQueue (см. ниже).
+model RegistrationWindow {
+  id        String   @id @default(cuid())
+  isOpen    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // Единственная запись в MVP (раздел 11.1 ТЗ) — bootstrap фиксированным id в
 // сервисе (upsert по PK, без гонки). nextOrder — монотонный счётчик порядка,
 // назначается под транзакционной блокировкой этой строки (SELECT ... FOR

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/lib/api';
 
@@ -49,6 +50,9 @@ export default function LoginPage() {
             {submitting ? 'Входим…' : 'Войти'}
           </button>
         </form>
+        <p className="hint" style={{ textAlign: 'center', marginTop: 12 }}>
+          Нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
+        </p>
       </div>
     </div>
   );

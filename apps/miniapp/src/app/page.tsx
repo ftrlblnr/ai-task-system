@@ -2,6 +2,7 @@
 
 import { useAuth } from '@/lib/auth-context';
 import { LoginScreen } from '@/components/login-screen';
+import { LinkScreen } from '@/components/link-screen';
 import { SwipeShell, type SwipeScreen } from '@/components/swipe-shell';
 import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
@@ -9,7 +10,7 @@ import { AssistantScreen } from '@/components/assistant-screen';
 import { ReceptionScreen } from '@/components/reception-screen';
 
 export default function Home() {
-  const { user, loading, error, isTelegram } = useAuth();
+  const { user, loading, error, isTelegram, needsLink } = useAuth();
 
   if (loading) {
     return (
@@ -17,6 +18,13 @@ export default function Home() {
         <p className="hint">Загрузка…</p>
       </div>
     );
+  }
+
+  // Владелец 02.10.2026 — NO_EMPLOYEE_LINKED: внутри Telegram, но аккаунт
+  // ещё не привязан. Проверяется раньше error — auth-context ставит ровно
+  // одно из needsLink/error/user после попытки входа.
+  if (needsLink) {
+    return <LinkScreen />;
   }
 
   if (error) {
@@ -30,7 +38,8 @@ export default function Home() {
   if (!user) {
     // isTelegram=true, но авторизация ещё не завершилась/провалилась
     // молча — не должно происходить (auth-context выставляет либо error,
-    // либо user), но на всякий случай не показываем пустой экран.
+    // либо needsLink, либо user), но на всякий случай не показываем пустой
+    // экран.
     if (isTelegram) return null;
     return <LoginScreen />;
   }

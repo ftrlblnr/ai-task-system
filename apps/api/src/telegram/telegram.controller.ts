@@ -39,7 +39,8 @@ export class TelegramController {
   // уже привязанного сотрудника — единый вход в Mini App.
   @Post('auth/telegram')
   async authenticateViaTelegram(@Body() dto: TelegramAuthDto) {
-    const employee = await this.telegramService.authenticate(dto.initData);
+    const credentials = dto.login && dto.password ? { login: dto.login, password: dto.password } : undefined;
+    const employee = await this.telegramService.authenticate(dto.initData, credentials);
     return this.authService.issueTokenFor(employee);
   }
 }

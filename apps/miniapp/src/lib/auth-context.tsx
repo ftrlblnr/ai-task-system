@@ -15,7 +15,13 @@ interface AuthState {
   // фолбэк на email/пароль (см. login-screen.tsx). Внутри настоящего
   // Telegram Mini App всегда true.
   isTelegram: boolean;
+  // Владелец 02.10.2026, самостоятельная регистрация: внутри Telegram,
+  // но этот telegramId ещё ни к кому не привязан и нет invite-ссылки —
+  // backend вернул NO_EMPLOYEE_LINKED (см. TelegramService.findByTelegramId).
+  // link-screen.tsx показывает форму логин/пароль вместо голой ошибки.
+  needsLink: boolean;
   loginWithPassword: (email: string, password: string) => Promise<void>;
+  linkWithPassword: (login: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -26,6 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isTelegram, setIsTelegram] = useState(false);
+  const [needsLink, setNeedsLink] = useState(false);
 
   useEffect(() => {
     initTelegramChrome();
@@ -53,7 +60,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(res.user);
       })
       .catch((err) => {
-        setError(err instanceof ApiError ? err.message : 'Не удалось войти через Telegram');
+        const message = err instanceof ApiError ? err.message : 'Не удалось войти через Telegram';
+        if (message.startsWith('NO_EMPLOYEE_LINKED')) {
+          setNeedsLink(true);
+        } else {
+          setError(message);
+        }
       })
       .finally(() => setLoading(false));
   }, []);
@@ -64,13 +76,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.user);
   }
 
+  // Вызывается link-screen.tsx внутри Telegram, когда backend вернул
+  // NO_EMPLOYEE_LINKED — тот же /auth/telegram, но с логином/паролем от
+  // самостоятельной регистрации на сайте; initData должна быть доступна,
+  // иначе этот экран вообще не показывается (см. page.tsx).
+  async function linkWithPassword(login: string, password: string) {
+    const initData = getInitData();
+    if (!initData) throw new ApiError('Доступно только внутри Telegram', 400);
+    const res = await api.post<LoginResponse>('/auth/telegram', { initData, login, password });
+    sessionStorage.setItem('accessToken', res.accessToken);
+    setNeedsLink(false);
+    setUser(res.user);
+  }
+
   function logout() {
     sessionStorage.removeItem('accessToken');
     setUser(null);
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, error, isTelegram, loginWithPassword, logout }}>
+    <AuthContext.Provider
+      value={{ user, loading, error, isTelegram, needsLink, loginWithPassword, linkWithPassword, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );

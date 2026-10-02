@@ -11,6 +11,11 @@ interface AuthState {
   user: CurrentUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  // Самостоятельная регистрация (владелец 02.10.2026, /register) уже
+  // получает {accessToken, user} от POST /auth/register одним запросом —
+  // отдельного повторного /auth/login не нужно, просто применяем готовый
+  // ответ к сессии (та же запись в localStorage + redirect, что login()).
+  applySession: (res: LoginResponse) => void;
   logout: () => void;
 }
 
@@ -36,6 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function login(email: string, password: string) {
     const res = await api.post<LoginResponse>('/auth/login', { email, password });
+    applySession(res);
+  }
+
+  function applySession(res: LoginResponse) {
     // MVP: токен в localStorage. Перед реальным продом заменить на httpOnly
     // cookie — раздел 15 ТЗ требует контроля доступа на уровне API, а не
     // только UI, localStorage слабее к XSS.
@@ -52,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login');
   }
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, applySession, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

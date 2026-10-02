@@ -658,6 +658,24 @@ export interface LoginResponse {
   };
 }
 
+// Временное окно самостоятельной регистрации (владелец 02.10.2026).
+export interface RegistrationWindowStatus {
+  isOpen: boolean;
+}
+
+export interface RegisterOptions {
+  positions: Position[];
+  directions: Direction[];
+}
+
+export interface RegisterInput {
+  login: string;
+  password: string;
+  fullName: string;
+  positionId?: string;
+  directionId?: string;
+}
+
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — GET /mail/*.
 // Почта синхронизируется в локальную БД; API/ассистент работают по ней.
 export type MailSyncState = 'IDLE' | 'SYNCING' | 'ERROR' | 'PAUSED';
