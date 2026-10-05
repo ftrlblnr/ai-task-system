@@ -4,6 +4,10 @@ import { useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Field, Input } from '@/components/ui/field';
+import { Alert } from '@/components/ui/alert';
+import { AgentMark } from '@/components/ui/agent-mark';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -28,29 +32,26 @@ export default function LoginPage() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-mark">AI</div>
-        <form onSubmit={handleSubmit} className="card">
-          <h1>Вход</h1>
+        {/* Единственное место в продукте, где метка агента показывается
+            крупно вне чата (project/implementation.md, шаг 10). */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
+          <AgentMark size={40} state="idle" />
+        </div>
+        <form onSubmit={handleSubmit} className="ds-card">
+          <h1 style={{ fontSize: 32, lineHeight: '38px', fontWeight: 650, letterSpacing: '-0.025em' }}>Вход</h1>
           <p className="auth-subtitle">Закрытая система задач — доступ только по приглашению</p>
-          <label>
-            Email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          </label>
-          <label>
-            Пароль
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </label>
-          {error && <p className="error">{error}</p>}
-          <button type="submit" disabled={submitting}>
-            {submitting ? 'Входим…' : 'Войти'}
-          </button>
+          <Field label="Email">
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </Field>
+          <Field label="Пароль">
+            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          </Field>
+          {error && <Alert tone="danger">{error}</Alert>}
+          <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+            Войти
+          </Button>
         </form>
-        <p className="hint" style={{ textAlign: 'center', marginTop: 12 }}>
+        <p className="ds-field-hint" style={{ textAlign: 'center', marginTop: 12 }}>
           Нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
         </p>
       </div>

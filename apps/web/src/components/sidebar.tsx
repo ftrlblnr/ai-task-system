@@ -1,9 +1,11 @@
 'use client';
 
+import { useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut, Sparkles } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
 
 // Голос — доступен всем, как задачи (раздел 5 ТЗ, скорректировано
@@ -30,43 +32,89 @@ const NAV_ITEMS = [
   { href: '/employees', label: 'Сотрудники', icon: Users, ownerOnly: true },
 ];
 
+// Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 5)
+// — порт Sidebar из project/components/src/index.jsx: светлый сайдбар на
+// bg, бренд с AgentMark, командная строка «Спросить или найти ⌘K» (та же
+// команда работает глобально по Ctrl+K/Cmd+K — см. useEffect ниже), группа
+// «Руководитель» перед ownerOnly-пунктами.
+//
+// «live»-индикатор у «Ассистента» (точка с AgentMark, пока где-то в фоне
+// стримится ответ) НЕ реализован — состояние стрима сейчас живёт целиком
+// внутри apps/web/src/app/assistant/page.tsx, нет глобального контекста,
+// который сайдбар мог бы читать с любой другой страницы. Поднимать его в
+// layout-контекст — отдельный, более крупный рефакторинг самой страницы
+// ассистента (она и так переписывается в шаге 7), поэтому сознательно
+// пропущено здесь, а не сделано наспех.
+function useGlobalAssistantShortcut() {
+  const router = useRouter();
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        router.push('/assistant');
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [router]);
+}
+
 export function Sidebar() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
+  useGlobalAssistantShortcut();
 
   if (!user) return null;
 
+  const isOwner = user.role === 'OWNER';
+  const generalItems = NAV_ITEMS.filter((item) => !item.ownerOnly);
+  const ownerItems = isOwner ? NAV_ITEMS.filter((item) => item.ownerOnly) : [];
+
+  function renderItem(item: (typeof NAV_ITEMS)[number]) {
+    const active = pathname === item.href || pathname.startsWith(item.href + '/');
+    const Icon = item.icon;
+    return (
+      <Link key={item.href} href={item.href} className={cx('ds-nav-item', active && 'is-active')} aria-current={active ? 'page' : undefined}>
+        <Icon size={18} strokeWidth={1.75} />
+        {item.label}
+      </Link>
+    );
+  }
+
   return (
-    <aside className="sidebar">
-      <Link href="/tasks" className="sidebar-brand">
-        <span className="sidebar-brand-mark">AI</span>
-        <span className="sidebar-brand-name">Task System</span>
+    <aside className="ds-sidebar">
+      <Link href="/tasks" className="ds-brand">
+        <span className="ds-brand-mark">
+          <AgentMark size={16} state="idle" />
+        </span>
+        Адъютант
       </Link>
 
-      <nav className="sidebar-nav">
-        {NAV_ITEMS.filter((item) => !item.ownerOnly || user.role === 'OWNER').map((item) => {
-          const active = pathname === item.href || pathname.startsWith(item.href + '/');
-          const Icon = item.icon;
-          return (
-            <Link key={item.href} href={item.href} className={`sidebar-nav-item ${active ? 'active' : ''}`}>
-              <Icon size={17} strokeWidth={2} />
-              {item.label}
-            </Link>
-          );
-        })}
+      <button type="button" className="ds-cmd ds-focusable" onClick={() => router.push('/assistant')}>
+        <Sparkles size={16} strokeWidth={1.75} />
+        <span>Спросить или найти</span>
+        <span className="ds-kbd">⌘K</span>
+      </button>
+
+      <nav>
+        {generalItems.map(renderItem)}
+        {ownerItems.length > 0 && (
+          <>
+            <div className="ds-nav-sep" />
+            <div className="ds-nav-group">Руководитель</div>
+            {ownerItems.map(renderItem)}
+          </>
+        )}
       </nav>
 
-      <div className="sidebar-footer">
-        <div className="sidebar-user">
-          <Avatar name={user.fullName} size={30} />
-          <div className="sidebar-user-info">
-            <span className="sidebar-user-name">{user.fullName}</span>
-            <span className="sidebar-user-role">{user.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</span>
-          </div>
+      <div className="ds-sidebar-foot">
+        <Avatar name={user.fullName} size={30} />
+        <div className="ds-sidebar-user">
+          <b>{user.fullName}</b>
+          <span>{isOwner ? 'Руководитель' : 'Подчинённый'}</span>
         </div>
-        <button onClick={logout} className="sidebar-logout" title="Выйти" aria-label="Выйти">
-          <LogOut size={16} strokeWidth={2} />
-        </button>
+        <IconButton icon={LogOut} label="Выйти" size="sm" onClick={logout} />
       </div>
     </aside>
   );

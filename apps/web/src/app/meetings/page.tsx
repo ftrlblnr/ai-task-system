@@ -6,6 +6,12 @@ import { ExternalLink, Link2, Link2Off, Plus, RefreshCw } from 'lucide-react';
 import type { MeetingSummary, PlaudStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
+import { Card, PageHeader } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Field, Input } from '@/components/ui/field';
+import { EmptyState } from '@/components/ui/empty-state';
 
 // У Plaud нет self-service регистрации OAuth-приложения, и браузерный
 // OAuth-редирект через наш домен Plaud отклоняет на шаге подтверждения
@@ -71,28 +77,28 @@ function PlaudConnectionCard() {
   if (!status) return null;
 
   return (
-    <div className="card" style={{ marginBottom: 20 }}>
+    <Card style={{ marginBottom: 20 }}>
       {status.connected ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Link2 size={16} strokeWidth={2} style={{ color: 'var(--ok)' }} />
+          <Link2 size={16} strokeWidth={1.75} style={{ color: 'var(--ok)' }} />
           <span>Plaud подключён — записи импортируются автоматически.</span>
-          <span className="badge badge-muted">
-            {status.lastSyncAt ? `Обновлено: ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}
-          </span>
-          <button className="btn-secondary btn-small" onClick={() => syncNow(() => window.location.reload())} disabled={busy}>
-            <RefreshCw size={14} strokeWidth={2} />
+          <Badge>{status.lastSyncAt ? `Обновлено: ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}</Badge>
+          <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => syncNow(() => window.location.reload())} disabled={busy}>
             Синхронизировать
-          </button>
-          <button className="btn-secondary btn-small" onClick={disconnect} disabled={busy}>
-            <Link2Off size={14} strokeWidth={2} />
+          </Button>
+          <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
             Отключить
-          </button>
-          {error && <p className="error" style={{ width: '100%', marginTop: 4 }}>{error}</p>}
+          </Button>
+          {error && (
+            <div style={{ width: '100%', marginTop: 4 }}>
+              <Alert tone="danger">{error}</Alert>
+            </div>
+          )}
         </div>
       ) : (
         <>
           <h2 style={{ marginBottom: 8 }}>Plaud не подключён</h2>
-          <p className="hint" style={{ marginBottom: 14 }}>
+          <p className="ds-field-hint" style={{ marginBottom: 14 }}>
             У Plaud нет кнопки «Подключить» через браузер для этого сценария — нужно один раз получить
             токен на своём компьютере:
           </p>
@@ -114,32 +120,25 @@ function PlaudConnectionCard() {
             <li>Вставить его в поле ниже.</li>
           </ol>
 
-          <form onSubmit={connect} className="form-card" style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--border)' }}>
-            <label>
-              Refresh token
-              <input
-                type="password"
-                value={refreshToken}
-                onChange={(e) => setRefreshToken(e.target.value)}
-                placeholder="..."
-                required
-              />
-            </label>
-            {error && <p className="error">{error}</p>}
-            <button type="submit" disabled={busy}>
-              {busy ? 'Подключаем…' : 'Подключить'}
-            </button>
+          <form onSubmit={connect} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 520 }}>
+            <Field label="Refresh token">
+              <Input type="password" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} placeholder="..." required />
+            </Field>
+            {error && <Alert tone="danger">{error}</Alert>}
+            <Button type="submit" variant="primary" disabled={busy} loading={busy} style={{ marginTop: 12 }}>
+              Подключить
+            </Button>
           </form>
-          <p className="hint" style={{ marginTop: 10 }}>
+          <p className="ds-field-hint" style={{ marginTop: 10 }}>
             Подробнее о самом CLI —{' '}
             <a href="https://docs.plaud.ai" target="_blank" rel="noreferrer">
-              docs.plaud.ai <ExternalLink size={12} strokeWidth={2} style={{ verticalAlign: -1 }} />
+              docs.plaud.ai <ExternalLink size={12} strokeWidth={1.75} style={{ verticalAlign: -1 }} />
             </a>
             .
           </p>
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -154,20 +153,17 @@ function MeetingsList() {
       .catch(() => setError('Не удалось загрузить встречи'));
   }, []);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!meetings) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!meetings) return <p className="ds-field-hint">Загрузка…</p>;
   if (meetings.length === 0) {
     return (
-      <div className="empty-state">
-        <strong>Встреч пока нет</strong>
-        <p className="hint">Подключите Plaud выше, чтобы записи импортировались автоматически, или загрузите саммари вручную.</p>
-      </div>
+      <EmptyState title="Встреч пока нет" description="Подключите Plaud выше, чтобы записи импортировались автоматически, или загрузите саммари вручную." />
     );
   }
 
   return (
-    <div className="table-wrap">
-      <table className="table">
+    <div className="ds-table-wrap">
+      <table className="ds-table">
         <thead>
           <tr>
             <th>Встреча</th>
@@ -180,7 +176,11 @@ function MeetingsList() {
             <tr key={m.id}>
               <td>
                 <Link href={`/meetings/${m.id}`}>{m.title}</Link>
-                {m.plaudRecordingId && <span className="badge badge-muted" style={{ marginLeft: 8 }}>Plaud</span>}
+                {m.plaudRecordingId && (
+                  <span style={{ marginLeft: 8 }}>
+                    <Badge>Plaud</Badge>
+                  </span>
+                )}
               </td>
               <td>{new Date(m.meetingDate).toLocaleDateString('ru-RU')}</td>
               <td>{m.createdBy.fullName}</td>
@@ -195,17 +195,16 @@ function MeetingsList() {
 export default function MeetingsPage() {
   return (
     <Protected requireRole="OWNER">
-      <div className="page-header">
-        <h1>Встречи</h1>
-        <Link href="/meetings/new" className="btn">
-          <Plus size={16} strokeWidth={2.5} />
-          Загрузить встречу
-        </Link>
-      </div>
-      <p className="page-subtitle">
-        Саммари из Plaud — источник задач (раздел 8 ТЗ). Видит только руководитель: протокол может
-        содержать переговоры и темы шире, чем задачи, которые из него извлечены.
-      </p>
+      <PageHeader
+        title="Встречи"
+        description="Саммари из Plaud — источник задач (раздел 8 ТЗ). Видит только руководитель: протокол может содержать переговоры и темы шире, чем задачи, которые из него извлечены."
+        actions={
+          <Link href="/meetings/new" className="ds-btn ds-btn-primary">
+            <Plus size={18} strokeWidth={1.75} />
+            Загрузить встречу
+          </Link>
+        }
+      />
       <PlaudConnectionCard />
       <MeetingsList />
     </Protected>

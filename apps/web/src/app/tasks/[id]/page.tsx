@@ -9,6 +9,7 @@ import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { useAuth } from '@/lib/auth-context';
 import { Avatar } from '@/components/avatar';
+import { Alert, Badge, Button, Card, Chip, Field, Input, PageHeader, Select, SegmentedControl, Textarea } from '@/components/ui';
 import {
   STATUS_LABELS,
   STATUS_DOT_COLOR,
@@ -212,8 +213,8 @@ function TaskDetailView({ id }: { id: string }) {
     return value;
   }
 
-  if (error) return <p className="error">{error}</p>;
-  if (!task) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!task) return <p className="ds-field-hint">Загрузка…</p>;
 
   const isOwner = user?.role === 'OWNER';
   // Раздел 5/10 ТЗ (скорректировано 28.08.2026): видеть задачу может и
@@ -238,117 +239,93 @@ function TaskDetailView({ id }: { id: string }) {
           Подзадача — {task.parentTask.title}
         </Link>
       )}
-      <div className="page-header">
-        <h1>{task.title}</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {canDelete && !editing && (
-            <button className="btn-secondary btn-small" onClick={startEdit} disabled={busy} aria-label="Редактировать задачу">
-              <Pencil size={14} strokeWidth={2} />
-              Редактировать
-            </button>
-          )}
-          {canDelete && (
-            <button className="btn-secondary btn-small" onClick={removeTask} disabled={busy} aria-label="Удалить задачу">
-              <Trash2 size={14} strokeWidth={2} />
-              Удалить
-            </button>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        title={task.title}
+        actions={
+          <>
+            {canDelete && !editing && (
+              <Button variant="secondary" size="sm" icon={Pencil} onClick={startEdit} disabled={busy} aria-label="Редактировать задачу">
+                Редактировать
+              </Button>
+            )}
+            {canDelete && (
+              <Button variant="secondary" size="sm" icon={Trash2} onClick={removeTask} disabled={busy} aria-label="Удалить задачу">
+                Удалить
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {editing ? (
-        <form onSubmit={saveEdit} className="card form-card" style={{ marginBottom: 18 }}>
-          <label>
-            Название
-            <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
-          </label>
-          <label>
-            Описание
-            <textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} />
-          </label>
-          <label>
-            Исполнитель
-            <select value={editAssigneeId} onChange={(e) => setEditAssigneeId(e.target.value)}>
-              <option value="">Не назначен</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.fullName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Приоритет
-            <select value={editPriority} onChange={(e) => setEditPriority(e.target.value as TaskPriority)}>
-              {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Срок
-            <input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} />
-          </label>
+        <form onSubmit={saveEdit} className="ds-card" style={{ marginBottom: 18, display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 520 }}>
+          <Field label="Название">
+            <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} required />
+          </Field>
+          <Field label="Описание">
+            <Textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} />
+          </Field>
+          <Field label="Исполнитель">
+            <Select
+              value={editAssigneeId}
+              onChange={(e) => setEditAssigneeId(e.target.value)}
+              options={[{ value: '', label: 'Не назначен' }, ...employees.map((emp) => ({ value: emp.id, label: emp.fullName }))]}
+            />
+          </Field>
+          <Field label="Приоритет">
+            <Select
+              value={editPriority}
+              onChange={(e) => setEditPriority(e.target.value as TaskPriority)}
+              options={(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => ({ value: p, label: PRIORITY_LABELS[p] }))}
+            />
+          </Field>
+          <Field label="Срок">
+            <Input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} />
+          </Field>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" disabled={busy || !editTitle.trim()}>
+            <Button type="submit" variant="primary" disabled={busy || !editTitle.trim()}>
               Сохранить
-            </button>
-            <button type="button" className="btn-secondary" onClick={() => setEditing(false)} disabled={busy}>
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setEditing(false)} disabled={busy}>
               Отмена
-            </button>
+            </Button>
           </div>
         </form>
       ) : (
         <div className="task-meta">
-          <span className={`badge status-${task.status.toLowerCase()}`}>{STATUS_LABELS[task.status]}</span>
-          {task.aiConfidence && <span className="badge badge-muted">{CONFIDENCE_LABELS[task.aiConfidence]}</span>}
-          {task.assignee && <span className="badge badge-muted">Исполнитель: {task.assignee.fullName}</span>}
-          <span className="badge badge-muted">Постановщик: {task.creator.fullName}</span>
-          {task.dueDate && (
-            <span className="badge badge-muted">Срок: {new Date(task.dueDate).toLocaleDateString('ru-RU')}</span>
-          )}
+          <Badge tone={task.status === 'DONE' ? 'ok' : task.status === 'RETURNED' ? 'danger' : 'neutral'} dot>
+            {STATUS_LABELS[task.status]}
+          </Badge>
+          {task.aiConfidence && <Badge>{CONFIDENCE_LABELS[task.aiConfidence]}</Badge>}
+          {task.assignee && <Badge>Исполнитель: {task.assignee.fullName}</Badge>}
+          <Badge>Постановщик: {task.creator.fullName}</Badge>
+          {task.dueDate && <Badge>Срок: {new Date(task.dueDate).toLocaleDateString('ru-RU')}</Badge>}
         </div>
       )}
 
       <div className="watchers-row">
-        <button className="btn-link" onClick={() => toggleWatch(isWatching)} disabled={busy}>
-          {isWatching ? <EyeOff size={14} strokeWidth={2.1} /> : <Eye size={14} strokeWidth={2.1} />}
+        <Button variant="ghost" size="sm" icon={isWatching ? EyeOff : Eye} onClick={() => toggleWatch(isWatching)} disabled={busy}>
           {isWatching ? 'Не наблюдать' : 'Наблюдать'}
-        </button>
+        </Button>
         {task.watchers.length > 0 && (
-          <div className="watchers-avatars">
+          <div className="watchers-avatars" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {task.watchers.map((w) => (
-              <span key={w.id} className="watcher-chip" title={w.fullName}>
-                <Avatar name={w.fullName} size={20} />
-                {isOwner && (
-                  <button
-                    type="button"
-                    className="watcher-remove"
-                    onClick={() => removeWatcher(w.id)}
-                    aria-label={`Убрать ${w.fullName} из наблюдателей`}
-                  >
-                    ×
-                  </button>
-                )}
-              </span>
+              <Chip key={w.id} avatar={w.fullName} onRemove={isOwner ? () => removeWatcher(w.id) : undefined}>
+                {w.fullName}
+              </Chip>
             ))}
           </div>
         )}
         {isOwner && watchableEmployees.length > 0 && (
-          <form className="watcher-add-form" onSubmit={addWatcher}>
-            <select value={addWatcherId} onChange={(e) => setAddWatcherId(e.target.value)}>
-              <option value="">+ Добавить наблюдателя…</option>
-              {watchableEmployees.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.fullName}
-                </option>
-              ))}
-            </select>
-            <button type="submit" className="btn-secondary btn-small" disabled={!addWatcherId || busy}>
+          <form className="watcher-add-form" onSubmit={addWatcher} style={{ display: 'flex', gap: 8 }}>
+            <Select
+              value={addWatcherId}
+              onChange={(e) => setAddWatcherId(e.target.value)}
+              options={[{ value: '', label: '+ Добавить наблюдателя…' }, ...watchableEmployees.map((e) => ({ value: e.id, label: e.fullName }))]}
+            />
+            <Button type="submit" variant="secondary" size="sm" disabled={!addWatcherId || busy}>
               Добавить
-            </button>
+            </Button>
           </form>
         )}
       </div>
@@ -356,10 +333,9 @@ function TaskDetailView({ id }: { id: string }) {
       {task.description && <p className="task-description">{task.description}</p>}
 
       {(task.sourceMeeting || task.sourceContext) && (
-        <div className="card source-card">
-          <h2>Источник</h2>
+        <Card tone="agent" title="Источник">
           <div className="source-row">
-            <FileAudio size={16} strokeWidth={2} className="source-icon" />
+            <FileAudio size={16} strokeWidth={1.75} className="source-icon" />
             <div>
               {task.sourceMeeting &&
                 (user?.role === 'OWNER' ? (
@@ -372,38 +348,34 @@ function TaskDetailView({ id }: { id: string }) {
                   </span>
                 ))}
               {task.sourceTimestamp && (
-                <span className="chip mono" style={{ marginLeft: task.sourceMeeting ? 8 : 0 }}>
+                <span className="mono" style={{ marginLeft: task.sourceMeeting ? 8 : 0 }}>
                   {task.sourceTimestamp}
                 </span>
               )}
-              {task.sourceContext && <p className="hint" style={{ marginTop: 6 }}>{task.sourceContext}</p>}
+              {task.sourceContext && (
+                <p className="ds-field-hint" style={{ marginTop: 6 }}>
+                  {task.sourceContext}
+                </p>
+              )}
             </div>
           </div>
-        </div>
+        </Card>
       )}
 
-      <div className="card">
-        <h2>Статус</h2>
+      <Card title="Статус">
         {canChangeStatus ? (
-          <div className="status-pill-group">
-            {availableStatuses.map((status) => (
-              <button
-                key={status}
-                className={`status-pill ${status === task.status ? 'current' : ''}`}
-                disabled={busy || status === task.status}
-                onClick={() => changeStatus(status)}
-              >
-                {STATUS_LABELS[status]}
-              </button>
-            ))}
-          </div>
+          <SegmentedControl
+            label="Статус задачи"
+            value={task.status}
+            onChange={(status) => changeStatus(status as TaskStatus)}
+            options={availableStatuses.map((status) => ({ value: status, label: STATUS_LABELS[status], disabled: busy }))}
+          />
         ) : (
-          <p className="hint">Статус меняет исполнитель задачи или руководитель.</p>
+          <p className="ds-field-hint">Статус меняет исполнитель задачи или руководитель.</p>
         )}
-      </div>
+      </Card>
 
-      <div className="card">
-        <h2>Комментарии</h2>
+      <Card title="Комментарии">
         <ul className="comment-list">
           {task.comments.map((c) => (
             <li key={c.id} className="comment-item">
@@ -417,27 +389,19 @@ function TaskDetailView({ id }: { id: string }) {
               </div>
             </li>
           ))}
-          {task.comments.length === 0 && <p className="hint">Пока нет комментариев.</p>}
+          {task.comments.length === 0 && <p className="ds-field-hint">Пока нет комментариев.</p>}
         </ul>
-        <form onSubmit={submitComment} className="comment-form">
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Добавить комментарий…"
-            rows={3}
-          />
-          <button type="submit" disabled={busy} style={{ alignSelf: 'flex-start' }}>
+        <form onSubmit={submitComment} className="comment-form" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Добавить комментарий…" rows={3} />
+          <Button type="submit" variant="primary" disabled={busy} style={{ alignSelf: 'flex-start' }}>
             Отправить
-          </button>
+          </Button>
         </form>
-      </div>
+      </Card>
 
       {!task.parentTask && (
-        <div className="card">
-          <h2>
-            Подзадачи{task.subtaskCount > 0 && ` (${task.subtaskDoneCount}/${task.subtaskCount})`}
-          </h2>
-          {task.subtasks.length === 0 && <p className="hint">Пока нет подзадач.</p>}
+        <Card title={`Подзадачи${task.subtaskCount > 0 ? ` (${task.subtaskDoneCount}/${task.subtaskCount})` : ''}`}>
+          {task.subtasks.length === 0 && <p className="ds-field-hint">Пока нет подзадач.</p>}
           <ul className="plain-list">
             {task.subtasks.map((s) => (
               <li key={s.id} className="plain-list-row subtask-row" onClick={() => router.push(`/tasks/${s.id}`)}>
@@ -449,48 +413,37 @@ function TaskDetailView({ id }: { id: string }) {
               </li>
             ))}
           </ul>
-          <form className="subtask-add-form" onSubmit={addSubtask}>
-            <input
-              value={subtaskTitle}
-              onChange={(e) => setSubtaskTitle(e.target.value)}
-              placeholder="+ Добавить подзадачу…"
-            />
-            <select
+          <form className="subtask-add-form" onSubmit={addSubtask} style={{ display: 'flex', gap: 8 }}>
+            <Input value={subtaskTitle} onChange={(e) => setSubtaskTitle(e.target.value)} placeholder="+ Добавить подзадачу…" />
+            <Select
               value={subtaskAssigneeId}
               onChange={(e) => setSubtaskAssigneeId(e.target.value)}
               style={{ maxWidth: 160 }}
-            >
-              <option value="">Без исполнителя</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.fullName}
-                </option>
-              ))}
-            </select>
-            <button type="submit" className="btn-secondary btn-small" disabled={!subtaskTitle.trim() || busy}>
+              options={[{ value: '', label: 'Без исполнителя' }, ...employees.map((emp) => ({ value: emp.id, label: emp.fullName }))]}
+            />
+            <Button type="submit" variant="secondary" size="sm" disabled={!subtaskTitle.trim() || busy}>
               Добавить
-            </button>
+            </Button>
           </form>
-        </div>
+        </Card>
       )}
 
-      <div className="card">
-        <h2>История изменений</h2>
-        {task.history.length === 0 && <p className="hint">Пока нет изменений.</p>}
+      <Card title="История изменений">
+        {task.history.length === 0 && <p className="ds-field-hint">Пока нет изменений.</p>}
         <ul className="plain-list">
           {task.history.map((h) => (
             <li key={h.id} className="plain-list-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-              <span className="hint">
+              <span className="body-sm" style={{ color: 'var(--ink-3)' }}>
                 {h.changedBy?.fullName ?? 'Система'} · {new Date(h.createdAt).toLocaleString('ru-RU')}
               </span>
-              <span>
+              <span className="body-sm" style={{ color: 'var(--ink-2)' }}>
                 {HISTORY_FIELD_LABELS[h.field] ?? h.field}: {formatHistoryValue(h.field, h.oldValue)} →{' '}
                 {formatHistoryValue(h.field, h.newValue)}
               </span>
             </li>
           ))}
         </ul>
-      </div>
+      </Card>
     </div>
   );
 }

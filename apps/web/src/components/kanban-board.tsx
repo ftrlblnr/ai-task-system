@@ -2,77 +2,15 @@
 
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { ListChecks, Search } from 'lucide-react';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { Avatar } from '@/components/avatar';
-import {
-  BOARD_COLUMNS,
-  BOARD_SIDE_COLUMNS,
-  EMPLOYEE_SETTABLE_STATUSES,
-  PRIORITY_CLASS,
-  PRIORITY_LABELS,
-  STATUS_DOT_COLOR,
-  STATUS_LABELS,
-} from '@/lib/labels';
-
-function TaskCard({
-  task,
-  draggable,
-  isDropTarget,
-  onDragStart,
-  onDragEnd,
-  onCardDragOver,
-  onCardDrop,
-}: {
-  task: TaskListItem;
-  draggable: boolean;
-  isDropTarget: boolean;
-  onDragStart: (e: DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
-  onCardDragOver: (e: DragEvent<HTMLDivElement>) => void;
-  onCardDrop: (e: DragEvent<HTMLDivElement>) => void;
-}) {
-  const router = useRouter();
-
-  return (
-    <div
-      className={`kanban-card ${PRIORITY_CLASS[task.priority]} ${isDropTarget ? 'kanban-card-drop-target' : ''}`}
-      draggable={draggable}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onDragOver={onCardDragOver}
-      onDrop={onCardDrop}
-      onClick={() => router.push(`/tasks/${task.id}`)}
-      role="button"
-      tabIndex={0}
-    >
-      <p className="kanban-card-title">{task.title}</p>
-      {task.dueDate && (
-        <div className="kanban-card-meta">
-          <span className={`chip ${task.isOverdue ? 'chip-danger' : ''}`}>
-            {new Date(task.dueDate).toLocaleDateString('ru-RU')}
-          </span>
-        </div>
-      )}
-      <div className="kanban-card-footer">
-        <div className="kanban-card-footer-left">
-          <span className="kanban-card-priority-label">{PRIORITY_LABELS[task.priority]}</span>
-          {task.subtaskCount > 0 && (
-            <span className="kanban-card-subtasks">
-              <ListChecks size={13} strokeWidth={2.2} />
-              {task.subtaskDoneCount}/{task.subtaskCount}
-            </span>
-          )}
-        </div>
-        {task.assignee && <Avatar name={task.assignee.fullName} size={22} />}
-      </div>
-    </div>
-  );
-}
+import { Alert, KanbanColumn, SearchInput, Select } from '@/components/ui';
+import { TaskCard } from '@/components/task-card';
+import { BOARD_COLUMNS, BOARD_SIDE_COLUMNS, EMPLOYEE_SETTABLE_STATUSES } from '@/lib/labels';
 
 export function KanbanBoard() {
+  const router = useRouter();
   const { user } = useAuth();
   const [tasks, setTasks] = useState<TaskListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -200,8 +138,8 @@ export function KanbanBoard() {
     }
   }
 
-  if (error && !tasks) return <p className="error">{error}</p>;
-  if (!tasks || !visibleTasks) return <p className="hint">Загрузка…</p>;
+  if (error && !tasks) return <Alert tone="danger">{error}</Alert>;
+  if (!tasks || !visibleTasks) return <p className="ds-field-hint">Загрузка…</p>;
 
   const byStatus = (status: TaskStatus) => visibleTasks.filter((t) => t.status === status);
 
@@ -210,9 +148,12 @@ export function KanbanBoard() {
     const dropAllowed = draggedTask ? canDropOn(status) : true;
 
     return (
-      <div
+      <KanbanColumn
         key={status}
-        className={`kanban-column ${dragOverStatus === status && dropAllowed ? 'kanban-column-drag-over' : ''}`}
+        status={status}
+        count={columnTasks.length}
+        over={dragOverStatus === status && dropAllowed}
+        isEmpty={columnTasks.length === 0}
         onDragOver={(e) => {
           if (!dropAllowed) return;
           e.preventDefault();
@@ -228,85 +169,64 @@ export function KanbanBoard() {
           moveTask(draggedId, status);
         }}
       >
-        <div className="kanban-column-header">
-          <span className="kanban-column-dot" style={{ background: STATUS_DOT_COLOR[status] }} />
-          <span className="col-name">{STATUS_LABELS[status]}</span>
-          <span className="kanban-column-count">{columnTasks.length}</span>
-        </div>
-        <div className="kanban-column-body">
-          {columnTasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              draggable={canManageStatus(task)}
-              isDropTarget={dragOverCardId === task.id}
-              onDragStart={(e) => {
-                setDraggedId(task.id);
-                e.dataTransfer.effectAllowed = 'move';
-              }}
-              onDragEnd={() => {
-                setDraggedId(null);
-                setDragOverStatus(null);
+        {columnTasks.map((task) => (
+          <TaskCard
+            key={task.id}
+            task={task}
+            draggable={canManageStatus(task)}
+            dropBefore={dragOverCardId === task.id}
+            onClick={() => router.push(`/tasks/${task.id}`)}
+            onDragStart={(e) => {
+              setDraggedId(task.id);
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onDragEnd={() => {
+              setDraggedId(null);
+              setDragOverStatus(null);
+              setDragOverCardId(null);
+            }}
+            onCardDragOver={(e) => {
+              // Своя колонка — это перестановка (не смена статуса):
+              // перехватываем здесь, дальше не всплывает к колонке.
+              if (draggedTask && draggedTask.status === task.status && draggedTask.id !== task.id) {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragOverCardId(task.id);
+              }
+            }}
+            onCardDrop={(e) => {
+              if (draggedTask && draggedTask.status === task.status && draggedTask.id !== task.id) {
+                e.preventDefault();
+                e.stopPropagation();
                 setDragOverCardId(null);
-              }}
-              onCardDragOver={(e) => {
-                // Своя колонка — это перестановка (не смена статуса):
-                // перехватываем здесь, дальше не всплывает к колонке.
-                if (draggedTask && draggedTask.status === task.status && draggedTask.id !== task.id) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOverCardId(task.id);
-                }
-              }}
-              onCardDrop={(e) => {
-                if (draggedTask && draggedTask.status === task.status && draggedTask.id !== task.id) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setDragOverCardId(null);
-                  reorderColumn(task.status, draggedTask.id, task.id);
-                }
-              }}
-            />
-          ))}
-          {columnTasks.length === 0 && <p className="kanban-empty">Пусто</p>}
-        </div>
-      </div>
+                reorderColumn(task.status, draggedTask.id, task.id);
+              }
+            }}
+          />
+        ))}
+      </KanbanColumn>
     );
   };
 
   return (
     <div>
-      {error && <p className="error">{error}</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
 
       <div className="board-filters">
-        <div className="board-search">
-          <Search size={15} strokeWidth={2} />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Поиск по названию или исполнителю…"
-          />
-        </div>
+        <SearchInput value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Поиск по названию или исполнителю…" />
         {assigneeOptions.length > 0 && (
-          <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
-            <option value="">Все исполнители</option>
-            {assigneeOptions.map(([id, fullName]) => (
-              <option key={id} value={id}>
-                {fullName}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={assigneeFilter}
+            onChange={(e) => setAssigneeFilter(e.target.value)}
+            options={[{ value: '', label: 'Все исполнители' }, ...assigneeOptions.map(([id, fullName]) => ({ value: id, label: fullName }))]}
+          />
         )}
         {directionOptions.length > 0 && (
-          <select value={directionFilter} onChange={(e) => setDirectionFilter(e.target.value)}>
-            <option value="">Все направления</option>
-            {directionOptions.map(([id, title]) => (
-              <option key={id} value={id}>
-                {title}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={directionFilter}
+            onChange={(e) => setDirectionFilter(e.target.value)}
+            options={[{ value: '', label: 'Все направления' }, ...directionOptions.map(([id, title]) => ({ value: id, label: title }))]}
+          />
         )}
       </div>
 

@@ -13,6 +13,12 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
+import { Card, PageHeader } from '@/components/ui/card';
+import { Button, IconButton } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Field, Input, Textarea, Select } from '@/components/ui/field';
+import { EmptyState } from '@/components/ui/empty-state';
 
 function GoogleConnectionCard() {
   const params = useSearchParams();
@@ -95,16 +101,16 @@ function GoogleConnectionCard() {
   if (!status.configured) {
     const redirectUri = `${process.env.NEXT_PUBLIC_API_URL}/calendar/google/callback`;
     return (
-      <div className="card" style={{ marginBottom: 20 }}>
+      <Card style={{ marginBottom: 20 }}>
         <h2 style={{ marginBottom: 8 }}>Google Calendar не настроен</h2>
-        <p className="hint" style={{ marginBottom: 14 }}>
+        <p className="ds-field-hint" style={{ marginBottom: 14 }}>
           Чтобы подключить синхронизацию, нужен OAuth-клиент в Google Cloud Console — разово, один раз:
         </p>
         <ol className="setup-steps">
           <li>
             Открыть{' '}
             <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
-              Google Cloud Console <ExternalLink size={12} strokeWidth={2} style={{ verticalAlign: -1 }} />
+              Google Cloud Console <ExternalLink size={12} strokeWidth={1.75} style={{ verticalAlign: -1 }} />
             </a>{' '}
             — создать проект (или выбрать существующий).
           </li>
@@ -129,74 +135,74 @@ function GoogleConnectionCard() {
           <li>Скопировать <strong>Client ID</strong> и <strong>Client Secret</strong> и вставить их в форму ниже.</li>
         </ol>
 
-        <form onSubmit={saveOAuthConfig} className="form-card" style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--border)' }}>
-          <label>
-            Client ID
-            <input
-              value={clientId}
-              onChange={(e) => setClientId(e.target.value)}
-              placeholder={status.clientId ?? '...apps.googleusercontent.com'}
-              required
-            />
-          </label>
-          <label>
-            Client Secret
-            <input
+        <form onSubmit={saveOAuthConfig} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Field label="Client ID">
+            <Input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder={status.clientId ?? '...apps.googleusercontent.com'} required />
+          </Field>
+          <Field label="Client Secret">
+            <Input
               type="password"
               value={clientSecret}
               onChange={(e) => setClientSecret(e.target.value)}
               placeholder={status.clientId ? 'уже сохранён — введите заново, чтобы заменить' : 'GOCSPX-...'}
               required
             />
-          </label>
+          </Field>
           {status.clientId && (
-            <p className="hint">
+            <p className="ds-field-hint">
               Сейчас сохранён Client ID <code className="mono">{status.clientId}</code>. Заполните оба поля, чтобы заменить.
             </p>
           )}
-          {error && <p className="error">{error}</p>}
-          <button type="submit" disabled={busy}>
-            {busy ? 'Сохраняем…' : 'Сохранить'}
-          </button>
+          {error && <Alert tone="danger">{error}</Alert>}
+          <Button type="submit" variant="primary" disabled={busy} loading={busy}>
+            Сохранить
+          </Button>
         </form>
-      </div>
+      </Card>
     );
   }
 
   return (
-    <div className="card" style={{ marginBottom: 20 }}>
-      {justConnected === '1' && <p className="hint" style={{ color: 'var(--ok)', marginBottom: 10 }}>Google Calendar подключён.</p>}
-      {justConnected === '0' && <p className="error" style={{ marginBottom: 10 }}>Подключение не удалось — попробуйте ещё раз.</p>}
+    <Card style={{ marginBottom: 20 }}>
+      {justConnected === '1' && (
+        <p className="ds-field-hint" style={{ color: 'var(--ok)', marginBottom: 10 }}>
+          Google Calendar подключён.
+        </p>
+      )}
+      {justConnected === '0' && (
+        <div style={{ marginBottom: 10 }}>
+          <Alert tone="danger">Подключение не удалось — попробуйте ещё раз.</Alert>
+        </div>
+      )}
 
       {status.connected ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Link2 size={16} strokeWidth={2} style={{ color: 'var(--ok)' }} />
+          <Link2 size={16} strokeWidth={1.75} style={{ color: 'var(--ok)' }} />
           <span>
             Синхронизировано с <strong>{status.googleAccountEmail}</strong>
           </span>
-          <span className="badge badge-muted">
-            {status.lastSyncAt ? `Обновлено: ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}
-          </span>
-          <button className="btn-secondary btn-small" onClick={syncNow} disabled={busy}>
-            <RefreshCw size={14} strokeWidth={2} />
+          <Badge>{status.lastSyncAt ? `Обновлено: ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}</Badge>
+          <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy}>
             Синхронизировать
-          </button>
-          <button className="btn-secondary btn-small" onClick={disconnect} disabled={busy}>
-            <Link2Off size={14} strokeWidth={2} />
+          </Button>
+          <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
             Отключить
-          </button>
+          </Button>
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span className="hint">Google Calendar не подключён — события хранятся только внутри системы.</span>
-          <button className="btn-secondary btn-small" onClick={connect} disabled={busy}>
-            <Link2 size={14} strokeWidth={2} />
+          <span className="ds-field-hint">Google Calendar не подключён — события хранятся только внутри системы.</span>
+          <Button variant="secondary" size="sm" icon={Link2} onClick={connect} disabled={busy}>
             Подключить Google Calendar
-          </button>
+          </Button>
         </div>
       )}
-      {error && <p className="error" style={{ marginTop: 8 }}>{error}</p>}
-    </div>
+      {error && (
+        <div style={{ marginTop: 8 }}>
+          <Alert tone="danger">{error}</Alert>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -239,43 +245,37 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
 
   if (!open) {
     return (
-      <button className="btn" onClick={() => setOpen(true)} style={{ marginBottom: 20 }}>
-        <Plus size={16} strokeWidth={2.5} />
+      <Button variant="primary" icon={Plus} onClick={() => setOpen(true)} style={{ marginBottom: 20 }}>
         Новое событие
-      </button>
+      </Button>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card form-card" style={{ marginBottom: 20 }}>
-      <label>
-        Название
-        <input value={title} onChange={(e) => setTitle(e.target.value)} required />
-      </label>
-      <label>
-        Начало
-        <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} required />
-      </label>
-      <label>
-        Окончание
-        <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} required />
-      </label>
-      <label>
-        Место
-        <input value={location} onChange={(e) => setLocation(e.target.value)} />
-      </label>
-      <label>
-        Описание
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
-      </label>
-      {error && <p className="error">{error}</p>}
+    <form onSubmit={handleSubmit} className="ds-card" style={{ marginBottom: 20, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Field label="Название">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
+      </Field>
+      <Field label="Начало">
+        <Input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} required />
+      </Field>
+      <Field label="Окончание">
+        <Input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} required />
+      </Field>
+      <Field label="Место">
+        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+      </Field>
+      <Field label="Описание">
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+      </Field>
+      {error && <Alert tone="danger">{error}</Alert>}
       <div style={{ display: 'flex', gap: 10 }}>
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Создаём…' : 'Создать событие'}
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
+        <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+          Создать событие
+        </Button>
+        <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
           Отмена
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -331,15 +331,12 @@ function EventsAgenda() {
     }
   }
 
-  if (error) return <p className="error">{error}</p>;
-  if (!events) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!events) return <p className="ds-field-hint">Загрузка…</p>;
 
   if (events.length === 0) {
     return (
-      <div className="empty-state">
-        <strong>Событий пока нет</strong>
-        <p className="hint">Создайте первое событие или подключите Google Calendar, чтобы подтянуть существующие.</p>
-      </div>
+      <EmptyState title="Событий пока нет" description="Создайте первое событие или подключите Google Calendar, чтобы подтянуть существующие." />
     );
   }
 
@@ -353,9 +350,9 @@ function EventsAgenda() {
     <div>
       {[...byDay.entries()].map(([day, dayEvents]) => (
         <div key={day} style={{ marginBottom: 20 }}>
-          <h3 style={{ fontSize: '0.85rem', color: 'var(--ink-soft)', textTransform: 'capitalize', marginBottom: 8 }}>{day}</h3>
-          <div className="table-wrap">
-            <table className="table">
+          <h3 style={{ fontSize: '0.85rem', color: 'var(--ink-3)', textTransform: 'capitalize', marginBottom: 8 }}>{day}</h3>
+          <div className="ds-table-wrap">
+            <table className="ds-table">
               <tbody>
                 {dayEvents.map((ev) => (
                   <tr key={ev.id}>
@@ -366,7 +363,7 @@ function EventsAgenda() {
                     </td>
                     <td>
                       <strong>{ev.title}</strong>
-                      {ev.location && <span className="hint" style={{ marginLeft: 8 }}>{ev.location}</span>}
+                      {ev.location && <span className="ds-field-hint" style={{ marginLeft: 8 }}>{ev.location}</span>}
                       <div className="watchers-row" style={{ marginTop: 6 }}>
                         {ev.participants.length > 0 && (
                           <div className="watchers-avatars">
@@ -386,40 +383,28 @@ function EventsAgenda() {
                           </div>
                         )}
                         {employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).length > 0 && (
-                          <div className="watcher-add-form">
-                            <select
+                          <div className="watcher-add-form" style={{ display: 'flex', gap: 6 }}>
+                            <Select
                               value={addParticipantSel[ev.id] ?? ''}
                               onChange={(e) => setAddParticipantSel((prev) => ({ ...prev, [ev.id]: e.target.value }))}
-                            >
-                              <option value="">+ Участник…</option>
-                              {employees
-                                .filter((e) => !ev.participants.some((p) => p.id === e.id))
-                                .map((e) => (
-                                  <option key={e.id} value={e.id}>
-                                    {e.fullName}
-                                  </option>
-                                ))}
-                            </select>
-                            <button
-                              type="button"
-                              className="btn-secondary btn-small"
-                              disabled={!addParticipantSel[ev.id]}
-                              onClick={() => addParticipant(ev.id)}
-                            >
+                              options={[
+                                { value: '', label: '+ Участник…' },
+                                ...employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).map((e) => ({ value: e.id, label: e.fullName })),
+                              ]}
+                            />
+                            <Button type="button" variant="secondary" size="sm" disabled={!addParticipantSel[ev.id]} onClick={() => addParticipant(ev.id)}>
                               Добавить
-                            </button>
+                            </Button>
                           </div>
                         )}
                       </div>
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>
-                      {ev.status === 'DRAFT' && <span className="badge badge-muted">Черновик</span>}
-                      {ev.googleEventId && <span className="badge">Google</span>}
+                      {ev.status === 'DRAFT' && <Badge>Черновик</Badge>}
+                      {ev.googleEventId && <Badge>Google</Badge>}
                     </td>
                     <td style={{ width: 1, whiteSpace: 'nowrap' }}>
-                      <button className="btn-secondary btn-small" onClick={() => remove(ev.id)} aria-label="Удалить">
-                        <Trash2 size={13} strokeWidth={2} />
-                      </button>
+                      <IconButton icon={Trash2} label="Удалить" variant="outline" size="sm" onClick={() => remove(ev.id)} />
                     </td>
                   </tr>
                 ))}
@@ -446,17 +431,16 @@ function CalendarBody() {
 export default function CalendarPage() {
   return (
     <Protected requireRole="OWNER">
-      <div className="page-header">
-        <h1>
-          <CalendarDays size={22} strokeWidth={2.2} style={{ verticalAlign: -3, marginRight: 8 }} />
-          Календарь
-        </h1>
-      </div>
-      <p className="page-subtitle">
-        Личный календарь руководителя, двусторонне синхронизированный с Google Calendar (раздел 14.2
-        ТЗ / Адъютант). Единственный писатель с обеих сторон — руководитель.
-      </p>
-      <Suspense fallback={<p className="hint">Загрузка…</p>}>
+      <PageHeader
+        title={
+          <>
+            <CalendarDays size={22} strokeWidth={1.75} style={{ verticalAlign: -3, marginRight: 8 }} />
+            Календарь
+          </>
+        }
+        description="Личный календарь руководителя, двусторонне синхронизированный с Google Calendar (раздел 14.2 ТЗ / Адъютант). Единственный писатель с обеих сторон — руководитель."
+      />
+      <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
         <CalendarBody />
       </Suspense>
     </Protected>

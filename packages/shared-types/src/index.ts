@@ -60,6 +60,13 @@ export interface TaskListItem {
   // TaskStatus.OVERDUE, который крон перетирал поверх статуса, только что
   // выставленного сотрудником (IN_PROGRESS и т.п.).
   isOverdue: boolean;
+  // Создана ассистентом (дизайн-система «Адъютант», владелец 04.10.2026) —
+  // производная от sourceExecutionId != null на бэкенде (TasksService.
+  // toListItem), не угадывается на фронте.
+  fromAgent: boolean;
+  // Название встречи-источника, если есть (та же дизайн-система) — только
+  // title, не полный объект sourceMeeting (тот доступен лишь в TaskDetail).
+  source: string | null;
 }
 
 export interface TaskSubtaskSummary {

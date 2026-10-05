@@ -79,7 +79,10 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
 // один в один, кроме localStorage вместо sessionStorage — тот выбор был
 // специфичен для Telegram WebView, web уже везде использует localStorage
 // (см. request()/requestForm() выше).
-async function requestStream(path: string, body: unknown): Promise<Response> {
+// signal — дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md
+// шаг 7): кнопка «Остановить ответ» в Composer прерывает именно этот fetch,
+// не трогая соединение (AbortError ловит вызывающий код, см. assistant/page.tsx).
+async function requestStream(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
@@ -89,6 +92,7 @@ async function requestStream(path: string, body: unknown): Promise<Response> {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
@@ -134,7 +138,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
-  postStream: (path: string, body: unknown) => requestStream(path, body),
+  postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),

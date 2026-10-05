@@ -8,6 +8,9 @@ import type { CreateEmployeeInput, Direction, EmployeeProfile, Position, Role } 
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { generatePassword } from '@/lib/generate-password';
+import { Field, Input, Select, Checkbox } from '@/components/ui/field';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
 
 const NEW_POSITION_VALUE = '__new__';
 const NEW_DIRECTION_VALUE = '__new__';
@@ -71,94 +74,82 @@ function NewEmployeeForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card form-card">
-      <label>
-        ФИО
-        <input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
-      </label>
+    <form onSubmit={handleSubmit} className="ds-card" style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Field label="ФИО">
+        <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+      </Field>
 
-      <label>
-        Email
-        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-      </label>
+      <Field label="Email">
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+      </Field>
 
-      <label>
-        Пароль (сообщите сотруднику лично — сменить его пока нельзя из интерфейса)
-        <div className="input-row">
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={8}
-            required
-          />
-          <button type="button" className="btn-secondary" onClick={() => setPassword(generatePassword())}>
+      <Field label="Пароль" hint="Сообщите сотруднику лично — сменить его пока нельзя из интерфейса">
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Input value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} required />
+          <Button type="button" variant="secondary" onClick={() => setPassword(generatePassword())}>
             Сгенерировать
-          </button>
+          </Button>
         </div>
-      </label>
+      </Field>
 
-      <label>
-        Должность
-        <select value={positionId} onChange={(e) => setPositionId(e.target.value)}>
-          <option value="">—</option>
-          {positions.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-            </option>
-          ))}
-          <option value={NEW_POSITION_VALUE}>+ Новая должность…</option>
-        </select>
-      </label>
+      <Field label="Должность">
+        <Select
+          value={positionId}
+          onChange={(e) => setPositionId(e.target.value)}
+          options={[
+            { value: '', label: '—' },
+            ...positions.map((p) => ({ value: p.id, label: p.title })),
+            { value: NEW_POSITION_VALUE, label: '+ Новая должность…' },
+          ]}
+        />
+      </Field>
 
       {positionId === NEW_POSITION_VALUE && (
-        <label>
-          Название новой должности
-          <input value={newPositionTitle} onChange={(e) => setNewPositionTitle(e.target.value)} required />
-        </label>
+        <Field label="Название новой должности">
+          <Input value={newPositionTitle} onChange={(e) => setNewPositionTitle(e.target.value)} required />
+        </Field>
       )}
 
-      <label>
-        Направление
-        <select value={directionId} onChange={(e) => setDirectionId(e.target.value)}>
-          <option value="">—</option>
-          {directions.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.title}
-            </option>
-          ))}
-          <option value={NEW_DIRECTION_VALUE}>+ Новое направление…</option>
-        </select>
-      </label>
+      <Field label="Направление">
+        <Select
+          value={directionId}
+          onChange={(e) => setDirectionId(e.target.value)}
+          options={[
+            { value: '', label: '—' },
+            ...directions.map((d) => ({ value: d.id, label: d.title })),
+            { value: NEW_DIRECTION_VALUE, label: '+ Новое направление…' },
+          ]}
+        />
+      </Field>
 
       {directionId === NEW_DIRECTION_VALUE && (
-        <label>
-          Название нового направления
-          <input value={newDirectionTitle} onChange={(e) => setNewDirectionTitle(e.target.value)} required />
-        </label>
+        <Field label="Название нового направления">
+          <Input value={newDirectionTitle} onChange={(e) => setNewDirectionTitle(e.target.value)} required />
+        </Field>
       )}
 
-      <label>
-        Роль в системе
-        <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-          <option value="EMPLOYEE">Подчинённый — видит только свои задачи</option>
-          <option value="OWNER">Руководитель — видит и подтверждает всё</option>
-        </select>
-      </label>
-
-      <label className="checkbox-label">
-        <input
-          type="checkbox"
-          checked={isProfileAdmin}
-          onChange={(e) => setIsProfileAdmin(e.target.checked)}
+      <Field label="Роль в системе">
+        <Select
+          value={role}
+          onChange={(e) => setRole(e.target.value as Role)}
+          options={[
+            { value: 'EMPLOYEE', label: 'Подчинённый — видит только свои задачи' },
+            { value: 'OWNER', label: 'Руководитель — видит и подтверждает всё' },
+          ]}
         />
-        Администратор профилей (ведёт компетенции сотрудников)
-      </label>
+      </Field>
 
-      {error && <p className="error">{error}</p>}
+      <Checkbox
+        label="Администратор профилей (ведёт компетенции сотрудников)"
+        checked={isProfileAdmin}
+        onChange={(e) => setIsProfileAdmin(e.target.checked)}
+      />
 
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Создаём…' : 'Создать сотрудника'}
-      </button>
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+        Создать сотрудника
+      </Button>
     </form>
   );
 }
@@ -167,11 +158,11 @@ export default function NewEmployeePage() {
   return (
     <Protected requireRole="OWNER">
       <Link href="/employees" className="back-link">
-        <ArrowLeft size={14} strokeWidth={2.25} />
+        <ArrowLeft size={14} strokeWidth={1.75} />
         Сотрудники
       </Link>
       <h1>Новый сотрудник</h1>
-      <p className="page-subtitle">Заведите профиль — компетенции добавите на карточке сотрудника.</p>
+      <p className="ds-field-hint">Заведите профиль — компетенции добавите на карточке сотрудника.</p>
       <NewEmployeeForm />
     </Protected>
   );

@@ -11,6 +11,9 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { OverlayPortal } from './overlay-portal';
 import { haptic } from '@/lib/telegram';
+import { Field, Input, Textarea, Select } from '@/components/ui/field';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026), раздел 8 — подача/
 // редактирование. Порт apps/web/src/app/reception/page.tsx:RequestForm в
@@ -84,57 +87,46 @@ export function ReceptionFormOverlay({
           <strong>{editing ? 'Изменить обращение' : 'Подать вопрос'}</strong>
         </div>
         <div className="overlay-body">
-          <form onSubmit={handleSubmit}>
-            <label className="field-label">
-              Тема
-              <input value={title} onChange={(e) => setTitle(e.target.value)} minLength={5} maxLength={150} required />
-            </label>
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Field label="Тема">
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} minLength={5} maxLength={150} required />
+            </Field>
 
-            <label className="field-label">
-              Описание вопроса
-              <textarea value={description} onChange={(e) => setDescription(e.target.value)} minLength={10} maxLength={3000} rows={4} required />
-            </label>
+            <Field label="Описание вопроса">
+              <Textarea value={description} onChange={(e) => setDescription(e.target.value)} minLength={10} maxLength={3000} rows={4} required />
+            </Field>
 
-            <label className="field-label">
-              Что требуется
-              <select value={requestType} onChange={(e) => setRequestType(e.target.value as ReceptionRequestType)}>
-                {Object.entries(REQUEST_TYPE_LABELS).map(([k, label]) => (
-                  <option key={k} value={k}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <Field label="Что требуется">
+              <Select
+                value={requestType}
+                onChange={(e) => setRequestType(e.target.value as ReceptionRequestType)}
+                options={Object.entries(REQUEST_TYPE_LABELS).map(([k, label]) => ({ value: k, label }))}
+              />
+            </Field>
 
-            <label className="field-label">
-              Ожидаемая длительность
-              <select value={expectedMinutes} onChange={(e) => setExpectedMinutes(e.target.value)}>
-                <option value="">Не указано</option>
-                {EXPECTED_MINUTES_OPTIONS.map((m) => (
-                  <option key={m} value={m}>
-                    {m} мин
-                  </option>
-                ))}
-              </select>
-            </label>
+            <Field label="Ожидаемая длительность">
+              <Select
+                value={expectedMinutes}
+                onChange={(e) => setExpectedMinutes(e.target.value)}
+                options={[{ value: '', label: 'Не указано' }, ...EXPECTED_MINUTES_OPTIONS.map((m) => ({ value: String(m), label: `${m} мин` }))]}
+              />
+            </Field>
 
-            <label className="field-label">
-              Нужен ответ до (необязательно)
-              <input type="datetime-local" value={desiredBy} onChange={(e) => setDesiredBy(e.target.value)} />
-            </label>
+            <Field label="Нужен ответ до (необязательно)">
+              <Input type="datetime-local" value={desiredBy} onChange={(e) => setDesiredBy(e.target.value)} />
+            </Field>
 
             {desiredBy && (
-              <label className="field-label">
-                Причина срочности
-                <input value={urgencyReason} onChange={(e) => setUrgencyReason(e.target.value)} minLength={5} maxLength={500} required />
-              </label>
+              <Field label="Причина срочности">
+                <Input value={urgencyReason} onChange={(e) => setUrgencyReason(e.target.value)} minLength={5} maxLength={500} required />
+              </Field>
             )}
 
-            {error && <p className="error">{error}</p>}
+            {error && <Alert tone="danger">{error}</Alert>}
 
-            <button type="submit" className="btn" disabled={submitting}>
-              {submitting ? 'Сохраняем…' : editing ? 'Сохранить' : 'Подать вопрос'}
-            </button>
+            <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+              {editing ? 'Сохранить' : 'Подать вопрос'}
+            </Button>
           </form>
         </div>
       </div>

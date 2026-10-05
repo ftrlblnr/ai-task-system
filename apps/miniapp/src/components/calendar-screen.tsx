@@ -5,6 +5,9 @@ import { Trash2 } from 'lucide-react';
 import type { CalendarEvent } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
+import { Alert } from '@/components/ui/alert';
+import { EmptyState } from '@/components/ui/empty-state';
+import { IconButton } from '@/components/ui/button';
 
 export function CalendarScreen({ active = true }: { active?: boolean }) {
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
@@ -37,15 +40,11 @@ export function CalendarScreen({ active = true }: { active?: boolean }) {
     }
   }
 
-  if (error) return <p className="error">{error}</p>;
-  if (!events) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!events) return <p className="ds-field-hint">Загрузка…</p>;
 
   if (events.length === 0) {
-    return (
-      <div className="empty-state">
-        <strong>Событий пока нет</strong>
-      </div>
-    );
+    return <EmptyState title="Событий пока нет" />;
   }
 
   const byDay = new Map<string, CalendarEvent[]>();
@@ -73,15 +72,9 @@ export function CalendarScreen({ active = true }: { active?: boolean }) {
               </div>
               <div style={{ flex: 1 }}>
                 <div className="event-title">{ev.title}</div>
-                {ev.location && <div className="hint">{ev.location}</div>}
+                {ev.location && <div className="ds-field-hint">{ev.location}</div>}
               </div>
-              <button
-                onClick={() => removeEvent(ev)}
-                aria-label="Удалить событие"
-                style={{ color: 'var(--danger)', flex: 'none', padding: 4 }}
-              >
-                <Trash2 size={15} strokeWidth={2} />
-              </button>
+              <IconButton icon={Trash2} label="Удалить событие" variant="ghost" onClick={() => removeEvent(ev)} style={{ color: 'var(--danger)', flex: 'none' }} />
             </div>
           ))}
         </div>

@@ -7,6 +7,9 @@ import { api, ApiError } from '@/lib/api';
 import { OverlayPortal } from './overlay-portal';
 import { PRIORITY_LABELS } from '@/lib/labels';
 import { haptic } from '@/lib/telegram';
+import { Field, Input, Textarea, Select } from '@/components/ui/field';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
 
 // Раздел 5 ТЗ (скорректировано 28.08.2026): задачу друг другу — включая
 // руководителю — может поставить любой участник, не только OWNER, поэтому
@@ -59,50 +62,40 @@ export function TaskCreateOverlay({ onClose, onCreated }: { onClose: () => void;
         <strong>Новая задача</strong>
       </div>
       <div className="overlay-body">
-        <form onSubmit={handleSubmit}>
-          <label className="field-label">
-            Название
-            <input value={title} onChange={(e) => setTitle(e.target.value)} required />
-          </label>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Field label="Название">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
+          </Field>
 
-          <label className="field-label">
-            Описание
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
-          </label>
+          <Field label="Описание">
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
+          </Field>
 
-          <label className="field-label">
-            Исполнитель
-            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
-              <option value="">Не назначен</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.fullName}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Field label="Исполнитель">
+            <Select
+              value={assigneeId}
+              onChange={(e) => setAssigneeId(e.target.value)}
+              options={[{ value: '', label: 'Не назначен' }, ...employees.map((emp) => ({ value: emp.id, label: emp.fullName }))]}
+            />
+          </Field>
 
-          <label className="field-label">
-            Приоритет
-            <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>
-              {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => (
-                <option key={p} value={p}>
-                  {PRIORITY_LABELS[p]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Field label="Приоритет">
+            <Select
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as TaskPriority)}
+              options={(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => ({ value: p, label: PRIORITY_LABELS[p] }))}
+            />
+          </Field>
 
-          <label className="field-label">
-            Срок
-            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          </label>
+          <Field label="Срок">
+            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </Field>
 
-          {error && <p className="error">{error}</p>}
+          {error && <Alert tone="danger">{error}</Alert>}
 
-          <button type="submit" className="btn" disabled={submitting}>
-            {submitting ? 'Создаём…' : 'Создать задачу'}
-          </button>
+          <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+            Создать задачу
+          </Button>
         </form>
       </div>
     </div>

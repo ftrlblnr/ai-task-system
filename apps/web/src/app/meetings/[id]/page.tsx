@@ -9,8 +9,13 @@ import { ArrowLeft, ListTodo, Mic } from 'lucide-react';
 import type { MeetingDetail } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
-import { STATUS_LABELS } from '@/lib/labels';
 import { TaskExtractionModal } from '@/components/task-extraction-modal';
+import { Card, PageHeader } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge, StatusBadge } from '@/components/ui/badge';
+import { Chip } from '@/components/ui/chip';
+import { Input } from '@/components/ui/field';
 
 // "Speaker 1", "Speaker 2" — метки Plaud до сопоставления с реальными
 // именами (владелец 09.09.2026). Дедуплицируем, сортируем по номеру.
@@ -53,17 +58,16 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
   }
 
   return (
-    <div className="card">
-      <h2>Спикеры</h2>
-      <p className="hint" style={{ marginBottom: 14 }}>
+    <Card title="Спикеры">
+      <p className="ds-field-hint" style={{ marginBottom: 14 }}>
         Саммари ссылается на спикеров по номеру — впишите реальные имена, чтобы саммари стало понятнее
         и AI точнее определял исполнителя при постановке задач.
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
         {labels.map((label) => (
-          <label key={label} style={{ minWidth: 200 }}>
+          <label key={label} style={{ minWidth: 200 }} className="ds-field-label">
             {label}
-            <input
+            <Input
               value={names[label] ?? ''}
               onChange={(e) => setNames((prev) => ({ ...prev, [label]: e.target.value }))}
               placeholder="Имя"
@@ -71,11 +75,11 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
           </label>
         ))}
       </div>
-      {error && <p className="error">{error}</p>}
-      <button className="btn-secondary btn-small" onClick={save} disabled={busy}>
-        {busy ? 'Сохраняем…' : 'Сохранить имена'}
-      </button>
-    </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Button variant="secondary" size="sm" onClick={save} disabled={busy} loading={busy}>
+        Сохранить имена
+      </Button>
+    </Card>
   );
 }
 
@@ -93,41 +97,41 @@ function MeetingDetailView({ id }: { id: string }) {
 
   useEffect(load, [id]);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!meeting) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!meeting) return <p className="ds-field-hint">Загрузка…</p>;
 
   return (
     <div>
       <Link href="/meetings" className="back-link">
-        <ArrowLeft size={14} strokeWidth={2.25} />
+        <ArrowLeft size={14} strokeWidth={1.75} />
         Встречи
       </Link>
-      <div className="page-header">
-        <h1>{meeting.title}</h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Link href={`/voice?meetingId=${meeting.id}`} className="btn-secondary">
-            <Mic size={16} strokeWidth={2.25} />
-            Голосом
-          </Link>
-          <button onClick={() => setShowExtraction(true)}>
-            <ListTodo size={16} strokeWidth={2.25} />
-            Поставить задачи
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title={meeting.title}
+        actions={
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Link href={`/voice?meetingId=${meeting.id}`} className="ds-btn ds-btn-secondary">
+              <Mic size={18} strokeWidth={1.75} />
+              Голосом
+            </Link>
+            <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
+              Поставить задачи
+            </Button>
+          </div>
+        }
+      />
       <div className="task-meta">
-        <span className="badge badge-muted">{new Date(meeting.meetingDate).toLocaleDateString('ru-RU')}</span>
-        <span className="badge badge-muted">Загрузил: {meeting.createdBy.fullName}</span>
+        <Badge>{new Date(meeting.meetingDate).toLocaleDateString('ru-RU')}</Badge>
+        <Badge>Загрузил: {meeting.createdBy.fullName}</Badge>
       </div>
 
-      <div className="card">
-        <h2>Саммари</h2>
+      <Card title="Саммари">
         {!meeting.enhancedSummary && (
-          <p className="hint" style={{ marginBottom: 12 }}>
+          <p className="ds-field-hint" style={{ marginBottom: 12 }}>
             Показана исходная версия из Plaud. Впишите имена спикеров ниже, если они есть в тексте.
           </p>
         )}
-        <div className="reader-text">
+        <div className="ds-md">
           {/* remark-gfm — чек-листы/таблицы из GFM-разметки Plaud; rehype-raw —
               встроенный HTML вроде <mark> в разделе "Задачи" саммари (владелец
               09.09.2026, источник — реальный сэмпл вывода Plaud). */}
@@ -135,27 +139,26 @@ function MeetingDetailView({ id }: { id: string }) {
             {meeting.enhancedSummary ?? meeting.rawSummary}
           </ReactMarkdown>
         </div>
-      </div>
+      </Card>
 
       <SpeakerNamesSection meeting={meeting} onSaved={load} />
 
-      <div className="card">
-        <h2>Задачи из этой встречи</h2>
+      <Card title="Задачи из этой встречи">
         {meeting.tasks.length === 0 && (
-          <p className="hint">Пока не привязано ни одной задачи — нажмите «Поставить задачи» выше или создайте задачу вручную и укажите эту встречу источником.</p>
+          <p className="ds-field-hint">Пока не привязано ни одной задачи — нажмите «Поставить задачи» выше или создайте задачу вручную и укажите эту встречу источником.</p>
         )}
         <ul className="plain-list">
           {meeting.tasks.map((t) => (
             <li key={t.id} className="plain-list-row">
               <Link href={`/tasks/${t.id}`}>{t.title}</Link>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {t.sourceTimestamp && <span className="chip mono">{t.sourceTimestamp}</span>}
-                <span className={`badge status-${t.status.toLowerCase()}`}>{STATUS_LABELS[t.status]}</span>
+                {t.sourceTimestamp && <Chip>{t.sourceTimestamp}</Chip>}
+                <StatusBadge status={t.status} />
               </div>
             </li>
           ))}
         </ul>
-      </div>
+      </Card>
 
       {showExtraction && (
         <TaskExtractionModal

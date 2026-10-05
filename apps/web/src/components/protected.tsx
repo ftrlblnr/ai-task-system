@@ -21,7 +21,7 @@ export function Protected({ children, requireRole }: { children: ReactNode; requ
   }, [loading, user, requireRole, router]);
 
   if (loading || !user || (requireRole && user.role !== requireRole)) {
-    return <p className="hint">Загрузка…</p>;
+    return <p className="ds-field-hint">Загрузка…</p>;
   }
 
   return <>{children}</>;

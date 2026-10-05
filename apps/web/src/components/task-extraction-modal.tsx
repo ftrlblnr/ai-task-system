@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Inbox, Pencil } from 'lucide-react';
 import type {
   CreateTaskInput,
   EmployeeSummary,
@@ -10,16 +10,23 @@ import type {
   TaskPriority,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
-import { PRIORITY_LABELS, CONFIDENCE_LABELS } from '@/lib/labels';
+import { PRIORITY_LABELS } from '@/lib/labels';
+import { Dialog, Field, Input, Textarea, Select, Alert, EmptyState, AgentSuggestion, Button } from '@/components/ui';
+
+type DraftState = 'pending' | 'accepted' | 'rejected';
 
 interface DraftRow extends MeetingTaskDraft {
   key: string;
+  state: DraftState;
+  editing: boolean;
 }
 
 // Владелец 09.09.2026: осознанное действие, не автомат — руководитель
-// видит черновики, редактирует/убирает лишние и только тогда подтверждает.
-// Ничего не создаётся до нажатия «Создать N задач». Первый модальный UI на
-// web (см. комментарий у .modal-backdrop в globals.css).
+// видит предложения ассистента и явно принимает («Создать») или пропускает
+// каждое, затем подтверждает итог одной кнопкой. Ничего не создаётся до
+// этого подтверждения. Дизайн-система «Адъютант» (владелец 04.10.2026,
+// implementation.md шаг 9) — AgentSuggestion/ConfidenceMeter вместо
+// старой всегда-редактируемой формы на каждую строку.
 export function TaskExtractionModal({
   meetingId,
   onClose,
@@ -41,7 +48,7 @@ export function TaskExtractionModal({
       api.get<EmployeeSummary[]>('/employees'),
     ])
       .then(([res, emps]) => {
-        setDrafts(res.drafts.map((d, i) => ({ ...d, key: `${i}-${d.title}` })));
+        setDrafts(res.drafts.map((d, i) => ({ ...d, key: `${i}-${d.title}`, state: 'pending' as const, editing: false })));
         setEmployees(emps);
       })
       .catch((err) => setError(err instanceof ApiError ? err.message : 'Не удалось разобрать саммари'))
@@ -52,24 +59,24 @@ export function TaskExtractionModal({
     setDrafts((prev) => prev?.map((d) => (d.key === key ? { ...d, ...patch } : d)) ?? null);
   }
 
-  function removeDraft(key: string) {
-    setDrafts((prev) => prev?.filter((d) => d.key !== key) ?? null);
-  }
+  const acceptedCount = drafts?.filter((d) => d.state === 'accepted').length ?? 0;
 
   async function handleSubmit() {
-    if (!drafts || drafts.length === 0) return;
+    if (!drafts || acceptedCount === 0) return;
     setSubmitting(true);
     setError(null);
     try {
-      const tasks: CreateTaskInput[] = drafts.map((d) => ({
-        title: d.title,
-        description: d.description || undefined,
-        assigneeId: d.assigneeId || undefined,
-        priority: d.priority || undefined,
-        dueDate: d.dueDate || undefined,
-        sourceContext: d.sourceContext || undefined,
-        aiConfidence: d.confidence,
-      }));
+      const tasks: CreateTaskInput[] = drafts
+        .filter((d) => d.state === 'accepted')
+        .map((d) => ({
+          title: d.title,
+          description: d.description || undefined,
+          assigneeId: d.assigneeId || undefined,
+          priority: d.priority || undefined,
+          dueDate: d.dueDate || undefined,
+          sourceContext: d.sourceContext || undefined,
+          aiConfidence: d.confidence,
+        }));
       await api.post(`/meetings/${meetingId}/tasks`, { tasks });
       onCreated();
       onClose();
@@ -81,96 +88,81 @@ export function TaskExtractionModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h2 style={{ margin: 0 }}>Задачи из саммари</h2>
-          <button className="btn-secondary btn-small" onClick={onClose} aria-label="Закрыть">
-            <X size={16} strokeWidth={2} />
-          </button>
-        </div>
+    <Dialog
+      title="Задачи из саммари"
+      onClose={onClose}
+      footer={
+        drafts && drafts.length > 0 ? (
+          <Button variant="primary" onClick={handleSubmit} disabled={submitting || acceptedCount === 0} loading={submitting}>
+            {`Создать ${acceptedCount} ${pluralTasks(acceptedCount)}`}
+          </Button>
+        ) : undefined
+      }
+    >
+      {loading && <p className="ds-field-hint">Анализируем саммари…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
 
-        {loading && <p className="hint">Анализируем саммари…</p>}
-        {error && <p className="error">{error}</p>}
+      {!loading && drafts && drafts.length === 0 && !error && (
+        <EmptyState icon={Inbox} title="AI не нашёл явных задач в этом саммари" />
+      )}
 
-        {!loading && drafts && drafts.length === 0 && !error && (
-          <p className="hint">AI не нашёл явных задач в этом саммари.</p>
-        )}
-
-        {!loading &&
-          drafts?.map((d) => (
-            <div key={d.key} className="draft-task-row">
-              <button
-                className="btn-secondary btn-small"
-                onClick={() => removeDraft(d.key)}
-                aria-label="Убрать"
-                style={{ position: 'absolute', top: 10, right: 10 }}
-              >
-                <X size={13} strokeWidth={2} />
-              </button>
-
-              <label>
-                Название
-                <input value={d.title} onChange={(e) => updateDraft(d.key, { title: e.target.value })} />
-              </label>
-              <label>
-                Описание
-                <textarea
+      {!loading &&
+        drafts?.map((d) =>
+          d.editing ? (
+            <div key={d.key} className="ds-suggest">
+              <Field label="Название">
+                <Input value={d.title} onChange={(e) => updateDraft(d.key, { title: e.target.value })} />
+              </Field>
+              <Field label="Описание">
+                <Textarea
                   rows={2}
                   value={d.description ?? ''}
                   onChange={(e) => updateDraft(d.key, { description: e.target.value || null })}
                 />
-              </label>
+              </Field>
               <div style={{ display: 'flex', gap: 12 }}>
-                <label style={{ flex: 1 }}>
-                  Исполнитель
-                  <select
+                <Field label="Исполнитель">
+                  <Select
                     value={d.assigneeId ?? ''}
-                    onChange={(e) => updateDraft(d.key, { assigneeId: e.target.value || null })}
-                  >
-                    <option value="">Не назначен</option>
-                    {employees.map((emp) => (
-                      <option key={emp.id} value={emp.id}>
-                        {emp.fullName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label style={{ flex: 1 }}>
-                  Приоритет
-                  <select
+                    onChange={(e) => updateDraft(d.key, { assigneeId: e.target.value || null, assigneeName: employees.find((emp) => emp.id === e.target.value)?.fullName ?? null })}
+                    options={[{ value: '', label: 'Не назначен' }, ...employees.map((emp) => ({ value: emp.id, label: emp.fullName }))]}
+                  />
+                </Field>
+                <Field label="Приоритет">
+                  <Select
                     value={d.priority ?? ''}
                     onChange={(e) => updateDraft(d.key, { priority: (e.target.value || null) as TaskPriority | null })}
-                  >
-                    <option value="">Не указан</option>
-                    {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => (
-                      <option key={p} value={p}>
-                        {PRIORITY_LABELS[p]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label style={{ flex: 1 }}>
-                  Срок
-                  <input
+                    options={[{ value: '', label: 'Не указан' }, ...(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => ({ value: p, label: PRIORITY_LABELS[p] }))]}
+                  />
+                </Field>
+                <Field label="Срок">
+                  <Input
                     type="date"
                     value={d.dueDate ? d.dueDate.slice(0, 10) : ''}
                     onChange={(e) => updateDraft(d.key, { dueDate: e.target.value || null })}
                   />
-                </label>
+                </Field>
               </div>
-              <span className="badge badge-muted">{CONFIDENCE_LABELS[d.confidence]}</span>
-              <p className="draft-task-source">«{d.sourceContext}»</p>
+              <Button size="sm" variant="secondary" onClick={() => updateDraft(d.key, { editing: false })} style={{ alignSelf: 'flex-start' }}>
+                Готово
+              </Button>
             </div>
-          ))}
-
-        {!loading && drafts && drafts.length > 0 && (
-          <button onClick={handleSubmit} disabled={submitting} style={{ marginTop: 4 }}>
-            {submitting ? 'Создаём…' : `Создать ${drafts.length} ${pluralTasks(drafts.length)}`}
-          </button>
+          ) : (
+            <AgentSuggestion
+              key={d.key}
+              title={d.title}
+              quote={d.sourceContext}
+              confidence={d.confidence}
+              assignee={d.assigneeName}
+              due={d.dueDate ? d.dueDate.slice(0, 10) : null}
+              state={d.state === 'pending' ? null : d.state}
+              onAccept={() => updateDraft(d.key, { state: 'accepted' })}
+              onReject={() => updateDraft(d.key, { state: d.state === 'rejected' ? 'pending' : 'rejected' })}
+              onEdit={() => updateDraft(d.key, { editing: true })}
+            />
+          ),
         )}
-      </div>
-    </div>
+    </Dialog>
   );
 }
 

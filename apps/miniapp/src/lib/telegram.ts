@@ -37,11 +37,21 @@ export function getInitData(): string {
   return getTelegramWebApp()?.initData ?? '';
 }
 
+// Дизайн-система «Адъютант» (владелец 04.10.2026, project/implementation.md,
+// шаг 2) — tokens.css различает темы через `data-theme` на <html>; web
+// следует prefers-color-scheme сам, а Mini App выставляет атрибут явно по
+// Telegram.WebApp.colorScheme (своя тема, не системная тема устройства).
+function syncTheme(app: TelegramWebApp) {
+  document.documentElement.dataset.theme = app.colorScheme;
+}
+
 export function initTelegramChrome() {
   const app = getTelegramWebApp();
   if (!app) return;
   app.ready();
   app.expand();
+  syncTheme(app);
+  app.onEvent('themeChanged', () => syncTheme(app));
   try {
     app.setHeaderColor('secondary_bg_color');
     app.setBackgroundColor('secondary_bg_color');

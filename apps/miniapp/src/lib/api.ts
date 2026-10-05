@@ -72,7 +72,10 @@ async function requestForm<T>(path: string, formData: FormData): Promise<T> {
 // fetch() с потоковым телом; парсинг SSE-фреймов — задача вызывающего кода
 // (assistant-screen.tsx), здесь только транспорт (тот же auth/401-паттерн,
 // что request()/requestForm()), отдаёт сырой Response для чтения потока.
-async function requestStream(path: string, body: unknown): Promise<Response> {
+// signal — дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md
+// шаг 7): кнопка «Остановить ответ» в Composer прерывает именно этот fetch,
+// не трогая соединение (AbortError ловит вызывающий код, см. assistant-screen.tsx).
+async function requestStream(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
@@ -82,6 +85,7 @@ async function requestStream(path: string, body: unknown): Promise<Response> {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
@@ -121,7 +125,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
   postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
-  postStream: (path: string, body: unknown) => requestStream(path, body),
+  postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),

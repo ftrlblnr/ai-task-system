@@ -1,67 +1,35 @@
-/* Токены — та же палитра, что apps/web (единый визуальный язык), но вёрстка
-   здесь мобильная (одна колонка, свайп-навигация), а не десктопная. */
+/* Дизайн-система «Адъютант» (владелец 04.10.2026, project/implementation.md,
+   шаг 3) — алиасы старых переменных на новые токены из tokens.css (подключён
+   в layout.tsx до этого файла), чтобы старая вёрстка продолжала работать,
+   пока экраны переносятся на новые компоненты по одному. --bg/--surface/
+   --surface-2/--ink/--danger/--warn/--ok и их -soft здесь не объявляются —
+   совпадают по именам с новыми токенами, значение приходит прямо из
+   tokens.css. --radius-sm/--radius-lg тоже не переопределяются — новые
+   значения (8px/16px) достаточно близки к старым (7px/16px). data-theme
+   на <html> выставляет lib/telegram.ts (initTelegramChrome/themeChanged) по
+   Telegram.WebApp.colorScheme — не prefers-color-scheme устройства. */
 :root {
-  --bg: #f5f7f8;
-  --surface: #ffffff;
-  --surface-2: #eef2f3;
-  --border: #e1e6e8;
-  --border-strong: #cbd3d6;
-  --ink: #171b1f;
-  --ink-soft: #565f66;
-  --ink-faint: #8a929a;
-
-  --accent: #1f6e80;
-  --accent-hover: #195a69;
-  --accent-soft: #dceef1;
-  --accent-soft-border: #b9dee3;
-  --accent-contrast: #ffffff;
-
-  --danger: #b0392f;
-  --danger-soft: #fbe4e1;
-  --warn: #a66a1e;
-  --warn-soft: #f5e7d0;
-  --ok: #2e7d4f;
-  --ok-soft: #dff1e5;
-
-  --shadow-sm: 0 1px 2px rgba(15, 23, 27, 0.05), 0 1px 1px rgba(15, 23, 27, 0.04);
-  --shadow-md: 0 10px 24px -8px rgba(15, 23, 27, 0.14), 0 2px 8px -2px rgba(15, 23, 27, 0.06);
-  --radius-sm: 7px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  --border: var(--line);
+  --border-strong: var(--line-control);
+  --ink-soft: var(--ink-2);
+  --ink-faint: var(--ink-3);
+  /* Старый --accent был «кнопочным» акцентом — теперь это ink (раздел
+     «Главная идея» project/README.md: цвет принадлежит только агенту). */
+  --accent: var(--ink);
+  --accent-hover: var(--ink);
+  --accent-contrast: var(--on-ink);
+  --accent-soft: var(--surface-2);
+  --accent-soft-border: var(--line);
+  --shadow-sm: var(--shadow-1);
+  --shadow-md: var(--shadow-2);
+  /* Старый --radius-md (10px) семантически ближе к новому --radius-sm
+     (8px, кнопки/поля), а не к новому --radius-md (12px, карточки). */
+  --radius-md: var(--radius-sm);
 
   /* Telegram отдаёт safe-area через свои CSS-переменные на iOS (чёлка/home
      indicator) — используем как есть, с фолбэком на 0. */
   --tg-safe-top: env(safe-area-inset-top, 0px);
   --tg-safe-bottom: env(safe-area-inset-bottom, 0px);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1215;
-    --surface: #171b1f;
-    --surface-2: #12151a;
-    --border: #262c31;
-    --border-strong: #343c42;
-    --ink: #edf0f2;
-    --ink-soft: #a7b0b6;
-    --ink-faint: #6d767c;
-
-    --accent: #5fc2d6;
-    --accent-hover: #7acfe0;
-    --accent-soft: #17323a;
-    --accent-soft-border: #26505a;
-    --accent-contrast: #0b1013;
-
-    --danger: #e2857a;
-    --danger-soft: #3a211f;
-    --warn: #dbae6e;
-    --warn-soft: #3a2e1b;
-    --ok: #7fcb9b;
-    --ok-soft: #1b3325;
-
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-    --shadow-md: 0 10px 28px -8px rgba(0, 0, 0, 0.55), 0 2px 8px -2px rgba(0, 0, 0, 0.4);
-  }
 }
 
 *,

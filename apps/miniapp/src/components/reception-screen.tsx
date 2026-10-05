@@ -6,6 +6,12 @@ import type { ReceptionListResponse, ReceptionRequestItem, ReceptionRequestStatu
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
 import { ReceptionFormOverlay } from './reception-form-overlay';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import type { BadgeTone } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026), раздел 8 — экран сотрудника
 // в Mini App: подать/список/изменить/отозвать СВОИ обращения. Очередь
@@ -18,12 +24,12 @@ const STATUS_LABELS: Record<ReceptionRequestStatus, string> = {
   REJECTED: 'Отклонено',
   WITHDRAWN: 'Отозвано',
 };
-const STATUS_BADGE_CLASS: Record<ReceptionRequestStatus, string> = {
-  WAITING: 'badge badge-muted',
-  CALLED: 'badge badge-warn',
-  COMPLETED: 'badge badge-ok',
-  REJECTED: 'badge badge-danger',
-  WITHDRAWN: 'badge badge-muted',
+const STATUS_BADGE_TONE: Record<ReceptionRequestStatus, BadgeTone> = {
+  WAITING: 'neutral',
+  CALLED: 'warn',
+  COMPLETED: 'ok',
+  REJECTED: 'danger',
+  WITHDRAWN: 'neutral',
 };
 
 function formatDate(value: string | null): string {
@@ -86,43 +92,43 @@ export function ReceptionScreen({ active = true }: { active?: boolean }) {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, margin: '8px 0 12px' }}>
-        <button className={scope === 'active' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setScope('active')}>
-          Активные
-        </button>
-        <button className={scope === 'history' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setScope('history')}>
-          История
-        </button>
+      <div style={{ margin: '8px 0 12px' }}>
+        <SegmentedControl
+          options={[
+            { value: 'active', label: 'Активные' },
+            { value: 'history', label: 'История' },
+          ]}
+          value={scope}
+          onChange={(v) => setScope(v as 'active' | 'history')}
+        />
       </div>
 
-      {error && <p className="error">{error}</p>}
-      {!data && !error && <p className="hint">Загрузка…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
+      {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
       {data && data.items.length === 0 && (
-        <div className="empty-state">
-          <strong>{scope === 'active' ? 'Активных обращений нет' : 'История пуста'}</strong>
-        </div>
+        <EmptyState title={scope === 'active' ? 'Активных обращений нет' : 'История пуста'} />
       )}
 
       {data?.items.map((item) => (
         <div key={item.id} className="task-card" style={{ display: 'block' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             <span className="task-card-title">{item.title}</span>
-            <span className={STATUS_BADGE_CLASS[item.status]}>{item.status === 'CALLED' ? 'Вас вызывают' : STATUS_LABELS[item.status]}</span>
+            <Badge tone={STATUS_BADGE_TONE[item.status]}>{item.status === 'CALLED' ? 'Вас вызывают' : STATUS_LABELS[item.status]}</Badge>
           </div>
-          <div className="hint" style={{ marginTop: 4 }}>
+          <div className="ds-field-hint" style={{ marginTop: 4 }}>
             подано {formatDate(item.createdAt)}
             {item.desiredBy && <> · нужен ответ до {formatDate(item.desiredBy)}</>}
           </div>
-          {item.status === 'REJECTED' && item.rejectionReason && <div className="hint">Причина: {item.rejectionReason}</div>}
-          {item.status === 'COMPLETED' && item.resolution && <div className="hint">Результат: {item.resolution}</div>}
+          {item.status === 'REJECTED' && item.rejectionReason && <div className="ds-field-hint">Причина: {item.rejectionReason}</div>}
+          {item.status === 'COMPLETED' && item.resolution && <div className="ds-field-hint">Результат: {item.resolution}</div>}
           {item.status === 'WAITING' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              <button className="btn-secondary btn-small" onClick={() => setFormOpen(item)}>
+              <Button variant="secondary" size="sm" onClick={() => setFormOpen(item)}>
                 Изменить
-              </button>
-              <button className="btn-secondary btn-small" onClick={() => withdraw(item)}>
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => withdraw(item)}>
                 Отозвать
-              </button>
+              </Button>
             </div>
           )}
         </div>

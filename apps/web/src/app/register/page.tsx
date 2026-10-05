@@ -5,6 +5,9 @@ import Link from 'next/link';
 import type { LoginResponse, RegisterInput, RegisterOptions, RegistrationWindowStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { Button } from '@/components/ui/button';
+import { Field, Input, Select } from '@/components/ui/field';
+import { Alert } from '@/components/ui/alert';
 
 // Самостоятельная регистрация (владелец 02.10.2026) — временное окно,
 // открывается/закрывается переключателем на странице «Сотрудники»
@@ -57,15 +60,15 @@ function RegisterForm() {
   }
 
   if (!windowStatus) {
-    return <p className="hint">Загрузка…</p>;
+    return <p className="ds-field-hint">Загрузка…</p>;
   }
 
   if (!windowStatus.isOpen) {
     return (
-      <div className="card">
+      <div className="ds-card">
         <h1>Регистрация закрыта</h1>
-        <p className="hint">Самостоятельная регистрация сейчас недоступна — обратитесь к руководителю.</p>
-        <p className="hint" style={{ marginTop: 12 }}>
+        <p className="ds-field-hint">Самостоятельная регистрация сейчас недоступна — обратитесь к руководителю.</p>
+        <p className="ds-field-hint" style={{ marginTop: 12 }}>
           <Link href="/login">Вернуться ко входу</Link>
         </p>
       </div>
@@ -73,64 +76,47 @@ function RegisterForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card">
+    <form onSubmit={handleSubmit} className="ds-card">
       <h1>Регистрация</h1>
       <p className="auth-subtitle">
         Придумайте логин и пароль — ими же вы войдёте в Mini App в Telegram, это свяжет аккаунты
       </p>
 
-      <label>
-        ФИО
-        <input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
-      </label>
+      <Field label="ФИО">
+        <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+      </Field>
 
-      <label>
-        Логин
-        <input value={login} onChange={(e) => setLogin(e.target.value)} minLength={3} maxLength={100} required />
-      </label>
+      <Field label="Логин">
+        <Input value={login} onChange={(e) => setLogin(e.target.value)} minLength={3} maxLength={100} required />
+      </Field>
 
-      <label>
-        Пароль
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          minLength={8}
-          required
+      <Field label="Пароль">
+        <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} required />
+      </Field>
+
+      <Field label="Должность">
+        <Select
+          value={positionId}
+          onChange={(e) => setPositionId(e.target.value)}
+          options={[{ value: '', label: '—' }, ...(options?.positions.map((p) => ({ value: p.id, label: p.title })) ?? [])]}
         />
-      </label>
+      </Field>
 
-      <label>
-        Должность
-        <select value={positionId} onChange={(e) => setPositionId(e.target.value)}>
-          <option value="">—</option>
-          {options?.positions.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-            </option>
-          ))}
-        </select>
-      </label>
+      <Field label="Направление">
+        <Select
+          value={directionId}
+          onChange={(e) => setDirectionId(e.target.value)}
+          options={[{ value: '', label: '—' }, ...(options?.directions.map((d) => ({ value: d.id, label: d.title })) ?? [])]}
+        />
+      </Field>
 
-      <label>
-        Направление
-        <select value={directionId} onChange={(e) => setDirectionId(e.target.value)}>
-          <option value="">—</option>
-          {options?.directions.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.title}
-            </option>
-          ))}
-        </select>
-      </label>
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      {error && <p className="error">{error}</p>}
+      <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+        Зарегистрироваться
+      </Button>
 
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Регистрируем…' : 'Зарегистрироваться'}
-      </button>
-
-      <p className="hint" style={{ textAlign: 'center', marginTop: 12 }}>
+      <p className="ds-field-hint" style={{ textAlign: 'center', marginTop: 12 }}>
         Уже есть аккаунт? <Link href="/login">Войти</Link>
       </p>
     </form>

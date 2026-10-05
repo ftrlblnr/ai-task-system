@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { Headphones, Mic, Paperclip, Send, Square, X } from 'lucide-react';
+import { Headphones, Mic, Paperclip, Send, Square } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
@@ -17,7 +17,17 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
 import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
-import { MessagePartRenderer, FilePartView } from './assistant-message-part';
+import { MessagePartsList, FilePartView } from './assistant-message-part';
+import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
+
+// Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
+// — пустой чат: приглашение + подсказки-чипы с типовыми поручениями
+// (примеры, не настоящие данные). Клик — подставляет текст в композер.
+const SUGGESTION_PROMPTS = [
+  'Поставь задачу Ивану на завтра',
+  'Что по задачам на этой неделе?',
+  'Какие встречи у меня сегодня?',
+];
 
 const MAX_TEXTAREA_HEIGHT = 140;
 // Зеркало бэкенд-лимитов (аудит 16.09.2026, находка про рассинхрон
@@ -181,6 +191,17 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   // порога, не на каждый пиксель).
   const isNearBottomRef = useRef(true);
   const [showJumpButton, setShowJumpButton] = useState(false);
+  // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
+  // — кнопка «Остановить ответ» в Composer; AbortController, не React state
+  // (нужен только внутри текущего send(), ре-рендер не требуется).
+  const sendAbortRef = useRef<AbortController | null>(null);
+  const userStoppedRef = useRef(false);
+  // "Создано только что" (материализация, agent-motion.md) — id сообщений,
+  // завершённых ЖИВЫМ стримом в этой сессии. Не React state: мутируется в
+  // handleEvent синхронно с setMessages из того же вызова, тот же ре-рендер
+  // подхватывает оба изменения; при обычной загрузке истории (load())
+  // сюда ничего не попадает, поэтому старые сообщения никогда не "фреш".
+  const freshMessageIdsRef = useRef<Set<string>>(new Set());
 
   // Phase F — вложения, уже загруженные (POST /files/upload прошёл), но
   // ещё не отправленные вместе с сообщением — чипы над composer'ом,
@@ -336,7 +357,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   // По остановке записи — POST /voice/parse (multipart), затем
   // userMessage/assistantMessage из ответа добавляются в ту же ленту, что и
   // обычная текстовая отправка (Stage 2, Phase H) — тем же
-  // MessagePartRenderer, без отдельного рендер-пути для голоса. results[i]
+  // MessagePartsList, без отдельного рендер-пути для голоса. results[i]
   // и assistantMessage.parts[i] идут в одном порядке (см.
   // buildVoiceAssistantParts на бэкенде) — зипуем по индексу, чтобы прицепить
   // временную (не персистентную — как и раньше) кнопку "Отменить" к нужной
@@ -587,6 +608,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         }
         case 'message.completed':
           terminal = true;
+          freshMessageIdsRef.current.add(event.message.id);
           setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId).concat(event.message));
           break;
         case 'message.failed':
@@ -606,12 +628,16 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       }
     }
 
+    const controller = new AbortController();
+    sendAbortRef.current = controller;
+    userStoppedRef.current = false;
+
     try {
-      const response = await api.postStream(`/assistant/conversations/${conversationId}/messages/stream`, {
-        text: value,
-        clientRequestId,
-        attachmentIds: attachments.map((a) => a.fileId),
-      });
+      const response = await api.postStream(
+        `/assistant/conversations/${conversationId}/messages/stream`,
+        { text: value, clientRequestId, attachmentIds: attachments.map((a) => a.fileId) },
+        controller.signal,
+      );
       const reader = response.body?.getReader();
       if (!reader) throw new Error('Поток ответа недоступен');
       const decoder = new TextDecoder();
@@ -638,12 +664,31 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
         setFailedSend({ clientRequestId, text: value, attachments });
       }
-    } catch {
-      setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-      setFailedSend({ clientRequestId, text: value, attachments });
+    } catch (err) {
+      // Остановлено самим пользователем (кнопка «Остановить ответ») — не
+      // сбой: оставляем накопленный к этому моменту текст как обычный
+      // завершённый ответ, без "Ответ был прерван" / "Повторить".
+      if (userStoppedRef.current) {
+        terminal = true;
+        setMessages((prev) =>
+          (prev ?? []).map((m) =>
+            m.id === assistantPlaceholderId ? { ...m, status: 'completed', parts: buildLiveParts(toolStates, liveText) } : m,
+          ),
+        );
+      } else if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
+        setFailedSend({ clientRequestId, text: value, attachments });
+      }
     } finally {
+      sendAbortRef.current = null;
       setSending(false);
     }
+  }
+
+  function stopSending() {
+    haptic('light');
+    userStoppedRef.current = true;
+    sendAbortRef.current?.abort();
   }
 
   function onComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -660,69 +705,80 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   }
 
   if (!messages) {
-    return (
-      <div className="assistant-screen">
-        {loadError ? <p className="error">{loadError}</p> : <p className="hint">Загрузка…</p>}
-      </div>
-    );
+    return <div className="assistant-screen">{loadError ? <Alert tone="danger">{loadError}</Alert> : <p className="ds-field-hint">Загрузка…</p>}</div>;
   }
+
+  const composerDisabled = liveActive || voicePhase !== 'idle';
+  const isVoiceProcessing = voicePhase === 'processing';
 
   return (
     <div className="assistant-screen">
-      <div className="assistant-chat" ref={chatRef}>
+      <div className="ds-thread" ref={chatRef}>
         {messages.length === 0 && (
-          <p className="hint" style={{ margin: '10px 0' }}>
-            Спросите что-нибудь текстом или надиктуйте задачу/встречу голосом — кнопка микрофона рядом с полем ввода.
-          </p>
-        )}
-        {messages.map((m) =>
-          m.role === 'user' ? (
-            <div key={m.id} className="assistant-user-bubble">
-              {userBubbleText(m)}
-              {m.parts
-                .filter((p) => p.type === 'file')
-                .map((p) => (
-                  <FilePartView key={p.id} data={p.data as FilePartData} />
-                ))}
+          <div style={{ textAlign: 'center', padding: '32px 16px' }}>
+            {/* "display" — типографика только для экрана входа и этого места
+                (project/README.md); utility-класса под неё нет в ds.css
+                (значения баковые per-компонент), поэтому здесь — инлайн. */}
+            <p style={{ margin: '0 0 8px', fontSize: 32, lineHeight: '38px', fontWeight: 650, letterSpacing: '-0.025em' }}>
+              Чем помочь?
+            </p>
+            <p className="ds-field-hint" style={{ margin: '0 0 16px' }}>
+              Спросите текстом или надиктуйте задачу/встречу голосом.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {SUGGESTION_PROMPTS.map((p) => (
+                <button key={p} type="button" className="ds-chip" onClick={() => setText(p)}>
+                  {p}
+                </button>
+              ))}
             </div>
-          ) : (
-            <div key={m.id} className="assistant-response">
-              {m.status === 'pending' ? (
-                <p className="assistant-pending">Печатает…</p>
-              ) : (
-                m.parts.map((part) => {
-                  const undo = voiceUndos.find((u) => u.messageId === m.id && u.partId === part.id);
-                  if (!undo) return <MessagePartRenderer key={part.id} part={part} />;
-                  // Голос (Stage 2, Phase H) — "Отменить" рядом с картой/
-                  // текстом только что выполненного действия, временно
-                  // (VOICE_UNDO_WINDOW_MS), не персистентно — то же
-                  // ограничение, что и раньше в voice-screen.tsx.
-                  return (
-                    <div key={part.id}>
-                      <MessagePartRenderer part={part} />
-                      <div className="voice-confirm-actions">
-                        <button type="button" className="btn-secondary btn-small" onClick={() => performVoiceUndo(undo)}>
-                          Отменить
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          ),
-        )}
-        {failedSend && (
-          <div className="assistant-error">
-            Ответ был прерван.
-            <button
-              type="button"
-              className="assistant-card-open"
-              onClick={() => send(failedSend.text, failedSend.clientRequestId, failedSend.attachments)}
-            >
-              Повторить
-            </button>
           </div>
+        )}
+        {messages.map((m) => {
+          if (m.role === 'user') {
+            return (
+              <UserMessage
+                key={m.id}
+                attachments={m.parts.filter((p) => p.type === 'file').map((p) => <FilePartView key={p.id} data={p.data as FilePartData} />)}
+              >
+                {userBubbleText(m)}
+              </UserMessage>
+            );
+          }
+          const fresh = freshMessageIdsRef.current.has(m.id);
+          const lastPart = m.parts[m.parts.length - 1];
+          const streamingPartId = m.status === 'streaming' && lastPart?.type === 'markdown' ? lastPart.id : null;
+          return (
+            <AgentMessage key={m.id} state={m.status === 'completed' ? 'done' : m.status === 'failed' ? 'error' : m.status} actions={false}>
+              {m.status === 'pending' ? null : <MessagePartsList parts={m.parts} fresh={fresh} streamingPartId={streamingPartId} />}
+              {m.parts.map((part) => {
+                const undo = voiceUndos.find((u) => u.messageId === m.id && u.partId === part.id);
+                if (!undo) return null;
+                // Голос (Stage 2, Phase H) — "Отменить" рядом с картой/
+                // текстом только что выполненного действия, временно
+                // (VOICE_UNDO_WINDOW_MS), не персистентно.
+                return (
+                  <div key={`undo-${part.id}`} className="voice-confirm-actions">
+                    <Button size="sm" variant="ghost" onClick={() => performVoiceUndo(undo)}>
+                      Отменить
+                    </Button>
+                  </div>
+                );
+              })}
+            </AgentMessage>
+          );
+        })}
+        {failedSend && (
+          <Alert
+            tone="danger"
+            action={
+              <Button size="sm" onClick={() => send(failedSend.text, failedSend.clientRequestId, failedSend.attachments)}>
+                Повторить
+              </Button>
+            }
+          >
+            Ответ был прерван.
+          </Alert>
         )}
         {showJumpButton && (
           <button type="button" className="assistant-scroll-down" onClick={scrollToBottom}>
@@ -730,102 +786,80 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
           </button>
         )}
       </div>
-      {(pendingAttachments.length > 0 || uploading || uploadError) && (
-        <div className="assistant-pending-attachments">
-          {pendingAttachments.map((a) => (
-            <span key={a.fileId} className="assistant-chip assistant-pending-attachment">
-              {a.name}
-              <button type="button" onClick={() => removePendingAttachment(a.fileId)} aria-label="Убрать вложение">
-                <X size={11} strokeWidth={2.5} />
-              </button>
-            </span>
-          ))}
-          {uploading && <span className="hint">Загрузка файла…</span>}
-          {uploadError && <span className="error">{uploadError}</span>}
-        </div>
-      )}
-      {voiceError && (
-        <div className="assistant-pending-attachments">
-          <span className="error">{voiceError}</span>
-        </div>
-      )}
-      {liveError && (
-        <div className="assistant-pending-attachments">
-          <span className="error">{liveError}</span>
-        </div>
-      )}
-      {liveActive && (
-        <div className="assistant-live-panel">
-          <span className="assistant-live-dot" aria-hidden />
-          <span className="assistant-live-status">
-            {livePhase === 'connecting' ? 'Подключаюсь…' : livePhase === 'closing' ? 'Завершаю…' : 'Идёт разговор'}
-          </span>
-          <span className="hint assistant-live-caption">
-            {liveCaption ? `${liveCaption.who === 'user' ? 'Вы' : 'Ассистент'}: ${liveCaption.text}` : ''}
-          </span>
-          <button type="button" className="assistant-live-stop" onClick={stopLive} disabled={livePhase === 'closing'}>
-            Завершить
-          </button>
-        </div>
-      )}
-      <div className="assistant-composer">
+
+      {voiceError && <Alert tone="danger">{voiceError}</Alert>}
+      {liveError && <Alert tone="danger">{liveError}</Alert>}
+
+      <div className={cx('ds-composer', sending && 'is-busy')}>
+        {liveActive && (
+          <LiveVoiceBar
+            status={livePhase === 'connecting' ? 'Подключаюсь…' : livePhase === 'closing' ? 'Завершаю…' : 'Идёт разговор'}
+            caption={liveCaption ? `${liveCaption.who === 'user' ? 'Вы' : 'Ассистент'}: ${liveCaption.text}` : ''}
+            amp={null}
+            onStop={stopLive}
+            stopDisabled={livePhase === 'closing'}
+          />
+        )}
+        {(pendingAttachments.length > 0 || uploading || uploadError) && (
+          <div className="ds-task-meta">
+            {pendingAttachments.map((a) => (
+              <FileChip key={a.fileId} name={a.name} onRemove={() => removePendingAttachment(a.fileId)} />
+            ))}
+            {uploading && <span className="ds-field-hint">Загрузка файла…</span>}
+            {uploadError && <span className="ds-field-error">{uploadError}</span>}
+          </div>
+        )}
         <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
-        <button
-          type="button"
-          className="assistant-attach-btn"
-          disabled={sending || uploading || liveActive || voicePhase !== 'idle' || pendingAttachments.length >= MAX_ATTACHMENTS}
-          onClick={() => fileInputRef.current?.click()}
-          aria-label="Прикрепить файл"
-        >
-          <Paperclip size={18} strokeWidth={2} />
-        </button>
         <textarea
           rows={1}
-          placeholder="Спросите что-нибудь…"
+          placeholder="Напишите задачу, вопрос или поручение…"
+          aria-label="Сообщение ассистенту"
           value={text}
-          disabled={sending || liveActive || voicePhase !== 'idle'}
+          disabled={sending || composerDisabled}
           maxLength={MAX_TEXT_LENGTH}
           onChange={(e) => setText(e.target.value)}
           onInput={onTextareaInput}
           onKeyDown={onComposerKeyDown}
         />
-        {text.length > MAX_TEXT_LENGTH - 200 && (
-          <span className="hint assistant-char-counter">
-            {text.length}/{MAX_TEXT_LENGTH}
-          </span>
-        )}
-        {voicePhase === 'recording' && (
-          <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>
-            {String(Math.floor(voiceElapsedSec / 60)).padStart(2, '0')}:{String(voiceElapsedSec % 60).padStart(2, '0')}
-          </span>
-        )}
-        {!text.trim() && (
-          <button
-            type="button"
-            className="assistant-attach-btn"
-            disabled={sending || uploading || liveActive || voicePhase === 'processing'}
-            onClick={voicePhase === 'recording' ? stopVoiceRecording : startVoiceRecording}
-            aria-label={voicePhase === 'recording' ? 'Остановить запись' : 'Надиктовать'}
-          >
-            {voicePhase === 'recording' ? <Square size={16} strokeWidth={2} /> : <Mic size={18} strokeWidth={2} />}
-          </button>
-        )}
-        {liveEnabled && !text.trim() && voicePhase === 'idle' && (
-          <button
-            type="button"
-            className="assistant-attach-btn"
-            disabled={sending || uploading || liveActive || !conversationId}
-            onClick={startLive}
-            aria-label="Живой голос"
-          >
-            <Headphones size={18} strokeWidth={2} />
-          </button>
-        )}
-        {!!text.trim() && (
-          <button type="button" className="assistant-send-btn" disabled={sending} onClick={() => send()}>
-            <Send size={18} strokeWidth={2.2} />
-          </button>
-        )}
+        <div className="ds-composer-row">
+          <IconButton
+            icon={Paperclip}
+            label="Прикрепить файл"
+            size="sm"
+            disabled={sending || uploading || composerDisabled || pendingAttachments.length >= MAX_ATTACHMENTS}
+            onClick={() => fileInputRef.current?.click()}
+          />
+          {voicePhase === 'recording' ? (
+            <IconButton icon={Square} label="Остановить запись" size="sm" onClick={stopVoiceRecording} />
+          ) : (
+            <IconButton
+              icon={Mic}
+              label="Надиктовать"
+              size="sm"
+              disabled={sending || uploading || composerDisabled || isVoiceProcessing}
+              onClick={startVoiceRecording}
+            />
+          )}
+          {liveEnabled && voicePhase === 'idle' && (
+            <IconButton icon={Headphones} label="Живой голос" size="sm" disabled={sending || uploading || liveActive || !conversationId} onClick={startLive} />
+          )}
+          <span className="ds-spacer" />
+          {voicePhase === 'recording' && (
+            <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>
+              {String(Math.floor(voiceElapsedSec / 60)).padStart(2, '0')}:{String(voiceElapsedSec % 60).padStart(2, '0')}
+            </span>
+          )}
+          {text.length > MAX_TEXT_LENGTH - 200 && (
+            <span className={cx('ds-composer-count', text.length > MAX_TEXT_LENGTH && 'is-over')}>
+              {text.length}/{MAX_TEXT_LENGTH}
+            </span>
+          )}
+          {sending ? (
+            <IconButton icon={Square} label="Остановить ответ" variant="outline" size="sm" onClick={stopSending} />
+          ) : (
+            <IconButton icon={Send} label="Отправить" variant="primary" size="sm" disabled={!text.trim() || composerDisabled} onClick={() => send()} />
+          )}
+        </div>
       </div>
     </div>
   );

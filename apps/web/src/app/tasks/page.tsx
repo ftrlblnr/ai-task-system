@@ -4,19 +4,22 @@ import Link from 'next/link';
 import { Plus } from 'lucide-react';
 import { Protected } from '@/components/protected';
 import { KanbanBoard } from '@/components/kanban-board';
+import { PageHeader } from '@/components/ui/card';
 
 // Раздел 5 ТЗ (скорректировано 28.08.2026): ставить задачи друг другу,
 // включая руководителю, может любой участник — кнопка больше не только
 // для OWNER.
 function TasksPageHeader() {
   return (
-    <div className="page-header">
-      <h1>Задачи</h1>
-      <Link href="/tasks/new" className="btn">
-        <Plus size={16} strokeWidth={2.5} />
-        Создать задачу
-      </Link>
-    </div>
+    <PageHeader
+      title="Задачи"
+      actions={
+        <Link href="/tasks/new" className="ds-btn ds-btn-primary">
+          <Plus size={18} strokeWidth={1.75} />
+          Создать задачу
+        </Link>
+      }
+    />
   );
 }
 

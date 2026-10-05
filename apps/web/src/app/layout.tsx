@@ -1,19 +1,24 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans, IBM_Plex_Mono } from "next/font/google";
+import { Onest, JetBrains_Mono } from "next/font/google";
+import "@ai-task-system/design-tokens/tokens.css";
+import "@ai-task-system/design-tokens/ds.css";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { Sidebar } from "@/components/sidebar";
 
-const sans = Plus_Jakarta_Sans({
+// Дизайн-система «Адъютант» (владелец 04.10.2026, внедрение по
+// project/implementation.md, шаг 1) — Plus Jakarta Sans не содержал
+// кириллицы, русский текст рендерился системным фолбэком. Onest —
+// вариативная гарнитура (300–800), поэтому `weight` не указывается.
+const sans = Onest({
   variable: "--font-sans",
-  subsets: ["latin", "latin-ext"],
-  weight: ["400", "500", "600", "700", "800"],
+  subsets: ["latin", "cyrillic"],
 });
 
-const mono = IBM_Plex_Mono({
+const mono = JetBrains_Mono({
   variable: "--font-mono",
-  subsets: ["latin"],
-  weight: ["400", "500"],
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {

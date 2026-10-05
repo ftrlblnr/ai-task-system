@@ -1,0 +1,173 @@
+/* Дизайн-система «Адъютант» (владелец 04.10.2026) — CSS-переменные из
+   project/tokens.json дизайн-системы. Генерируется вручную по правилу шага 2
+   project/implementation.md: light-тема в `:root, [data-theme="light"]`,
+   dark — в `[data-theme="dark"]`, плюс `@media (prefers-color-scheme: dark)`
+   с теми же dark-значениями — web следует системной теме, Mini App
+   выставляет `data-theme` сам (см. apps/miniapp/src/lib/telegram.ts).
+
+   --font-sans/--font-mono НЕ объявляются здесь: их задаёт next/font через
+   класс на <html> (см. layout.tsx обоих приложений) — тот же механизм, что
+   был у Plus Jakarta Sans/IBM Plex Mono до шага 1, просто другая гарнитура. */
+
+:root,
+[data-theme="light"] {
+  --bg: #f3f5f5;
+  --surface: #ffffff;
+  --surface-2: #eaeeef;
+  --surface-3: #dfe5e6;
+  --line: #dde3e4;
+  --line-control: #7c8990;
+  --ink: #0f1517;
+  --ink-2: #475358;
+  --ink-3: #5d6a70;
+  --on-ink: #ffffff;
+
+  --agent: #00727f;
+  --agent-soft: #e0f3f5;
+  --agent-line: #a6dbe2;
+  --agent-glow: rgba(0, 168, 186, 0.32);
+  --on-agent: #ffffff;
+
+  --ok: #1b7445;
+  --ok-soft: #e1f2e8;
+  --warn: #8f5400;
+  --warn-soft: #fbeed8;
+  --danger: #bc3328;
+  --danger-soft: #fbe5e2;
+  --info: #2a59c7;
+  --info-soft: #e5ecfb;
+  --review: #6f47c9;
+  --review-soft: #efe9fb;
+
+  --scrim: rgba(9, 13, 14, 0.48);
+  --link: var(--info);
+  --focus: var(--ink);
+
+  --shadow-1: 0 1px 2px rgba(15, 21, 23, 0.06);
+  --shadow-2: 0 8px 24px -10px rgba(15, 21, 23, 0.18), 0 2px 6px -2px rgba(15, 21, 23, 0.06);
+  --shadow-3: 0 24px 64px -16px rgba(15, 21, 23, 0.28);
+  --shadow-agent: 0 0 0 1px rgba(0, 114, 127, 0.22), 0 8px 28px -8px rgba(0, 168, 186, 0.35);
+}
+
+[data-theme="dark"] {
+  --bg: #0d1112;
+  --surface: #141a1c;
+  --surface-2: #1a2124;
+  --surface-3: #232b2e;
+  --line: #252d30;
+  --line-control: #5f6d73;
+  --ink: #edf3f4;
+  --ink-2: #a7b3b7;
+  --ink-3: #84919a;
+  --on-ink: #0d1112;
+
+  --agent: #4fd6e5;
+  --agent-soft: #0f2c31;
+  --agent-line: #1f525a;
+  --agent-glow: rgba(79, 214, 229, 0.30);
+  --on-agent: #0d1112;
+
+  --ok: #62d295;
+  --ok-soft: #12301f;
+  --warn: #f2b456;
+  --warn-soft: #33260f;
+  --danger: #ff8b7c;
+  --danger-soft: #3a1a17;
+  --info: #8fb1ff;
+  --info-soft: #18233d;
+  --review: #bba3ff;
+  --review-soft: #251d3d;
+
+  --scrim: rgba(0, 0, 0, 0.62);
+  --link: var(--info);
+  --focus: var(--ink);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 10px 28px -10px rgba(0, 0, 0, 0.7), 0 2px 6px -2px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.8);
+  --shadow-agent: 0 0 0 1px rgba(79, 214, 229, 0.25), 0 8px 28px -8px rgba(79, 214, 229, 0.30);
+}
+
+/* Web следует prefers-color-scheme, когда data-theme не выставлен явно
+   (сейчас так везде в web — он темы не переключает). Mini App всегда
+   выставляет data-theme сам, поэтому этот блок там эффективно не участвует
+   (:not([data-theme="light"]) всё равно совпадёт с [data-theme="dark"], но
+   правило [data-theme="dark"] выше имеет такую же специфичность и идёт
+   раньше — порядок here итогового merge решает в пользу явного атрибута,
+   см. ds.css подключается после этого файла). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1112;
+    --surface: #141a1c;
+    --surface-2: #1a2124;
+    --surface-3: #232b2e;
+    --line: #252d30;
+    --line-control: #5f6d73;
+    --ink: #edf3f4;
+    --ink-2: #a7b3b7;
+    --ink-3: #84919a;
+    --on-ink: #0d1112;
+
+    --agent: #4fd6e5;
+    --agent-soft: #0f2c31;
+    --agent-line: #1f525a;
+    --agent-glow: rgba(79, 214, 229, 0.30);
+    --on-agent: #0d1112;
+
+    --ok: #62d295;
+    --ok-soft: #12301f;
+    --warn: #f2b456;
+    --warn-soft: #33260f;
+    --danger: #ff8b7c;
+    --danger-soft: #3a1a17;
+    --info: #8fb1ff;
+    --info-soft: #18233d;
+    --review: #bba3ff;
+    --review-soft: #251d3d;
+
+    --scrim: rgba(0, 0, 0, 0.62);
+    --link: var(--info);
+    --focus: var(--ink);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 10px 28px -10px rgba(0, 0, 0, 0.7), 0 2px 6px -2px rgba(0, 0, 0, 0.5);
+    --shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.8);
+    --shadow-agent: 0 0 0 1px rgba(79, 214, 229, 0.25), 0 8px 28px -8px rgba(79, 214, 229, 0.30);
+  }
+}
+
+/* Без темы: пространство, форма, глубина, движение — одни и те же в обоих
+   темах и обоих приложениях. */
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  --dur-instant: 80ms;
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 360ms;
+  --dur-think: 1600ms;
+  --dur-breathe: 4200ms;
+
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  --z-sticky: 10;
+  --z-popover: 40;
+  --z-modal: 100;
+  --z-toast: 200;
+}

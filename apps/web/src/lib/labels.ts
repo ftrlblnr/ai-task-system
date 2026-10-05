@@ -45,13 +45,6 @@ export const BOARD_COLUMNS: TaskStatus[] = [
 // а не отдельным "статусом", в который можно перетащить карточку.
 export const BOARD_SIDE_COLUMNS: TaskStatus[] = ['CANCELLED'];
 
-export const PRIORITY_CLASS: Record<TaskPriority, string> = {
-  LOW: 'priority-low',
-  MEDIUM: 'priority-medium',
-  HIGH: 'priority-high',
-  CRITICAL: 'priority-critical',
-};
-
 // Цвет точки-индикатора в заголовке колонки канбан-доски — семантический,
 // не завязан на акцент интерфейса (см. artifact/dataviz-принцип: semantic
 // color separate from brand accent).

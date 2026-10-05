@@ -15,6 +15,14 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
+import { Card, PageHeader } from '@/components/ui/card';
+import { Button, IconButton } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import type { BadgeTone } from '@/components/ui/badge';
+import { Field, Input, Select } from '@/components/ui/field';
+import { EmptyState } from '@/components/ui/empty-state';
+import { SegmentedControl } from '@/components/ui/segmented-control';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -40,25 +48,25 @@ const REPLY_STATUS_LABELS: Record<EmailReplyStatus, string> = {
 
 // Владелец 30.09.2026: цветовой индикатор в подписях писем — Важно/Критично
 // красным-оранжевым, Вы ответили зелёным, Ответ не нужен/Не важно серым.
-// badge-danger/badge-warn/badge-ok переиспользуют ту же палитру, что уже
-// красит приоритет задач (globals.css, --danger/--warn/--ok).
-const REPLY_STATUS_BADGE_CLASS: Record<EmailReplyStatus, string> = {
-  AWAITING_MY_REPLY: 'badge badge-warn',
-  REPLIED: 'badge badge-ok',
-  NO_REPLY_REQUIRED: 'badge badge-muted',
-  AWAITING_THEIR_REPLY: 'badge',
-  UNKNOWN: 'badge badge-muted',
+// Дизайн-система «Адъютант» (04.10.2026, шаг 4) — тон Badge вместо
+// собственных badge-danger/badge-warn/badge-ok классов.
+const REPLY_STATUS_BADGE_TONE: Record<EmailReplyStatus, BadgeTone> = {
+  AWAITING_MY_REPLY: 'warn',
+  REPLIED: 'ok',
+  NO_REPLY_REQUIRED: 'neutral',
+  AWAITING_THEIR_REPLY: 'neutral',
+  UNKNOWN: 'neutral',
 };
 
 // NORMAL/LOW теперь тоже подписаны (владелец 30.09.2026: индикатор важности
 // должен быть виден у каждого проанализированного письма, не только у
 // критичных/важных).
 const IMPORTANCE_LABELS: Record<string, string> = { CRITICAL: 'Критично', IMPORTANT: 'Важно', NORMAL: 'Обычно', LOW: 'Не важно' };
-const IMPORTANCE_BADGE_CLASS: Record<string, string> = {
-  CRITICAL: 'badge badge-danger',
-  IMPORTANT: 'badge badge-warn',
-  NORMAL: 'badge badge-muted',
-  LOW: 'badge badge-muted',
+const IMPORTANCE_BADGE_TONE: Record<string, BadgeTone> = {
+  CRITICAL: 'danger',
+  IMPORTANT: 'warn',
+  NORMAL: 'neutral',
+  LOW: 'neutral',
 };
 
 type Filter = 'all' | 'unread' | 'awaiting' | 'important';
@@ -147,9 +155,8 @@ function ConnectCard({ onConnected }: { onConnected: () => void }) {
   }
 
   return (
-    <div className="card">
-      <h2 style={{ marginBottom: 8 }}>Подключить Mail.ru</h2>
-      <p className="hint" style={{ marginBottom: 12 }}>
+    <Card title="Подключить Mail.ru">
+      <p className="ds-field-hint" style={{ marginBottom: 12 }}>
         Письма синхронизируются в систему, а ассистент отвечает по ним из локальной базы. Нужен пароль для внешнего
         приложения — обычный пароль от почты не подойдёт.
       </p>
@@ -158,29 +165,30 @@ function ConnectCard({ onConnected }: { onConnected: () => void }) {
         <li>В настройках безопасности аккаунта создайте «Пароль для внешнего приложения» и скопируйте его.</li>
         <li>Введите адрес ящика и этот пароль ниже. Пароль хранится только в зашифрованном виде.</li>
       </ol>
-      <form onSubmit={connect} className="form-card" style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--border)' }}>
-        <label>
-          Адрес почты
-          <input type="email" value={emailAddress} onChange={(e) => setEmailAddress(e.target.value)} placeholder="name@mail.ru" required autoComplete="off" />
-        </label>
-        <label>
-          Пароль приложения
-          <input type="password" value={appPassword} onChange={(e) => setAppPassword(e.target.value)} required autoComplete="new-password" />
-        </label>
-        <label>
-          Загрузить письма за
-          <select value={initialDays} onChange={(e) => setInitialDays(Number(e.target.value))}>
-            <option value={30}>30 дней</option>
-            <option value={90}>90 дней</option>
-            <option value={180}>180 дней</option>
-          </select>
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button type="submit" disabled={busy}>
-          {busy ? 'Проверяем подключение…' : 'Подключить'}
-        </button>
+      <form onSubmit={connect} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <Field label="Адрес почты">
+          <Input type="email" value={emailAddress} onChange={(e) => setEmailAddress(e.target.value)} placeholder="name@mail.ru" required autoComplete="off" />
+        </Field>
+        <Field label="Пароль приложения">
+          <Input type="password" value={appPassword} onChange={(e) => setAppPassword(e.target.value)} required autoComplete="new-password" />
+        </Field>
+        <Field label="Загрузить письма за">
+          <Select
+            value={String(initialDays)}
+            onChange={(e) => setInitialDays(Number(e.target.value))}
+            options={[
+              { value: '30', label: '30 дней' },
+              { value: '90', label: '90 дней' },
+              { value: '180', label: '180 дней' },
+            ]}
+          />
+        </Field>
+        {error && <Alert tone="danger">{error}</Alert>}
+        <Button type="submit" variant="primary" disabled={busy} loading={busy}>
+          Подключить
+        </Button>
       </form>
-    </div>
+    </Card>
   );
 }
 
@@ -216,30 +224,32 @@ function StatusBar({ status, onChange }: { status: Extract<MailStatus, { connect
   }
 
   return (
-    <div className="card" style={{ marginBottom: 16 }}>
+    <Card style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <strong>{status.emailAddress}</strong>
-        <span className="badge badge-muted">{status.messageCount} писем</span>
-        <span className="badge badge-muted">
-          {syncing ? 'Синхронизация…' : status.lastSyncedAt ? `Обновлено: ${new Date(status.lastSyncedAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}
-        </span>
-        <button className="btn-secondary btn-small" onClick={syncNow} disabled={busy || syncing || status.syncState === 'PAUSED'}>
-          <RefreshCw size={14} strokeWidth={2} />
+        <Badge>{status.messageCount} писем</Badge>
+        <Badge>{syncing ? 'Синхронизация…' : status.lastSyncedAt ? `Обновлено: ${new Date(status.lastSyncedAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}</Badge>
+        <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy || syncing || status.syncState === 'PAUSED'}>
           Синхронизировать
-        </button>
-        <button className="btn-secondary btn-small" onClick={disconnect} disabled={busy}>
-          <Link2Off size={14} strokeWidth={2} />
+        </Button>
+        <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
           Отключить
-        </button>
+        </Button>
       </div>
       {status.lastError && (
-        <p className="error" style={{ marginTop: 8 }}>
-          {status.syncState === 'PAUSED' ? 'Синхронизация приостановлена. ' : ''}
-          {ERROR_LABELS[status.lastError] ?? 'Ошибка синхронизации.'}
-        </p>
+        <div style={{ marginTop: 8 }}>
+          <Alert tone="danger">
+            {status.syncState === 'PAUSED' ? 'Синхронизация приостановлена. ' : ''}
+            {ERROR_LABELS[status.lastError] ?? 'Ошибка синхронизации.'}
+          </Alert>
+        </div>
       )}
-      {error && <p className="error" style={{ marginTop: 8 }}>{error}</p>}
-    </div>
+      {error && (
+        <div style={{ marginTop: 8 }}>
+          <Alert tone="danger">{error}</Alert>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -256,18 +266,18 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
   }, [id]);
 
   return (
-    <div className="card" style={{ marginTop: 16 }}>
+    <Card style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
         <h2 style={{ marginBottom: 6 }}>{detail?.subject ?? 'Письмо'}</h2>
-        <button className="btn-secondary btn-small" onClick={onClose}>
+        <Button variant="secondary" size="sm" onClick={onClose}>
           Закрыть
-        </button>
+        </Button>
       </div>
-      {error && <p className="error">{error}</p>}
-      {!detail && !error && <p className="hint">Загрузка…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
+      {!detail && !error && <p className="ds-field-hint">Загрузка…</p>}
       {detail && (
         <>
-          <p className="hint" style={{ marginBottom: 8 }}>
+          <p className="ds-field-hint" style={{ marginBottom: 8 }}>
             От: {senderLabel(detail)} &lt;{detail.fromAddress}&gt; · {formatDate(detail.receivedAt)}
             <br />
             Кому: {detail.recipients.filter((r) => r.type === 'TO').map((r) => r.name || r.address).join(', ') || '—'}
@@ -291,7 +301,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
           )}
           {detail.attachments.length > 0 && (
             <p style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Paperclip size={13} strokeWidth={2} style={{ verticalAlign: -2 }} />
+              <Paperclip size={13} strokeWidth={1.75} style={{ verticalAlign: -2 }} />
               {detail.attachments.map((a, i) => (
                 <span key={a.id}>
                   <AttachmentItem attachment={a} />
@@ -303,7 +313,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
           <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, maxHeight: 420, overflow: 'auto' }}>
             {detail.textBody ?? '(тело письма недоступно)'}
           </pre>
-          {detail.bodyTruncated && <p className="hint">Письмо большое — показано начало.</p>}
+          {detail.bodyTruncated && <p className="ds-field-hint">Письмо большое — показано начало.</p>}
           {detail.threadMessages.length > 1 && (
             <>
               <h3 style={{ margin: '16px 0 6px' }}>Переписка ({detail.threadMessages.length})</h3>
@@ -318,7 +328,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
           )}
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -368,18 +378,14 @@ function MessageList() {
   return (
     <>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        {filters.map((f) => (
-          <button
-            key={f.key}
-            className={filter === f.key ? 'btn btn-small' : 'btn-secondary btn-small'}
-            onClick={() => {
-              setFilter(f.key);
-              setOpenId(null);
-            }}
-          >
-            {f.label}
-          </button>
-        ))}
+        <SegmentedControl
+          options={filters.map((f) => ({ value: f.key, label: f.label }))}
+          value={filter}
+          onChange={(v) => {
+            setFilter(v as Filter);
+            setOpenId(null);
+          }}
+        />
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -388,24 +394,19 @@ function MessageList() {
           }}
           style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}
         >
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по письмам" style={{ minWidth: 220 }} />
-          <button type="submit" className="btn-secondary btn-small" aria-label="Искать">
-            <Search size={14} strokeWidth={2} />
-          </button>
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по письмам" style={{ minWidth: 220 }} />
+          <IconButton icon={Search} label="Искать" variant="outline" size="sm" type="submit" />
         </form>
       </div>
 
-      {error && <p className="error">{error}</p>}
-      {!data && !error && <p className="hint">Загрузка…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
+      {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
       {data && data.items.length === 0 && (
-        <div className="empty-state">
-          <strong>Писем не найдено</strong>
-          <p className="hint">Если ящик только что подключён, первая синхронизация может занять несколько минут.</p>
-        </div>
+        <EmptyState title="Писем не найдено" description="Если ящик только что подключён, первая синхронизация может занять несколько минут." />
       )}
       {data && data.items.length > 0 && (
-        <div className="table-wrap">
-          <table className="table">
+        <div className="ds-table-wrap">
+          <table className="ds-table">
             <thead>
               <tr>
                 <th>От</th>
@@ -422,18 +423,18 @@ function MessageList() {
                     <td>{senderLabel(m)}</td>
                     <td>
                       {m.subject || '(без темы)'}
-                      {m.hasAttachments && <Paperclip size={12} strokeWidth={2} style={{ marginLeft: 6, verticalAlign: -1 }} />}
+                      {m.hasAttachments && <Paperclip size={12} strokeWidth={1.75} style={{ marginLeft: 6, verticalAlign: -1 }} />}
                       {importanceLabel && m.analysis?.importance && (
-                        <span className={IMPORTANCE_BADGE_CLASS[m.analysis.importance]} style={{ marginLeft: 8 }}>
-                          {importanceLabel}
+                        <span style={{ marginLeft: 8 }}>
+                          <Badge tone={IMPORTANCE_BADGE_TONE[m.analysis.importance]}>{importanceLabel}</Badge>
                         </span>
                       )}
                       {replyLabel && m.thread && (
-                        <span className={REPLY_STATUS_BADGE_CLASS[m.thread.replyStatus]} style={{ marginLeft: 8 }}>
-                          {replyLabel}
+                        <span style={{ marginLeft: 8 }}>
+                          <Badge tone={REPLY_STATUS_BADGE_TONE[m.thread.replyStatus]}>{replyLabel}</Badge>
                         </span>
                       )}
-                      {m.analysis?.summary && <div className="hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
+                      {m.analysis?.summary && <div className="ds-field-hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
                     </td>
                     <td>{formatDate(m.receivedAt)}</td>
                   </tr>
@@ -443,7 +444,11 @@ function MessageList() {
           </table>
         </div>
       )}
-      {data && data.totalCount > data.items.length && <p className="hint" style={{ marginTop: 8 }}>Показано {data.items.length} из {data.totalCount}.</p>}
+      {data && data.totalCount > data.items.length && (
+        <p className="ds-field-hint" style={{ marginTop: 8 }}>
+          Показано {data.items.length} из {data.totalCount}.
+        </p>
+      )}
       {openId && <MessageDetail key={openId} id={openId} onClose={() => setOpenId(null)} />}
     </>
   );
@@ -476,37 +481,37 @@ function DigestDetailView({ id, onClose }: { id: string; onClose: () => void }) 
   }, [id]);
 
   return (
-    <div className="card" style={{ marginTop: 16 }}>
+    <Card style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
         <h2 style={{ marginBottom: 6 }}>{detail ? `Сводка за ${formatDay(detail.periodFrom)}` : 'Сводка'}</h2>
-        <button className="btn-secondary btn-small" onClick={onClose}>
+        <Button variant="secondary" size="sm" onClick={onClose}>
           Закрыть
-        </button>
+        </Button>
       </div>
-      {error && <p className="error">{error}</p>}
-      {!detail && !error && <p className="hint">Загрузка…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
+      {!detail && !error && <p className="ds-field-hint">Загрузка…</p>}
       {detail && (
         <>
-          <p className="hint" style={{ marginBottom: 12 }}>
+          <p className="ds-field-hint" style={{ marginBottom: 12 }}>
             Источник: {detail.source}
           </p>
-          {detail.items.length === 0 && <p className="hint">Писем за эти сутки не было.</p>}
+          {detail.items.length === 0 && <p className="ds-field-hint">Писем за эти сутки не было.</p>}
           {detail.items.length > 0 && (
             <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {detail.items.map((item, i) => {
                 const badges = digestItemBadges(item);
                 return (
-                  <li key={item.id ?? i} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
+                  <li key={item.id ?? i} style={{ borderBottom: '1px solid var(--line)', paddingBottom: 10 }}>
                     <div>
-                      <span className="hint">{formatDate(item.receivedAt)}</span>{' '}
+                      <span className="ds-field-hint">{formatDate(item.receivedAt)}</span>{' '}
                       <strong>{item.fromName || item.fromAddress}</strong> — {item.subject || '(без темы)'}
                       {badges.map((b) => (
-                        <span key={b} className="badge badge-muted" style={{ marginLeft: 8 }}>
-                          {b}
+                        <span key={b} style={{ marginLeft: 8 }}>
+                          <Badge>{b}</Badge>
                         </span>
                       ))}
                     </div>
-                    {item.analysis?.summary && <div className="hint">{item.analysis.summary}</div>}
+                    {item.analysis?.summary && <div className="ds-field-hint">{item.analysis.summary}</div>}
                   </li>
                 );
               })}
@@ -514,7 +519,7 @@ function DigestDetailView({ id, onClose }: { id: string; onClose: () => void }) 
           )}
         </>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -535,17 +540,14 @@ function DigestList() {
 
   return (
     <>
-      {error && <p className="error">{error}</p>}
-      {!data && !error && <p className="hint">Загрузка…</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
+      {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
       {data && data.digests.length === 0 && (
-        <div className="empty-state">
-          <strong>Сводок пока нет</strong>
-          <p className="hint">Первая ежедневная сводка появится завтра в 06:00 по Алматы.</p>
-        </div>
+        <EmptyState title="Сводок пока нет" description="Первая ежедневная сводка появится завтра в 06:00 по Алматы." />
       )}
       {data && data.digests.length > 0 && (
-        <div className="table-wrap">
-          <table className="table">
+        <div className="ds-table-wrap">
+          <table className="ds-table">
             <thead>
               <tr>
                 <th>Дата</th>
@@ -561,8 +563,8 @@ function DigestList() {
                   <td>
                     {d.totalCount}
                     {d.importantCount > 0 && (
-                      <span className="badge badge-muted" style={{ marginLeft: 8 }}>
-                        важных: {d.importantCount}
+                      <span style={{ marginLeft: 8 }}>
+                        <Badge>важных: {d.importantCount}</Badge>
                       </span>
                     )}
                   </td>
@@ -604,20 +606,22 @@ function MailView() {
     return () => clearInterval(timer);
   }, [syncing, load]);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!status) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!status) return <p className="ds-field-hint">Загрузка…</p>;
   if (!status.connected) return <ConnectCard onConnected={load} />;
 
   return (
     <>
       <StatusBar status={status} onChange={load} />
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button className={tab === 'messages' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setTab('messages')}>
-          Письма
-        </button>
-        <button className={tab === 'digests' ? 'btn btn-small' : 'btn-secondary btn-small'} onClick={() => setTab('digests')}>
-          Дайджест
-        </button>
+      <div style={{ marginBottom: 16 }}>
+        <SegmentedControl
+          options={[
+            { value: 'messages', label: 'Письма' },
+            { value: 'digests', label: 'Дайджест' },
+          ]}
+          value={tab}
+          onChange={(v) => setTab(v as MailTab)}
+        />
       </div>
       {tab === 'messages' ? <MessageList /> : <DigestList />}
     </>
@@ -627,9 +631,7 @@ function MailView() {
 export default function MailPage() {
   return (
     <Protected requireRole="OWNER">
-      <div className="page-header">
-        <h1>Почта</h1>
-      </div>
+      <PageHeader title="Почта" />
       <MailView />
     </Protected>
   );

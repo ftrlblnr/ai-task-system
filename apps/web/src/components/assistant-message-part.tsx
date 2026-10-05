@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, type AnchorHTMLAttributes } from 'react';
+import { useState, type AnchorHTMLAttributes, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Download, ExternalLink, File, FileAudio, FileSpreadsheet, FileText, Image as ImageIcon } from 'lucide-react';
+import { Copy, File, FileSpreadsheet, FileText, Image as ImageIcon } from 'lucide-react';
 import type {
   MessagePart as MessagePartData,
   MarkdownPartData,
@@ -13,26 +13,25 @@ import type {
   EventCardData,
   ToolActivityData,
   FilePartData,
+  TaskStatus,
 } from '@ai-task-system/shared-types';
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
+import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
 
-// Stage 2, Phase M (Web Assistant parity, 22.09.2026) — порт
-// apps/miniapp/src/components/assistant-message-part.tsx один в один
-// (реестр по part.type, та же форма данных с бэкенда), с одним desktop-
-// специфичным отличием: TaskCardView открывает существующую страницу
-// задачи (apps/web/src/app/tasks/[id]/page.tsx, уже показывает source/
-// sourceTimestamp/sourceContext) вместо модального TaskDetailOverlay,
-// которого на Web нет и заводить не нужно — раздел 39 спеки Phase M:
-// "capabilities одинаковые, presentation разный".
-export function MessagePartRenderer({ part }: { part: MessagePartData }) {
+// Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
+// — реестр по part.type остаётся тем же (Stage 2, Phase M), меняются только
+// представления. `fresh`/`streaming` приходят от вызывающей страницы —
+// только она знает, какое сообщение завершилось В ЭТОМ стриме (не при
+// обычной загрузке истории) и какая часть сейчас последняя в стриме.
+export function MessagePartRenderer({ part, fresh, streaming }: { part: MessagePartData; fresh?: boolean; streaming?: boolean }) {
   switch (part.type) {
     case 'markdown':
-      return <MarkdownPartView data={part.data as MarkdownPartData} />;
+      return <MarkdownPartView data={part.data as MarkdownPartData} streaming={streaming} />;
     case 'task_card':
-      return <TaskCardView data={part.data as TaskCardData} />;
+      return <TaskCardView data={part.data as TaskCardData} fresh={fresh} />;
     case 'event_card':
-      return <EventCardView data={part.data as EventCardData} />;
+      return <EventCardView data={part.data as EventCardData} fresh={fresh} />;
     case 'tool_activity':
       return <ToolActivityView data={part.data as ToolActivityData} />;
     case 'error':
@@ -42,8 +41,49 @@ export function MessagePartRenderer({ part }: { part: MessagePartData }) {
     default:
       // Задел на будущий тип части, который этот интерфейс ещё не знает —
       // тихий fallback вместо падения, остальные части сообщения по-прежнему видны.
-      return <p className="hint">Часть сообщения пока не поддерживается в этом интерфейсе.</p>;
+      return <p className="ds-field-hint">Часть сообщения пока не поддерживается в этом интерфейсе.</p>;
   }
+}
+
+// Группирует подряд идущие tool_activity-части под один .ds-think-group
+// (agent-motion.md: "Каждая следующая строка выезжает под предыдущей") и
+// подбирает streaming/fresh для остальных. lastPartId — часть, которая
+// сейчас стримится (только пока всё сообщение в status:'streaming').
+export function MessagePartsList({
+  parts,
+  fresh,
+  streamingPartId,
+}: {
+  parts: MessagePartData[];
+  fresh?: boolean;
+  streamingPartId?: string | null;
+}) {
+  const nodes: ReactNode[] = [];
+  let toolGroup: MessagePartData[] = [];
+
+  function flushToolGroup() {
+    if (toolGroup.length === 0) return;
+    nodes.push(
+      <ThinkingGroup key={`tool-group-${toolGroup[0].id}`}>
+        {toolGroup.map((p) => (
+          <MessagePartRenderer key={p.id} part={p} />
+        ))}
+      </ThinkingGroup>,
+    );
+    toolGroup = [];
+  }
+
+  for (const part of parts) {
+    if (part.type === 'tool_activity') {
+      toolGroup.push(part);
+      continue;
+    }
+    flushToolGroup();
+    nodes.push(<MessagePartRenderer key={part.id} part={part} fresh={fresh} streaming={part.id === streamingPartId} />);
+  }
+  flushToolGroup();
+
+  return <>{nodes}</>;
 }
 
 // Безопасные внешние ссылки — target=_blank без opener. Никакого
@@ -53,7 +93,7 @@ function MarkdownLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
   return <a {...props} target="_blank" rel="noopener noreferrer" />;
 }
 
-function MarkdownPartView({ data }: { data: MarkdownPartData }) {
+function MarkdownPartView({ data, streaming }: { data: MarkdownPartData; streaming?: boolean }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -70,89 +110,79 @@ function MarkdownPartView({ data }: { data: MarkdownPartData }) {
 
   return (
     <div>
-      <div className="assistant-markdown">
+      <StreamingText streaming={streaming}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
             a: MarkdownLink,
-            table: ({ children }) => <div className="assistant-markdown-table-wrap"><table>{children}</table></div>,
+            table: ({ children }) => <div className="ds-table-wrap"><table className="ds-table">{children}</table></div>,
           }}
         >
           {data.content}
         </ReactMarkdown>
-      </div>
-      <button type="button" className="assistant-copy-btn" onClick={copy}>
-        <Copy size={12} strokeWidth={2.2} />
+      </StreamingText>
+      <Button size="sm" variant="ghost" icon={Copy} onClick={copy}>
         {copied ? 'Скопировано' : 'Копировать'}
-      </button>
+      </Button>
     </div>
   );
 }
 
-function TaskCardView({ data }: { data: TaskCardData }) {
+const KNOWN_STATUS = new Set(Object.keys(STATUS_LABELS));
+
+function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) {
   const router = useRouter();
   return (
-    <div className="assistant-card">
-      <div className="assistant-card-title">{data.title}</div>
-      <div className="assistant-card-meta">
-        <span>{STATUS_LABELS[data.status as keyof typeof STATUS_LABELS] ?? data.status}</span>
-        {data.dueDate && <span>до {new Date(data.dueDate).toLocaleDateString('ru-RU')}</span>}
-        {data.assignee && <span>{data.assignee.name}</span>}
-      </div>
-      {data.source && (
-        <div className="assistant-card-source">
-          <FileAudio size={12} strokeWidth={2.2} />
-          <span>{data.source.meetingTitle}</span>
-          {data.source.timestamp && <span className="mono">{data.source.timestamp}</span>}
-        </div>
-      )}
-      <button type="button" className="assistant-card-open" onClick={() => router.push(`/tasks/${data.taskId}`)}>
-        <ExternalLink size={12} strokeWidth={2.2} style={{ marginRight: 4 }} />
-        Открыть
-      </button>
-    </div>
+    <EntityCard
+      kind="task"
+      title={data.title}
+      status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
+      due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
+      assignee={data.assignee?.name}
+      source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
+      fresh={fresh}
+      onOpen={() => router.push(`/tasks/${data.taskId}`)}
+    />
   );
 }
 
 // Без кнопки «Открыть» — тот же принцип, что в Mini App: отдельная
 // детальная страница события — самостоятельная фича календаря, вне рамок
 // этой фазы чата.
-function EventCardView({ data }: { data: EventCardData }) {
+function EventCardView({ data, fresh }: { data: EventCardData; fresh?: boolean }) {
   const start = new Date(data.startAt);
   const end = new Date(data.endAt);
   const time = `${start.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
   return (
-    <div className="assistant-card">
-      <div className="assistant-card-title">{data.title}</div>
-      <div className="assistant-card-meta">
-        <span>{time}</span>
-        {data.location && <span>{data.location}</span>}
-      </div>
-      {data.participants.length > 0 && (
-        <div className="assistant-chip-row">
-          {data.participants.map((p) => (
-            <span key={p.id} className="assistant-chip">
-              {p.name}
-            </span>
-          ))}
-        </div>
-      )}
-      {data.warning && <div className="assistant-card-warning">⚠ {data.warning}</div>}
-    </div>
+    <EntityCard
+      kind="event"
+      title={data.title}
+      time={time}
+      location={data.location}
+      participants={data.participants.map((p) => p.name)}
+      warning={data.warning}
+      fresh={fresh}
+    />
   );
 }
 
 function ToolActivityView({ data }: { data: ToolActivityData }) {
-  return <div className="assistant-tool-activity">{data.label}</div>;
+  // `done`/`time` — ToolActivityData (shared-types) сейчас отдаёт только
+  // финальный label ("Нашёл 6 задач"), без отдельного статуса/длительности,
+  // поэтому строка всегда показывается как завершённая ("галочка", не
+  // орбита) — живое "Ищу задачи…" до tool.completed рисует сам стрим,
+  // заменяя часть целиком новым data.label, а не эту часть обновляя на месте.
+  return <ThinkingLine label={data.label} done />;
 }
 
 function ErrorPartView({ data }: { data: ErrorPartData }) {
-  return <div className="assistant-error">{data.message}</div>;
+  // Без кнопки «Повторить» — это сбой ОДНОГО инструмента внутри уже
+  // сохранённого ответа ассистента, не обрыв всей отправки (тот случай —
+  // failedSend на странице, у него retry есть). Повторить именно этот вызов
+  // инструмента отдельно от всего ответа бэкенд не поддерживает.
+  return <Alert tone="danger">{data.message}</Alert>;
 }
 
-// Отдельный компонент, а не функция, возвращающая ссылку на компонент
-// (react-hooks/static-components — "Cannot create components during
-// render") — так однозначно нет динамически выбираемого JSX-тега.
 function FileIcon({ mimeType, size, strokeWidth }: { mimeType: string; size: number; strokeWidth: number }) {
   if (mimeType.startsWith('image/')) return <ImageIcon size={size} strokeWidth={strokeWidth} />;
   if (mimeType.includes('spreadsheet') || mimeType === 'text/csv') return <FileSpreadsheet size={size} strokeWidth={strokeWidth} />;
@@ -173,9 +203,7 @@ function formatFileSize(bytes: number): string {
 // временный <a download> — стандартный обходной путь для скачки файла,
 // защищённого не куки/сессией, а Bearer-токеном.
 // Экспортирован — страница ассистента переиспользует его напрямую для
-// показа вложений пользователя внутри его собственного bubble (реестр
-// MessagePartRenderer выше рассчитан на document-flow вывод ассистента,
-// не на компактный вид внутри цветного bubble).
+// показа вложений пользователя внутри его собственного bubble.
 export function FilePartView({ data }: { data: FilePartData }) {
   const [downloading, setDownloading] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -201,16 +229,14 @@ export function FilePartView({ data }: { data: FilePartData }) {
   }
 
   return (
-    <div className="assistant-file-part">
-      <FileIcon mimeType={data.mimeType} size={22} strokeWidth={1.7} />
-      <div className="assistant-file-info">
-        <div className="assistant-file-name">{data.name}</div>
-        <div className="assistant-file-size">{formatFileSize(data.size)}</div>
-      </div>
-      <button type="button" className="assistant-file-download" onClick={download} disabled={downloading} aria-label="Скачать">
-        <Download size={16} strokeWidth={2} />
-      </button>
-      {failed && <span className="hint">Не удалось скачать</span>}
+    <div>
+      <FileChip
+        icon={<FileIcon mimeType={data.mimeType} size={16} strokeWidth={1.75} />}
+        name={data.name}
+        size={formatFileSize(data.size)}
+        onDownload={downloading ? undefined : download}
+      />
+      {failed && <span className="ds-field-hint">Не удалось скачать</span>}
     </div>
   );
 }

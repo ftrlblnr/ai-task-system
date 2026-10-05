@@ -3,6 +3,9 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/field';
+import { Alert } from '@/components/ui/alert';
 
 // Показывается внутри настоящего Telegram, когда этот telegramId ещё ни к
 // кому не привязан и нет invite-ссылки от руководителя (NO_EMPLOYEE_LINKED,
@@ -34,23 +37,17 @@ export function LinkScreen() {
     <div className="center-screen">
       <div className="login-card">
         <h1>Вход</h1>
-        <p className="hint">
+        <p className="ds-field-hint">
           Этот Telegram-аккаунт ещё не привязан. Войдите логином и паролем, которые вы указали при
           регистрации на сайте — это привяжет аккаунт автоматически.
         </p>
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <input placeholder="Логин" value={login} onChange={(e) => setLogin(e.target.value)} required />
-          <input
-            type="password"
-            placeholder="Пароль"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          {error && <p className="error">{error}</p>}
-          <button type="submit" className="btn" disabled={busy}>
-            {busy ? 'Входим…' : 'Войти и привязать'}
-          </button>
+          <Input placeholder="Логин" value={login} onChange={(e) => setLogin(e.target.value)} required />
+          <Input type="password" placeholder="Пароль" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          {error && <Alert tone="danger">{error}</Alert>}
+          <Button type="submit" variant="primary" block disabled={busy} loading={busy}>
+            Войти и привязать
+          </Button>
         </form>
       </div>
     </div>

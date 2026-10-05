@@ -8,6 +8,7 @@ import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { AssistantScreen } from '@/components/assistant-screen';
 import { ReceptionScreen } from '@/components/reception-screen';
+import { Alert } from '@/components/ui/alert';
 
 export default function Home() {
   const { user, loading, error, isTelegram, needsLink } = useAuth();
@@ -15,7 +16,7 @@ export default function Home() {
   if (loading) {
     return (
       <div className="center-screen">
-        <p className="hint">Загрузка…</p>
+        <p className="ds-field-hint">Загрузка…</p>
       </div>
     );
   }
@@ -29,8 +30,8 @@ export default function Home() {
 
   if (error) {
     return (
-      <div className="center-screen">
-        <p className="error">{error}</p>
+      <div className="center-screen" style={{ padding: 16 }}>
+        <Alert tone="danger">{error}</Alert>
       </div>
     );
   }

@@ -7,6 +7,11 @@ import type { Direction, EmployeeDetail, PasswordResetLink, TelegramInvite } fro
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Input, Textarea, Select } from '@/components/ui/field';
 
 const NEW_ITEM_VALUE = '__new__';
 
@@ -83,25 +88,21 @@ function AttachCatalogItemForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="attach-form">
-      <select value={itemId} onChange={(e) => setItemId(e.target.value)}>
-        <option value="">Выбрать {itemLabel}…</option>
-        {catalog.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.name}
-          </option>
-        ))}
-        <option value={NEW_ITEM_VALUE}>+ Новое…</option>
-      </select>
+    <form onSubmit={handleSubmit} className="attach-form" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Select
+        value={itemId}
+        onChange={(e) => setItemId(e.target.value)}
+        options={[
+          { value: '', label: `Выбрать ${itemLabel}…` },
+          ...catalog.map((item) => ({ value: item.id, label: item.name })),
+          { value: NEW_ITEM_VALUE, label: '+ Новое…' },
+        ]}
+      />
 
       {itemId === NEW_ITEM_VALUE && (
         <>
-          <input
-            placeholder="Название"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-          />
-          <textarea
+          <Input placeholder="Название" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <Textarea
             placeholder="Развёрнутое описание (не тег — раздел 6.4 ТЗ: точность зависит от содержательности)"
             value={newDescription}
             onChange={(e) => setNewDescription(e.target.value)}
@@ -111,7 +112,7 @@ function AttachCatalogItemForm({
       )}
 
       {itemId && itemId !== NEW_ITEM_VALUE && (
-        <textarea
+        <Textarea
           placeholder="Уточнение именно для этого сотрудника (необязательно)"
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -119,11 +120,11 @@ function AttachCatalogItemForm({
         />
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      <button type="submit" disabled={busy}>
-        {busy ? 'Добавляем…' : 'Добавить'}
-      </button>
+      <Button type="submit" disabled={busy} loading={busy}>
+        Добавить
+      </Button>
     </form>
   );
 }
@@ -168,66 +169,64 @@ function TelegramSection({ employee, onChange }: { employee: EmployeeDetail; onC
 
   if (employee.telegramId) {
     return (
-      <div className="card">
-        <h2>Telegram</h2>
+      <Card title="Telegram">
         <p>
-          Привязан <span className="badge status-done">аккаунт подтверждён</span>
+          Привязан <Badge tone="ok">аккаунт подтверждён</Badge>
         </p>
-        {error && <p className="error">{error}</p>}
-        <button className="btn-secondary" onClick={unlink} disabled={busy}>
+        {error && <Alert tone="danger">{error}</Alert>}
+        <Button variant="secondary" onClick={unlink} disabled={busy}>
           Отвязать
-        </button>
-      </div>
+        </Button>
+      </Card>
     );
   }
 
   return (
-    <div className="card">
-      <h2>Telegram</h2>
-      <p className="hint">
+    <Card title="Telegram">
+      <p className="ds-field-hint">
         Не привязан. Руководитель не знает Telegram-id сотрудника заранее — сгенерируйте одноразовую
         ссылку и передайте её сотруднику лично (в личном сообщении, не публично). Ссылка открывает
         Telegram Mini App, и аккаунт привяжется сам — без ручного ввода id.
       </p>
 
       {!invite && (
-        <button onClick={createInvite} disabled={busy}>
-          {busy ? 'Создаём…' : 'Сгенерировать приглашение'}
-        </button>
+        <Button onClick={createInvite} disabled={busy} loading={busy}>
+          Сгенерировать приглашение
+        </Button>
       )}
 
       {invite && (
         <div className="invite-box">
           {invite.deepLink ? (
             <>
-              <p className="hint">Ссылка действительна до {new Date(invite.expiresAt).toLocaleString('ru-RU')}:</p>
+              <p className="ds-field-hint">Ссылка действительна до {new Date(invite.expiresAt).toLocaleString('ru-RU')}:</p>
               <div className="input-row">
-                <input readOnly value={invite.deepLink} onFocus={(e) => e.target.select()} />
-                <button type="button" className="btn-secondary" onClick={() => copy(invite.deepLink!)}>
+                <Input readOnly value={invite.deepLink} onFocus={(e) => e.target.select()} />
+                <Button type="button" variant="secondary" onClick={() => copy(invite.deepLink!)}>
                   {copied ? 'Скопировано' : 'Копировать'}
-                </button>
+                </Button>
               </div>
             </>
           ) : (
             <>
-              <p className="hint">
+              <p className="ds-field-hint">
                 Mini App пока не настроен (не заданы TELEGRAM_BOT_USERNAME /
                 TELEGRAM_MINIAPP_SHORT_NAME) — передайте сотруднику токен вручную, он понадобится при
                 первом открытии Mini App. Действителен до{' '}
                 {new Date(invite.expiresAt).toLocaleString('ru-RU')}:
               </p>
               <div className="input-row">
-                <input readOnly value={invite.token} onFocus={(e) => e.target.select()} />
-                <button type="button" className="btn-secondary" onClick={() => copy(invite.token)}>
+                <Input readOnly value={invite.token} onFocus={(e) => e.target.select()} />
+                <Button type="button" variant="secondary" onClick={() => copy(invite.token)}>
                   {copied ? 'Скопировано' : 'Копировать'}
-                </button>
+                </Button>
               </div>
             </>
           )}
         </div>
       )}
-      {error && <p className="error">{error}</p>}
-    </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+    </Card>
   );
 }
 
@@ -260,32 +259,31 @@ function PasswordResetSection({ employeeId }: { employeeId: string }) {
   }
 
   return (
-    <div className="card">
-      <h2>Пароль</h2>
-      <p className="hint">
+    <Card title="Пароль">
+      <p className="ds-field-hint">
         Сотрудник забыл пароль — сгенерируйте одноразовую ссылку и передайте её лично (в личном
         сообщении, не публично). По ссылке сотрудник сам задаст новый пароль.
       </p>
 
       {!reset && (
-        <button className="btn-secondary" onClick={createReset} disabled={busy}>
-          {busy ? 'Создаём…' : 'Сбросить пароль'}
-        </button>
+        <Button variant="secondary" onClick={createReset} disabled={busy} loading={busy}>
+          Сбросить пароль
+        </Button>
       )}
 
       {reset && (
         <div className="invite-box">
-          <p className="hint">Ссылка действительна до {new Date(reset.expiresAt).toLocaleString('ru-RU')}:</p>
+          <p className="ds-field-hint">Ссылка действительна до {new Date(reset.expiresAt).toLocaleString('ru-RU')}:</p>
           <div className="input-row">
-            <input readOnly value={reset.link} onFocus={(e) => e.target.select()} />
-            <button type="button" className="btn-secondary" onClick={() => copy(reset.link)}>
+            <Input readOnly value={reset.link} onFocus={(e) => e.target.select()} />
+            <Button type="button" variant="secondary" onClick={() => copy(reset.link)}>
               {copied ? 'Скопировано' : 'Копировать'}
-            </button>
+            </Button>
           </div>
         </div>
       )}
-      {error && <p className="error">{error}</p>}
-    </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+    </Card>
   );
 }
 
@@ -341,29 +339,23 @@ function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; on
   }
 
   return (
-    <div className="card">
-      <h2>Направление</h2>
-      <label>
-        <select value={directionId} onChange={(e) => handleSelect(e.target.value)} disabled={busy}>
-          <option value="">—</option>
-          {directions.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.title}
-            </option>
-          ))}
-          <option value={NEW_ITEM_VALUE}>+ Новое направление…</option>
-        </select>
-      </label>
+    <Card title="Направление">
+      <Select
+        value={directionId}
+        onChange={(e) => handleSelect(e.target.value)}
+        disabled={busy}
+        options={[{ value: '', label: '—' }, ...directions.map((d) => ({ value: d.id, label: d.title })), { value: NEW_ITEM_VALUE, label: '+ Новое направление…' }]}
+      />
       {directionId === NEW_ITEM_VALUE && (
         <form onSubmit={createAndSave} className="input-row" style={{ marginTop: 8 }}>
-          <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Название направления" required />
-          <button type="submit" className="btn-secondary" disabled={busy}>
+          <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Название направления" required />
+          <Button type="submit" variant="secondary" disabled={busy} loading={busy}>
             Создать
-          </button>
+          </Button>
         </form>
       )}
-      {error && <p className="error">{error}</p>}
-    </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+    </Card>
   );
 }
 
@@ -391,13 +383,13 @@ function EmployeeDetailView({ id }: { id: string }) {
     }
   }
 
-  if (error) return <p className="error">{error}</p>;
-  if (!employee) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!employee) return <p className="ds-field-hint">Загрузка…</p>;
 
   return (
     <div>
       <Link href="/employees" className="back-link">
-        <ArrowLeft size={14} strokeWidth={2.25} />
+        <ArrowLeft size={14} strokeWidth={1.75} />
         Сотрудники
       </Link>
       <div className="profile-head">
@@ -405,33 +397,28 @@ function EmployeeDetailView({ id }: { id: string }) {
         <div>
           <h1>{employee.fullName}</h1>
           <div className="task-meta">
-            <span className="badge badge-muted">{employee.position?.title ?? 'Должность не указана'}</span>
-            <span className="badge badge-muted">{employee.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</span>
-            <span className="badge badge-muted">{employee.email}</span>
-            {employee.isProfileAdmin && <span className="badge badge-muted">Администратор профилей</span>}
+            <Badge>{employee.position?.title ?? 'Должность не указана'}</Badge>
+            <Badge>{employee.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</Badge>
+            <Badge>{employee.email}</Badge>
+            {employee.isProfileAdmin && <Badge>Администратор профилей</Badge>}
           </div>
         </div>
       </div>
 
-      {actionError && <p className="error">{actionError}</p>}
+      {actionError && <Alert tone="danger">{actionError}</Alert>}
 
-      <div className="card">
-        <h2>Компетенции</h2>
-        {employee.competencies.length === 0 && <p className="hint">Пока не заведены.</p>}
+      <Card title="Компетенции">
+        {employee.competencies.length === 0 && <p className="ds-field-hint">Пока не заведены.</p>}
         <ul className="plain-list">
           {employee.competencies.map((c) => (
             <li key={c.competency.id} className="plain-list-row">
               <div>
                 <strong>{c.competency.name}</strong>
-                {c.description && <p className="hint">{c.description}</p>}
+                {c.description && <p className="ds-field-hint">{c.description}</p>}
               </div>
-              <button
-                type="button"
-                className="btn-secondary btn-small"
-                onClick={() => removeCompetency(c.competency.id)}
-              >
+              <Button variant="secondary" size="sm" onClick={() => removeCompetency(c.competency.id)}>
                 Удалить
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -442,7 +429,7 @@ function EmployeeDetailView({ id }: { id: string }) {
           itemLabel="компетенцию"
           onAdded={load}
         />
-      </div>
+      </Card>
 
       <DirectionSection employee={employee} onChange={load} />
 

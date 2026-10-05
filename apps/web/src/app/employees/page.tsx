@@ -7,6 +7,11 @@ import type { EmployeeProfile, RegistrationWindowStatus } from '@ai-task-system/
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
+import { PageHeader } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { EmptyState } from '@/components/ui/empty-state';
 
 // Переключатель временного окна самостоятельной регистрации (владелец
 // 02.10.2026) — человек сам заводит логин/пароль на /register, пока окно
@@ -38,19 +43,19 @@ function RegistrationWindowToggle() {
   if (!status) return null;
 
   return (
-    <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+    <div className="ds-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
       <div>
         <strong>Самостоятельная регистрация</strong>
-        <p className="hint" style={{ margin: 0 }}>
+        <p className="ds-field-hint" style={{ margin: 0 }}>
           {status.isOpen
             ? 'Открыта — любой человек может завести логин/пароль на /register'
             : 'Закрыта — новые учётки заводит только руководитель'}
         </p>
-        {error && <p className="error">{error}</p>}
+        {error && <Alert tone="danger">{error}</Alert>}
       </div>
-      <button className={status.isOpen ? 'btn-secondary' : 'btn'} onClick={toggle} disabled={busy}>
+      <Button variant={status.isOpen ? 'secondary' : 'primary'} onClick={toggle} disabled={busy}>
         {status.isOpen ? 'Закрыть' : 'Открыть'}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -66,20 +71,15 @@ function EmployeesList() {
       .catch(() => setError('Не удалось загрузить список сотрудников'));
   }, []);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!employees) return <p className="hint">Загрузка…</p>;
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!employees) return <p className="ds-field-hint">Загрузка…</p>;
   if (employees.length === 0) {
-    return (
-      <div className="empty-state">
-        <strong>Сотрудников пока нет</strong>
-        <p className="hint">Добавьте первого сотрудника, чтобы начать раздавать задачи.</p>
-      </div>
-    );
+    return <EmptyState icon={UserPlus} title="Сотрудников пока нет" description="Добавьте первого сотрудника, чтобы начать раздавать задачи." />;
   }
 
   return (
-    <div className="table-wrap">
-      <table className="table">
+    <div className="ds-table-wrap">
+      <table className="ds-table">
         <thead>
           <tr>
             <th>Сотрудник</th>
@@ -93,7 +93,7 @@ function EmployeesList() {
           {employees.map((e) => (
             <tr key={e.id}>
               <td>
-                <Link href={`/employees/${e.id}`} className="table-person">
+                <Link href={`/employees/${e.id}`} className="ds-table-person">
                   <Avatar name={e.fullName} size={28} />
                   {e.fullName}
                 </Link>
@@ -102,9 +102,7 @@ function EmployeesList() {
               <td>{e.email}</td>
               <td>{e.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</td>
               <td>
-                <span className={`badge ${e.status === 'ACTIVE' ? 'status-done' : 'badge-muted'}`}>
-                  {e.status === 'ACTIVE' ? 'Активен' : 'Неактивен'}
-                </span>
+                <Badge tone={e.status === 'ACTIVE' ? 'ok' : 'neutral'}>{e.status === 'ACTIVE' ? 'Активен' : 'Неактивен'}</Badge>
               </td>
             </tr>
           ))}
@@ -117,13 +115,15 @@ function EmployeesList() {
 export default function EmployeesPage() {
   return (
     <Protected requireRole="OWNER">
-      <div className="page-header">
-        <h1>Сотрудники</h1>
-        <Link href="/employees/new" className="btn">
-          <UserPlus size={16} strokeWidth={2.25} />
-          Добавить сотрудника
-        </Link>
-      </div>
+      <PageHeader
+        title="Сотрудники"
+        actions={
+          <Link href="/employees/new" className="ds-btn ds-btn-primary">
+            <UserPlus size={18} strokeWidth={1.75} />
+            Добавить сотрудника
+          </Link>
+        }
+      />
       <RegistrationWindowToggle />
       <EmployeesList />
     </Protected>

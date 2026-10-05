@@ -15,6 +15,10 @@ import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { useAuth } from '@/lib/auth-context';
 import { PRIORITY_LABELS } from '@/lib/labels';
+import { Field, Input, Textarea, Select } from '@/components/ui/field';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
+import { PageHeader } from '@/components/ui/card';
 
 function NewTaskForm() {
   const router = useRouter();
@@ -68,89 +72,72 @@ function NewTaskForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card form-card">
-      <label>
-        Название
-        <input value={title} onChange={(e) => setTitle(e.target.value)} required />
-      </label>
+    <form onSubmit={handleSubmit} className="ds-card" style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Field label="Название">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
+      </Field>
 
-      <label>
-        Описание
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} />
-      </label>
+      <Field label="Описание">
+        <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} />
+      </Field>
 
-      <label>
-        Исполнитель
-        <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)}>
-          <option value="">Не назначен</option>
-          {employees.map((emp) => (
-            <option key={emp.id} value={emp.id}>
-              {emp.fullName}
-            </option>
-          ))}
-        </select>
-      </label>
+      <Field label="Исполнитель">
+        <Select
+          value={assigneeId}
+          onChange={(e) => setAssigneeId(e.target.value)}
+          options={[{ value: '', label: 'Не назначен' }, ...employees.map((emp) => ({ value: emp.id, label: emp.fullName }))]}
+        />
+      </Field>
 
-      <label>
-        Приоритет
-        <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>
-          {(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => (
-            <option key={p} value={p}>
-              {PRIORITY_LABELS[p]}
-            </option>
-          ))}
-        </select>
-      </label>
+      <Field label="Приоритет">
+        <Select
+          value={priority}
+          onChange={(e) => setPriority(e.target.value as TaskPriority)}
+          options={(Object.keys(PRIORITY_LABELS) as TaskPriority[]).map((p) => ({ value: p, label: PRIORITY_LABELS[p] }))}
+        />
+      </Field>
 
-      <label>
-        Срок
-        <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-      </label>
+      <Field label="Срок">
+        <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+      </Field>
 
       {isOwner && (
         <>
           <div className="form-section-divider">Источник (раздел 9 ТЗ) — необязательно</div>
 
-          <label>
-            Встреча-источник
-            <select value={sourceMeetingId} onChange={(e) => setSourceMeetingId(e.target.value)}>
-              <option value="">Не из встречи</option>
-              {meetings.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.title} ({new Date(m.meetingDate).toLocaleDateString('ru-RU')})
-                </option>
-              ))}
-            </select>
-          </label>
+          <Field label="Встреча-источник">
+            <Select
+              value={sourceMeetingId}
+              onChange={(e) => setSourceMeetingId(e.target.value)}
+              options={[
+                { value: '', label: 'Не из встречи' },
+                ...meetings.map((m) => ({ value: m.id, label: `${m.title} (${new Date(m.meetingDate).toLocaleDateString('ru-RU')})` })),
+              ]}
+            />
+          </Field>
 
           {sourceMeetingId && (
-            <label>
-              Таймкод
-              <input
-                value={sourceTimestamp}
-                onChange={(e) => setSourceTimestamp(e.target.value)}
-                placeholder="00:14:32"
-              />
-            </label>
+            <Field label="Таймкод">
+              <Input value={sourceTimestamp} onChange={(e) => setSourceTimestamp(e.target.value)} placeholder="00:14:32" />
+            </Field>
           )}
 
-          <label>
-            Контекст происхождения (видно исполнителю без доступа к самой встрече)
-            <textarea
+          <Field label="Контекст происхождения (видно исполнителю без доступа к самой встрече)">
+            <Textarea
               value={sourceContext}
               onChange={(e) => setSourceContext(e.target.value)}
               rows={2}
               placeholder="Например: обсуждали новый тариф поставщика, нужно учесть в модели"
             />
-          </label>
+          </Field>
         </>
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Создаём…' : 'Создать задачу'}
-      </button>
+      <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+        Создать задачу
+      </Button>
     </form>
   );
 }
@@ -159,14 +146,13 @@ export default function NewTaskPage() {
   return (
     <Protected>
       <Link href="/tasks" className="back-link">
-        <ArrowLeft size={14} strokeWidth={2.25} />
+        <ArrowLeft size={14} strokeWidth={1.75} />
         Задачи
       </Link>
-      <h1>Новая задача</h1>
-      <p className="page-subtitle">
-        Задачу можно поставить любому участнику, включая руководителя. AI-подбор исполнителя
-        появится на Этапе 5.
-      </p>
+      <PageHeader
+        title="Новая задача"
+        description="Задачу можно поставить любому участнику, включая руководителя. AI-подбор исполнителя появится на Этапе 5."
+      />
       <NewTaskForm />
     </Protected>
   );

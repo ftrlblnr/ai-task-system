@@ -26,6 +26,14 @@ const TASK_LIST_SELECT = {
   // Только статусы — достаточно посчитать subtaskCount/subtaskDoneCount
   // (см. toListItem), полный список полей отдаёт только TASK_DETAIL_SELECT.
   subtasks: { select: { status: true } },
+  // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 6)
+  // — fromAgent в toListItem ниже: задача создана ассистентом, не угадывается
+  // на фронте, а прямо выводится из наличия sourceExecutionId.
+  sourceExecutionId: true,
+  // Название встречи на карточке в колонке (implementation.md шаг 6) — только
+  // title, не полный протокол (тот уже и был доступен исполнителю в детальной
+  // карточке задачи без доступа к самой встрече, раздел 9 ТЗ).
+  sourceMeeting: { select: { title: true } },
 } as const;
 
 const TASK_DETAIL_SELECT = {
@@ -179,7 +187,12 @@ export class TasksService {
     // либо ретенции ради этого шума. AuditService/MeetingsService.findOne
     // по-прежнему логируют READ там, где это оправдано.
 
-    const { subtasks, watchers, ...rest } = task;
+    // sourceExecutionId убран из rest — TASK_LIST_SELECT (через который
+    // проходит TASK_DETAIL_SELECT) теперь выбирает его для toListItem/
+    // fromAgent, но сырой внутренний id исполнения ассистента в детальный
+    // ответ наружу не нужен (в списке он тоже не выводится — только
+    // производное fromAgent, см. toListItem).
+    const { subtasks, watchers, sourceExecutionId, ...rest } = task;
     return {
       ...rest,
       subtasks,
@@ -464,15 +477,23 @@ export class TasksService {
   // Схлопывает сырой subtasks: {status}[] из TASK_LIST_SELECT в два числа —
   // список задач не должен раздувать JSON полным содержимым каждой
   // подзадачи, детали видны только на странице самой задачи (findOne).
-  private toListItem<T extends { subtasks: { status: TaskStatus }[]; dueDate: Date | null; status: TaskStatus }>(
-    task: T,
-  ) {
-    const { subtasks, ...rest } = task;
+  private toListItem<
+    T extends {
+      subtasks: { status: TaskStatus }[];
+      dueDate: Date | null;
+      status: TaskStatus;
+      sourceExecutionId: string | null;
+      sourceMeeting: { title: string } | null;
+    },
+  >(task: T) {
+    const { subtasks, sourceExecutionId, sourceMeeting, ...rest } = task;
     return {
       ...rest,
       subtaskCount: subtasks.length,
       subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
       isOverdue: isTaskOverdue(task),
+      fromAgent: sourceExecutionId != null,
+      source: sourceMeeting?.title ?? null,
     };
   }
 

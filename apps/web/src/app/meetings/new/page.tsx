@@ -7,6 +7,10 @@ import { ArrowLeft } from 'lucide-react';
 import type { CreateMeetingInput, MeetingSummary } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
+import { Field, Input, Textarea } from '@/components/ui/field';
+import { PageHeader } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Alert } from '@/components/ui/alert';
 
 function NewMeetingForm() {
   const router = useRouter();
@@ -36,28 +40,24 @@ function NewMeetingForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card form-card form-wide">
-      <label>
-        Название встречи
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например: Синк по проекту, 28.08" required />
-      </label>
+    <form onSubmit={handleSubmit} className="ds-card form-wide" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Field label="Название встречи">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например: Синк по проекту, 28.08" required />
+      </Field>
 
-      <label>
-        Дата встречи
-        <input type="date" value={meetingDate} onChange={(e) => setMeetingDate(e.target.value)} required />
-      </label>
+      <Field label="Дата встречи">
+        <Input type="date" value={meetingDate} onChange={(e) => setMeetingDate(e.target.value)} required />
+      </Field>
 
-      <label>
-        Саммари (как есть из Plaud, включая метки Speaker N — заменить их на имена
-        сможет AI на Этапе 4)
-        <textarea value={rawSummary} onChange={(e) => setRawSummary(e.target.value)} rows={14} required />
-      </label>
+      <Field label="Саммари (как есть из Plaud, включая метки Speaker N — заменить их на имена сможет AI на Этапе 4)">
+        <Textarea value={rawSummary} onChange={(e) => setRawSummary(e.target.value)} rows={14} required />
+      </Field>
 
-      {error && <p className="error">{error}</p>}
+      {error && <Alert tone="danger">{error}</Alert>}
 
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Сохраняем…' : 'Сохранить встречу'}
-      </button>
+      <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+        Сохранить встречу
+      </Button>
     </form>
   );
 }
@@ -66,14 +66,13 @@ export default function NewMeetingPage() {
   return (
     <Protected requireRole="OWNER">
       <Link href="/meetings" className="back-link">
-        <ArrowLeft size={14} strokeWidth={2.25} />
+        <ArrowLeft size={14} strokeWidth={1.75} />
         Встречи
       </Link>
-      <h1>Новая встреча</h1>
-      <p className="page-subtitle">
-        Ручная загрузка (Этап 3 ТЗ) — вставьте текст саммари как есть, без правок. Оригинал
-        сохраняется без изменений. Транскрипт не хранится — Plaud уже делает саммари сам.
-      </p>
+      <PageHeader
+        title="Новая встреча"
+        description="Ручная загрузка (Этап 3 ТЗ) — вставьте текст саммари как есть, без правок. Оригинал сохраняется без изменений. Транскрипт не хранится — Plaud уже делает саммари сам."
+      />
       <NewMeetingForm />
     </Protected>
   );
