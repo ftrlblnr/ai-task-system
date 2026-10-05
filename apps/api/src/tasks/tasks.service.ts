@@ -192,6 +192,7 @@ export class TasksService {
     // fromAgent, но сырой внутренний id исполнения ассистента в детальный
     // ответ наружу не нужен (в списке он тоже не выводится — только
     // производное fromAgent, см. toListItem).
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- sourceExecutionId выбирается только чтобы не попасть в ...rest, см. комментарий выше
     const { subtasks, watchers, sourceExecutionId, ...rest } = task;
     return {
       ...rest,
