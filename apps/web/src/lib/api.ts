@@ -9,6 +9,11 @@ export class ApiError extends Error {
   }
 }
 
+// signal — «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 14): клиентский
+// таймаут на источник обзора, чтобы один зависший запрос не держал всю
+// страницу в Loading бесконечно (тот же optional-параметр приём, что у
+// postStream/post — остальные вызовы api.get не передают 2-й аргумент,
+// ничего не меняется).
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
@@ -131,7 +136,7 @@ async function downloadBlob(path: string): Promise<Blob> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
   // headers — раздел 12 ТЗ «Приёмная»: мутирующие запросы требуют
   // Idempotency-Key, обычный заголовок, не часть тела — остальные вызовы
   // api.post/api.patch не передают 3-й аргумент, ничего не меняется.

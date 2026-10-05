@@ -41,6 +41,21 @@ export class EventsService {
     return events.map(withParticipants);
   }
 
+  // «Стол руководителя» (владелец 05.10.2026, ТЗ раздел 10) — до 3 текущих/
+  // будущих подтверждённых событий. startAt asc уже даёт нужный порядок:
+  // идущее сейчас событие (startAt в прошлом, endAt в будущем) имеет более
+  // ранний startAt, чем ещё не начавшиеся — сортировать по "текущее/будущее"
+  // отдельно не нужно. Только минимальные поля — дашборду не нужны
+  // participants/location/description.
+  async findUpcoming(employeeId: string, limit: number) {
+    return this.prisma.event.findMany({
+      where: { createdById: employeeId, status: EventStatus.CONFIRMED, endAt: { gte: new Date() } },
+      orderBy: [{ startAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+      select: { id: true, title: true, startAt: true, endAt: true, allDay: true },
+    });
+  }
+
   async findOne(id: string) {
     const event = await this.prisma.event.findUnique({ where: { id }, include: PARTICIPANTS_INCLUDE });
     if (!event) throw new NotFoundException('Событие не найдено');

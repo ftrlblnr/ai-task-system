@@ -19,6 +19,7 @@ import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
 import { Protected } from '@/components/protected';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
 import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
+import { ASSISTANT_DRAFT_KEY } from '@/components/dashboard/agent-hero';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
 // — пустой чат: приглашение + 3-4 подсказки-чипа с типовыми поручениями
@@ -157,6 +158,7 @@ function AssistantView() {
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [text, setText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sending, setSending] = useState(false);
   const [failedSend, setFailedSend] = useState<{ clientRequestId: string; text: string; attachments: UploadedFileInfo[] } | null>(
     null,
@@ -452,6 +454,38 @@ function AssistantView() {
   useEffect(() => {
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 6.2) — черновик из
+  // AgentHero передаётся через sessionStorage с одноразовым ключом (не URL),
+  // читается и сразу удаляется здесь. Если в композере уже что-то набрано —
+  // спрашиваем, не теряем молча (простой confirm — отдельного более богатого
+  // UI для этого в проекте пока нет).
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem(ASSISTANT_DRAFT_KEY);
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    sessionStorage.removeItem(ASSISTANT_DRAFT_KEY);
+    let draftText = '';
+    try {
+      draftText = (JSON.parse(raw) as { text?: string }).text?.trim() ?? '';
+    } catch {
+      return;
+    }
+    if (!draftText) return;
+
+    setText((prev) => {
+      if (prev.trim() && !window.confirm('Заменить текущий черновик текстом со «Стола руководителя»?')) {
+        return prev;
+      }
+      return draftText;
+    });
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- один раз на монтирование, читает одноразовый sessionStorage-ключ
   }, []);
 
   useEffect(() => {
@@ -769,6 +803,7 @@ function AssistantView() {
           )}
           <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
           <textarea
+            ref={textareaRef}
             rows={1}
             placeholder="Напишите задачу, вопрос или поручение…"
             aria-label="Сообщение ассистенту"

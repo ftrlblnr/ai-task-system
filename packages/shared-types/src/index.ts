@@ -882,3 +882,60 @@ export interface CompleteReceptionRequestInput {
   resolution?: string;
 }
 
+// --- «Стол руководителя» (ТЗ v1.0, владелец 05.10.2026) ---------------------
+// GET /dashboard/overview — агрегирующий контракт раздела 13.2 ТЗ: три
+// независимых раздела, каждый сам ok/error (недоступность одного источника
+// не должна скрывать два других, раздел 14 ТЗ).
+
+export interface DashboardSectionError {
+  status: 'error';
+  fetchedAt: null;
+  message: string;
+}
+
+export interface DashboardTaskItem {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  dueDate: string | null;
+  isOverdue: boolean;
+  assignee: { id: string; fullName: string } | null;
+}
+
+export interface DashboardTasksSection {
+  status: 'ok';
+  fetchedAt: string;
+  counts: { active: number; overdue: number; inReview: number };
+  items: DashboardTaskItem[];
+}
+
+export interface DashboardReceptionSection {
+  status: 'ok';
+  fetchedAt: string;
+  waitingCount: number;
+  current: (ReceptionRequestItem & { notificationStatus: ReceptionNotificationStatus | null }) | null;
+  items: ReceptionRequestItem[];
+}
+
+export interface DashboardEventItem {
+  id: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  allDay: boolean;
+}
+
+export interface DashboardCalendarSection {
+  status: 'ok';
+  fetchedAt: string;
+  items: DashboardEventItem[];
+}
+
+export interface DashboardOverview {
+  generatedAt: string;
+  timezone: string;
+  tasks: DashboardTasksSection | DashboardSectionError;
+  reception: DashboardReceptionSection | DashboardSectionError;
+  calendar: DashboardCalendarSection | DashboardSectionError;
+}
+

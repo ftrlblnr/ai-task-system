@@ -22,6 +22,7 @@ import { LiveModule } from './live/live.module';
 import { MailModule } from './mail/mail.module';
 import { FilesModule } from './files/files.module';
 import { ReceptionModule } from './reception/reception.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { ReceptionModule } from './reception/reception.module';
     MailModule,
     FilesModule,
     ReceptionModule,
+    DashboardModule,
   ],
   controllers: [AppController],
 })

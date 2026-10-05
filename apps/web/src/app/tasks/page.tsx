@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { Plus } from 'lucide-react';
 import { Protected } from '@/components/protected';
@@ -27,7 +28,9 @@ export default function TasksPage() {
   return (
     <Protected>
       <TasksPageHeader />
-      <KanbanBoard />
+      <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
+        <KanbanBoard />
+      </Suspense>
     </Protected>
   );
 }

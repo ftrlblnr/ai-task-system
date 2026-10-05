@@ -282,6 +282,13 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
 }
 
 function EventsAgenda() {
+  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 10) — переход с
+  // главной по конкретной встрече: ?event=<id> прокручивает к ней; если
+  // событие удалено/недоступно — обычный календарь без ошибки (раздел 10 ТЗ:
+  // "стандартное сообщение и доступный календарь").
+  const searchParams = useSearchParams();
+  const focusEventId = searchParams.get('event');
+  const [eventMissing, setEventMissing] = useState(false);
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
   const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -298,6 +305,15 @@ function EventsAgenda() {
   useEffect(() => {
     api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!focusEventId || !events) return;
+    const found = events.some((e) => e.id === focusEventId);
+    setEventMissing(!found);
+    if (found) {
+      document.getElementById(`calendar-event-${focusEventId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusEventId, events]);
 
   async function remove(id: string) {
     try {
@@ -348,6 +364,11 @@ function EventsAgenda() {
 
   return (
     <div>
+      {eventMissing && (
+        <div style={{ marginBottom: 16 }}>
+          <Alert tone="info">Это событие больше недоступно</Alert>
+        </div>
+      )}
       {[...byDay.entries()].map(([day, dayEvents]) => (
         <div key={day} style={{ marginBottom: 20 }}>
           <h3 style={{ fontSize: '0.85rem', color: 'var(--ink-3)', textTransform: 'capitalize', marginBottom: 8 }}>{day}</h3>
@@ -355,7 +376,7 @@ function EventsAgenda() {
             <table className="ds-table">
               <tbody>
                 {dayEvents.map((ev) => (
-                  <tr key={ev.id}>
+                  <tr key={ev.id} id={`calendar-event-${ev.id}`} style={{ background: focusEventId === ev.id ? 'var(--surface-2)' : undefined }}>
                     <td style={{ whiteSpace: 'nowrap', width: 120 }}>
                       {ev.allDay
                         ? 'Весь день'

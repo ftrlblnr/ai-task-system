@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { RefreshCw } from 'lucide-react';
 import type {
   CompleteReceptionRequestInput,
@@ -423,6 +424,13 @@ function CompleteDialog({ item, onClose, onDone }: { item: ReceptionRequestItem;
 // --- вкладка владельца: очередь ---
 
 function QueueView() {
+  const searchParams = useSearchParams();
+  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 9) — переход с главной
+  // по конкретному обращению: ?focus=<id> подсвечивает и прокручивает к
+  // нему, если оно всё ещё в доступной очереди; если уже нет — обычная
+  // очередь + "Статус вопроса изменился" (ниже, после загрузки данных).
+  const focusId = searchParams.get('focus');
+  const [focusMissing, setFocusMissing] = useState(false);
   const [data, setData] = useState<ReceptionQueueView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -454,6 +462,15 @@ function QueueView() {
 
   useEffect(load, [load]);
   useVisiblePolling(load, !dialogOpen);
+
+  useEffect(() => {
+    if (!focusId || !data) return;
+    const found = data.current?.id === focusId || data.items.some((i) => i.id === focusId);
+    setFocusMissing(!found);
+    if (found) {
+      document.getElementById(`reception-item-${focusId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [focusId, data]);
 
   async function moveToEnd(item: ReceptionRequestItem) {
     setBusyId(item.id);
@@ -500,8 +517,15 @@ function QueueView() {
         Ожидают: {data?.totalWaiting ?? '—'}
       </p>
 
+      {focusMissing && (
+        <div style={{ marginBottom: 12 }}>
+          <Alert tone="info">Статус вопроса изменился</Alert>
+        </div>
+      )}
+
       {data?.current && (
-        <Card style={{ marginBottom: 16, borderLeft: '3px solid var(--warn)' }}>
+        <div id={`reception-item-${data.current.id}`}>
+        <Card style={{ marginBottom: 16, borderLeft: `3px solid ${focusId === data.current.id ? 'var(--agent)' : 'var(--warn)'}` }}>
           <h2 style={{ marginBottom: 6 }}>Сейчас вызван</h2>
           <p>
             <strong>{data.current.author.fullName}</strong> — {data.current.title}
@@ -523,6 +547,7 @@ function QueueView() {
             </Button>
           </div>
         </Card>
+        </div>
       )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
@@ -565,7 +590,12 @@ function QueueView() {
         <>
           <ul className="plain-list">
             {data.items.map((item) => (
-              <li key={item.id} className="plain-list-row" style={{ alignItems: 'flex-start' }}>
+              <li
+                key={item.id}
+                id={`reception-item-${item.id}`}
+                className="plain-list-row"
+                style={{ alignItems: 'flex-start', background: focusId === item.id ? 'var(--surface-2)' : undefined }}
+              >
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <strong>{item.author.fullName}</strong>
@@ -753,7 +783,9 @@ function ReceptionView() {
 export default function ReceptionPage() {
   return (
     <Protected>
-      <ReceptionView />
+      <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
+        <ReceptionView />
+      </Suspense>
     </Protected>
   );
 }

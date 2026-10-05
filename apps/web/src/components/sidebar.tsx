@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut, Sparkles } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
@@ -12,6 +12,13 @@ import { Avatar } from './avatar';
 // 28.08.2026): черновик-событие для не-OWNER бэкенд сам превращает в
 // черновик задачи (см. VoiceService.enforceEventRbac), поэтому пункт меню
 // не требует условия на роль — та же логика, что в apps/miniapp/page.tsx.
+// «Стол руководителя» (ТЗ v1.0, 05.10.2026) — первый пункт меню, только
+// OWNER (раздел 4 ТЗ). Рендерится отдельно от generalItems/ownerItems ниже
+// (а не как обычный ownerOnly-пункт), чтобы быть визуально ПЕРВЫМ даже при
+// активной группировке «Руководитель» после разделителя — сам список
+// NAV_ITEMS начинается с "Задачи" и это не должно меняться для остальных.
+const DASHBOARD_ITEM = { href: '/', label: 'Стол руководителя', icon: LayoutDashboard, ownerOnly: true };
+
 const NAV_ITEMS = [
   { href: '/tasks', label: 'Задачи', icon: KanbanSquare, ownerOnly: false },
   // Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
@@ -84,7 +91,7 @@ export function Sidebar() {
 
   return (
     <aside className="ds-sidebar">
-      <Link href="/tasks" className="ds-brand">
+      <Link href="/" className="ds-brand">
         <span className="ds-brand-mark">
           <AgentMark size={16} state="idle" />
         </span>
@@ -98,6 +105,7 @@ export function Sidebar() {
       </button>
 
       <nav>
+        {isOwner && renderItem(DASHBOARD_ITEM)}
         {generalItems.map(renderItem)}
         {ownerItems.length > 0 && (
           <>

@@ -10,5 +10,8 @@ import { ReceptionNotificationsCron } from './reception-notifications.cron';
   imports: [TelegramModule],
   controllers: [ReceptionController],
   providers: [ReceptionService, IdempotencyService, ActiveEmployeeGuard, ReceptionNotificationsCron],
+  // «Стол руководителя» (владелец 05.10.2026) — DashboardService переиспользует
+  // getQueueView() напрямую, без второй реализации очереди на главной.
+  exports: [ReceptionService],
 })
 export class ReceptionModule {}

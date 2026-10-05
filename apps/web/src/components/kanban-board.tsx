@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -12,6 +12,7 @@ import { BOARD_COLUMNS, BOARD_SIDE_COLUMNS, EMPLOYEE_SETTABLE_STATUSES } from '@
 export function KanbanBoard() {
   const router = useRouter();
   const { user } = useAuth();
+  const searchParams = useSearchParams();
   const [tasks, setTasks] = useState<TaskListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -21,10 +22,18 @@ export function KanbanBoard() {
   // вообще никакого способа найти нужную, кроме скролла — с сотней задач
   // это ломается быстрее всего остального в приложении.
   const [searchQuery, setSearchQuery] = useState('');
-  const [assigneeFilter, setAssigneeFilter] = useState('');
+  const [assigneeFilter, setAssigneeFilter] = useState(() => searchParams.get('assignee') ?? '');
   // Фильтр по направлению (владелец 30.09.2026) — тот же принцип, что
   // assigneeFilter: из уже загруженных задач, без отдельного запроса.
   const [directionFilter, setDirectionFilter] = useState('');
+  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 7) — переход со
+  // счётчика: ?filter=active|overdue|review. Инициализируется из URL один
+  // раз при монтировании, дальше обычный клиентский фильтр, тот же принцип,
+  // что searchQuery/assigneeFilter (без отдельного запроса).
+  const [quickFilter, setQuickFilter] = useState<'active' | 'overdue' | 'review' | ''>(() => {
+    const value = searchParams.get('filter');
+    return value === 'active' || value === 'overdue' || value === 'review' ? value : '';
+  });
 
   useEffect(() => {
     api
@@ -57,12 +66,15 @@ export function KanbanBoard() {
     if (!tasks) return null;
     const q = searchQuery.trim().toLowerCase();
     return tasks.filter((t) => {
+      if (quickFilter === 'active' && (t.status === 'DONE' || t.status === 'CANCELLED')) return false;
+      if (quickFilter === 'overdue' && !t.isOverdue) return false;
+      if (quickFilter === 'review' && t.status !== 'IN_REVIEW') return false;
       if (assigneeFilter && t.assignee?.id !== assigneeFilter) return false;
       if (directionFilter && t.assignee?.direction?.id !== directionFilter) return false;
       if (!q) return true;
       return t.title.toLowerCase().includes(q) || (t.assignee?.fullName.toLowerCase().includes(q) ?? false);
     });
-  }, [tasks, searchQuery, assigneeFilter, directionFilter]);
+  }, [tasks, searchQuery, assigneeFilter, directionFilter, quickFilter]);
 
   const draggedTask = useMemo(
     () => visibleTasks?.find((t) => t.id === draggedId) ?? null,
@@ -213,6 +225,11 @@ export function KanbanBoard() {
       {error && <Alert tone="danger">{error}</Alert>}
 
       <div className="board-filters">
+        {quickFilter && (
+          <button type="button" className="ds-chip" onClick={() => setQuickFilter('')}>
+            {quickFilter === 'active' ? 'Активные' : quickFilter === 'overdue' ? 'Просрочены' : 'На проверке'} ×
+          </button>
+        )}
         <SearchInput value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Поиск по названию или исполнителю…" />
         {assigneeOptions.length > 0 && (
           <Select

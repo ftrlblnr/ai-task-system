@@ -1751,3 +1751,31 @@ select {
   opacity: 0.5;
   cursor: default;
 }
+
+/* «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 11.3) — 4 колонки
+   показателей только от 1200px, 2×2 ниже; задачи+приёмная в две колонки
+   только от 1024px (ниже ни одна не получает честные 320px). AgentOrb
+   уменьшается на мобильной ширине — страница декоративна, не теряет смысл
+   без крупной сферы. Поля ввода 16px на мобильном — тот же приём, что уже
+   применяется в Mini App (project/README.md), предотвращает зум iOS. */
+@media (max-width: 1199px) {
+  .dashboard-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+@media (max-width: 1023px) {
+  .dashboard-two-col {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (max-width: 767px) {
+  .dashboard-hero-orb {
+    width: 72px !important;
+    height: 72px !important;
+  }
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

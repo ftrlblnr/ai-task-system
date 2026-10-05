@@ -12,6 +12,7 @@ export * from './alert';
 export * from './toast';
 export * from './skeleton';
 export * from './agent-mark';
+export * from './agent-orb';
 export * from './kanban-column';
 export * from './streaming-text';
 export * from './thinking-line';
