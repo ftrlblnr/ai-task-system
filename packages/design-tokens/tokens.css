@@ -27,11 +27,6 @@
   --agent-line: #a6dbe2;
   --agent-glow: rgba(0, 168, 186, 0.32);
   --on-agent: #ffffff;
-  /* «Стол руководителя» (ТЗ v1.0, 05.10.2026) — фон AgentHero-блока,
-     отдельный от --agent-soft: тут всегда тёмная поверхность в ОБЕИХ темах
-     (agent-soft, наоборот, переворачивается по теме), значение из
-     референс-скриншотов владельца. */
-  --agent-hero-bg: #142c37;
 
   --ok: #1b7445;
   --ok-soft: #e1f2e8;
@@ -71,7 +66,6 @@
   --agent-line: #1f525a;
   --agent-glow: rgba(79, 214, 229, 0.30);
   --on-agent: #0d1112;
-  --agent-hero-bg: #172f3a;
 
   --ok: #62d295;
   --ok-soft: #12301f;
@@ -119,7 +113,6 @@
     --agent-line: #1f525a;
     --agent-glow: rgba(79, 214, 229, 0.30);
     --on-agent: #0d1112;
-    --agent-hero-bg: #172f3a;
 
     --ok: #62d295;
     --ok-soft: #12301f;

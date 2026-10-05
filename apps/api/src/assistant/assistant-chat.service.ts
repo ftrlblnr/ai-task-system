@@ -186,6 +186,19 @@ export class AssistantChatService {
     await this.findOwnedConversation(user, conversationId);
   }
 
+  // Владелец 05.10.2026 — без этого все разговоры в списке неотличимы
+  // ("Новый разговор" — заглушка в conversationTitle на фронте, когда
+  // title ещё null, см. apps/web/src/app/assistant/page.tsx). title уже
+  // был в схеме (задел под это), просто никто его не выставлял.
+  async renameConversation(user: AuthenticatedUser, conversationId: string, title: string): Promise<Conversation> {
+    await this.findOwnedConversation(user, conversationId);
+    const trimmed = title.trim();
+    return this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { title: trimmed || null },
+    });
+  }
+
   // Публичный тонкий алиас — тот же приём, что assertOwnedConversation:
   // AssistantChatController зовёт его ДО открытия SSE-потока (Phase F.2,
   // аудит 17.09.2026, P2.11), чтобы ошибка на недоступное вложение пришла

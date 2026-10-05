@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Plus, RefreshCw, Sparkles } from 'lucide-react';
-import { AgentHero } from './agent-hero';
 import { OverviewStats } from './overview-stats';
 import { AttentionTasks } from './attention-tasks';
 import { ReceptionPreview } from './reception-preview';
@@ -54,8 +53,6 @@ export function DashboardPage() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <AgentHero />
-
         <OverviewStats
           active={tasks.data?.counts.active ?? null}
           overdue={tasks.data?.counts.overdue ?? null}

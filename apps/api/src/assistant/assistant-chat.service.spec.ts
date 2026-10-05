@@ -36,6 +36,35 @@ describe('AssistantChatService.findOwnedConversation (Stage 2 §30 — conversat
   });
 });
 
+describe('AssistantChatService.renameConversation (владелец 05.10.2026 — переименование разговора в списке)', () => {
+  it('бросает NotFoundException для диалога другого сотрудника, update не вызывается', async () => {
+    const update = jest.fn();
+    const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'someone-else' }), update } };
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
+    await expect(service.renameConversation(user(), 'c1', 'Новое имя')).rejects.toThrow(NotFoundException);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('сохраняет обрезанный title владельцу диалога', async () => {
+    const updated = { id: 'c1', employeeId: 'u1', title: 'Бюджет Q4' };
+    const update = jest.fn().mockResolvedValue(updated);
+    const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'u1' }), update } };
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
+
+    await expect(service.renameConversation(user(), 'c1', '  Бюджет Q4  ')).resolves.toBe(updated);
+    expect(update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { title: 'Бюджет Q4' } });
+  });
+
+  it('пустая/пробельная строка сбрасывает title в null (назад к "Новый разговор" на фронте)', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'u1', title: null });
+    const prisma = { conversation: { findUnique: jest.fn().mockResolvedValue({ id: 'c1', employeeId: 'u1' }), update } };
+    const service = new AssistantChatService(prisma as any, {} as any, {} as any) as any;
+
+    await service.renameConversation(user(), 'c1', '   ');
+    expect(update).toHaveBeenCalledWith({ where: { id: 'c1' }, data: { title: null } });
+  });
+});
+
 describe('AssistantChatService.sendMessage идемпотентность (Stage 2 §29 — повторная отправка с тем же clientRequestId не создаёт вторую пару сообщений)', () => {
   it('COMPLETED-пара — короткое замыкание, ассистент и prisma.message.create не вызываются', async () => {
     const conversation = { id: 'c1', employeeId: 'u1' };

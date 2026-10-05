@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, Mic, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
@@ -24,10 +24,10 @@ const NAV_ITEMS = [
   // Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
   // AI-чат с историей на сервере (GET/POST /assistant/conversations[...]),
   // доступен всем, как задачи (видимость конкретных tools уже решает
-  // backend через buildTools(user)). Legacy /voice ниже намеренно не
-  // убран и не редиректится в этом раунде — отдельное решение по спеке.
+  // backend через buildTools(user)). Отдельная страница /voice убрана
+  // (владелец 05.10.2026) — голос и так доступен внутри Ассистента
+  // (микрофон в композере, тот же VoiceService).
   { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false },
-  { href: '/voice', label: 'Голос', icon: Mic, ownerOnly: false },
   // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем (сотрудник
   // подаёт обращение, руководитель управляет очередью), видимость действий
   // внутри страницы решает backend по роли, не пункт меню.

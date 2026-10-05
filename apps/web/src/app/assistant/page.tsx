@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
-import { Headphones, Mic, Paperclip, Plus, Send, Square } from 'lucide-react';
+import { Check, Headphones, Mic, Paperclip, Pencil, Plus, Send, Square, X } from 'lucide-react';
 import type {
   ConversationMessage,
   ConversationSummary,
@@ -19,7 +19,6 @@ import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
 import { Protected } from '@/components/protected';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
 import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
-import { ASSISTANT_DRAFT_KEY } from '@/components/dashboard/agent-hero';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
 // — пустой чат: приглашение + 3-4 подсказки-чипа с типовыми поручениями
@@ -154,6 +153,11 @@ export default function AssistantPage() {
 function AssistantView() {
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
+  // Переименование разговора (владелец 05.10.2026) — инлайн-редактирование
+  // прямо в списке, без отдельного диалога: editingConversationId — какой
+  // элемент сейчас в режиме правки, editingTitle — его черновой текст.
+  const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -451,45 +455,31 @@ function AssistantView() {
     }
   }
 
+  function startEditingTitle(c: ConversationSummary) {
+    setEditingConversationId(c.id);
+    setEditingTitle(conversationTitle(c));
+  }
+
+  function cancelEditingTitle() {
+    setEditingConversationId(null);
+    setEditingTitle('');
+  }
+
+  async function saveTitle(id: string) {
+    const title = editingTitle.trim();
+    setEditingConversationId(null);
+    if (!title) return;
+    try {
+      const updated = await api.patch<ConversationSummary>(`/assistant/conversations/${id}`, { title });
+      setConversations((prev) => (prev ?? []).map((c) => (c.id === id ? updated : c)));
+    } catch (err) {
+      setConversationsError(err instanceof ApiError ? err.message : 'Не удалось переименовать разговор');
+    }
+  }
+
   useEffect(() => {
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 6.2) — черновик из
-  // AgentHero передаётся через sessionStorage с одноразовым ключом (не URL),
-  // читается и сразу удаляется здесь. Если в композере уже что-то набрано —
-  // спрашиваем, не теряем молча (простой confirm — отдельного более богатого
-  // UI для этого в проекте пока нет).
-  useEffect(() => {
-    let raw: string | null = null;
-    try {
-      raw = sessionStorage.getItem(ASSISTANT_DRAFT_KEY);
-    } catch {
-      return;
-    }
-    if (!raw) return;
-    sessionStorage.removeItem(ASSISTANT_DRAFT_KEY);
-    let draftText = '';
-    try {
-      draftText = (JSON.parse(raw) as { text?: string }).text?.trim() ?? '';
-    } catch {
-      return;
-    }
-    if (!draftText) return;
-
-    // Чтение одноразового sessionStorage-ключа на монтировании — синхронизация
-    // с внешней системой, не подстройка под изменившийся проп (тот же случай,
-    // что уже разбирался в apps/web/src/lib/auth-context.tsx).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setText((prev) => {
-      if (prev.trim() && !window.confirm('Заменить текущий черновик текстом со «Стола руководителя»?')) {
-        return prev;
-      }
-      return draftText;
-    });
-    requestAnimationFrame(() => textareaRef.current?.focus());
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- один раз на монтирование, читает одноразовый sessionStorage-ключ
   }, []);
 
   useEffect(() => {
@@ -684,16 +674,43 @@ function AssistantView() {
           <p className="ds-field-hint">Загрузка…</p>
         ) : (
           <div className="assistant-conversation-list">
-            {conversations.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className={`assistant-conversation-item ${c.id === conversationId ? 'active' : ''}`}
-                onClick={() => selectConversation(c.id)}
-              >
-                {conversationTitle(c)}
-              </button>
-            ))}
+            {conversations.map((c) =>
+              editingConversationId === c.id ? (
+                <div key={c.id} style={{ display: 'flex', gap: 4, alignItems: 'center', padding: '2px 0' }}>
+                  <input
+                    autoFocus
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void saveTitle(c.id);
+                      if (e.key === 'Escape') cancelEditingTitle();
+                    }}
+                    onBlur={() => void saveTitle(c.id)}
+                    maxLength={200}
+                    aria-label="Название разговора"
+                    className="ds-input"
+                    style={{ flex: 1, minWidth: 0, height: 30, fontSize: '0.86rem', padding: '0 8px' }}
+                  />
+                  {/* onMouseDown+preventDefault — иначе клик по кнопке сначала роняет
+                      фокус с input, onBlur выше уже сохраняет/отменяет раньше, чем
+                      успевает сработать onClick самой кнопки. */}
+                  <IconButton icon={Check} label="Сохранить" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={() => void saveTitle(c.id)} />
+                  <IconButton icon={X} label="Отменить" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={cancelEditingTitle} />
+                </div>
+              ) : (
+                <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  <button
+                    type="button"
+                    className={`assistant-conversation-item ${c.id === conversationId ? 'active' : ''}`}
+                    onClick={() => selectConversation(c.id)}
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
+                    {conversationTitle(c)}
+                  </button>
+                  <IconButton icon={Pencil} label="Переименовать" size="sm" onClick={() => startEditingTitle(c)} />
+                </div>
+              ),
+            )}
             {conversations.length === 0 && <p className="ds-field-hint">Разговоров пока нет</p>}
           </div>
         )}

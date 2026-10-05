@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -6,6 +6,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AssistantChatService, type InternalStreamEvent } from './assistant-chat.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
+import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import type { StreamEvent } from './dto/stream-event.dto';
 import { toResponseConversation, toResponseMessage, toResponseMessagePart } from './assistant-response.mapper';
@@ -33,6 +34,15 @@ export class AssistantChatController {
   @Post('conversations')
   async createConversation(@Body() dto: CreateConversationDto, @CurrentUser() user: AuthenticatedUser) {
     return toResponseConversation(await this.chat.createConversation(user, dto.title));
+  }
+
+  @Patch('conversations/:id')
+  async renameConversation(
+    @Param('id') id: string,
+    @Body() dto: RenameConversationDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return toResponseConversation(await this.chat.renameConversation(user, id, dto.title));
   }
 
   @Get('conversations/:id/messages')
