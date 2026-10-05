@@ -430,7 +430,6 @@ function QueueView() {
   // нему, если оно всё ещё в доступной очереди; если уже нет — обычная
   // очередь + "Статус вопроса изменился" (ниже, после загрузки данных).
   const focusId = searchParams.get('focus');
-  const [focusMissing, setFocusMissing] = useState(false);
   const [data, setData] = useState<ReceptionQueueView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -463,11 +462,16 @@ function QueueView() {
   useEffect(load, [load]);
   useVisiblePolling(load, !dialogOpen);
 
+  // focusMissing — производное значение (не отдельный useState + setState в
+  // эффекте: React-антипаттерн, лишний рендер), скролл к карточке — настоящий
+  // DOM-эффект, остаётся в useEffect.
+  const focusMissing = Boolean(
+    focusId && data && data.current?.id !== focusId && !data.items.some((i) => i.id === focusId),
+  );
+
   useEffect(() => {
     if (!focusId || !data) return;
-    const found = data.current?.id === focusId || data.items.some((i) => i.id === focusId);
-    setFocusMissing(!found);
-    if (found) {
+    if (data.current?.id === focusId || data.items.some((i) => i.id === focusId)) {
       document.getElementById(`reception-item-${focusId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [focusId, data]);

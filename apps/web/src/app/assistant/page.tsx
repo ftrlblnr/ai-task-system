@@ -478,6 +478,10 @@ function AssistantView() {
     }
     if (!draftText) return;
 
+    // Чтение одноразового sessionStorage-ключа на монтировании — синхронизация
+    // с внешней системой, не подстройка под изменившийся проп (тот же случай,
+    // что уже разбирался в apps/web/src/lib/auth-context.tsx).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setText((prev) => {
       if (prev.trim() && !window.confirm('Заменить текущий черновик текстом со «Стола руководителя»?')) {
         return prev;

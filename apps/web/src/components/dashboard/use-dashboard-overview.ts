@@ -89,6 +89,11 @@ export function useDashboardOverview() {
   }, []);
 
   useEffect(() => {
+    // fetchOverview переиспользуется и ручным обновлением (клик по кнопке —
+    // там синхронный setRefreshing(true) ожидаем и не под этим правилом),
+    // здесь же это первая загрузка на монтировании — синхронизация с внешней
+    // системой (запрос к API), не подстройка состояния под проп.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchOverview();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- один запуск на монтирование, fetchOverview стабильна (useCallback, [])
   }, []);

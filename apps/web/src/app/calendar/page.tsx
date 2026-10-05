@@ -288,7 +288,6 @@ function EventsAgenda() {
   // "стандартное сообщение и доступный календарь").
   const searchParams = useSearchParams();
   const focusEventId = searchParams.get('event');
-  const [eventMissing, setEventMissing] = useState(false);
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
   const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -306,11 +305,15 @@ function EventsAgenda() {
     api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
   }, []);
 
+  // «Стол руководителя» (ТЗ v1.0, 05.10.2026) — ?event= из перехода с
+  // дашборда. eventMissing — производное значение (не отдельный useState +
+  // setState в эффекте: React-антипаттерн, лишний рендер), скролл к карточке
+  // — настоящий DOM-эффект, остаётся в useEffect.
+  const eventMissing = Boolean(focusEventId && events && !events.some((e) => e.id === focusEventId));
+
   useEffect(() => {
     if (!focusEventId || !events) return;
-    const found = events.some((e) => e.id === focusEventId);
-    setEventMissing(!found);
-    if (found) {
+    if (events.some((e) => e.id === focusEventId)) {
       document.getElementById(`calendar-event-${focusEventId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [focusEventId, events]);

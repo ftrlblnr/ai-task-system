@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Inbox, Pencil } from 'lucide-react';
+import { Inbox } from 'lucide-react';
 import type {
   CreateTaskInput,
   EmployeeSummary,

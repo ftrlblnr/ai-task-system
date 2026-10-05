@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
