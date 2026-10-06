@@ -9,6 +9,11 @@ function fakeExecutor(outcome: 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'SKIPPED_CHA
   return { execute: jest.fn().mockResolvedValue({ outcome }) };
 }
 
+// Исполнители в этих тестах — моки (fakeExecutor выше), ни один не
+// обращается к ctx.session реально, поэтому фейковая сессия здесь — просто
+// заглушка с close().
+const fakeSessions = { openSession: jest.fn().mockResolvedValue({ close: jest.fn().mockResolvedValue(undefined) }) };
+
 describe('MailActionExecutionService (ТЗ разд. 14-16)', () => {
   let prisma: FakeMailActionPrisma;
   let plans: MailActionPlanService;
@@ -19,7 +24,7 @@ describe('MailActionExecutionService (ТЗ разд. 14-16)', () => {
     prisma = new FakeMailActionPrisma();
     plans = new MailActionPlanService(prisma as never);
     registry = new MailActionExecutorRegistry();
-    execution = new MailActionExecutionService(prisma as never, registry);
+    execution = new MailActionExecutionService(prisma as never, registry, fakeSessions as never);
   });
 
   async function approvedSingleItem(type: 'ARCHIVE' | 'MOVE' | 'CREATE_FOLDER' = 'ARCHIVE', dependsOnLocalIds?: string[], extraCandidates: Parameters<typeof plans.attachAnalysisResult>[1] = []) {
@@ -55,6 +60,17 @@ describe('MailActionExecutionService (ТЗ разд. 14-16)', () => {
     expect(prisma.executions[0].state).toBe('DONE');
     expect(prisma.attempts).toHaveLength(1);
     expect(prisma.attempts[0].outcome).toBe('SUCCEEDED');
+  });
+
+  it('не удалось открыть сессию ящика — все пункты FAILED, исполнение DONE', async () => {
+    registry.register('ARCHIVE', fakeExecutor('SUCCEEDED'));
+    fakeSessions.openSession.mockRejectedValueOnce(new Error('IMAP_DISABLED'));
+    const { items, exec } = await approvedSingleItem('ARCHIVE');
+    await execution.start(exec.id);
+    const item = prisma.items.find((i) => i.id === items[0].id)!;
+    expect(item.status).toBe('FAILED');
+    expect(prisma.executions[0].state).toBe('DONE');
+    expect(prisma.attempts).toHaveLength(0);
   });
 
   it('нет зарегистрированного исполнителя — пункт FAILED с errorCode NOT_IMPLEMENTED', async () => {

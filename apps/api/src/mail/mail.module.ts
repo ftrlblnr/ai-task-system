@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { FilesModule } from '../files/files.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { IdempotencyService } from '../common/idempotency.service';
@@ -17,6 +17,8 @@ import { MailActionApprovalService } from './action/mail-action-approval.service
 import { MailActionExecutionService } from './action/mail-action-execution.service';
 import { MailActionExecutorRegistry } from './action/mail-action-executor';
 import { MailActionPlanService } from './action/mail-action-plan.service';
+import { MailActionSessionFactory } from './action/mail-action-session-factory';
+import { registerStage1MailActionExecutors } from './action/executors/stage1-executors';
 
 // Stage 2, Phase R — Mail.ru Email Intelligence. PrismaModule/CryptoModule глобальные
 // (AppModule). Экспорты — для tools ассистента (MailQueryService/MailStore).
@@ -42,7 +44,18 @@ import { MailActionPlanService } from './action/mail-action-plan.service';
     MailActionApprovalService,
     MailActionExecutionService,
     MailActionExecutorRegistry,
+    MailActionSessionFactory,
   ],
   exports: [MailStore, MailQueryService, MailActionExecutorRegistry],
 })
-export class MailModule {}
+export class MailModule implements OnModuleInit {
+  constructor(private readonly executors: MailActionExecutorRegistry) {}
+
+  // Этап 1 (раздел 3 ТЗ) — архив/перемещение/папки/флаги/прочитанность/
+  // корзина. Регистрация здесь, не в конструкторе исполнителей — реестр
+  // общий (#122), исполнители конкретного этапа не должны сами решать,
+  // когда их подключать.
+  onModuleInit(): void {
+    registerStage1MailActionExecutors(this.executors);
+  }
+}

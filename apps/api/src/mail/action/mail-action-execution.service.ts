@@ -1,8 +1,10 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { MailActionAttemptOutcome, MailActionItem, MailActionItemStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { mapOutcomeToAttemptOutcome, MailActionExecutorRegistry, MailActionExecutorResult } from './mail-action-executor';
+import { mapOutcomeToAttemptOutcome, MailActionExecutionContext, MailActionExecutorRegistry, MailActionExecutorResult } from './mail-action-executor';
+import { MailActionSessionFactory } from './mail-action-session-factory';
 import { topoSortMailActionItems } from './mail-action-rules';
+import type { EmailSession } from '../providers/email-provider';
 
 // Раздел 16 ТЗ — только из этих состояний можно "запустить"/"повторить"
 // исполнение; пока оно QUEUED/RUNNING — стоп только взводит флаг, не трогает
@@ -22,6 +24,7 @@ export class MailActionExecutionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly executors: MailActionExecutorRegistry,
+    private readonly sessions: MailActionSessionFactory,
   ) {}
 
   async getExecutionOrThrow(ownerId: string, executionId: string) {
@@ -69,24 +72,45 @@ export class MailActionExecutionService {
       data: { status: 'QUEUED' },
     });
 
+    // Одна IMAP-сессия на весь прогон (не на каждый пункт) — если ящик
+    // недоступен (пароль приложения отозван и т.п.), это ошибка всего
+    // исполнения, не конкретного пункта: ничего не исполнено, но и не
+    // "зависло" — явный FAILED с кодом, а не тихое молчание.
+    let session: EmailSession;
+    try {
+      session = await this.sessions.openSession(mailboxId);
+    } catch (err) {
+      this.logger.error(`mailbox session open failed: ${err instanceof Error ? err.message : String(err)}`);
+      await this.prisma.mailActionItem.updateMany({
+        where: { id: { in: ordered.map((i) => i.id) }, status: 'QUEUED' },
+        data: { status: 'FAILED' },
+      });
+      await this.prisma.mailActionExecution.update({ where: { id: executionId }, data: { state: 'DONE', finishedAt: new Date() } });
+      return;
+    }
+
     const finalStatusByItemId = new Map<string, MailActionItemStatus>();
     let stopped = false;
 
-    for (const item of ordered) {
-      const fresh = await this.prisma.mailActionExecution.findUniqueOrThrow({ where: { id: executionId }, select: { cancelRequestedAt: true } });
-      if (fresh.cancelRequestedAt) {
-        stopped = true;
-        break;
-      }
+    try {
+      for (const item of ordered) {
+        const fresh = await this.prisma.mailActionExecution.findUniqueOrThrow({ where: { id: executionId }, select: { cancelRequestedAt: true } });
+        if (fresh.cancelRequestedAt) {
+          stopped = true;
+          break;
+        }
 
-      const blocked = item.dependsOnItemIds.some((depId) => finalStatusByItemId.get(depId) !== 'SUCCEEDED');
-      if (blocked) {
-        await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: 'BLOCKED_DEPENDENCY', version: { increment: 1 } } });
-        finalStatusByItemId.set(item.id, 'BLOCKED_DEPENDENCY');
-        continue;
-      }
+        const blocked = item.dependsOnItemIds.some((depId) => finalStatusByItemId.get(depId) !== 'SUCCEEDED');
+        if (blocked) {
+          await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: 'BLOCKED_DEPENDENCY', version: { increment: 1 } } });
+          finalStatusByItemId.set(item.id, 'BLOCKED_DEPENDENCY');
+          continue;
+        }
 
-      finalStatusByItemId.set(item.id, await this.runItem(item, mailboxId));
+        finalStatusByItemId.set(item.id, await this.runItem(item, { mailboxId, session }));
+      }
+    } finally {
+      await session.close().catch(() => undefined);
     }
 
     await this.prisma.mailActionExecution.update({
@@ -95,13 +119,13 @@ export class MailActionExecutionService {
     });
   }
 
-  private async runItem(item: MailActionItem, mailboxId: string): Promise<MailActionItemStatus> {
+  private async runItem(item: MailActionItem, ctx: MailActionExecutionContext): Promise<MailActionItemStatus> {
     await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: 'RUNNING', version: { increment: 1 } } });
     const attemptNumber = (await this.prisma.mailActionAttempt.count({ where: { actionId: item.id } })) + 1;
 
     const executor = this.executors.get(item.type);
     const result: MailActionExecutorResult = executor
-      ? await executor.execute(item, { mailboxId }).catch(
+      ? await executor.execute(item, ctx).catch(
           (err: unknown): MailActionExecutorResult => ({
             outcome: 'FAILED',
             errorCode: 'EXECUTOR_ERROR',

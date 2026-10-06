@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MailActionAttemptOutcome, MailActionItem, MailActionItemStatus, MailActionType } from '@prisma/client';
+import type { EmailSession } from '../providers/email-provider';
 
 // Раздел 16 ТЗ — только эти 4 исхода попытки отображаются в статус пункта;
 // SKIPPED_CHANGED — отдельный путь (раздел 14/15: "старые координаты не
@@ -16,6 +17,10 @@ export interface MailActionExecutorResult {
 
 export interface MailActionExecutionContext {
   mailboxId: string;
+  // Одна сессия на весь прогон исполнения (движок открывает её один раз
+  // перед циклом пунктов и закрывает после — не на каждый пункт, это
+  // реальное IMAP-соединение).
+  session: EmailSession;
 }
 
 // Один исполнитель на MailActionType (ARCHIVE/MOVE/... — Этап 1, остальные

@@ -13,7 +13,7 @@ describe('MailActionApprovalService (ТЗ разд. 7/8/14)', () => {
   beforeEach(() => {
     prisma = new FakeMailActionPrisma();
     plans = new MailActionPlanService(prisma as never);
-    const execution = new MailActionExecutionService(prisma as never, new MailActionExecutorRegistry());
+    const execution = new MailActionExecutionService(prisma as never, new MailActionExecutorRegistry(), {} as never);
     // start() реально исполняет пункты — в тестах согласия это намеренно
     // не интересует (проверяется отдельно в mail-action-execution.service.spec.ts),
     // поэтому глушим здесь, чтобы не тянуть исполнители.
