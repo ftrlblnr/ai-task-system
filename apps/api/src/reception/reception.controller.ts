@@ -18,7 +18,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { ActiveEmployeeGuard } from './guards/active-employee.guard';
 import { ReceptionService } from './reception.service';
-import { IdempotencyService } from './idempotency.service';
+import { IdempotencyService } from '../common/idempotency.service';
 import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto, VersionOnlyDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';

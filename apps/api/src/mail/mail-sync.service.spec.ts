@@ -156,8 +156,8 @@ class FakeServer {
   failConnect: MailConnectError | null = null;
   emptyFlags = false;
   folders: ProviderFolder[] = [
-    { path: 'INBOX', role: 'INBOX' },
-    { path: 'Sent', role: 'SENT' },
+    { path: 'INBOX', role: 'INBOX', specialUse: null },
+    { path: 'Sent', role: 'SENT', specialUse: '\\Sent' },
   ];
   connects = 0;
 

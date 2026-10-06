@@ -102,6 +102,10 @@ model Employee {
   receptionEventsActed         ReceptionEvent[]
   receptionNotificationsToMe   ReceptionNotification[]
 
+  mailActionPlansOwned   MailActionPlan[]
+  mailActionApprovalsMade MailActionApproval[]
+  mailWatchesOwned       MailWatch[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -1066,6 +1070,14 @@ enum MailboxSyncState {
 enum EmailFolderRole {
   INBOX
   SENT
+  // Раздел 15 ТЗ v2.0 (05.10.2026) — "Добавить учёт ARCHIVE/TRASH/
+  // пользовательских папок и новых удалённых координат". Определяются через
+  // special-use/XLIST провайдера (см. MailRuImapProvider.listFolders), не по
+  // жёсткому имени — раздел 9 ТЗ.
+  ARCHIVE
+  DRAFTS
+  JUNK
+  TRASH
   OTHER
 }
 
@@ -1128,6 +1140,10 @@ model Mailbox {
   threads  EmailThread[]
   messages EmailMessage[]
   digests  EmailDigest[]
+
+  mailActionPlans MailActionPlan[]
+  mailDrafts      MailDraft[]
+  mailWatches     MailWatch[]
 }
 
 model EmailFolder {
@@ -1283,6 +1299,312 @@ model EmailDigest {
   generatedAt DateTime @default(now())
 
   @@unique([mailboxId, periodFrom, periodTo])
+}
+
+// ============ Почтовый ИИ-агент (ТЗ v2.0, 05.10.2026) ============
+// Единый план анализ → предложение действий → согласование → исполнение →
+// отчёт/восстановление поверх почты (раздел 1 ТЗ). ТЗ описывает это как
+// замену "v1 ограничиваемого архивирования" — в ЭТОМ репозитории такой v1
+// никогда не существовал (ни модели, ни API — проверено 05.10.2026, грепом
+// по всей схеме и коду), почта была строго read-only (синк + анализ +
+// дайджест). Поэтому всё ниже не миграция, а разработка с нуля.
+//
+// Схема сразу покрывает все 4 этапа ТЗ (раздел 21, шаг 2 — "реализовать
+// общий план... до выпуска этапа 1"), но СЕРВИСНАЯ ЛОГИКА в этом релизе —
+// только для этапа 1 (ARCHIVE/MOVE/CREATE_FOLDER/SET_READ/SET_UNREAD/
+// FLAG/UNFLAG/TRASH). MailDraft/MailWatch/остальные типы MailActionType —
+// заготовка под этапы 2-4, без исполнителя пока.
+
+enum MailActionType {
+  ARCHIVE
+  MOVE
+  CREATE_FOLDER
+  SET_READ
+  SET_UNREAD
+  FLAG
+  UNFLAG
+  TRASH
+  CREATE_TASK
+  SAVE_ATTACHMENT
+  DRAFT_REPLY
+  SEND_REPLY
+  FORWARD
+  PROPOSE_MEETING
+  CREATE_EVENT
+  WATCH_REPLY
+  WATCH_COMMITMENT
+  DRAFT_REMINDER
+}
+
+// Раздел 7 ТЗ — три вида согласования + отдельная явно названная группа для
+// корзины (раздел 9: "Корзина также подтверждается отдельной явно названной
+// группой").
+enum MailActionGroupType {
+  MAILBOX_ORDER
+  WORK_OBJECTS
+  EXTERNAL_SEND
+  TRASH
+}
+
+enum MailActionPlanStatus {
+  ANALYZING
+  READY
+  EXECUTING
+  DONE
+  CANCELLED
+}
+
+// Раздел 16 ТЗ — ровно этот список состояний пункта плана.
+enum MailActionItemStatus {
+  DRAFT
+  NEEDS_REVIEW
+  APPROVED
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+  SKIPPED_CHANGED
+  BLOCKED_DEPENDENCY
+  CANCELLED
+  COMPENSATED
+}
+
+// Раздел 5 ТЗ — категории релевантности письма предложенному действию.
+enum MailActionRelevance {
+  RECOMMENDED
+  KEEP
+  NEEDS_REVIEW
+  UNVERIFIED
+}
+
+enum MailActionApprovalStatus {
+  ACTIVE
+  CONSUMED
+  EXPIRED
+  SUPERSEDED
+}
+
+enum MailActionAttemptOutcome {
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+}
+
+model MailActionPlan {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       Employee @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  mailboxId   String
+  mailbox     Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  requestText String
+
+  // Охват (раздел 4 ТЗ): ящик/папки/период/критерий/разрешённые типы —
+  // одним Json, не отдельными колонками, состав охвата описан ТЗ подробно и
+  // может расти по этапам.
+  scope        Json
+  snapshotAt   DateTime
+  modelVersion String?
+  // Раздел 4/14 ТЗ — смена критерия/папок создаёт НОВУЮ версию плана, не
+  // правит старую версию на месте.
+  version Int                  @default(1)
+  status  MailActionPlanStatus @default(ANALYZING)
+  // Раздел 6 ТЗ — обнаружено/получено/проверено/требует просмотра/ошибки/
+  // исчезло + отдельно число действий (не равно числу писем).
+  coverage Json?
+
+  items     MailActionItem[]
+  approvals MailActionApproval[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId, mailboxId, createdAt])
+}
+
+model MailActionItem {
+  id        String              @id @default(cuid())
+  planId    String
+  plan      MailActionPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  type      MailActionType
+  groupType MailActionGroupType
+
+  // Раздел 7 ТЗ: "Объект — стабильный ID письма, вложения, проекта задачи
+  // или встречи" — разнородный список, поэтому обычный String[], не
+  // Prisma-связь (полиморфная ссылка).
+  stableObjectIds String[]
+  // UID/папка/UIDVALIDITY на момент snapshot — сверка "не изменилось ли"
+  // перед исполнением (раздел 14/15 ТЗ).
+  sourceLocators Json
+
+  reason      String
+  evidence    Json?
+  relevance   MailActionRelevance?
+  parameters  Json
+  payloadHash String
+
+  // ID других MailActionItem этого же плана, от которых зависит этот пункт
+  // (раздел 8 ТЗ, например MOVE зависит от CREATE_FOLDER).
+  dependsOnItemIds String[]
+
+  selected Boolean              @default(true)
+  status   MailActionItemStatus @default(DRAFT)
+  // Оптимистическая конкуренция на уровне пункта — тот же приём, что
+  // ReceptionRequest.version (раздел 14 ТЗ: изменённые параметры требуют
+  // нового согласия).
+  version Int @default(1)
+
+  approvalId String?
+  approval   MailActionApproval? @relation(fields: [approvalId], references: [id], onDelete: SetNull)
+
+  attempts       MailActionAttempt[]
+  compensations  MailActionCompensation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([planId, groupType, status])
+}
+
+model MailActionApproval {
+  id          String              @id @default(cuid())
+  actorId     String
+  actor       Employee            @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  planId      String
+  plan        MailActionPlan      @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planVersion Int
+  groupType   MailActionGroupType
+
+  // Раздел 14 ТЗ — замороженный снимок согласованных пунктов (параметры,
+  // адресаты, файлы, checksum) НА МОМЕНТ согласия, не ссылка на изменяемые
+  // записи — сервер сверяет его с текущим состоянием перед каждым действием.
+  itemIds                 String[]
+  immutableActionSnapshot Json
+  payloadHash             String
+  status                  MailActionApprovalStatus @default(ACTIVE)
+  approvedAt              DateTime                 @default(now())
+  // Раздел 14 ТЗ — начальный настраиваемый срок актуальности согласия, 24ч.
+  expiresAt DateTime
+
+  items     MailActionItem[]
+  execution MailActionExecution?
+
+  @@index([planId, groupType])
+}
+
+enum MailActionExecutionState {
+  QUEUED
+  RUNNING
+  DONE
+  STOPPED
+}
+
+model MailActionExecution {
+  id         String                   @id @default(cuid())
+  approvalId String                   @unique
+  approval   MailActionApproval       @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  state      MailActionExecutionState @default(QUEUED)
+  // Раздел 16 ТЗ — агрегированные счётчики по типам действий.
+  countersByType    Json?
+  cancelRequestedAt DateTime?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+
+  @@index([state])
+}
+
+model MailActionAttempt {
+  id            String         @id @default(cuid())
+  actionId      String
+  action        MailActionItem @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  // Раздел 16 ТЗ — durable intent ДО обращения к провайдеру, затем
+  // подтверждённый результат.
+  intent             Json
+  providerResult     Json?
+  destinationLocator Json?
+  errorCode          String?
+  outcome            MailActionAttemptOutcome?
+  startedAt          DateTime                  @default(now())
+  finishedAt         DateTime?
+
+  @@index([actionId, attemptNumber])
+}
+
+enum MailDraftState {
+  DRAFT
+  SENT
+  DISCARDED
+}
+
+// Этапы 2-3 ТЗ (DRAFT_REPLY/SEND_REPLY) — модель заведена вместе с общей
+// инфраструктурой (раздел 21, шаг 2), сервис появится при выпуске этапа.
+model MailDraft {
+  id              String   @id @default(cuid())
+  mailboxId       String
+  mailbox         Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  sourceMessageId String?
+  version         Int      @default(1)
+  fromAddress     String?
+  toAddresses     String[]
+  ccAddresses     String[]
+  bccAddresses    String[]
+  subject         String?
+  body            String?
+  signature       String?
+  attachments     Json?
+  state           MailDraftState @default(DRAFT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum MailWatchStatus {
+  ACTIVE
+  NEEDS_REVIEW
+  SATISFIED
+  STOPPED
+  CANNOT_VERIFY
+}
+
+// Этап 4 ТЗ (WATCH_REPLY/WATCH_COMMITMENT) — модель заведена сейчас, сервис
+// появится при выпуске этого этапа.
+model MailWatch {
+  id          String          @id @default(cuid())
+  ownerId     String
+  owner       Employee        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  mailboxId   String
+  mailbox     Mailbox         @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  sourceIds   String[]
+  expectation String
+  deadline    DateTime?
+  nextCheckAt DateTime?
+  expiresAt   DateTime?
+  status      MailWatchStatus @default(ACTIVE)
+  evidence    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum MailActionCompensationStatus {
+  PENDING
+  DONE
+  FAILED
+  NOT_POSSIBLE
+}
+
+model MailActionCompensation {
+  id                   String                        @id @default(cuid())
+  originalActionId     String
+  originalAction       MailActionItem                @relation(fields: [originalActionId], references: [id], onDelete: Cascade)
+  selectedCompensation String
+  approvalId           String?
+  status               MailActionCompensationStatus @default(PENDING)
+  result               Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ============ Приёмная руководителя (ТЗ v1.0, 02.10.2026) ============

@@ -3,13 +3,19 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser';
 import {
   MailConnectError,
+  StaleLocatorError,
   type EmailProvider,
   type EmailSession,
   type MailCredentials,
+  type MessageFlag,
+  type MessageLocator,
+  type MoveResult,
   type NormalizedAddress,
   type NormalizedMessage,
   type OpenedFolder,
+  type ProviderCapabilities,
   type ProviderFolder,
+  type ProviderFolderRole,
 } from './email-provider';
 
 const MAILRU_IMAP_HOST = 'imap.mail.ru';
@@ -46,6 +52,35 @@ function toAddresses(value: AddressObject | AddressObject[] | undefined): Normal
     .flatMap((o) => o.value)
     .filter((a) => a.address)
     .map((a) => ({ address: (a.address as string).toLowerCase(), name: a.name || null }));
+}
+
+// Чистая функция (вынесена ради тестов без сети, тот же приём, что
+// normalizeParsedMail). Подтверждено живым подключением 05.10.2026: Mail.ru
+// не объявляет SPECIAL-USE в CAPABILITY, но сообщает те же роли через XLIST
+// (ImapFlow сам приводит их к одному и тому же полю specialUse) — отдельная
+// ветка под XLIST не нужна, только единая проверка specialUse + INBOX по
+// имени (INBOX — специальный регистронезависимый путь по RFC 3501, его
+// сервер отдельным флагом не помечает).
+export function mapSpecialUseToRole(path: string, specialUse: string | null): ProviderFolderRole {
+  if (path.toUpperCase() === 'INBOX') return 'INBOX';
+  switch (specialUse) {
+    case '\\Sent':
+      return 'SENT';
+    case '\\Archive':
+      return 'ARCHIVE';
+    case '\\Drafts':
+      return 'DRAFTS';
+    case '\\Junk':
+      return 'JUNK';
+    case '\\Trash':
+      return 'TRASH';
+    default:
+      // Фолбэк по имени — только для Sent (единственная роль, которой уже
+      // доверяли по имени до этого шага, см. SENT_FOLDER_NAME ниже); для
+      // Archive/Drafts/Trash жёсткое сопоставление по имени ТЗ прямо
+      // запрещает (раздел 9: "не по жёсткому русскому/английскому имени").
+      return SENT_FOLDER_NAME.test(path) ? 'SENT' : 'OTHER';
+  }
 }
 
 function normalizeMessageId(value: string | undefined | null): string | null {
@@ -119,15 +154,83 @@ class MailRuImapSession implements EmailSession {
   constructor(private readonly client: ImapFlow) {}
 
   async folders(): Promise<ProviderFolder[]> {
-    const list = await this.client.list();
-    const result: ProviderFolder[] = [];
-    for (const f of list) {
-      if (f.path.toUpperCase() === 'INBOX') result.push({ path: f.path, role: 'INBOX' });
-      else if (f.specialUse === '\\Sent' || SENT_FOLDER_NAME.test(f.path)) result.push({ path: f.path, role: 'SENT' });
-    }
+    const all = await this.listAllFolders();
+    const result = all.filter((f) => f.role === 'INBOX' || f.role === 'SENT');
     // Если сервер вернул несколько кандидатов на Sent — берём первый (по special-use он один).
     const seen = new Set<string>();
     return result.filter((f) => (seen.has(f.role) ? false : (seen.add(f.role), true)));
+  }
+
+  // Почтовый ИИ-агент v2.0 (05.10.2026) — ВСЕ папки, не только INBOX/SENT
+  // (folders() выше существующий синк не трогает, это для охвата/выбора
+  // папок в плане, раздел 4/9 ТЗ).
+  async listAllFolders(): Promise<ProviderFolder[]> {
+    const list = await this.client.list();
+    return list.map((f) => ({
+      path: f.path,
+      role: mapSpecialUseToRole(f.path, f.specialUse ?? null),
+      specialUse: f.specialUse ?? null,
+    }));
+  }
+
+  capabilities(): ProviderCapabilities {
+    return {
+      move: this.client.capabilities.has('MOVE'),
+      uidplus: this.client.capabilities.has('UIDPLUS'),
+    };
+  }
+
+  // Открывает папку НЕ readOnly (в отличие от fetchNew/fetchFlagsFrom —
+  // это пишущая операция) и сверяет UIDVALIDITY с locator ДО перемещения —
+  // раздел 15 ТЗ: "Старые координаты при смене UIDVALIDITY не исполнять".
+  async moveMessage(locator: MessageLocator, toFolderPath: string): Promise<MoveResult> {
+    const caps = this.capabilities();
+    if (!caps.move) {
+      // Раздел 15 ТЗ: "При отсутствии безопасного механизма — отказ операции
+      // с объяснением" — COPY + общий EXPUNGE здесь НЕ реализован намеренно
+      // (слишком легко случайно затронуть чужие сообщения в папке).
+      throw new Error('Провайдер не поддерживает безопасное перемещение (MOVE) — операция недоступна');
+    }
+    const lock = await this.client.getMailboxLock(locator.folderPath);
+    try {
+      const status = await this.client.status(locator.folderPath, { uidValidity: true });
+      if (String(status.uidValidity) !== locator.uidValidity) {
+        throw new StaleLocatorError();
+      }
+      const result = await this.client.messageMove(String(locator.uid), toFolderPath, { uid: true });
+      if (!result) {
+        throw new Error('Перемещение не выполнено сервером');
+      }
+      const newUid = result.uidMap?.get(locator.uid) ?? null;
+      return {
+        newUid: newUid ?? null,
+        newUidValidity: result.uidValidity != null ? String(result.uidValidity) : null,
+      };
+    } finally {
+      lock.release();
+    }
+  }
+
+  async changeFlag(locator: MessageLocator, flag: MessageFlag, set: boolean): Promise<void> {
+    const lock = await this.client.getMailboxLock(locator.folderPath);
+    try {
+      const status = await this.client.status(locator.folderPath, { uidValidity: true });
+      if (String(status.uidValidity) !== locator.uidValidity) {
+        throw new StaleLocatorError();
+      }
+      // Только ЭТОТ один флаг (massageFlagsAdd/Remove затрагивают ровно
+      // переданный список, не весь набор) — раздел 9/15 ТЗ.
+      if (set) await this.client.messageFlagsAdd(String(locator.uid), [flag], { uid: true });
+      else await this.client.messageFlagsRemove(String(locator.uid), [flag], { uid: true });
+    } finally {
+      lock.release();
+    }
+  }
+
+  async createFolder(parentPath: string | null, name: string): Promise<ProviderFolder & { created: boolean }> {
+    const path = parentPath ? [parentPath, name] : [name];
+    const result = await this.client.mailboxCreate(path);
+    return { path: result.path, role: 'OTHER', specialUse: null, created: result.created };
   }
 
   async openFolder(path: string): Promise<OpenedFolder> {

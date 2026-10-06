@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { TelegramModule } from '../telegram/telegram.module';
 import { ReceptionController } from './reception.controller';
 import { ReceptionService } from './reception.service';
-import { IdempotencyService } from './idempotency.service';
+import { IdempotencyService } from '../common/idempotency.service';
 import { ActiveEmployeeGuard } from './guards/active-employee.guard';
 import { ReceptionNotificationsCron } from './reception-notifications.cron';
 
