@@ -120,6 +120,13 @@ export class MailStore {
     await this.prisma.emailFolder.update({ where: { id }, data: patch });
   }
 
+  // Почтовый ИИ-агент v2.0 — список папок уже СИНКНУТЫХ ящиком (не живой
+  // IMAP-запрос): для подсказки анализу (раздел 9 ТЗ: MOVE предлагается
+  // только в реально существующую папку, агент не придумывает имена).
+  listFolders(mailboxId: string): Promise<{ path: string; role: EmailFolderRole }[]> {
+    return this.prisma.emailFolder.findMany({ where: { mailboxId }, select: { path: true, role: true } });
+  }
+
   findMessageByUid(folderId: string, uid: number): Promise<{ id: string; isRead: boolean } | null> {
     return this.prisma.emailMessage.findUnique({ where: { folderId_uid: { folderId, uid } }, select: { id: true, isRead: true } });
   }
@@ -332,6 +339,47 @@ export class MailStore {
       update: { status: 'FAILED', attempts: { increment: 1 } },
     });
   }
+
+  // Почтовый ИИ-агент v2.0 (05.10.2026) — кандидаты для анализа плана
+  // (mail-action-analysis.service.ts). folderPaths=null → только INBOX
+  // (типичный сценарий "разбери входящие"), не весь ящик — агент не трогает
+  // Sent/Drafts/Archive/Trash по умолчанию. Уже вынесенные в архив/корзину
+  // письма не предлагаются повторно (providerMissing тоже исключён, как
+  // везде — письмо реально пропало с сервера).
+  async listMessagesForActionAnalysis(
+    mailboxId: string,
+    scope: { folderPaths: string[] | null; since: string | null; until: string | null },
+    limit: number,
+  ): Promise<MessageForActionAnalysis[]> {
+    const folderWhere = scope.folderPaths ? { path: { in: scope.folderPaths } } : { role: 'INBOX' as const };
+    return this.prisma.emailMessage.findMany({
+      where: {
+        mailboxId,
+        isOutgoing: false,
+        isAutomated: false,
+        providerMissing: false,
+        folder: { is: folderWhere },
+        ...(scope.since || scope.until
+          ? { receivedAt: { gte: scope.since ? new Date(scope.since) : undefined, lte: scope.until ? new Date(scope.until) : undefined } }
+          : {}),
+      },
+      select: {
+        id: true,
+        uid: true,
+        subject: true,
+        fromAddress: true,
+        fromName: true,
+        receivedAt: true,
+        isRead: true,
+        hasAttachments: true,
+        textBody: true,
+        folder: { select: { path: true, uidValidity: true } },
+        analysis: { select: { importance: true, category: true } },
+      },
+      orderBy: { receivedAt: 'desc' },
+      take: limit,
+    });
+  }
 }
 
 export interface MessageForAnalysis {
@@ -345,6 +393,20 @@ export interface MessageForAnalysis {
   textBody: string | null;
   recipients: { type: 'TO' | 'CC' | 'BCC'; address: string }[];
   attachments: { fileName: string; extractedText: string | null }[];
+}
+
+export interface MessageForActionAnalysis {
+  id: string;
+  uid: number;
+  subject: string | null;
+  fromAddress: string;
+  fromName: string | null;
+  receivedAt: Date | null;
+  isRead: boolean;
+  hasAttachments: boolean;
+  textBody: string | null;
+  folder: { path: string; uidValidity: string | null };
+  analysis: { importance: string | null; category: string | null } | null;
 }
 
 export interface AnalysisSuccessData {

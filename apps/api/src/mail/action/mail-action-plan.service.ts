@@ -59,7 +59,7 @@ export class MailActionPlanService {
   // ANALYZING → READY. Собственной валидацией конфликтов здесь не
   // занимается — listItemsWithConflicts() считает их на лету при чтении,
   // чтобы правка одного пункта не требовала пересчёта и записи всех.
-  async attachAnalysisResult(planId: string, candidates: MailActionCandidate[]): Promise<void> {
+  async attachAnalysisResult(planId: string, candidates: MailActionCandidate[], coverage?: Prisma.InputJsonValue): Promise<void> {
     const idByLocalId = new Map(candidates.map((c) => [c.localId, randomUUID()]));
 
     await this.prisma.$transaction([
@@ -82,8 +82,16 @@ export class MailActionPlanService {
           },
         }),
       ),
-      this.prisma.mailActionPlan.update({ where: { id: planId }, data: { status: 'READY' } }),
+      this.prisma.mailActionPlan.update({ where: { id: planId }, data: { status: 'READY', coverage } }),
     ]);
+  }
+
+  // Раздел 6 ТЗ — coverage хранит "ошибки" наравне с "обнаружено/проверено":
+  // сбой анализа (LLM недоступен и т.п.) не оставляет план в ANALYZING
+  // навечно — READY с нулём пунктов и причиной в coverage, владелец видит
+  // честный результат, а не бесконечную загрузку.
+  async markAnalysisFailed(planId: string, reason: string): Promise<void> {
+    await this.prisma.mailActionPlan.update({ where: { id: planId }, data: { status: 'READY', coverage: { error: reason } } });
   }
 
   async listPlans(ownerId: string, mailboxId: string) {

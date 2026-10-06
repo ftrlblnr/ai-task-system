@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, NotFoundException, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Logger, NotFoundException, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { RolesGuard } from '../../auth/roles.guard';
@@ -10,6 +10,7 @@ import { MailStore } from '../mail-store';
 import { ApproveMailActionGroupDto } from './dto/approve-mail-action-group.dto';
 import { CreateMailActionPlanDto } from './dto/create-mail-action-plan.dto';
 import { PatchMailActionItemDto } from './dto/patch-mail-action-item.dto';
+import { MailActionAnalysisService } from './mail-action-analysis.service';
 import { MailActionApprovalService } from './mail-action-approval.service';
 import { MailActionExecutionService } from './mail-action-execution.service';
 import { MailActionPlanService } from './mail-action-plan.service';
@@ -22,11 +23,14 @@ import { MailActionPlanService } from './mail-action-plan.service';
 @Roles(Role.OWNER)
 @Controller('mail')
 export class MailActionController {
+  private readonly logger = new Logger(MailActionController.name);
+
   constructor(
     private readonly store: MailStore,
     private readonly plans: MailActionPlanService,
     private readonly approvals: MailActionApprovalService,
     private readonly executions: MailActionExecutionService,
+    private readonly analysis: MailActionAnalysisService,
     private readonly idempotency: IdempotencyService,
   ) {}
 
@@ -50,6 +54,11 @@ export class MailActionController {
     const key = this.requireIdempotencyKey(idemKey);
     const mailbox = await this.requireMailbox(user);
     const { body } = await this.idempotency.run(user.id, key, 'mail.action-plans.create', dto, () => this.plans.createPlan(user.id, mailbox.id, dto));
+    // Анализ — LLM-вызов, не блокирует HTTP-ответ (план создаётся в
+    // ANALYZING, клиент опрашивает GET .../:id до READY), тот же приём, что
+    // approveGroup → execution.start.
+    const planId = (body as { id: string }).id;
+    void this.analysis.analyzePlan(planId).catch((err: unknown) => this.logger.error(`analyzePlan failed: ${err instanceof Error ? err.message : String(err)}`));
     return body;
   }
 

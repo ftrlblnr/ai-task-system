@@ -13,6 +13,7 @@ import { MailSyncCron } from './mail-sync.cron';
 import { MailSyncService } from './mail-sync.service';
 import { MailRuImapProvider } from './providers/mailru-imap.provider';
 import { MailActionController } from './action/mail-action.controller';
+import { MailActionAnalysisService } from './action/mail-action-analysis.service';
 import { MailActionApprovalService } from './action/mail-action-approval.service';
 import { MailActionExecutionService } from './action/mail-action-execution.service';
 import { MailActionExecutorRegistry } from './action/mail-action-executor';
@@ -41,6 +42,7 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
     MailDigestCron,
     IdempotencyService,
     MailActionPlanService,
+    MailActionAnalysisService,
     MailActionApprovalService,
     MailActionExecutionService,
     MailActionExecutorRegistry,
