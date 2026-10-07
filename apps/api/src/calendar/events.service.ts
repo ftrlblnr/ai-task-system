@@ -56,9 +56,14 @@ export class EventsService {
     });
   }
 
-  async findOne(id: string) {
+  // ownerId обязателен (календарный агент ТЗ, раздел 4, C06) — модуль
+  // закрыт на роль OWNER целиком, но это не заменяет проверку конкретного
+  // объекта: при нескольких OWNER один не должен читать/менять событие
+  // другого по угаданному id. 404, не 403 — тот же принцип, что в
+  // приёмной (не раскрывать сам факт существования чужой записи).
+  async findOne(id: string, ownerId: string) {
     const event = await this.prisma.event.findUnique({ where: { id }, include: PARTICIPANTS_INCLUDE });
-    if (!event) throw new NotFoundException('Событие не найдено');
+    if (!event || event.createdById !== ownerId) throw new NotFoundException('Событие не найдено');
     return withParticipants(event);
   }
 
@@ -78,11 +83,11 @@ export class EventsService {
     });
 
     await this.pushBestEffort(employeeId, event.id);
-    return this.findOne(event.id);
+    return this.findOne(event.id, employeeId);
   }
 
   async update(id: string, dto: UpdateEventDto, employeeId: string) {
-    await this.findOne(id);
+    await this.findOne(id, employeeId);
     await this.prisma.event.update({
       where: { id },
       data: {
@@ -94,22 +99,22 @@ export class EventsService {
     });
 
     await this.pushBestEffort(employeeId, id);
-    return this.findOne(id);
+    return this.findOne(id, employeeId);
   }
 
   // Участники встречи (владелец 09.09.2026) — весь модуль и так закрыт на
   // OWNER, отдельной RBAC-проверки здесь не нужно (тот же принцип, что у
   // TasksService.addWatcher/removeWatcher, только без варианта "сам на
   // себя" — участников встречи назначает только руководитель).
-  async addParticipant(eventId: string, employeeId: string) {
-    await this.findOne(eventId); // 404, если встречи нет
+  async addParticipant(eventId: string, employeeId: string, ownerId: string) {
+    await this.findOne(eventId, ownerId); // 404, если встречи нет или принадлежит другому OWNER
     await this.prisma.eventParticipant.upsert({
       where: { eventId_employeeId: { eventId, employeeId } },
       create: { eventId, employeeId },
       update: {},
     });
 
-    const event = await this.findOne(eventId);
+    const event = await this.findOne(eventId, ownerId);
     const when = event.startAt.toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
     void this.prisma.employee
       .findUnique({ where: { id: employeeId }, select: { telegramId: true } })
@@ -118,14 +123,14 @@ export class EventsService {
     return event;
   }
 
-  async removeParticipant(eventId: string, employeeId: string) {
-    await this.findOne(eventId); // 404, если встречи нет
+  async removeParticipant(eventId: string, employeeId: string, ownerId: string) {
+    await this.findOne(eventId, ownerId); // 404, если встречи нет или принадлежит другому OWNER
     await this.prisma.eventParticipant.deleteMany({ where: { eventId, employeeId } });
-    return this.findOne(eventId);
+    return this.findOne(eventId, ownerId);
   }
 
   async remove(id: string, employeeId: string) {
-    const event = await this.findOne(id);
+    const event = await this.findOne(id, employeeId);
     if (event.googleEventId) {
       try {
         await this.sync.deleteFromGoogle(employeeId, event.googleEventId);

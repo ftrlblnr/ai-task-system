@@ -342,8 +342,8 @@ describe('VoiceService.executeEventAction (Stage 2, Phase H — entity для к
 
     const { entity } = await service.executeEventAction(draft, makeUser({ role: Role.OWNER }));
 
-    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp1');
-    expect(events.findOne).toHaveBeenCalledWith('e1');
+    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp1', 'u1');
+    expect(events.findOne).toHaveBeenCalledWith('e1', 'u1');
     expect(entity).toBe(refetched);
   });
 
@@ -653,8 +653,8 @@ describe('VoiceService.undo (Stage 2, Phase H.1 → H.4)', () => {
 
     await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.OWNER }));
 
-    expect(events.removeParticipant).toHaveBeenCalledWith('e1', 'emp1');
-    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp2');
+    expect(events.removeParticipant).toHaveBeenCalledWith('e1', 'emp1', 'u1');
+    expect(events.addParticipant).toHaveBeenCalledWith('e1', 'emp2', 'u1');
     expect(events.update).not.toHaveBeenCalled(); // previous пуст — нечего обновлять полями
   });
 

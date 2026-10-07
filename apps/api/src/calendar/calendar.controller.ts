@@ -65,13 +65,13 @@ export class CalendarController {
   }
 
   @Post('events/:id/participants')
-  addParticipant(@Param('id') id: string, @Body() dto: AddEventParticipantDto) {
-    return this.events.addParticipant(id, dto.employeeId);
+  addParticipant(@Param('id') id: string, @Body() dto: AddEventParticipantDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.events.addParticipant(id, dto.employeeId, user.id);
   }
 
   @Delete('events/:id/participants/:employeeId')
-  removeParticipant(@Param('id') id: string, @Param('employeeId') employeeId: string) {
-    return this.events.removeParticipant(id, employeeId);
+  removeParticipant(@Param('id') id: string, @Param('employeeId') employeeId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.events.removeParticipant(id, employeeId, user.id);
   }
 
   @Get('calendar/google/status')

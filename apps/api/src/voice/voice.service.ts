@@ -964,15 +964,15 @@ export class VoiceService {
   // читаемое описание, какие именно упали (result.warning, ok остаётся
   // true — сама встреча создана/изменена успешно, это вторичный сбой, тот
   // же decoupling-принцип, что и у createUndoRecord).
-  private async applyParticipants(eventId: string, addParticipantIds: string[], removeParticipantIds: string[]): Promise<string | null> {
+  private async applyParticipants(eventId: string, addParticipantIds: string[], removeParticipantIds: string[], ownerId: string): Promise<string | null> {
     const failures: string[] = [];
     for (const employeeId of addParticipantIds) {
-      await this.events.addParticipant(eventId, employeeId).catch((err) => {
+      await this.events.addParticipant(eventId, employeeId, ownerId).catch((err) => {
         failures.push(`не удалось добавить участника ${employeeId}: ${toErrorMessage(err)}`);
       });
     }
     for (const employeeId of removeParticipantIds) {
-      await this.events.removeParticipant(eventId, employeeId).catch((err) => {
+      await this.events.removeParticipant(eventId, employeeId, ownerId).catch((err) => {
         failures.push(`не удалось убрать участника ${employeeId}: ${toErrorMessage(err)}`);
       });
     }
@@ -998,13 +998,13 @@ export class VoiceService {
           allDay: draft.allDay ?? false,
         };
         const created = await this.events.create(dto, user.id);
-        const warning = await this.applyParticipants(created.id, draft.addParticipantIds, []);
+        const warning = await this.applyParticipants(created.id, draft.addParticipantIds, [], user.id);
         // Свежая сущность ПОСЛЕ добавления участников (Stage 2, Phase H) —
         // created сам по себе ещё не знает про них (addParticipant меняет
         // строку в БД уже после того, как created был получен), карточка с
         // пустым participants была бы неверна для только что созданной
         // встречи с указанными участниками.
-        const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id) : created;
+        const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id, user.id) : created;
         const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.CREATE, created.id);
         return {
           result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, undoToken, warning },
@@ -1025,7 +1025,7 @@ export class VoiceService {
 
         const previous: EventRevertPayload = {};
         if (Object.keys(dto).length > 0) {
-          const before = await this.events.findOne(draft.targetEventId);
+          const before = await this.events.findOne(draft.targetEventId, user.id);
           if (dto.title !== undefined) previous.title = before.title;
           if (dto.description !== undefined) previous.description = before.description ?? '';
           if (dto.location !== undefined) previous.location = before.location ?? '';
@@ -1034,11 +1034,11 @@ export class VoiceService {
           if (dto.allDay !== undefined) previous.allDay = before.allDay;
           await this.events.update(draft.targetEventId, dto, user.id);
         }
-        const warning = await this.applyParticipants(draft.targetEventId, draft.addParticipantIds, draft.removeParticipantIds);
+        const warning = await this.applyParticipants(draft.targetEventId, draft.addParticipantIds, draft.removeParticipantIds, user.id);
         // Один финальный findOne после всех изменений (полей + участников)
         // — Stage 2, Phase H: раньше возврат update()/addParticipant не
         // использовался вовсе, строить карточку было не из чего.
-        const entity = await this.events.findOne(draft.targetEventId);
+        const entity = await this.events.findOne(draft.targetEventId, user.id);
         const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.UPDATE, draft.targetEventId, {
           previous,
           addedParticipantIds: draft.addParticipantIds,
@@ -1219,14 +1219,14 @@ export class VoiceService {
           const addedParticipantIds = (record.addedParticipantIds ?? []) as string[];
           const removedParticipantIds = (record.removedParticipantIds ?? []) as string[];
           for (const employeeId of addedParticipantIds) {
-            await this.events.removeParticipant(record.entityId, employeeId).catch((err) => {
+            await this.events.removeParticipant(record.entityId, employeeId, user.id).catch((err) => {
               const message = `не удалось откатить добавленного участника ${employeeId}: ${toErrorMessage(err)}`;
               this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
               participantFailures.push(message);
             });
           }
           for (const employeeId of removedParticipantIds) {
-            await this.events.addParticipant(record.entityId, employeeId).catch((err) => {
+            await this.events.addParticipant(record.entityId, employeeId, user.id).catch((err) => {
               const message = `не удалось восстановить снятого участника ${employeeId}: ${toErrorMessage(err)}`;
               this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
               participantFailures.push(message);
