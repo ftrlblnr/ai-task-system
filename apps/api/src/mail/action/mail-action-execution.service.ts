@@ -1,7 +1,17 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { MailActionAttemptOutcome, MailActionItem, MailActionItemStatus, Prisma } from '@prisma/client';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import type { MailActionItem, MailActionItemStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { mapOutcomeToAttemptOutcome, MailActionExecutionContext, MailActionExecutorRegistry, MailActionExecutorResult } from './mail-action-executor';
+import {
+  mapOutcomeToAttemptOutcome,
+  MailActionExecutionContext,
+  MailActionExecutorRegistry,
+  MailActionExecutorResult,
+} from './mail-action-executor';
 import { MailActionSessionFactory } from './mail-action-session-factory';
 import { topoSortMailActionItems } from './mail-action-rules';
 import type { EmailSession } from '../providers/email-provider';
@@ -10,7 +20,10 @@ import type { EmailSession } from '../providers/email-provider';
 // исполнение; пока оно QUEUED/RUNNING — стоп только взводит флаг, не трогает
 // state напрямую (сам цикл в start() доводит до STOPPED между пунктами).
 const RETRIABLE_EXECUTION_STATES = new Set(['DONE', 'STOPPED']);
-const RETRIABLE_ITEM_STATUSES: ReadonlySet<MailActionItemStatus> = new Set(['FAILED', 'UNKNOWN']);
+const RETRIABLE_ITEM_STATUSES: ReadonlySet<MailActionItemStatus> = new Set([
+  'FAILED',
+  'UNKNOWN',
+]);
 
 // Движок исполнения одобренной группы (раздел 14-16 ТЗ). Знает только про
 // статусы/журнал/порядок зависимостей — САМО действие (архивировать,
@@ -32,7 +45,8 @@ export class MailActionExecutionService {
       where: { id: executionId },
       include: { approval: { include: { plan: true } } },
     });
-    if (!execution || execution.approval.plan.ownerId !== ownerId) throw new NotFoundException('Исполнение не найдено');
+    if (!execution || execution.approval.plan.ownerId !== ownerId)
+      throw new NotFoundException('Исполнение не найдено');
     return execution;
   }
 
@@ -50,15 +64,24 @@ export class MailActionExecutionService {
     try {
       await this.runLoop(executionId);
     } catch (err) {
-      this.logger.error(`execution ${executionId} failed: ${err instanceof Error ? err.message : String(err)}`);
-      await this.prisma.mailActionExecution.update({ where: { id: executionId }, data: { state: 'STOPPED', finishedAt: new Date() } });
+      this.logger.error(
+        `execution ${executionId} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      await this.prisma.mailActionExecution.update({
+        where: { id: executionId },
+        data: { state: 'STOPPED', finishedAt: new Date() },
+      });
     }
   }
 
   private async runLoop(executionId: string): Promise<void> {
     const execution = await this.prisma.mailActionExecution.findUniqueOrThrow({
       where: { id: executionId },
-      include: { approval: { include: { items: { include: { attempts: true } }, plan: true } } },
+      include: {
+        approval: {
+          include: { items: { include: { attempts: true } }, plan: true },
+        },
+      },
     });
     const mailboxId = execution.approval.plan.mailboxId;
     const ordered = topoSortMailActionItems(
@@ -80,12 +103,17 @@ export class MailActionExecutionService {
     try {
       session = await this.sessions.openSession(mailboxId);
     } catch (err) {
-      this.logger.error(`mailbox session open failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(
+        `mailbox session open failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       await this.prisma.mailActionItem.updateMany({
         where: { id: { in: ordered.map((i) => i.id) }, status: 'QUEUED' },
         data: { status: 'FAILED' },
       });
-      await this.prisma.mailActionExecution.update({ where: { id: executionId }, data: { state: 'DONE', finishedAt: new Date() } });
+      await this.prisma.mailActionExecution.update({
+        where: { id: executionId },
+        data: { state: 'DONE', finishedAt: new Date() },
+      });
       return;
     }
 
@@ -94,20 +122,31 @@ export class MailActionExecutionService {
 
     try {
       for (const item of ordered) {
-        const fresh = await this.prisma.mailActionExecution.findUniqueOrThrow({ where: { id: executionId }, select: { cancelRequestedAt: true } });
+        const fresh = await this.prisma.mailActionExecution.findUniqueOrThrow({
+          where: { id: executionId },
+          select: { cancelRequestedAt: true },
+        });
         if (fresh.cancelRequestedAt) {
           stopped = true;
           break;
         }
 
-        const blocked = item.dependsOnItemIds.some((depId) => finalStatusByItemId.get(depId) !== 'SUCCEEDED');
+        const blocked = item.dependsOnItemIds.some(
+          (depId) => finalStatusByItemId.get(depId) !== 'SUCCEEDED',
+        );
         if (blocked) {
-          await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: 'BLOCKED_DEPENDENCY', version: { increment: 1 } } });
+          await this.prisma.mailActionItem.update({
+            where: { id: item.id },
+            data: { status: 'BLOCKED_DEPENDENCY', version: { increment: 1 } },
+          });
           finalStatusByItemId.set(item.id, 'BLOCKED_DEPENDENCY');
           continue;
         }
 
-        finalStatusByItemId.set(item.id, await this.runItem(item, { mailboxId, session }));
+        finalStatusByItemId.set(
+          item.id,
+          await this.runItem(item, { mailboxId, session }),
+        );
       }
     } finally {
       await session.close().catch(() => undefined);
@@ -119,63 +158,100 @@ export class MailActionExecutionService {
     });
   }
 
-  private async runItem(item: MailActionItem, ctx: MailActionExecutionContext): Promise<MailActionItemStatus> {
-    await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: 'RUNNING', version: { increment: 1 } } });
-    const attemptNumber = (await this.prisma.mailActionAttempt.count({ where: { actionId: item.id } })) + 1;
+  private async runItem(
+    item: MailActionItem,
+    ctx: MailActionExecutionContext,
+  ): Promise<MailActionItemStatus> {
+    await this.prisma.mailActionItem.update({
+      where: { id: item.id },
+      data: { status: 'RUNNING', version: { increment: 1 } },
+    });
+    const attemptNumber =
+      (await this.prisma.mailActionAttempt.count({
+        where: { actionId: item.id },
+      })) + 1;
 
     const executor = this.executors.get(item.type);
     const result: MailActionExecutorResult = executor
-      ? await executor.execute(item, ctx).catch(
-          (err: unknown): MailActionExecutorResult => ({
+      ? await executor
+          .execute(item, ctx)
+          .catch((err: unknown): MailActionExecutorResult => ({
             outcome: 'FAILED',
             errorCode: 'EXECUTOR_ERROR',
-            providerResult: { message: err instanceof Error ? err.message : String(err) },
-          }),
-        )
+            providerResult: {
+              message: err instanceof Error ? err.message : String(err),
+            },
+          }))
       : { outcome: 'FAILED', errorCode: 'NOT_IMPLEMENTED' };
 
     await this.prisma.mailActionAttempt.create({
       data: {
         actionId: item.id,
         attemptNumber,
-        intent: { type: item.type, parameters: item.parameters } as Prisma.InputJsonValue,
-        providerResult: (result.providerResult ?? undefined) as Prisma.InputJsonValue | undefined,
-        destinationLocator: (result.destinationLocator ?? undefined) as Prisma.InputJsonValue | undefined,
+        intent: { type: item.type, parameters: item.parameters },
+        providerResult: result.providerResult ?? undefined,
+        destinationLocator: result.destinationLocator ?? undefined,
         errorCode: result.errorCode,
-        outcome: mapOutcomeToAttemptOutcome(result.outcome) satisfies MailActionAttemptOutcome,
+        outcome: mapOutcomeToAttemptOutcome(result.outcome),
         finishedAt: new Date(),
       },
     });
 
-    await this.prisma.mailActionItem.update({ where: { id: item.id }, data: { status: result.outcome, version: { increment: 1 } } });
+    await this.prisma.mailActionItem.update({
+      where: { id: item.id },
+      data: { status: result.outcome, version: { increment: 1 } },
+    });
     return result.outcome;
   }
 
   async stop(ownerId: string, executionId: string) {
     const execution = await this.getExecutionOrThrow(ownerId, executionId);
     if (execution.state === 'QUEUED' || execution.state === 'RUNNING') {
-      await this.prisma.mailActionExecution.update({ where: { id: execution.id }, data: { cancelRequestedAt: new Date() } });
+      await this.prisma.mailActionExecution.update({
+        where: { id: execution.id },
+        data: { cancelRequestedAt: new Date() },
+      });
     }
-    return this.prisma.mailActionExecution.findUniqueOrThrow({ where: { id: execution.id } });
+    return this.prisma.mailActionExecution.findUniqueOrThrow({
+      where: { id: execution.id },
+    });
   }
 
   async retry(ownerId: string, executionId: string) {
     const execution = await this.getExecutionOrThrow(ownerId, executionId);
     if (!RETRIABLE_EXECUTION_STATES.has(execution.state)) {
-      throw new ConflictException('EXECUTION_NOT_RETRIABLE: исполнение ещё выполняется');
+      throw new ConflictException(
+        'EXECUTION_NOT_RETRIABLE: исполнение ещё выполняется',
+      );
     }
     const retried = await this.prisma.mailActionItem.updateMany({
-      where: { approvalId: execution.approvalId, status: { in: Array.from(RETRIABLE_ITEM_STATUSES) } },
+      where: {
+        approvalId: execution.approvalId,
+        status: { in: Array.from(RETRIABLE_ITEM_STATUSES) },
+      },
       data: { status: 'QUEUED', version: { increment: 1 } },
     });
     if (retried.count === 0) {
-      throw new ConflictException('NOTHING_TO_RETRY: нет пунктов в состоянии FAILED/UNKNOWN');
+      throw new ConflictException(
+        'NOTHING_TO_RETRY: нет пунктов в состоянии FAILED/UNKNOWN',
+      );
     }
     await this.prisma.mailActionExecution.update({
       where: { id: execution.id },
-      data: { state: 'QUEUED', cancelRequestedAt: null, finishedAt: null, startedAt: null },
+      data: {
+        state: 'QUEUED',
+        cancelRequestedAt: null,
+        finishedAt: null,
+        startedAt: null,
+      },
     });
-    void this.start(execution.id).catch((err: unknown) => this.logger.error(`retry start failed: ${err instanceof Error ? err.message : String(err)}`));
-    return this.prisma.mailActionExecution.findUniqueOrThrow({ where: { id: execution.id } });
+    void this.start(execution.id).catch((err: unknown) =>
+      this.logger.error(
+        `retry start failed: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    return this.prisma.mailActionExecution.findUniqueOrThrow({
+      where: { id: execution.id },
+    });
   }
 }

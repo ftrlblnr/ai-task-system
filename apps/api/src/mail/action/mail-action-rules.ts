@@ -10,30 +10,35 @@ import { createHash } from 'node:crypto';
 // "Рабочие объекты" (задачи/вложения/внутренние события/наблюдения),
 // "Внешняя отправка" (ответы/переадресация/приглашения) — отдельная кнопка,
 // и Корзина — своя явно названная группа (раздел 9: не прячем в "Порядок").
-export const GROUP_BY_ACTION_TYPE: Record<MailActionType, MailActionGroupType> = {
-  ARCHIVE: 'MAILBOX_ORDER',
-  MOVE: 'MAILBOX_ORDER',
-  CREATE_FOLDER: 'MAILBOX_ORDER',
-  SET_READ: 'MAILBOX_ORDER',
-  SET_UNREAD: 'MAILBOX_ORDER',
-  FLAG: 'MAILBOX_ORDER',
-  UNFLAG: 'MAILBOX_ORDER',
-  TRASH: 'TRASH',
-  CREATE_TASK: 'WORK_OBJECTS',
-  SAVE_ATTACHMENT: 'WORK_OBJECTS',
-  DRAFT_REPLY: 'WORK_OBJECTS',
-  CREATE_EVENT: 'WORK_OBJECTS',
-  WATCH_REPLY: 'WORK_OBJECTS',
-  WATCH_COMMITMENT: 'WORK_OBJECTS',
-  DRAFT_REMINDER: 'WORK_OBJECTS',
-  SEND_REPLY: 'EXTERNAL_SEND',
-  FORWARD: 'EXTERNAL_SEND',
-  PROPOSE_MEETING: 'EXTERNAL_SEND',
-};
+export const GROUP_BY_ACTION_TYPE: Record<MailActionType, MailActionGroupType> =
+  {
+    ARCHIVE: 'MAILBOX_ORDER',
+    MOVE: 'MAILBOX_ORDER',
+    CREATE_FOLDER: 'MAILBOX_ORDER',
+    SET_READ: 'MAILBOX_ORDER',
+    SET_UNREAD: 'MAILBOX_ORDER',
+    FLAG: 'MAILBOX_ORDER',
+    UNFLAG: 'MAILBOX_ORDER',
+    TRASH: 'TRASH',
+    CREATE_TASK: 'WORK_OBJECTS',
+    SAVE_ATTACHMENT: 'WORK_OBJECTS',
+    DRAFT_REPLY: 'WORK_OBJECTS',
+    CREATE_EVENT: 'WORK_OBJECTS',
+    WATCH_REPLY: 'WORK_OBJECTS',
+    WATCH_COMMITMENT: 'WORK_OBJECTS',
+    DRAFT_REMINDER: 'WORK_OBJECTS',
+    SEND_REPLY: 'EXTERNAL_SEND',
+    FORWARD: 'EXTERNAL_SEND',
+    PROPOSE_MEETING: 'EXTERNAL_SEND',
+  };
 
 // Раздел 8 ТЗ — терминальные перемещения письма: взаимоисключающие,
 // максимум одно на письмо в рамках одного плана.
-const TERMINAL_MOVE_TYPES: ReadonlySet<MailActionType> = new Set(['ARCHIVE', 'MOVE', 'TRASH']);
+const TERMINAL_MOVE_TYPES: ReadonlySet<MailActionType> = new Set([
+  'ARCHIVE',
+  'MOVE',
+  'TRASH',
+]);
 
 export interface MailActionCandidateItem {
   // Идентификатор внутри плана, используется только для ссылок между
@@ -50,7 +55,8 @@ export interface MailActionConflict {
   // 'FLAG_STATE' — SET_READ×SET_UNREAD или FLAG×UNFLAG на то же письмо.
   // 'MISSING_DEPENDENCY' — dependsOnItemIds ссылается на localId, которого нет в плане.
   // 'DEPENDENCY_CYCLE' — зависимости образуют цикл (CREATE_FOLDER↔MOVE и т.п.).
-  code: 'TERMINAL_MOVE' | 'FLAG_STATE' | 'MISSING_DEPENDENCY' | 'DEPENDENCY_CYCLE';
+  code:
+    'TERMINAL_MOVE' | 'FLAG_STATE' | 'MISSING_DEPENDENCY' | 'DEPENDENCY_CYCLE';
   itemLocalIds: string[];
   stableObjectId?: string;
 }
@@ -64,7 +70,9 @@ const FLAG_STATE_OPPOSITES: Partial<Record<MailActionType, MailActionType>> = {
 
 // Раздел 8 ТЗ — проверяет ВСЕ пункты плана целиком (не по одному), чтобы
 // найти конфликты между ними до того, как план перейдёт в READY.
-export function validateMailActionConflicts(items: MailActionCandidateItem[]): MailActionConflict[] {
+export function validateMailActionConflicts(
+  items: MailActionCandidateItem[],
+): MailActionConflict[] {
   const conflicts: MailActionConflict[] = [];
   const byLocalId = new Map(items.map((i) => [i.localId, i]));
 
@@ -72,7 +80,10 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
   // затронутому stableObjectId независимо (один пункт может затрагивать
   // несколько объектов, например вложение + его письмо).
   const terminalByObject = new Map<string, MailActionCandidateItem[]>();
-  const flagByObjectAndType = new Map<string, Map<MailActionType, MailActionCandidateItem[]>>();
+  const flagByObjectAndType = new Map<
+    string,
+    Map<MailActionType, MailActionCandidateItem[]>
+  >();
 
   for (const item of items) {
     for (const objectId of item.stableObjectIds) {
@@ -82,7 +93,9 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
         terminalByObject.set(objectId, list);
       }
       if (FLAG_STATE_OPPOSITES[item.type]) {
-        const byType = flagByObjectAndType.get(objectId) ?? new Map();
+        const byType =
+          flagByObjectAndType.get(objectId) ??
+          new Map<MailActionType, MailActionCandidateItem[]>();
         const list = byType.get(item.type) ?? [];
         list.push(item);
         byType.set(item.type, list);
@@ -93,7 +106,11 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
 
   for (const [objectId, list] of terminalByObject) {
     if (list.length > 1) {
-      conflicts.push({ code: 'TERMINAL_MOVE', itemLocalIds: list.map((i) => i.localId), stableObjectId: objectId });
+      conflicts.push({
+        code: 'TERMINAL_MOVE',
+        itemLocalIds: list.map((i) => i.localId),
+        stableObjectId: objectId,
+      });
     }
   }
 
@@ -108,7 +125,10 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
       if (oppositeList?.length) {
         conflicts.push({
           code: 'FLAG_STATE',
-          itemLocalIds: [...list.map((i) => i.localId), ...oppositeList.map((i) => i.localId)],
+          itemLocalIds: [
+            ...list.map((i) => i.localId),
+            ...oppositeList.map((i) => i.localId),
+          ],
           stableObjectId: objectId,
         });
       }
@@ -130,13 +150,19 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
         const key = `${localId}->${depId}`;
         if (!seenMissing.has(key)) {
           seenMissing.add(key);
-          conflicts.push({ code: 'MISSING_DEPENDENCY', itemLocalIds: [localId] });
+          conflicts.push({
+            code: 'MISSING_DEPENDENCY',
+            itemLocalIds: [localId],
+          });
         }
         continue;
       }
       const depColor = color.get(depId);
       if (depColor === GRAY) {
-        conflicts.push({ code: 'DEPENDENCY_CYCLE', itemLocalIds: [...stack, localId, depId] });
+        conflicts.push({
+          code: 'DEPENDENCY_CYCLE',
+          itemLocalIds: [...stack, localId, depId],
+        });
         continue;
       }
       if (depColor === WHITE) {
@@ -157,8 +183,13 @@ export function validateMailActionConflicts(items: MailActionCandidateItem[]): M
 // изменение параметров требует нового согласия. Детерминированный хэш по
 // типу действия + параметрам (НЕ по stableObjectIds/dependsOn — те сверяются
 // отдельно, через version/snapshot).
-export function computeMailActionPayloadHash(type: MailActionType, parameters: unknown): string {
-  return createHash('sha256').update(JSON.stringify({ type, parameters })).digest('hex');
+export function computeMailActionPayloadHash(
+  type: MailActionType,
+  parameters: unknown,
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ type, parameters }))
+    .digest('hex');
 }
 
 // Раздел 14 ТЗ — хэш ВСЕГО замороженного снимка согласия (не одного
@@ -174,7 +205,9 @@ export function computeSnapshotHash(snapshot: unknown): string {
 // пункта (MOVE). Вызывающий код уже знает, что цикла нет (прошёл
 // validateMailActionConflicts без DEPENDENCY_CYCLE) — здесь это не
 // перепроверяется, только сортировка.
-export function topoSortMailActionItems<T extends { localId: string; dependsOnItemIds: string[] }>(items: T[]): T[] {
+export function topoSortMailActionItems<
+  T extends { localId: string; dependsOnItemIds: string[] },
+>(items: T[]): T[] {
   const byLocalId = new Map(items.map((i) => [i.localId, i]));
   const result: T[] = [];
   const visited = new Set<string>();

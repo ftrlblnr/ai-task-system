@@ -1,12 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { MailActionAttemptOutcome, MailActionItem, MailActionItemStatus, MailActionType } from '@prisma/client';
+import {
+  MailActionAttemptOutcome,
+  MailActionItem,
+  MailActionItemStatus,
+  MailActionType,
+} from '@prisma/client';
 import type { EmailSession } from '../providers/email-provider';
 
 // Раздел 16 ТЗ — только эти 4 исхода попытки отображаются в статус пункта;
 // SKIPPED_CHANGED — отдельный путь (раздел 14/15: "старые координаты не
 // исполнять"), BLOCKED_DEPENDENCY/CANCELLED/COMPENSATED выставляет сам
 // движок (mail-action-execution.service.ts), не исполнитель конкретного типа.
-export type MailActionExecutorOutcome = Extract<MailActionItemStatus, 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'SKIPPED_CHANGED'>;
+export type MailActionExecutorOutcome = Extract<
+  MailActionItemStatus,
+  'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'SKIPPED_CHANGED'
+>;
 
 export interface MailActionExecutorResult {
   outcome: MailActionExecutorOutcome;
@@ -27,11 +35,20 @@ export interface MailActionExecutionContext {
 // типы получат свой исполнитель на следующих этапах). Сам ходит в провайдер
 // (EmailSession) — движок (#122) про IMAP ничего не знает, только про
 // статусы/журнал.
+// Свойство-функция, не метод (shorthand `execute(...)` заставляет
+// @typescript-eslint/unbound-method подозревать небезопасный `this` при
+// любом обращении к executor.execute без немедленного вызова — в тестах
+// это обычное `expect(executor.execute).toHaveBeenCalled()`).
 export interface MailActionExecutor {
-  execute(item: MailActionItem, ctx: MailActionExecutionContext): Promise<MailActionExecutorResult>;
+  execute: (
+    item: MailActionItem,
+    ctx: MailActionExecutionContext,
+  ) => Promise<MailActionExecutorResult>;
 }
 
-export function mapOutcomeToAttemptOutcome(outcome: MailActionExecutorOutcome): MailActionAttemptOutcome {
+export function mapOutcomeToAttemptOutcome(
+  outcome: MailActionExecutorOutcome,
+): MailActionAttemptOutcome {
   return outcome === 'SKIPPED_CHANGED' ? 'UNKNOWN' : outcome;
 }
 
