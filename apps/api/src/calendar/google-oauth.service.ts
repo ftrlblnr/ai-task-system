@@ -129,6 +129,7 @@ export class GoogleOAuthService {
         // Новое подключение — предыдущий канал/sync-токен больше не валиден.
         syncToken: null,
         channelId: null,
+        channelToken: null,
         channelResourceId: null,
         channelExpiresAt: null,
       },

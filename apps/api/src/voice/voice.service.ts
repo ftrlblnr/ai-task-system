@@ -1032,7 +1032,11 @@ export class VoiceService {
           if (dto.startAt !== undefined) previous.startAt = before.startAt.toISOString();
           if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
           if (dto.allDay !== undefined) previous.allDay = before.allDay;
-          await this.events.update(draft.targetEventId, dto, user.id);
+          // Раздел 17 ТЗ — version только что прочитанного before: гонка с
+          // параллельной правкой (другая голосовая команда, веб, обратная
+          // синхронизация Google) теперь корректно даёт конфликт, а не
+          // тихую перезапись.
+          await this.events.update(draft.targetEventId, { ...dto, version: before.version }, user.id);
         }
         const warning = await this.applyParticipants(draft.targetEventId, draft.addParticipantIds, draft.removeParticipantIds, user.id);
         // Один финальный findOne после всех изменений (полей + участников)

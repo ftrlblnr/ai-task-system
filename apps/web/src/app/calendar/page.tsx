@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState, type FormEvent } from 'react';
+import { Suspense, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { CalendarDays, ExternalLink, Link2, Link2Off, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type {
@@ -206,6 +206,23 @@ function GoogleConnectionCard() {
   );
 }
 
+// Раздел 18.2 ТЗ календарного агента — POST /events требует Idempotency-Key
+// (тот же приём, что reception/page.tsx): ключ сгенерирован один раз на
+// попытку создания и переиспользуется при повторе ТОГО ЖЕ действия,
+// сбрасывается на новый только после успеха.
+function useIdempotencyKey(): { key: () => string; reset: () => void } {
+  const ref = useRef<string | null>(null);
+  return {
+    key: () => {
+      if (!ref.current) ref.current = crypto.randomUUID();
+      return ref.current;
+    },
+    reset: () => {
+      ref.current = null;
+    },
+  };
+}
+
 function NewEventForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -215,6 +232,7 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
   const [end, setEnd] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -228,7 +246,8 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
         startAt: new Date(start).toISOString(),
         endAt: new Date(end).toISOString(),
       };
-      await api.post('/events', payload);
+      await api.post('/events', payload, { 'Idempotency-Key': idem.key() });
+      idem.reset();
       setTitle('');
       setLocation('');
       setDescription('');

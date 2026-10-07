@@ -941,6 +941,12 @@ model Event {
   allDay      Boolean     @default(false)
   status      EventStatus @default(CONFIRMED)
 
+  // Календарный агент, раздел 17 ТЗ — optimistic concurrency на правку
+  // (тот же приём, что ReceptionRequest.version): клиент передаёт
+  // ожидаемую версию, несовпадение → 409, а не тихая перезапись чужой
+  // правки (включая правку от обратной синхронизации Google).
+  version Int @default(1)
+
   // Кто последним менял событие и с какой стороны — last-write-wins
   // при двусторонней синхронизации (см. комментарий к блоку выше).
   lastModifiedBy EventSource @default(INTERNAL)
@@ -1001,6 +1007,12 @@ model GoogleCalendarConnection {
   channelId         String?
   channelResourceId String?
   channelExpiresAt  DateTime?
+  // Календарный агент, раздел 19 ТЗ — "проверять канал, resourceId и
+  // секрет channel token": без него любой POST с угаданным/подслушанным
+  // channelId на публичный /calendar/google/webhook запускал бы pull от
+  // имени этого сотрудника. Google возвращает его назад в заголовке
+  // X-Goog-Channel-Token на каждом уведомлении канала.
+  channelToken String?
 
   connectedAt DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -21,6 +23,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { IdempotencyService } from '../common/idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsService } from './events.service';
 import { GoogleOAuthService } from './google-oauth.service';
@@ -41,6 +44,7 @@ export class CalendarController {
     private readonly oauth: GoogleOAuthService,
     private readonly sync: GoogleCalendarSyncService,
     private readonly prisma: PrismaService,
+    private readonly idempotency: IdempotencyService,
   ) {}
 
   @Get('events')
@@ -48,9 +52,18 @@ export class CalendarController {
     return this.events.findAll(user.id);
   }
 
+  // Idempotency-Key обязателен (раздел 18.2 ТЗ календарного агента) —
+  // повтор создания (двойной клик, таймаут с ретраем) не должен создавать
+  // второе событие и вторую отправку в Google.
   @Post('events')
-  create(@Body() dto: CreateEventDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.events.create(dto, user.id);
+  async create(
+    @Body() dto: CreateEventDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') idemKey?: string,
+  ) {
+    if (!idemKey) throw new BadRequestException('Заголовок Idempotency-Key обязателен для этого действия');
+    const { body } = await this.idempotency.run(user.id, idemKey, 'calendar.events.create', dto, () => this.events.create(dto, user.id));
+    return body;
   }
 
   @Patch('events/:id')
@@ -151,9 +164,16 @@ export class GoogleCalendarPublicController {
 
     const connection = await this.prisma.googleCalendarConnection.findFirst({
       where: { channelId },
-      select: { employeeId: true },
+      select: { employeeId: true, channelToken: true },
     });
     if (!connection) return { ok: true };
+
+    // Раздел 19 ТЗ — секрет канала: без сверки с X-Goog-Channel-Token
+    // любой, кто подсмотрел/угадал channelId, мог бы дёргать pull от
+    // имени этого сотрудника через публичный (без JwtAuthGuard) вебхук.
+    if (connection.channelToken && req.header('X-Goog-Channel-Token') !== connection.channelToken) {
+      return { ok: true };
+    }
 
     // Не блокируем ответ Google — они ждут быстрый 200, дельту тянем асинхронно.
     this.sync.pullChanges(connection.employeeId).catch(() => {});

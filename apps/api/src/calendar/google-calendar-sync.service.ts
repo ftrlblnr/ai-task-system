@@ -229,7 +229,11 @@ export class GoogleCalendarSyncService {
     };
 
     if (existing) {
-      await this.prisma.event.update({ where: { id: existing.id }, data });
+      // Раздел 17 ТЗ — внешняя правка (из Google) тоже делает удерживаемую
+      // клиентом version устаревшей: следующая попытка отредактировать по
+      // старой копии корректно получит 409, а не тихо перезапишет то, что
+      // только что пришло снаружи.
+      await this.prisma.event.update({ where: { id: existing.id }, data: { ...data, version: { increment: 1 } } });
     } else {
       await this.prisma.event.create({ data: { ...data, createdById: employeeId } });
     }
@@ -250,16 +254,21 @@ export class GoogleCalendarSyncService {
 
     const calendar = await this.calendarClient(employeeId);
     const channelId = randomUUID();
+    // Раздел 19 ТЗ — секрет канала; Google возвращает его назад в каждом
+    // push-уведомлении этого канала (X-Goog-Channel-Token), webhook
+    // сверяет его с сохранённым перед тем, как запускать pull.
+    const channelToken = randomUUID();
 
     const response = await calendar.events.watch({
       calendarId: connection.calendarId,
-      requestBody: { id: channelId, type: 'web_hook', address: webhookUrl },
+      requestBody: { id: channelId, type: 'web_hook', address: webhookUrl, token: channelToken },
     });
 
     await this.prisma.googleCalendarConnection.update({
       where: { employeeId },
       data: {
         channelId,
+        channelToken,
         channelResourceId: response.data.resourceId ?? null,
         channelExpiresAt: response.data.expiration ? new Date(Number(response.data.expiration)) : null,
       },

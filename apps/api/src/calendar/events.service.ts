@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventSource, EventStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
@@ -88,15 +88,37 @@ export class EventsService {
 
   async update(id: string, dto: UpdateEventDto, employeeId: string) {
     await this.findOne(id, employeeId);
-    await this.prisma.event.update({
-      where: { id },
-      data: {
-        ...dto,
-        startAt: dto.startAt ? new Date(dto.startAt) : undefined,
-        endAt: dto.endAt ? new Date(dto.endAt) : undefined,
-        lastModifiedBy: EventSource.INTERNAL,
-      },
-    });
+    const { version: expectedVersion, ...fields } = dto;
+
+    if (expectedVersion !== undefined) {
+      // Раздел 17 ТЗ — атомарная проверка версии: клиент передал её,
+      // значит готов получить 409 вместо тихой перезаписи чужой правки
+      // (включая правку, пришедшую обратной синхронизацией из Google).
+      const result = await this.prisma.event.updateMany({
+        where: { id, version: expectedVersion },
+        data: {
+          ...fields,
+          startAt: fields.startAt ? new Date(fields.startAt) : undefined,
+          endAt: fields.endAt ? new Date(fields.endAt) : undefined,
+          lastModifiedBy: EventSource.INTERNAL,
+          version: { increment: 1 },
+        },
+      });
+      if (result.count === 0) {
+        throw new ConflictException('EVENT_VERSION_CONFLICT: событие изменилось, перечитайте его перед правкой');
+      }
+    } else {
+      await this.prisma.event.update({
+        where: { id },
+        data: {
+          ...fields,
+          startAt: fields.startAt ? new Date(fields.startAt) : undefined,
+          endAt: fields.endAt ? new Date(fields.endAt) : undefined,
+          lastModifiedBy: EventSource.INTERNAL,
+          version: { increment: 1 },
+        },
+      });
+    }
 
     await this.pushBestEffort(employeeId, id);
     return this.findOne(id, employeeId);
@@ -129,14 +151,18 @@ export class EventsService {
     return this.findOne(eventId, ownerId);
   }
 
+  // Раздел 13 ТЗ календарного агента / C40 — "удаление локального события
+  // после неуспешного внешнего удаления требует замены на контролируемую
+  // операцию с сохранением истории". Полноценная CANCELLED-архивация с
+  // историей — отдельный заход (нужны новые поля); пока минимально не
+  // теряем данные: если Google реально отказал (не 404/410 — те уже
+  // проглочены внутри deleteFromGoogle как "и так удалено"), локальная
+  // строка остаётся на месте и вызывающий получает ошибку, а не тихий
+  // "успех" с потерянным событием.
   async remove(id: string, employeeId: string) {
     const event = await this.findOne(id, employeeId);
     if (event.googleEventId) {
-      try {
-        await this.sync.deleteFromGoogle(employeeId, event.googleEventId);
-      } catch (err) {
-        this.logger.warn(`Не удалось удалить событие ${id} в Google Calendar: ${err}`);
-      }
+      await this.sync.deleteFromGoogle(employeeId, event.googleEventId);
     }
     await this.prisma.event.delete({ where: { id } });
   }
