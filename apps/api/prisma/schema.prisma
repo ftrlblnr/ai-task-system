@@ -92,6 +92,8 @@ model Employee {
   eventsCreated            Event[]
   googleCalendarConnection GoogleCalendarConnection?
   calendarPolicy           CalendarPolicy?
+  calendarPlansOwned       CalendarPlan[]
+  calendarAuthorizationsMade CalendarAuthorization[]
   plaudConnection          PlaudConnection?
   mailbox                  Mailbox?
   conversations            Conversation[]
@@ -1843,4 +1845,175 @@ model IdempotencyKey {
   completedAt DateTime?
 
   @@unique([actorId, key])
+}
+
+// ============ Календарный ИИ-агент (ТЗ 07.10.2026) ============
+// Этап 1, раздел 25 ТЗ: "проекты и согласование одиночных встреч" — план
+// и его действия, согласие (Authorization) и журнал попыток исполнения.
+// Архитектура намеренно повторяет MailActionPlan/Item/Approval/Execution/
+// Attempt (почтовый агент, этот же проект) — тот же проверенный паттерн
+// план→действия→согласие→исполнение→попытки, не изобретается заново.
+// В отличие от почтового агента, здесь обычно ОДНО (редко — несколько
+// зависимых) действие на план, не группы по согласованию — "проекты и
+// согласование ОДИНОЧНЫХ встреч" прямо из названия шага ТЗ; сложная
+// многогруповая модель согласия почтового агента здесь не нужна.
+
+enum CalendarActionType {
+  CREATE_EVENT
+  UPDATE_EVENT
+  RESCHEDULE_EVENT
+  CANCEL_EVENT
+}
+
+enum CalendarPlanStatus {
+  DRAFT
+  NEEDS_APPROVAL
+  APPROVED
+  EXECUTING
+  SUCCEEDED
+  PARTIAL
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+// Раздел 21 ТЗ — ровно этот список состояний действия.
+enum CalendarActionStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+  SKIPPED_CHANGED
+  BLOCKED_DEPENDENCY
+  CANCELLED
+}
+
+// Раздел 17 ТЗ — на чём основано разрешение исполнить действие.
+enum CalendarAuthorizationBasis {
+  DIRECT_COMMAND
+  EXPLICIT_APPROVAL
+  BOOKING_GRANT
+  POLICY_RULE
+}
+
+enum CalendarExecutionState {
+  QUEUED
+  RUNNING
+  DONE
+  STOPPED
+}
+
+enum CalendarAttemptOutcome {
+  SUCCEEDED
+  FAILED
+  UNKNOWN
+}
+
+model CalendarPlan {
+  id          String             @id @default(cuid())
+  ownerId     String
+  owner       Employee           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  // Исходное поручение ("intent" раздела 20 ТЗ) — свободный текст, разбор
+  // на структурированные действия делает вызывающий код (ассистент/voice),
+  // не этот сервис.
+  requestText String
+  version     Int                @default(1)
+  status      CalendarPlanStatus @default(DRAFT)
+  // Раздел 17 ТЗ — начальный срок актуальности плана, 24ч по умолчанию.
+  expiresAt   DateTime?
+
+  actions        CalendarAction[]
+  authorizations CalendarAuthorization[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId, createdAt])
+}
+
+model CalendarAction {
+  id     String             @id @default(cuid())
+  planId String
+  plan   CalendarPlan       @relation(fields: [planId], references: [id], onDelete: Cascade)
+  type   CalendarActionType
+
+  // Null для CREATE_EVENT (событие ещё не существует); обязателен для
+  // UPDATE_EVENT/RESCHEDULE_EVENT/CANCEL_EVENT.
+  targetEventId String?
+  // Версия Event, которую действие ожидает увидеть перед исполнением
+  // (раздел 17 ТЗ) — EventsService.update сам атомарно её проверяет,
+  // здесь — то, что было показано руководителю на момент согласования.
+  beforeVersion Int?
+
+  // Поля CreateEventDto/UpdateEventDto, подготовленные вызывающим кодом
+  // (ассистент/voice) — этот сервис их не придумывает, только исполняет.
+  parameters  Json
+  payloadHash String
+
+  dependsOnActionIds String[]
+  status              CalendarActionStatus @default(PENDING)
+  version             Int                  @default(1)
+
+  authorizationId String?
+  authorization   CalendarAuthorization? @relation(fields: [authorizationId], references: [id], onDelete: SetNull)
+
+  attempts CalendarExecutionAttempt[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([planId, status])
+}
+
+model CalendarAuthorization {
+  id          String                     @id @default(cuid())
+  actorId     String
+  actor       Employee                   @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  planId      String
+  plan        CalendarPlan               @relation(fields: [planId], references: [id], onDelete: Cascade)
+  planVersion Int
+  basis       CalendarAuthorizationBasis @default(EXPLICIT_APPROVAL)
+
+  // Раздел 14 ТЗ — замороженный снимок согласованных действий на момент
+  // согласия, не ссылка на изменяемые записи.
+  actionIds               String[]
+  immutableActionSnapshot Json
+  payloadHash             String
+  approvedAt              DateTime  @default(now())
+  expiresAt               DateTime
+  revokedAt               DateTime?
+
+  actions   CalendarAction[]
+  execution CalendarActionExecution?
+
+  @@index([planId])
+}
+
+model CalendarActionExecution {
+  id              String                 @id @default(cuid())
+  authorizationId String                 @unique
+  authorization   CalendarAuthorization  @relation(fields: [authorizationId], references: [id], onDelete: Cascade)
+  state           CalendarExecutionState @default(QUEUED)
+
+  cancelRequestedAt DateTime?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+
+  @@index([state])
+}
+
+model CalendarExecutionAttempt {
+  id            String                  @id @default(cuid())
+  actionId      String
+  action        CalendarAction          @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  intent        Json
+  providerResult Json?
+  errorCode     String?
+  outcome       CalendarAttemptOutcome?
+  startedAt     DateTime                @default(now())
+  finishedAt    DateTime?
+
+  @@index([actionId, attemptNumber])
 }
