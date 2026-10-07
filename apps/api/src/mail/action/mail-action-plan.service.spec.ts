@@ -225,4 +225,21 @@ describe('MailActionPlanService (ТЗ разд. 4/6/14)', () => {
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  it('patchItem на FAILED пункте — разрешено, правка параметров снимает согласие и возвращает в NEEDS_REVIEW (раздел 17 ТЗ: исправить ARCHIVE_FOLDER_MISSING)', async () => {
+    const plan = await service.createPlan('owner', 'mbx-1', { requestText: 'x' });
+    await service.attachAnalysisResult(plan.id, [
+      { localId: 'a', type: 'ARCHIVE', stableObjectIds: ['msg-1'], sourceLocators: {}, reason: 'r', parameters: {} },
+    ]);
+    prisma.items[0].status = 'FAILED';
+    prisma.items[0].approvalId = 'appr-1';
+
+    const patched = await service.patchItem('owner', plan.id, prisma.items[0].id, {
+      version: prisma.items[0].version,
+      parameters: { folderPath: 'INBOX/Archive' },
+    });
+    expect(patched.status).toBe('NEEDS_REVIEW');
+    expect(patched.approvalId).toBeNull();
+    expect(patched.parameters).toEqual({ folderPath: 'INBOX/Archive' });
+  });
 });

@@ -139,13 +139,25 @@ export class FakeMailActionPrisma {
       return row;
     },
     findUnique: async ({ where }: { where: { id: string } }) => this.items.find((i) => i.id === where.id) ?? null,
-    findMany: async ({ where }: { where: { id?: { in: string[] }; planId?: string; approvalId?: string } }) =>
-      this.items.filter(
+    findMany: async ({
+      where,
+      include,
+    }: {
+      where: { id?: { in: string[] }; planId?: string; approvalId?: string };
+      include?: { attempts?: unknown };
+    }) => {
+      const matches = this.items.filter(
         (i) =>
           (!where.id || where.id.in.includes(i.id)) &&
           (where.planId === undefined || i.planId === where.planId) &&
           (where.approvalId === undefined || i.approvalId === where.approvalId),
-      ),
+      );
+      if (!include?.attempts) return matches;
+      return matches.map((i) => ({
+        ...i,
+        attempts: this.attempts.filter((a) => a.actionId === i.id).sort((a, b) => b.attemptNumber - a.attemptNumber),
+      }));
+    },
     update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       const row = this.items.find((i) => i.id === where.id)!;
       applyUpdate(row, data);

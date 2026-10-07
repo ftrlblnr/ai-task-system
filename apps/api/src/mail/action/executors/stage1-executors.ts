@@ -17,16 +17,19 @@ function toStaleResult(): MailActionExecutorResult {
 class ArchiveExecutor implements MailActionExecutor {
   async execute(item: MailActionItem, ctx: Parameters<MailActionExecutor['execute']>[1]): Promise<MailActionExecutorResult> {
     const locator = parseMessageLocator(item.sourceLocators);
-    const archive = await findSpecialUseFolder(ctx.session, '\\Archive');
-    if (!archive) {
-      // Раздел 17 ТЗ / решение владельца 05.10.2026 — папки \Archive нет
-      // живьём: не создаём молча, просим выбрать/создать (следующий заход
-      // UI). Явный код, а не общий FAILED.
+    // Раздел 17 ТЗ / решение владельца 05.10.2026 — если \Archive не нашлась
+    // живьём при первой попытке, владелец выбирает/создаёт папку сам (через
+    // GET/POST /mail/folders) и правит параметры пункта (PATCH .../items/:id,
+    // раздел 14 ТЗ) — folderPath в параметрах явно переопределяет
+    // автопоиск \Archive, не ищет её повторно.
+    const params = item.parameters as unknown as { folderPath?: string } | null;
+    const targetPath = params?.folderPath ?? (await findSpecialUseFolder(ctx.session, '\\Archive'))?.path;
+    if (!targetPath) {
       return { outcome: 'FAILED', errorCode: 'ARCHIVE_FOLDER_MISSING' };
     }
     try {
-      const result = await ctx.session.moveMessage(locator, archive.path);
-      return { outcome: 'SUCCEEDED', destinationLocator: { folderPath: archive.path, uid: result.newUid, uidValidity: result.newUidValidity } };
+      const result = await ctx.session.moveMessage(locator, targetPath);
+      return { outcome: 'SUCCEEDED', destinationLocator: { folderPath: targetPath, uid: result.newUid, uidValidity: result.newUidValidity } };
     } catch (err) {
       if (err instanceof StaleLocatorError) return toStaleResult();
       throw err;

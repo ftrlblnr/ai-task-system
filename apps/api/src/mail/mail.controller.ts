@@ -8,6 +8,8 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { contentDisposition } from '../common/http/content-disposition';
 import { FilesService } from '../files/files.service';
+import { MailActionSessionFactory } from './action/mail-action-session-factory';
+import { CreateMailFolderDto } from './dto/create-mail-folder.dto';
 import { MailConnectionService } from './mail-connection.service';
 import { PROVIDER_LABELS } from './mail-digest.cron';
 import { MailQueryService, parseEmailFilters } from './mail-query.service';
@@ -44,6 +46,7 @@ export class MailController {
     private readonly store: MailStore,
     private readonly query: MailQueryService,
     private readonly files: FilesService,
+    private readonly sessions: MailActionSessionFactory,
   ) {}
 
   @Get('status')
@@ -111,6 +114,39 @@ export class MailController {
     const limit = Number(rawLimit);
     const digests = await this.query.listDigests(mailbox.id, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 90) : 30);
     return { source: this.digestSource(mailbox), digests };
+  }
+
+  // Раздел 9/17 ТЗ — живой список папок ящика (не из синка — владельцу
+  // нужно видеть ровно то, что есть на сервере прямо сейчас, в том числе
+  // папку, которую он только что создал сам через Mail.ru веб-интерфейс),
+  // для выбора папки-архива, когда \Archive не нашлась автоматически
+  // (ARCHIVE_FOLDER_MISSING у пункта плана).
+  @Get('folders')
+  async listFolders(@CurrentUser() user: AuthenticatedUser) {
+    const mailbox = await this.requireMailbox(user);
+    const session = await this.sessions.openSession(mailbox.id);
+    try {
+      return await session.listAllFolders();
+    } finally {
+      await session.close().catch(() => undefined);
+    }
+  }
+
+  // Создаёт папку живьём на сервере (раздел 9 ТЗ: created=false, если такая
+  // уже была — не плодит дубликат) и сразу заносит её в уже синкнутый
+  // список (store.upsertFolder), чтобы анализ плана (listFolders из БД)
+  // увидел её без ожидания следующего синка.
+  @Post('folders')
+  async createFolder(@Body() dto: CreateMailFolderDto, @CurrentUser() user: AuthenticatedUser) {
+    const mailbox = await this.requireMailbox(user);
+    const session = await this.sessions.openSession(mailbox.id);
+    try {
+      const folder = await session.createFolder(dto.parentPath ?? null, dto.name);
+      await this.store.upsertFolder(mailbox.id, folder.path, folder.role);
+      return folder;
+    } finally {
+      await session.close().catch(() => undefined);
+    }
   }
 
   @Get('digests/:id')

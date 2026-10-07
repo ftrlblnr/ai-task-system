@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  MailActionAttemptOutcome,
   MailActionItem,
   MailActionItemStatus,
   MailActionRelevance,
@@ -39,15 +40,27 @@ export interface MailActionCandidate {
 }
 
 // Раздел 16 ТЗ — редактировать параметры/выбор можно, пока пункт ещё не
-// исполняется/не исполнен. После QUEUED движок уже мог начать читать строку.
+// исполняется, ЛИБО если попытка исполнения не привела к успеху (FAILED/
+// UNKNOWN/SKIPPED_CHANGED/BLOCKED_DEPENDENCY — владелец должен суметь
+// исправить параметры, например указать другую папку для ARCHIVE, когда
+// \Archive не нашлась, раздел 9/17 ТЗ). QUEUED/RUNNING/SUCCEEDED/CANCELLED/
+// COMPENSATED — нет, это уже либо в процессе, либо завершено окончательно.
 const EDITABLE_ITEM_STATUSES: ReadonlySet<MailActionItemStatus> = new Set([
   'DRAFT',
   'NEEDS_REVIEW',
   'APPROVED',
+  'FAILED',
+  'UNKNOWN',
+  'SKIPPED_CHANGED',
+  'BLOCKED_DEPENDENCY',
 ]);
 
+export interface MailActionItemView extends MailActionItem {
+  lastAttempt: { errorCode: string | null; outcome: MailActionAttemptOutcome | null; finishedAt: Date | null } | null;
+}
+
 export interface PlanItemsView {
-  items: MailActionItem[];
+  items: MailActionItemView[];
   conflicts: MailActionConflict[];
 }
 
@@ -158,10 +171,18 @@ export class MailActionPlanService {
     planId: string,
   ): Promise<PlanItemsView> {
     const plan = await this.getPlanOrThrow(ownerId, planId);
-    const items = await this.prisma.mailActionItem.findMany({
+    const rows = await this.prisma.mailActionItem.findMany({
       where: { planId: plan.id },
       orderBy: { createdAt: 'asc' },
+      include: { attempts: { orderBy: { attemptNumber: 'desc' }, take: 1 } },
     });
+    // Раздел 17 ТЗ — почему пункт не исполнился должно быть видно без
+    // отдельного запроса к журналу попыток (например ARCHIVE_FOLDER_MISSING,
+    // чтобы владелец понял, что нужно выбрать/создать папку).
+    const items = rows.map(({ attempts, ...item }) => ({
+      ...item,
+      lastAttempt: attempts[0] ? { errorCode: attempts[0].errorCode, outcome: attempts[0].outcome, finishedAt: attempts[0].finishedAt } : null,
+    }));
     const selected = items.filter((i) => i.selected);
     const conflicts = validateMailActionConflicts(
       selected.map((i) => ({
