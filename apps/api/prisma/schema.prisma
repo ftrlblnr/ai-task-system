@@ -91,6 +91,7 @@ model Employee {
 
   eventsCreated            Event[]
   googleCalendarConnection GoogleCalendarConnection?
+  calendarPolicy           CalendarPolicy?
   plaudConnection          PlaudConnection?
   mailbox                  Mailbox?
   conversations            Conversation[]
@@ -1031,6 +1032,35 @@ model GoogleOAuthAppConfig {
   clientId              String
   clientSecretEncrypted String
   updatedAt             DateTime @updatedAt
+}
+
+// Календарный ИИ-агент (ТЗ 07.10.2026), раздел 11/20 — правила доступности
+// FIND_SLOTS. Один на владельца (этот деплой — один руководитель с личным
+// календарём, не общая корпоративная политика). "До настройки руководителем
+// публичная запись выключена" (раздел 11 ТЗ) относится к внешней записи
+// (Этап 2) — для внутреннего поиска слотов (Этап 1) действуют встроенные
+// значения по умолчанию (calendar-availability.ts: defaultAvailabilityPolicy),
+// пока владелец не сохранил свои через PATCH /calendar/policy.
+model CalendarPolicy {
+  id      String @id @default(cuid())
+  ownerId String @unique
+  owner   Employee @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // Optimistic concurrency на правку политики — тот же приём, что Event.version.
+  version Int @default(1)
+
+  // Фиксированное смещение (раздел 24 ТЗ: Asia/Almaty, UTC+5, без DST) —
+  // полноценный IANA-часовой пояс с переходом на летнее время здесь не
+  // нужен (единственный офис без DST, см. common/timezone.ts).
+  timeZoneOffsetMinutes Int @default(300)
+  // [{weekday: 0-6, startMinute, endMinute}, ...] — раздел 11 ТЗ.
+  workingHours    Json
+  bufferMinutes   Int @default(15)
+  minNoticeHours  Int @default(4)
+  slotStepMinutes Int @default(15)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // --- Синхронизация встреч из Plaud (владелец 08.09.2026) --------------------

@@ -25,6 +25,8 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { IdempotencyService } from '../common/idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CalendarAvailabilityService } from './calendar-availability.service';
+import { CalendarPolicyService } from './calendar-policy.service';
 import { EventsService } from './events.service';
 import { GoogleOAuthService } from './google-oauth.service';
 import { GoogleCalendarSyncService } from './google-calendar-sync.service';
@@ -32,6 +34,8 @@ import { CreateEventDto } from './dto/create-event.dto';
 import { UpdateEventDto } from './dto/update-event.dto';
 import { SetGoogleOAuthConfigDto } from './dto/set-google-oauth-config.dto';
 import { AddEventParticipantDto } from './dto/add-event-participant.dto';
+import { FindAvailabilityDto } from './dto/find-availability.dto';
+import { UpdateCalendarPolicyDto } from './dto/update-calendar-policy.dto';
 
 // Календарь руководителя (раздел 14.2 ТЗ / Адъютант, скорректировано
 // 28.08.2026) — личный, не общий: весь модуль ограничен ролью OWNER.
@@ -45,7 +49,26 @@ export class CalendarController {
     private readonly sync: GoogleCalendarSyncService,
     private readonly prisma: PrismaService,
     private readonly idempotency: IdempotencyService,
+    private readonly availability: CalendarAvailabilityService,
+    private readonly policy: CalendarPolicyService,
   ) {}
+
+  // FIND_SLOTS (раздел 6/11/22 ТЗ календарного агента). Чтение — не
+  // мутация, Idempotency-Key не требуется.
+  @Post('calendar/availability')
+  findAvailability(@Body() dto: FindAvailabilityDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.availability.findSlots(user.id, new Date(dto.from), new Date(dto.to), dto.durationMinutes, dto.maxResults);
+  }
+
+  @Get('calendar/policy')
+  getPolicy(@CurrentUser() user: AuthenticatedUser) {
+    return this.policy.getOrDefault(user.id);
+  }
+
+  @Patch('calendar/policy')
+  updatePolicy(@Body() dto: UpdateCalendarPolicyDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.policy.update(user.id, dto);
+  }
 
   @Get('events')
   findAll(@CurrentUser() user: AuthenticatedUser) {
