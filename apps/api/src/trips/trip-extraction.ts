@@ -27,31 +27,40 @@ export type TripLegModeValue = (typeof TRIP_LEG_MODES)[number];
 export type TripBookingStatusValue = (typeof TRIP_BOOKING_STATUSES)[number];
 export type TripContactRoleValue = (typeof TRIP_CONTACT_ROLES)[number];
 
+// Раздел 18 ТЗ — живой баг 08.10.2026: исходная схема тула (23 nullable/
+// union-параметра — top(2)+LEG(8)+EVENT(6)+STAY(4)+CONTACT(3)) превышала
+// жёсткий лимит Anthropic API в 16 union-типизированных параметров на
+// инструмент ("too many parameters with union types... exponential
+// compilation cost") — КАЖДЫЙ вызов extractOne() падал 400 и тихо уходил в
+// UNREADABLE/FAILED, что не было замечено раньше, т.к. живой вызов с
+// реальным файлом не делался до этого дня. Раздел времени пояса
+// (departTimeZoneOffsetMinutes и т.п.) свёрнут в сам ISO-timestamp (смещение
+// как суффикс "+05:00" — валидный ISO 8601, парсится в
+// trip-compose.ts.parseIsoWithOffset), carrier+referenceCode объединены в
+// bookingReference, TripEvent.notes и TripStay.name убраны из
+// автоизвлечения, TripContact.organization убран — ничего из этого не
+// теряется безвозвратно: соответствующие колонки в БД остаются, просто не
+// заполняются автоматически (можно дозаполнить вручную через PATCH).
+// Итог — 15 union-параметров, см. trip-extraction.spec.ts, тест на точное
+// совпадение required-списков фиксирует это число на будущее.
 export interface TripExtractedLeg {
   mode: TripLegModeValue;
   fromLocation: string | null;
   toLocation: string | null;
   departAt: string | null;
-  departTimeZoneOffsetMinutes: number | null;
   arriveAt: string | null;
-  arriveTimeZoneOffsetMinutes: number | null;
-  carrier: string | null;
-  referenceCode: string | null;
+  bookingReference: string | null;
   bookingStatus: TripBookingStatusValue;
 }
 
 export interface TripExtractedEvent {
   title: string;
   startAt: string | null;
-  startTimeZoneOffsetMinutes: number | null;
-  dateOnly: string | null;
   endAt: string | null;
   location: string | null;
-  notes: string | null;
 }
 
 export interface TripExtractedStay {
-  name: string | null;
   address: string | null;
   checkInAt: string | null;
   checkOutAt: string | null;
@@ -61,7 +70,6 @@ export interface TripExtractedStay {
 export interface TripExtractedContact {
   name: string;
   role: TripContactRoleValue;
-  organization: string | null;
   email: string | null;
   phone: string | null;
 }
@@ -84,9 +92,13 @@ export interface TripExtractionDraft {
 }
 
 const NULLABLE_STRING = { anyOf: [{ type: 'string' }, { type: 'null' }] } as const;
-const NULLABLE_NUMBER = { anyOf: [{ type: 'integer' }, { type: 'null' }] } as const;
-const NULLABLE_DATETIME = { anyOf: [{ type: 'string', format: 'date-time' }, { type: 'null' }] } as const;
-const NULLABLE_DATE = { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] } as const;
+// Датавремя — обычный ISO 8601 строкой; смещение часового пояса, если
+// известно, передаётся суффиксом САМОЙ строки ("2026-12-01T06:00:00+05:00"),
+// а не отдельным числовым параметром — это валидный ISO 8601 и экономит
+// union-параметр схемы (см. комментарий на интерфейсах выше). Для события
+// с известной датой, но неизвестным часом — просто "YYYY-MM-DD" в этом же
+// поле (определяется по длине строки в trip-compose.ts.isDateOnly).
+const NULLABLE_DATETIME = { anyOf: [{ type: 'string' }, { type: 'null' }] } as const;
 
 const LEG_SCHEMA = {
   type: 'object',
@@ -95,25 +107,11 @@ const LEG_SCHEMA = {
     fromLocation: NULLABLE_STRING,
     toLocation: NULLABLE_STRING,
     departAt: NULLABLE_DATETIME,
-    departTimeZoneOffsetMinutes: NULLABLE_NUMBER,
     arriveAt: NULLABLE_DATETIME,
-    arriveTimeZoneOffsetMinutes: NULLABLE_NUMBER,
-    carrier: NULLABLE_STRING,
-    referenceCode: NULLABLE_STRING,
+    bookingReference: { ...NULLABLE_STRING, description: 'Перевозчик и/или номер рейса/бронирования одной строкой, например "Air Astana KC901".' },
     bookingStatus: { type: 'string', enum: TRIP_BOOKING_STATUSES },
   },
-  required: [
-    'mode',
-    'fromLocation',
-    'toLocation',
-    'departAt',
-    'departTimeZoneOffsetMinutes',
-    'arriveAt',
-    'arriveTimeZoneOffsetMinutes',
-    'carrier',
-    'referenceCode',
-    'bookingStatus',
-  ],
+  required: ['mode', 'fromLocation', 'toLocation', 'departAt', 'arriveAt', 'bookingReference', 'bookingStatus'],
   additionalProperties: false,
 } as const;
 
@@ -121,27 +119,23 @@ const EVENT_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    startAt: NULLABLE_DATETIME,
-    startTimeZoneOffsetMinutes: NULLABLE_NUMBER,
-    dateOnly: NULLABLE_DATE,
+    startAt: { ...NULLABLE_DATETIME, description: 'Полный ISO-момент, либо просто "YYYY-MM-DD", если известна только дата.' },
     endAt: NULLABLE_DATETIME,
     location: NULLABLE_STRING,
-    notes: NULLABLE_STRING,
   },
-  required: ['title', 'startAt', 'startTimeZoneOffsetMinutes', 'dateOnly', 'endAt', 'location', 'notes'],
+  required: ['title', 'startAt', 'endAt', 'location'],
   additionalProperties: false,
 } as const;
 
 const STAY_SCHEMA = {
   type: 'object',
   properties: {
-    name: NULLABLE_STRING,
-    address: NULLABLE_STRING,
+    address: { ...NULLABLE_STRING, description: 'Название и/или адрес проживания одной строкой, например "Hilton Istanbul, Istiklal Cad. 123".' },
     checkInAt: NULLABLE_DATETIME,
     checkOutAt: NULLABLE_DATETIME,
     bookingStatus: { type: 'string', enum: TRIP_BOOKING_STATUSES },
   },
-  required: ['name', 'address', 'checkInAt', 'checkOutAt', 'bookingStatus'],
+  required: ['address', 'checkInAt', 'checkOutAt', 'bookingStatus'],
   additionalProperties: false,
 } as const;
 
@@ -150,11 +144,10 @@ const CONTACT_SCHEMA = {
   properties: {
     name: { type: 'string' },
     role: { type: 'string', enum: TRIP_CONTACT_ROLES },
-    organization: NULLABLE_STRING,
     email: NULLABLE_STRING,
     phone: NULLABLE_STRING,
   },
-  required: ['name', 'role', 'organization', 'email', 'phone'],
+  required: ['name', 'role', 'email', 'phone'],
   additionalProperties: false,
 } as const;
 
@@ -201,9 +194,12 @@ export function buildExtractionSystemPrompt(): string {
 - Различай "забронировано" (есть номер билета/бронирования, явное подтверждение), "предложено" (черновик/вариант
   без подтверждения) и "подтверждения не найдено" (bookingStatus=UNCONFIRMED) — никогда не присваивай BOOKED
   плану или варианту без явного подтверждения в самом материале.
-- Если у события известна дата, но не известен точный час — заполни dateOnly, оставь startAt null. Не изобретай час.
-- Часовой пояс указывай только если он явно понятен из материала (например, код аэропорта/город); если не уверен —
-  null.
+- Даты/время — строкой в формате ISO 8601. Если известен час, но известен и часовой пояс — включи смещение в
+  саму строку, например "2026-12-01T06:00:00+05:00". Если часовой пояс не понятен из материала — просто
+  "2026-12-01T06:00:00" без смещения. Если у события известна только дата, без часа — "2026-12-01" (10 символов,
+  без времени) и ничего не изобретай для часа.
+- bookingReference (у перелёта/переезда) — перевозчик и/или номер рейса/бронирования в одну строку, например
+  "Air Astana KC901"; если в материале есть только одно из двух — пиши то, что есть.
 - facts — только то, что не укладывается в leg/event/stay/contact (виза, бюджет, особые требования и т.п.).
 - issues — конкретные проблемы именно этого материала: нечитаемый скан, противоречие внутри самого документа,
   обрезанный текст. Общие фразы типа "всё хорошо" не нужны — для этого issues просто пустой массив.

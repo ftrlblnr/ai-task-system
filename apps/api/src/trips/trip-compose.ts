@@ -10,6 +10,15 @@ import type { TripExtractedContact, TripExtractedFactEntry, TripExtractedLeg, Tr
 // значение (сведение факт→факт не делается), а просто остаются отдельными
 // TripLeg/TripEvent/TripStay с разным sourceMaterialId — противоречие видно
 // пользователю как два разных пункта программы, не как потерянная правда.
+//
+// Composed*-типы НЕ алиасы TripExtracted*-типов (были до 08.10.2026) — у
+// TripExtracted* урезанный набор полей (см. комментарий в trip-extraction.ts
+// про лимит Anthropic на union-параметры тула), а downstream-код
+// (trip-run-execution.service.ts/trip-changes.service.ts) пишет в БД полный
+// набор колонок (departTimeZoneOffsetMinutes/carrier/referenceCode/
+// TripStay.name/TripEvent.dateOnly/organization). toComposedLeg/Event/Stay/
+// Contact ниже — единственное место, где урезанный ответ модели
+// разворачивается в полную форму для записи.
 
 export interface MaterialDraft {
   materialId: string;
@@ -17,10 +26,41 @@ export interface MaterialDraft {
   draft: TripExtractionDraft;
 }
 
-export type ComposedLeg = TripExtractedLeg & { sourceMaterialId: string };
-export type ComposedEvent = TripExtractedEvent & { sourceMaterialId: string };
-export type ComposedStay = TripExtractedStay & { sourceMaterialId: string };
-export type ComposedContact = TripExtractedContact & { sourceMaterialId: string };
+export interface ComposedLeg {
+  mode: TripExtractedLeg['mode'];
+  fromLocation: string | null;
+  toLocation: string | null;
+  departAt: string | null;
+  departTimeZoneOffsetMinutes: number | null;
+  arriveAt: string | null;
+  arriveTimeZoneOffsetMinutes: number | null;
+  carrier: string | null;
+  referenceCode: string | null;
+  bookingStatus: TripExtractedLeg['bookingStatus'];
+  sourceMaterialId: string;
+}
+
+export interface ComposedEvent {
+  title: string;
+  startAt: string | null;
+  startTimeZoneOffsetMinutes: number | null;
+  dateOnly: string | null;
+  endAt: string | null;
+  location: string | null;
+  notes: string | null;
+  sourceMaterialId: string;
+}
+
+export interface ComposedStay {
+  name: string | null;
+  address: string | null;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  bookingStatus: TripExtractedStay['bookingStatus'];
+  sourceMaterialId: string;
+}
+
+export type ComposedContact = TripExtractedContact & { organization: string | null; sourceMaterialId: string };
 export type ComposedFact = TripExtractedFactEntry & { sourceMaterialId: string };
 
 export interface ComposedTrip {
@@ -45,6 +85,74 @@ export function parseDateOrNull(value: string | null): Date | null {
 
 const parseDate = parseDateOrNull;
 
+// Модель кодирует известное смещение часового пояса прямо в ISO-строке
+// ("2026-12-01T06:00:00+05:00") вместо отдельного числового параметра —
+// экономит union-параметр схемы тула (см. trip-extraction.ts). Здесь это
+// смещение достаётся обратно для записи в departTimeZoneOffsetMinutes и
+// аналогичные колонки. 'Z' — смещение 0. Без суффикса смещения — null
+// (неизвестно), не 0: предполагать UTC без оснований не лучше, чем
+// предполагать Алматы.
+export function extractUtcOffsetMinutes(value: string | null): number | null {
+  if (!value) return null;
+  if (/Z$/.test(value)) return 0;
+  const match = value.match(/([+-])(\d{2}):?(\d{2})$/);
+  if (!match) return null;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
+}
+
+// "YYYY-MM-DD" ровно — отличает "известна только дата" от полного
+// ISO-момента (раздел 4 ТЗ — unknown-time событие своей группой, без
+// придуманного часа).
+export function isDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function toComposedLeg(raw: TripExtractedLeg, sourceMaterialId: string): ComposedLeg {
+  return {
+    mode: raw.mode,
+    fromLocation: raw.fromLocation,
+    toLocation: raw.toLocation,
+    departAt: raw.departAt,
+    departTimeZoneOffsetMinutes: extractUtcOffsetMinutes(raw.departAt),
+    arriveAt: raw.arriveAt,
+    arriveTimeZoneOffsetMinutes: extractUtcOffsetMinutes(raw.arriveAt),
+    carrier: raw.bookingReference,
+    referenceCode: null,
+    bookingStatus: raw.bookingStatus,
+    sourceMaterialId,
+  };
+}
+
+function toComposedEvent(raw: TripExtractedEvent, sourceMaterialId: string): ComposedEvent {
+  const startIsDateOnly = Boolean(raw.startAt && isDateOnly(raw.startAt));
+  return {
+    title: raw.title,
+    startAt: startIsDateOnly ? null : raw.startAt,
+    startTimeZoneOffsetMinutes: startIsDateOnly ? null : extractUtcOffsetMinutes(raw.startAt),
+    dateOnly: startIsDateOnly ? raw.startAt : null,
+    endAt: raw.endAt,
+    location: raw.location,
+    notes: null,
+    sourceMaterialId,
+  };
+}
+
+function toComposedStay(raw: TripExtractedStay, sourceMaterialId: string): ComposedStay {
+  return {
+    name: null,
+    address: raw.address,
+    checkInAt: raw.checkInAt,
+    checkOutAt: raw.checkOutAt,
+    bookingStatus: raw.bookingStatus,
+    sourceMaterialId,
+  };
+}
+
+function toComposedContact(raw: TripExtractedContact, sourceMaterialId: string): ComposedContact {
+  return { ...raw, organization: null, sourceMaterialId };
+}
+
 export function composeTripFromMaterials(materials: MaterialDraft[]): ComposedTrip {
   const legs: ComposedLeg[] = [];
   const events: ComposedEvent[] = [];
@@ -63,29 +171,32 @@ export function composeTripFromMaterials(materials: MaterialDraft[]): ComposedTr
     if (!summaryHint && draft.summaryHint) summaryHint = draft.summaryHint;
 
     for (const leg of draft.legs) {
-      legs.push({ ...leg, sourceMaterialId: materialId });
-      const depart = parseDate(leg.departAt);
-      const arrive = parseDate(leg.arriveAt);
+      const composed = toComposedLeg(leg, materialId);
+      legs.push(composed);
+      const depart = parseDate(composed.departAt);
+      const arrive = parseDate(composed.arriveAt);
       if (depart) exactDates.push(depart);
       if (arrive) exactDates.push(arrive);
     }
     for (const event of draft.events) {
-      events.push({ ...event, sourceMaterialId: materialId });
-      const start = parseDate(event.startAt);
+      const composed = toComposedEvent(event, materialId);
+      events.push(composed);
+      const start = parseDate(composed.startAt);
       if (start) exactDates.push(start);
       else {
-        const dateOnly = parseDate(event.dateOnly);
+        const dateOnly = parseDate(composed.dateOnly);
         if (dateOnly) approxDates.push(dateOnly);
       }
     }
     for (const stay of draft.stays) {
-      stays.push({ ...stay, sourceMaterialId: materialId });
-      const checkIn = parseDate(stay.checkInAt);
-      const checkOut = parseDate(stay.checkOutAt);
+      const composed = toComposedStay(stay, materialId);
+      stays.push(composed);
+      const checkIn = parseDate(composed.checkInAt);
+      const checkOut = parseDate(composed.checkOutAt);
       if (checkIn) exactDates.push(checkIn);
       if (checkOut) exactDates.push(checkOut);
     }
-    for (const contact of draft.contacts) contacts.push({ ...contact, sourceMaterialId: materialId });
+    for (const contact of draft.contacts) contacts.push(toComposedContact(contact, materialId));
     for (const fact of draft.facts) facts.push({ ...fact, sourceMaterialId: materialId });
     for (const issue of draft.issues) issues.push(`${fileLabel}: ${issue}`);
   }

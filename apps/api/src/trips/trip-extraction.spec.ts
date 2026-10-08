@@ -41,6 +41,36 @@ describe('buildExtractionTool', () => {
   });
 });
 
+// Живой баг 08.10.2026 — Anthropic API отвергает тул с >16
+// union-типизированными параметрами (anyOf/type-массив) ошибкой 400 "too
+// many parameters with union types... exponential compilation cost".
+// Раньше это считалось вручную и не проверялось тестом — сам факт
+// превышения лимита обнаружился только на живом вызове. Этот тест считает
+// рекурсивно по всей схеме тула и фиксирует лимит на будущее, чтобы
+// случайное добавление ещё одного nullable-поля не повторило тот же сбой
+// незаметно.
+function countUnionParams(node: unknown): number {
+  if (node === null || typeof node !== 'object') return 0;
+  let count = 0;
+  if ('anyOf' in node || (('type' in node) && Array.isArray((node as { type: unknown }).type))) count += 1;
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    if (Array.isArray(value)) {
+      for (const item of value) count += countUnionParams(item);
+    } else if (value && typeof value === 'object') {
+      count += countUnionParams(value);
+    }
+  }
+  return count;
+}
+
+describe('buildExtractionTool — лимит Anthropic на union-параметры', () => {
+  it('не превышает 16 union-типизированных параметров во всей схеме', () => {
+    const tool = buildExtractionTool();
+    const total = countUnionParams(tool.input_schema.properties);
+    expect(total).toBeLessThanOrEqual(16);
+  });
+});
+
 describe('buildMaterialContentBlock', () => {
   it('PDF -> document-блок с base64', () => {
     const block = buildMaterialContentBlock(Buffer.from('%PDF-1.4'), 'application/pdf', 'ticket.pdf');
