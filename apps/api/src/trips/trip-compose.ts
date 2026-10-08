@@ -153,6 +153,96 @@ function toComposedContact(raw: TripExtractedContact, sourceMaterialId: string):
   return { ...raw, organization: null, sourceMaterialId };
 }
 
+// Живой баг 08.10.2026 — несколько билетов на один и тот же рейс (по одному
+// на пассажира) извлекались как отдельные TripLeg каждый, раздувая
+// программу копиями одного и того же объективного события. Это НЕ тот же
+// случай, что "конфликт между материалами" (комментарий в шапке файла,
+// раздел 5 ТЗ) — там разные источники называют РАЗНЫЕ значения одного и
+// того же факта (разные даты, разный статус), и это осознанно не
+// схлопывается. Здесь источники (билеты разных пассажиров) называют ОДНО И
+// ТО ЖЕ значение — один и тот же рейс — просто потому что документов
+// несколько.
+//
+// Ключ дедупликации — ТОЛЬКО время вылета (+режим), не маршрут. На живых
+// данных (разбор бага 08.10.2026) три билета на один и тот же рейс назвали
+// fromLocation/toLocation по-разному ("Astana (Nursultan Nazarbayev)" /
+// "ASTANA, NURSULTAN NAZARBAYEV" / "Астана (NQZ), T2" — разный язык/разная
+// подробность по вёрстке каждого билета), а у одного из трёх arriveAt
+// вовсе не извлёкся. Текстовые поля слишком ненадёжны для ключа; departAt
+// — календарный факт, который разные билеты на один рейс называют
+// одинаково всегда. Риск: два РАЗНЫХ рейса с буквально одной и той же
+// секundой вылета схлопнутся лишний раз — встречается на практике
+// многократно реже, чем недодедуплицированные билеты одного рейса (сам
+// этот баг), поэтому риск принят. Леги без departAt вообще (время
+// неизвестно) никогда не схлопываются друг с другом — index в ключе не
+// даёт им совпасть.
+const BOOKING_STATUS_RANK: Record<string, number> = { BOOKED: 2, PROPOSED: 1, UNCONFIRMED: 0 };
+
+function mergeLegs(a: ComposedLeg, b: ComposedLeg): ComposedLeg {
+  return {
+    mode: a.mode,
+    fromLocation: a.fromLocation ?? b.fromLocation,
+    toLocation: a.toLocation ?? b.toLocation,
+    departAt: a.departAt ?? b.departAt,
+    departTimeZoneOffsetMinutes: a.departTimeZoneOffsetMinutes ?? b.departTimeZoneOffsetMinutes,
+    arriveAt: a.arriveAt ?? b.arriveAt,
+    arriveTimeZoneOffsetMinutes: a.arriveTimeZoneOffsetMinutes ?? b.arriveTimeZoneOffsetMinutes,
+    carrier: a.carrier ?? b.carrier,
+    referenceCode: a.referenceCode ?? b.referenceCode,
+    bookingStatus: BOOKING_STATUS_RANK[b.bookingStatus] > BOOKING_STATUS_RANK[a.bookingStatus] ? b.bookingStatus : a.bookingStatus,
+    sourceMaterialId: a.sourceMaterialId,
+  };
+}
+
+function dedupeLegs(legs: ComposedLeg[]): ComposedLeg[] {
+  const byKey = new Map<string, ComposedLeg>();
+  legs.forEach((leg, index) => {
+    const key = leg.departAt ? `${leg.mode}|${leg.departAt}` : `${leg.mode}|no-time|${index}`;
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? mergeLegs(existing, leg) : leg);
+  });
+  return [...byKey.values()];
+}
+
+// Та же логика, что у рейсов: checkInAt/checkOutAt — календарный факт,
+// надёжнее свободного текста address (название+адрес одной строкой,
+// формат которой тоже может отличаться между подтверждениями разных
+// гостей одного и того же бронирования).
+function mergeStays(a: ComposedStay, b: ComposedStay): ComposedStay {
+  return {
+    name: a.name ?? b.name,
+    address: a.address ?? b.address,
+    checkInAt: a.checkInAt ?? b.checkInAt,
+    checkOutAt: a.checkOutAt ?? b.checkOutAt,
+    bookingStatus: BOOKING_STATUS_RANK[b.bookingStatus] > BOOKING_STATUS_RANK[a.bookingStatus] ? b.bookingStatus : a.bookingStatus,
+    sourceMaterialId: a.sourceMaterialId,
+  };
+}
+
+function dedupeStays(stays: ComposedStay[]): ComposedStay[] {
+  const byKey = new Map<string, ComposedStay>();
+  stays.forEach((stay, index) => {
+    const key = stay.checkInAt || stay.checkOutAt ? `${stay.checkInAt ?? ''}|${stay.checkOutAt ?? ''}` : `no-dates|${index}`;
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? mergeStays(existing, stay) : stay);
+  });
+  return [...byKey.values()];
+}
+
+function mergeContacts(a: ComposedContact, b: ComposedContact): ComposedContact {
+  return { ...a, email: a.email ?? b.email, phone: a.phone ?? b.phone };
+}
+
+function dedupeContacts(contacts: ComposedContact[]): ComposedContact[] {
+  const byKey = new Map<string, ComposedContact>();
+  for (const contact of contacts) {
+    const key = contact.name.trim().toLowerCase();
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? mergeContacts(existing, contact) : contact);
+  }
+  return [...byKey.values()];
+}
+
 export function composeTripFromMaterials(materials: MaterialDraft[]): ComposedTrip {
   const legs: ComposedLeg[] = [];
   const events: ComposedEvent[] = [];
@@ -210,5 +300,20 @@ export function composeTripFromMaterials(materials: MaterialDraft[]): ComposedTr
   const periodEnd = allDates.length > 0 ? new Date(Math.max(...allDates.map((d) => d.getTime()))) : null;
   const periodPrecision: ComposedTrip['periodPrecision'] = exactDates.length > 0 ? 'EXACT' : approxDates.length > 0 ? 'APPROXIMATE' : 'UNKNOWN';
 
-  return { destinationHint, summaryHint, periodStart, periodEnd, periodPrecision, legs, events, stays, contacts, facts, issues };
+  // Дедупликация — после подсчёта периода (дубликаты не искажают min/max),
+  // но до возврата: ни create-, ни update-режим не должны видеть билеты
+  // разных пассажиров на один рейс как отдельные пункты программы.
+  return {
+    destinationHint,
+    summaryHint,
+    periodStart,
+    periodEnd,
+    periodPrecision,
+    legs: dedupeLegs(legs),
+    events,
+    stays: dedupeStays(stays),
+    contacts: dedupeContacts(contacts),
+    facts,
+    issues,
+  };
 }

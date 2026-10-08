@@ -1,5 +1,5 @@
 import { composeTripFromMaterials, extractUtcOffsetMinutes, isDateOnly, type MaterialDraft } from './trip-compose';
-import type { TripExtractionDraft } from './trip-extraction';
+import type { TripExtractedLeg, TripExtractionDraft } from './trip-extraction';
 
 function draft(overrides: Partial<TripExtractionDraft> = {}): TripExtractionDraft {
   return {
@@ -148,5 +148,85 @@ describe('composeTripFromMaterials', () => {
     const composed = composeTripFromMaterials([material('m1', 'invite.pdf', draft({ contacts: [{ name: 'Иван Иванов', role: 'OTHER', email: 'ivan@example.com', phone: null }] }))]);
     expect(composed.contacts[0].organization).toBeNull();
     expect(composed.contacts[0].email).toBe('ivan@example.com');
+  });
+});
+
+describe('composeTripFromMaterials — дедупликация одного рейса на несколько пассажиров (живой баг 08.10.2026)', () => {
+  function ticketLeg(overrides: Partial<TripExtractedLeg> = {}): TripExtractedLeg {
+    return {
+      mode: 'FLIGHT' as const,
+      fromLocation: 'ALA',
+      toLocation: 'IST',
+      departAt: '2026-12-01T06:00:00+05:00',
+      arriveAt: '2026-12-01T09:00:00+03:00',
+      bookingReference: null,
+      bookingStatus: 'BOOKED' as const,
+      ...overrides,
+    };
+  }
+
+  it('три билета на один и тот же рейс (разные материалы, разные пассажиры) схлопываются в один leg', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'ticket-ivan.pdf', draft({ legs: [ticketLeg({ bookingReference: 'KC901, билет AAA111' })] })),
+      material('m2', 'ticket-petr.pdf', draft({ legs: [ticketLeg({ bookingReference: 'KC901, билет BBB222' })] })),
+      material('m3', 'ticket-anna.pdf', draft({ legs: [ticketLeg({ bookingReference: 'KC901, билет CCC333' })] })),
+    ]);
+    expect(composed.legs).toHaveLength(1);
+  });
+
+  it('один и тот же рейс, но маршрут назван по-разному в разных билетах (язык/формат) — всё равно схлопывается по времени вылета', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'ticket-en.pdf', draft({ legs: [ticketLeg({ fromLocation: 'Astana (Nursultan Nazarbayev)', toLocation: 'Almaty', arriveAt: '2026-12-01T09:00:00+03:00' })] })),
+      material('m2', 'ticket-ru.pdf', draft({ legs: [ticketLeg({ fromLocation: 'Астана (NQZ), T2', toLocation: 'Алматы (ALA), T1', arriveAt: null })] })),
+    ]);
+    expect(composed.legs).toHaveLength(1);
+    // Ключ — только время вылета, маршрут текстом ненадёжен между билетами
+    // (живой случай 08.10.2026); первое непустое имя побеждает.
+    expect(composed.legs[0].fromLocation).toBe('Astana (Nursultan Nazarbayev)');
+    // arriveAt — null у второго билета не стирает уже известное значение первого.
+    expect(composed.legs[0].arriveAt).toBe('2026-12-01T09:00:00+03:00');
+  });
+
+  it('рейсы с одинаковым временем вылета, но заданные как РАЗНЫЕ объекты верхнего уровня — риск принят (разный mode не схлопывается)', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'a.pdf', draft({ legs: [ticketLeg({ mode: 'FLIGHT' })] })),
+      material('m2', 'b.pdf', draft({ legs: [ticketLeg({ mode: 'TRAIN' })] })),
+    ]);
+    expect(composed.legs).toHaveLength(2);
+  });
+
+  it('рейсы с разным временем вылета (настоящий конфликт между источниками) НЕ схлопываются', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'a.pdf', draft({ legs: [ticketLeg({ departAt: '2026-11-10T06:00:00.000Z' })] })),
+      material('m2', 'b.pdf', draft({ legs: [ticketLeg({ departAt: '2026-11-11T06:00:00.000Z' })] })),
+    ]);
+    expect(composed.legs).toHaveLength(2);
+  });
+
+  it('при схлопывании статус бронирования берётся максимальный (BOOKED важнее PROPOSED)', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'a.pdf', draft({ legs: [ticketLeg({ bookingStatus: 'PROPOSED' })] })),
+      material('m2', 'b.pdf', draft({ legs: [ticketLeg({ bookingStatus: 'BOOKED' })] })),
+    ]);
+    expect(composed.legs).toHaveLength(1);
+    expect(composed.legs[0].bookingStatus).toBe('BOOKED');
+  });
+
+  it('одинаковые проживания (3 брони на один отель/даты) схлопываются', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'a.pdf', draft({ stays: [{ address: 'Hilton Istanbul', checkInAt: '2026-12-01', checkOutAt: '2026-12-05', bookingStatus: 'BOOKED' }] })),
+      material('m2', 'b.pdf', draft({ stays: [{ address: 'Hilton Istanbul', checkInAt: '2026-12-01', checkOutAt: '2026-12-05', bookingStatus: 'BOOKED' }] })),
+    ]);
+    expect(composed.stays).toHaveLength(1);
+  });
+
+  it('один и тот же контакт по имени из разных материалов схлопывается, email/phone объединяются', () => {
+    const composed = composeTripFromMaterials([
+      material('m1', 'a.pdf', draft({ contacts: [{ name: 'Иван Иванов', role: 'OTHER', email: 'ivan@example.com', phone: null }] })),
+      material('m2', 'b.pdf', draft({ contacts: [{ name: 'иван иванов', role: 'OTHER', email: null, phone: '+7...' }] })),
+    ]);
+    expect(composed.contacts).toHaveLength(1);
+    expect(composed.contacts[0].email).toBe('ivan@example.com');
+    expect(composed.contacts[0].phone).toBe('+7...');
   });
 });
