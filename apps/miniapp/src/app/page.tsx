@@ -8,6 +8,7 @@ import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { AssistantScreen } from '@/components/assistant-screen';
 import { ReceptionScreen } from '@/components/reception-screen';
+import { TripsScreen } from '@/components/trips-screen';
 import { Alert } from '@/components/ui/alert';
 
 export default function Home() {
@@ -65,6 +66,10 @@ export default function Home() {
   // руководителя — только Web App (раздел 13 ТЗ не описывает её для
   // Mini App).
   screens.push({ key: 'reception', label: 'Приёмная', content: <ReceptionScreen /> });
+  // Агент поездок (ТЗ 08.10.2026) — доступен всем: создатель и путешествующий
+  // руководитель могут быть разными людьми (раздел 9 ТЗ), видимость конкретных
+  // поездок решает backend через TripMember, не вкладка.
+  screens.push({ key: 'trips', label: 'Поездки', content: <TripsScreen /> });
   screens.push({ key: 'assistant', label: 'Ассистент', content: <AssistantScreen /> });
 
   return <SwipeShell screens={screens} />;

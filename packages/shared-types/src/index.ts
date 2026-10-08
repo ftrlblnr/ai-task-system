@@ -939,3 +939,229 @@ export interface DashboardOverview {
   calendar: DashboardCalendarSection | DashboardSectionError;
 }
 
+
+// Агент поездок (ТЗ 08.10.2026) — зеркало apps/api/src/trips/*.
+export type AgentRunStatus = 'RECEIVED' | 'EXTRACTING' | 'MATCHING' | 'COMPOSING' | 'READY' | 'READY_WITH_ISSUES' | 'FAILED';
+export type TripMaterialStatus = 'PENDING' | 'EXTRACTED' | 'FAILED' | 'UNREADABLE';
+export type TripPeriodPrecision = 'UNKNOWN' | 'APPROXIMATE' | 'EXACT';
+export type TripTimeStatus = 'CANCELLED' | 'NO_CONFIRMED_DATES' | 'UPCOMING' | 'ONGOING' | 'COMPLETED';
+export type TripAccessRole = 'ORGANIZER' | 'EDITOR' | 'APPROVER' | 'VIEWER';
+export type TripLegMode = 'FLIGHT' | 'TRAIN' | 'CAR' | 'OTHER';
+export type TripBookingStatus = 'BOOKED' | 'PROPOSED' | 'UNCONFIRMED';
+export type TripContactRole = 'ORGANIZER_HOST' | 'RECEIVING_PARTY' | 'DELEGATE' | 'OTHER';
+export type ExtractedFactStatus = 'EXTRACTED' | 'CONFIRMED' | 'DISPUTED' | 'OUTDATED';
+export type ProposedChangeEntityType = 'TRIP' | 'TRIP_LEG' | 'TRIP_EVENT' | 'TRIP_STAY' | 'TRIP_CONTACT';
+export type ProposedChangeStatus = 'PENDING' | 'APPLIED' | 'REJECTED';
+
+export interface TripMaterialItem {
+  id: string;
+  tripId: string | null;
+  agentRunId: string;
+  fileArtifactId: string;
+  processingStatus: TripMaterialStatus;
+  addedByEmployeeId: string;
+  extractionIssue: string | null;
+  createdAt: string;
+}
+
+export interface AgentRunItem {
+  id: string;
+  tripId: string | null;
+  status: AgentRunStatus;
+  initiatorId: string;
+  errorSummary: string | null;
+  attempts: number;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface AgentRunDetail extends AgentRunItem {
+  materials: TripMaterialItem[];
+}
+
+export interface TripSummary {
+  id: string;
+  humanCode: string;
+  title: string;
+  purposeSummary: string | null;
+  organizerId: string;
+  periodStart: string | null;
+  periodEnd: string | null;
+  periodPrecision: TripPeriodPrecision;
+  cancelledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  timeStatus: TripTimeStatus;
+}
+
+export interface TripLegItem {
+  id: string;
+  tripId: string;
+  mode: TripLegMode;
+  fromLocation: string | null;
+  toLocation: string | null;
+  departAt: string | null;
+  departTimeZoneOffsetMinutes: number | null;
+  arriveAt: string | null;
+  arriveTimeZoneOffsetMinutes: number | null;
+  carrier: string | null;
+  referenceCode: string | null;
+  bookingStatus: TripBookingStatus;
+  sourceMaterialId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TripEventItem {
+  id: string;
+  tripId: string;
+  title: string;
+  startAt: string | null;
+  startTimeZoneOffsetMinutes: number | null;
+  dateOnly: string | null;
+  endAt: string | null;
+  location: string | null;
+  notes: string | null;
+  sourceMaterialId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TripStayItem {
+  id: string;
+  tripId: string;
+  name: string | null;
+  address: string | null;
+  checkInAt: string | null;
+  checkOutAt: string | null;
+  bookingStatus: TripBookingStatus;
+  sourceMaterialId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TripContactItem {
+  id: string;
+  tripId: string;
+  name: string;
+  role: TripContactRole;
+  organization: string | null;
+  email: string | null;
+  phone: string | null;
+  sourceMaterialId: string | null;
+  createdAt: string;
+}
+
+export interface TripMemberItem {
+  id: string;
+  tripId: string;
+  employeeId: string;
+  accessRole: TripAccessRole;
+  createdAt: string;
+}
+
+export interface ExtractedFactItem {
+  id: string;
+  tripId: string;
+  materialId: string;
+  factKey: string;
+  factValue: string;
+  status: ExtractedFactStatus;
+  extractedAt: string;
+}
+
+export interface TripDetail extends TripSummary {
+  legs: TripLegItem[];
+  events: TripEventItem[];
+  stays: TripStayItem[];
+  contacts: TripContactItem[];
+  materials: TripMaterialItem[];
+  facts: ExtractedFactItem[];
+  members: TripMemberItem[];
+}
+
+export interface ProposedChangeItem {
+  id: string;
+  tripId: string;
+  agentRunId: string | null;
+  materialId: string | null;
+  entityType: ProposedChangeEntityType;
+  entityId: string | null;
+  fieldKey: string | null;
+  previousValue: unknown;
+  proposedValue: unknown;
+  reason: string | null;
+  consequences: string | null;
+  status: ProposedChangeStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedByEmployeeId: string | null;
+}
+
+export interface TripRevisionItem {
+  id: string;
+  tripId: string;
+  changeId: string | null;
+  entityType: ProposedChangeEntityType;
+  entityId: string | null;
+  summary: string;
+  appliedByEmployeeId: string | null;
+  appliedAt: string;
+}
+
+export interface UpdateTripInput {
+  title?: string;
+  purposeSummary?: string | null;
+  cancelledAt?: string | null;
+}
+
+export interface UpdateTripLegInput {
+  mode?: TripLegMode;
+  fromLocation?: string | null;
+  toLocation?: string | null;
+  departAt?: string | null;
+  departTimeZoneOffsetMinutes?: number | null;
+  arriveAt?: string | null;
+  arriveTimeZoneOffsetMinutes?: number | null;
+  carrier?: string | null;
+  referenceCode?: string | null;
+  bookingStatus?: TripBookingStatus;
+}
+
+export interface UpdateTripEventInput {
+  title?: string;
+  startAt?: string | null;
+  startTimeZoneOffsetMinutes?: number | null;
+  dateOnly?: string | null;
+  endAt?: string | null;
+  location?: string | null;
+  notes?: string | null;
+}
+
+export interface UpdateTripStayInput {
+  name?: string | null;
+  address?: string | null;
+  checkInAt?: string | null;
+  checkOutAt?: string | null;
+  bookingStatus?: TripBookingStatus;
+}
+
+export interface UpdateTripContactInput {
+  name?: string;
+  role?: TripContactRole;
+  organization?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
+export interface AddTripMemberInput {
+  employeeId: string;
+  accessRole: TripAccessRole;
+}
+
+export interface ProposeTripTaskInput {
+  title: string;
+  assigneeId: string;
+  dueDate: string;
+}

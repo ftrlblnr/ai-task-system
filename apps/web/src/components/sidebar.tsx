@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard, Plane } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
@@ -32,6 +32,10 @@ const NAV_ITEMS = [
   // подаёт обращение, руководитель управляет очередью), видимость действий
   // внутри страницы решает backend по роли, не пункт меню.
   { href: '/reception', label: 'Приёмная', icon: DoorOpen, ownerOnly: false },
+  // Агент поездок (ТЗ 08.10.2026) — доступен всем: создатель и путешествующий
+  // руководитель могут быть разными людьми (раздел 9 ТЗ), видимость конкретных
+  // поездок решает backend через TripMember, не пункт меню.
+  { href: '/trips', label: 'Поездки', icon: Plane, ownerOnly: false },
   { href: '/calendar', label: 'Календарь', icon: CalendarDays, ownerOnly: true },
   { href: '/meetings', label: 'Встречи', icon: FileAudio, ownerOnly: true },
   // Stage 2, Phase R — почта Mail.ru (личная интеграция руководителя, как Plaud/календарь).

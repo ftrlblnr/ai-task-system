@@ -44,17 +44,20 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// multipart/form-data (голосовые заметки, /voice/parse) — не может идти
-// через request(): Content-Type там всегда 'application/json' и body всегда
-// JSON.stringify. Здесь Content-Type намеренно НЕ выставляется — браузер
-// сам проставляет multipart/form-data; boundary=... по FormData, ручной
-// заголовок ломает границу и Multer не парсит тело.
-async function requestForm<T>(path: string, formData: FormData): Promise<T> {
+// multipart/form-data (голосовые заметки, /voice/parse, материалы поездки)
+// — не может идти через request(): Content-Type там всегда
+// 'application/json' и body всегда JSON.stringify. Здесь Content-Type
+// намеренно НЕ выставляется — браузер сам проставляет multipart/form-data;
+// boundary=... по FormData, ручной заголовок ломает границу и Multer не
+// парсит тело. headers — агент поездок (ТЗ 08.10.2026): POST /trips/runs и
+// /trips/:id/materials требуют Idempotency-Key тем же способом, что
+// api.post (тот же приём, что в apps/web/src/lib/api.ts).
+async function requestForm<T>(path: string, formData: FormData, headers?: HeadersInit): Promise<T> {
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     body: formData,
   });
 
@@ -124,7 +127,7 @@ export const api = {
   // же приём, что в apps/web/src/lib/api.ts).
   post: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
-  postForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData),
+  postForm: <T>(path: string, formData: FormData, headers?: HeadersInit) => requestForm<T>(path, formData, headers),
   postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
