@@ -28,6 +28,19 @@ export class FilesCleanupCron {
   @Cron(CronExpression.EVERY_HOUR)
   async cleanupOrphanUploads(): Promise<void> {
     const cutoff = new Date(Date.now() - ORPHAN_MAX_AGE_MS);
+    // Агент поездок (ТЗ 08.10.2026) — живой баг 08.10.2026: TripMaterial
+    // ссылается на FileArtifact тем же приёмом, что и EmailAttachment
+    // (простая строка fileArtifactId, не формальная Prisma-связь) и тоже
+    // никогда не получает messageId — загрузка материала идёт через
+    // FilesService.upload() с source=UPLOADED, тот же источник, что у
+    // обычного (действительно орфанного) вложения композера, поэтому
+    // исключить весь source целиком, как сделано для почты, здесь нельзя.
+    // Без этого исключения материал поездки удалялся бы отсюда же через
+    // сутки после загрузки, пока TripMaterial.fileArtifactId продолжал
+    // указывать на уже не существующий файл — ровно то, что сломало
+    // предпросмотр/скачивание материалов в проде.
+    const referenced = await this.prisma.tripMaterial.findMany({ select: { fileArtifactId: true }, distinct: ['fileArtifactId'] });
+    const referencedIds = referenced.map((m) => m.fileArtifactId);
     const orphans = await this.prisma.fileArtifact.findMany({
       // Release 2 (Mail.ru Email Intelligence) — вложения почты
       // (FileArtifactSource.INTERNAL) тоже имеют messageId === null (они
@@ -36,7 +49,12 @@ export class FilesCleanupCron {
       // чата" — без этого исключения синхронное вложение удалялось бы
       // отсюда же через сутки после синка, а EmailAttachment.fileArtifactId
       // тихо повисал бы на несуществующий файл.
-      where: { messageId: null, createdAt: { lt: cutoff }, source: { not: FileArtifactSource.INTERNAL } },
+      where: {
+        messageId: null,
+        createdAt: { lt: cutoff },
+        source: { not: FileArtifactSource.INTERNAL },
+        ...(referencedIds.length > 0 ? { id: { notIn: referencedIds } } : {}),
+      },
     });
     let deleted = 0;
     for (const file of orphans) {

@@ -181,6 +181,20 @@ export class FilesService {
     return { buffer: Buffer.concat(chunks), file };
   }
 
+  // Агент поездок (ТЗ 08.10.2026) — то же обоснование, что
+  // readBufferForProcessing выше, но для HTTP-скачивания (Readable, не
+  // буфер целиком): доступ к материалу поездки проверяется вызывающим
+  // кодом через TripRightsService.assertPermission (участник поездки),
+  // не через личное владение файлом — тот, кто загрузил билет, и тот,
+  // кто его теперь скачивает (другой член поездки), часто разные люди,
+  // а assertOwnedFile/getDownloadStream рассчитаны именно на владельца.
+  async getStreamForProcessing(fileId: string): Promise<{ stream: Readable; file: FileArtifact }> {
+    const file = await this.prisma.fileArtifact.findUnique({ where: { id: fileId } });
+    if (!file) throw new NotFoundException('Файл не найден');
+    const stream = await this.registry.resolve(file.storageProvider).getStream(file.storageKey);
+    return { stream, file };
+  }
+
   // Phase F.1 (аудит 16.09.2026, находка #10 "orphan uploads") — раньше
   // снятие вложения крестиком в composer'е убирало его только из
   // локального React state, физический файл и FileArtifact оставались

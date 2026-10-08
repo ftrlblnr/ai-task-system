@@ -26,6 +26,7 @@ function fakeFilesService() {
       createdAt: new Date(),
       expiresAt: null,
     })),
+    getStreamForProcessing: jest.fn((fileId: string) => ({ stream: `stream-for-${fileId}`, file: { id: fileId, name: 'x', mimeType: 'application/pdf' } })),
   };
 }
 
@@ -219,6 +220,82 @@ describe('TripsService.listTrips / getTrip', () => {
     const result = await service.getTrip(USER, trip.id);
     expect(result.legs).toHaveLength(1);
     expect(result.timeStatus).toBe('NO_CONFIRMED_DATES');
+  });
+
+  // Живой баг 08.10.2026 — TripMaterial.fileArtifactId plain-строка, не
+  // Prisma-связь, поэтому include сам по себе не подтягивает имя файла —
+  // раньше это заканчивалось тем, что веб показывал сырой fileArtifactId.
+  it('getTrip — материал с живым FileArtifact получает fileName/mimeType/size/downloadable:true', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: USER.id } });
+    const run = await prisma.agentRun.create({
+      data: { initiatorId: USER.id, idempotencyKey: 'k1', tripId: trip.id, materials: { create: [{ fileArtifactId: 'file-1', addedByEmployeeId: USER.id, tripId: trip.id }] } },
+    });
+    prisma.fileArtifacts.push({ id: 'file-1', name: 'ticket.pdf', mimeType: 'application/pdf', size: 1234 });
+
+    const result = await service.getTrip(USER, trip.id);
+
+    expect(result.materials).toHaveLength(1);
+    expect(result.materials[0]).toMatchObject({ fileName: 'ticket.pdf', mimeType: 'application/pdf', size: 1234, downloadable: true });
+    expect(run).toBeTruthy();
+  });
+
+  // Та же фича — но FileArtifact уже не существует (материал загружен
+  // раньше фикса orphan-чистки в files-cleanup.cron.ts): карточка
+  // поездки не должна ломаться целиком, материал просто недоступен.
+  it('getTrip — материал без живого FileArtifact (уже удалён) — downloadable:false, fileName:null, карточка не падает', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: USER.id } });
+    await prisma.agentRun.create({
+      data: { initiatorId: USER.id, idempotencyKey: 'k1', tripId: trip.id, materials: { create: [{ fileArtifactId: 'ghost-file', addedByEmployeeId: USER.id, tripId: trip.id }] } },
+    });
+
+    const result = await service.getTrip(USER, trip.id);
+
+    expect(result.materials[0]).toMatchObject({ fileName: null, mimeType: null, size: null, downloadable: false });
+  });
+});
+
+describe('TripsService.downloadMaterial', () => {
+  async function setup() {
+    const prisma = new FakeTripsPrisma();
+    const files = fakeFilesService();
+    const rights = fakeRights();
+    const service = new TripsService(prisma as never, files as never, rights as never);
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: USER.id } });
+    await prisma.agentRun.create({
+      data: { initiatorId: USER.id, idempotencyKey: 'k1', tripId: trip.id, materials: { create: [{ fileArtifactId: 'file-1', addedByEmployeeId: USER.id, tripId: trip.id }] } },
+    });
+    const materialId = prisma.tripMaterials[0].id;
+    return { prisma, files, rights, service, trip, materialId };
+  }
+
+  it('материал своей поездки — отдаёт поток через FilesService.getStreamForProcessing по fileArtifactId материала', async () => {
+    const { files, service, trip, materialId } = await setup();
+    const result = await service.downloadMaterial(USER, trip.id, materialId);
+    expect(files.getStreamForProcessing).toHaveBeenCalledWith('file-1');
+    expect(result).toEqual({ stream: 'stream-for-file-1', file: { id: 'file-1', name: 'x', mimeType: 'application/pdf' } });
+  });
+
+  it('материал существует, но принадлежит ДРУГОЙ поездке — NotFoundException, файл не читается', async () => {
+    const { files, service, materialId } = await setup();
+    await expect(service.downloadMaterial(USER, 'other-trip', materialId)).rejects.toBeInstanceOf(NotFoundException);
+    expect(files.getStreamForProcessing).not.toHaveBeenCalled();
+  });
+
+  it('несуществующий materialId — NotFoundException', async () => {
+    const { service, trip } = await setup();
+    await expect(service.downloadMaterial(USER, trip.id, 'ghost')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('без права view (DENY) — исключение из rights прокидывается, материал не читается', async () => {
+    const prisma = new FakeTripsPrisma();
+    const files = fakeFilesService();
+    const service = new TripsService(prisma as never, files as never, fakeRights({ permission: 'DENY' }) as never);
+    await expect(service.downloadMaterial(USER, 'trip-1', 'material-1')).rejects.toBeInstanceOf(NotFoundException);
+    expect(files.getStreamForProcessing).not.toHaveBeenCalled();
   });
 });
 

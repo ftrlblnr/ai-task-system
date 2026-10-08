@@ -74,6 +74,37 @@ describe('FilesService.getDownloadStream', () => {
   });
 });
 
+// Агент поездок (ТЗ 08.10.2026) — тот же сервис-метод, что
+// readBufferForProcessing, но отдаёт Readable, не буфер, для HTTP-
+// скачивания материала поездки. Доступ проверяет вызывающий код
+// (TripsService.downloadMaterial через TripRightsService), не сам метод —
+// поэтому здесь, в отличие от getDownloadStream, НЕТ проверки владения.
+describe('FilesService.getStreamForProcessing', () => {
+  it('отдаёт поток БЕЗ проверки владения — чужой employeeId не мешает', async () => {
+    const file = { id: 'f1', employeeId: 'someone-else', storageKey: 'key-1', storageProvider: 's3-legacy' };
+    const stream = {};
+    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(file) } };
+    const legacyStorage = { getStream: jest.fn().mockResolvedValue(stream) };
+    const registry = { resolve: jest.fn().mockReturnValue(legacyStorage) };
+    const service = new FilesService(prisma as any, {} as any, registry as any);
+
+    const result = await service.getStreamForProcessing('f1');
+
+    expect(registry.resolve).toHaveBeenCalledWith('s3-legacy');
+    expect(legacyStorage.getStream).toHaveBeenCalledWith('key-1');
+    expect(result).toEqual({ stream, file });
+  });
+
+  it('несуществующий файл — NotFoundException', async () => {
+    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const storage = { getStream: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any, registryFor(storage) as any);
+
+    await expect(service.getStreamForProcessing('ghost')).rejects.toThrow(NotFoundException);
+    expect(storage.getStream).not.toHaveBeenCalled();
+  });
+});
+
 describe('FilesService.upload (Stage 2 Phase F.1 — magic-byte проверка)', () => {
   it('отклоняет файл, чьи байты не совпадают с заявленным MIME (spoofed)', async () => {
     const prisma = { fileArtifact: { create: jest.fn() } };

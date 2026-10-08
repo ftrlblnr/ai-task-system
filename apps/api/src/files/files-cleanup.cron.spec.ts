@@ -17,6 +17,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const orphan1 = { id: 'f1', storageKey: 'key-1', storageProvider: 'local', messageId: null, createdAt: new Date('2020-01-01') };
     const orphan2 = { id: 'f2', storageKey: 'key-2', storageProvider: 'local', messageId: null, createdAt: new Date('2020-01-01') };
     const prisma = {
+      tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: {
         findMany: jest.fn().mockResolvedValue([orphan1, orphan2]),
         delete: jest.fn(),
@@ -38,7 +39,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
 
   it('запрос к БД фильтрует по messageId:null, возрасту и исключает вложения почты (source=INTERNAL) — сам крон не решает, что orphan, а что нет', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
-    const prisma = { fileArtifact: { findMany, delete: jest.fn() } };
+    const prisma = { tripMaterial: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
     const storage = { delete: jest.fn() };
     const cron = new FilesCleanupCron(prisma as any, registryFor(storage) as any);
 
@@ -48,6 +49,47 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
       where: { messageId: null, createdAt: { lt: expect.any(Date) }, source: { not: 'INTERNAL' } },
     });
     expect(storage.delete).not.toHaveBeenCalled();
+  });
+
+  // Агент поездок (ТЗ 08.10.2026) — живой баг 08.10.2026: материал
+  // поездки ссылается на FileArtifact той же plain-строкой, что
+  // EmailAttachment, и тоже никогда не получает messageId — без
+  // исключения по TripMaterial.fileArtifactId крон удалял бы такой файл
+  // через сутки, оставляя TripMaterial.fileArtifactId указывать в
+  // никуда (ровно то, что сломало скачивание материалов в проде).
+  it('исключает файлы, на которые ссылается TripMaterial.fileArtifactId, даже если messageId:null и возраст подходит', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      tripMaterial: { findMany: jest.fn().mockResolvedValue([{ fileArtifactId: 'trip-file-1' }, { fileArtifactId: 'trip-file-2' }]) },
+      fileArtifact: { findMany, delete: jest.fn() },
+    };
+    const storage = { delete: jest.fn() };
+    const cron = new FilesCleanupCron(prisma as any, registryFor(storage) as any);
+
+    await cron.cleanupOrphanUploads();
+
+    expect(prisma.tripMaterial.findMany).toHaveBeenCalledWith({ select: { fileArtifactId: true }, distinct: ['fileArtifactId'] });
+    expect(findMany).toHaveBeenCalledWith({
+      where: {
+        messageId: null,
+        createdAt: { lt: expect.any(Date) },
+        source: { not: 'INTERNAL' },
+        id: { notIn: ['trip-file-1', 'trip-file-2'] },
+      },
+    });
+  });
+
+  it('нет материалов поездок вообще — запрос к FileArtifact не получает лишний id:notIn (пустой список исключений не добавляется как бессмысленное условие)', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = { tripMaterial: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
+    const storage = { delete: jest.fn() };
+    const cron = new FilesCleanupCron(prisma as any, registryFor(storage) as any);
+
+    await cron.cleanupOrphanUploads();
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: { messageId: null, createdAt: { lt: expect.any(Date) }, source: { not: 'INTERNAL' } },
+    });
   });
 
   // P1 (внешний аудит 20.09.2026) — раньше storage.delete() глотал любую
@@ -61,6 +103,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const orphan1 = { id: 'f1', storageKey: 'key-1', messageId: null, createdAt: new Date('2020-01-01') };
     const orphan2 = { id: 'f2', storageKey: 'key-2', messageId: null, createdAt: new Date('2020-01-01') };
     const prisma = {
+      tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: {
         findMany: jest.fn().mockResolvedValue([orphan1, orphan2]),
         delete: jest.fn(),

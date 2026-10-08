@@ -39,6 +39,17 @@ export interface FakeTripMaterial {
   createdAt: Date;
 }
 
+// Живой баг 08.10.2026 — TripsService.enrichMaterials/downloadMaterial
+// читают FileArtifact напрямую (fileArtifactId — plain-строка, не
+// формальная Prisma-связь), поэтому фейку нужна отдельная модель, не
+// связанная автоматически с FakeTripMaterial.
+export interface FakeFileArtifact {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface FakeTrip {
   id: string;
   humanCode: string;
@@ -173,6 +184,7 @@ function applyUpdate(row: object, data: Record<string, unknown>): void {
 export class FakeTripsPrisma {
   agentRuns: FakeAgentRun[] = [];
   tripMaterials: FakeTripMaterial[] = [];
+  fileArtifacts: FakeFileArtifact[] = [];
   trips: FakeTrip[] = [];
   tripMembers: FakeTripMember[] = [];
   tripLegs: FakeTripLeg[] = [];
@@ -241,6 +253,7 @@ export class FakeTripsPrisma {
 
   tripMaterial = {
     findMany: async ({ where }: { where: { agentRunId: string } }) => this.tripMaterials.filter((m) => m.agentRunId === where.agentRunId),
+    findUnique: async ({ where }: { where: { id: string } }) => this.tripMaterials.find((m) => m.id === where.id) ?? null,
     update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       const row = this.tripMaterials.find((m) => m.id === where.id)!;
       applyUpdate(row, data);
@@ -251,6 +264,12 @@ export class FakeTripsPrisma {
       for (const row of rows) applyUpdate(row, data);
       return { count: rows.length };
     },
+  };
+
+  // Живой баг 08.10.2026 — см. комментарий на FakeFileArtifact выше.
+  fileArtifact = {
+    findMany: async ({ where }: { where: { id: { in: string[] } } }) => this.fileArtifacts.filter((f) => where.id.in.includes(f.id)),
+    findUnique: async ({ where }: { where: { id: string } }) => this.fileArtifacts.find((f) => f.id === where.id) ?? null,
   };
 
   trip = {

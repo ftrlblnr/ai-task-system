@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Patch, Post, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Patch, Post, StreamableFile, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -6,6 +6,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { IdempotencyService } from '../common/idempotency.service';
 import { fixMultipartFileName } from '../common/http/multipart-filename';
+import { contentDisposition } from '../common/http/content-disposition';
 import { ALLOWED_UPLOAD_MIME_TYPES, MAX_UPLOAD_FILE_SIZE } from '../files/dto/upload-file.dto';
 import { TripsService, MAX_MATERIALS_PER_RUN, type MaterialUpload } from './trips.service';
 import { TripChangesService } from './trip-changes.service';
@@ -107,6 +108,15 @@ export class TripsController {
     const idemBody = { tripId: id, files: materials.map((m) => ({ name: m.originalName, size: m.buffer.length, mimeType: m.mimeType })) };
     const { body } = await this.idempotency.run(user.id, idemKey, 'trips.materials.add', idemBody, () => this.trips.addMaterialsToTrip(user, id, materials));
     return body;
+  }
+
+  // Живой баг 08.10.2026 — скачивание материала отдельной точкой, не
+  // через files/:id/download: доступ проверяется участием в поездке
+  // (TripsService.downloadMaterial → 'view'), не личным владением файлом.
+  @Get(':id/materials/:materialId/download')
+  async downloadMaterial(@Param('id') id: string, @Param('materialId') materialId: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
+    const { stream, file } = await this.trips.downloadMaterial(user, id, materialId);
+    return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
   }
 
   @Get(':id/changes')

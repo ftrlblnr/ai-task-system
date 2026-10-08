@@ -962,6 +962,14 @@ export interface TripMaterialItem {
   addedByEmployeeId: string;
   extractionIssue: string | null;
   createdAt: string;
+  // Только у материалов поездки (GET /trips/:id) — TripsService.getTrip
+  // дозаполняет их отдельным запросом к FileArtifact; в AgentRunDetail
+  // (GET /trips/runs/:id) этих полей нет, там материал — ещё необработанная
+  // запись пакета, не карточка поездки.
+  fileName?: string | null;
+  mimeType?: string | null;
+  size?: number | null;
+  downloadable?: boolean;
 }
 
 export interface AgentRunItem {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText, Plus, Trash2, Download } from 'lucide-react';
 import type {
   AddTripMemberInput,
   AgentRunDetail,
@@ -761,6 +761,52 @@ function CreateContactDialog({ tripId, onClose, onDone }: { tripId: string; onCl
   );
 }
 
+// Живой баг 08.10.2026 — карточка материала показывала сырой
+// fileArtifactId вместо имени файла, и у материала не было ни одной
+// ссылки на скачивание/просмотр. Скачивание — тот же приём, что
+// apps/web/src/app/mail/page.tsx.AttachmentItem (авторизованный fetch →
+// Blob → временный <a download>, обычная <a href> не отправит
+// Bearer-токен). downloadable:false — файл уже не существует (материал
+// загружен раньше фикса orphan-чистки, см. files-cleanup.cron.ts) —
+// тогда просто имя без ссылки, без попытки скачать то, чего нет.
+function MaterialItem({ tripId, material }: { tripId: string; material: TripDetail['materials'][number] }) {
+  const [downloading, setDownloading] = useState(false);
+  const label = material.fileName ?? 'Файл недоступен';
+
+  if (!material.downloadable) {
+    return <span className="ds-field-hint">{label}</span>;
+  }
+
+  async function download() {
+    setDownloading(true);
+    try {
+      const blob = await api.downloadBlob(`/trips/${tripId}/materials/${material.id}/download`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = material.fileName ?? 'file';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={download}
+      disabled={downloading}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--accent, inherit)', textDecoration: 'underline', cursor: downloading ? 'default' : 'pointer' }}
+    >
+      {label}
+      <Download size={12} strokeWidth={2} />
+    </button>
+  );
+}
+
 // Факты — простая форма из двух полей, без модалки (ExtractedFact — самый
 // "мягкий" слой данных, не заслуживает отдельного диалога).
 function AddFactInline({ tripId, onDone }: { tripId: string; onDone: () => void }) {
@@ -958,7 +1004,7 @@ function TripDetailView({ tripId }: { tripId: string }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {trip.materials.map((m) => (
                   <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{m.fileArtifactId}</span>
+                    <MaterialItem tripId={tripId} material={m} />
                     <Badge tone={m.processingStatus === 'EXTRACTED' ? 'ok' : m.processingStatus === 'PENDING' ? 'neutral' : 'warn'}>{m.processingStatus}</Badge>
                   </div>
                 ))}

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, type FileArtifact } from '@prisma/client';
+import { Prisma, type FileArtifact, type TripMaterial } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
@@ -186,6 +186,38 @@ export class TripsService {
         members: true,
       },
     });
-    return { ...trip, timeStatus: computeTripTimeStatus(trip) };
+    const materials = await this.enrichMaterials(trip.materials);
+    return { ...trip, materials, timeStatus: computeTripTimeStatus(trip) };
+  }
+
+  // Живой баг 08.10.2026 — TripMaterial.fileArtifactId простая строка, не
+  // формальная Prisma-связь (как EmailAttachment), поэтому include
+  // никогда не подтягивает имя/тип файла сам — раньше это заканчивалось
+  // тем, что веб показывал сырой fileArtifactId вместо имени документа.
+  // FileArtifact может уже не существовать (материал загружен раньше
+  // фикса orphan-чистки в files-cleanup.cron.ts) — тогда просто
+  // downloadable:false, не ошибка на всю карточку поездки.
+  private async enrichMaterials(materials: TripMaterial[]) {
+    if (materials.length === 0) return [];
+    const files = await this.prisma.fileArtifact.findMany({
+      where: { id: { in: materials.map((m) => m.fileArtifactId) } },
+      select: { id: true, name: true, mimeType: true, size: true },
+    });
+    const byId = new Map(files.map((f) => [f.id, f]));
+    return materials.map((m) => {
+      const file = byId.get(m.fileArtifactId);
+      return { ...m, fileName: file?.name ?? null, mimeType: file?.mimeType ?? null, size: file?.size ?? null, downloadable: !!file };
+    });
+  }
+
+  // Доступ — та же 'view' permission, что getTrip: любой участник
+  // поездки может скачать её материал, не только тот, кто его загрузил
+  // (см. FilesService.getStreamForProcessing — личное владение файлом
+  // здесь намеренно не проверяется).
+  async downloadMaterial(user: AuthenticatedUser, tripId: string, materialId: string) {
+    await this.rights.assertPermission(tripId, user.id, 'view');
+    const material = await this.prisma.tripMaterial.findUnique({ where: { id: materialId } });
+    if (!material || material.tripId !== tripId) throw new NotFoundException('Материал не найден');
+    return this.files.getStreamForProcessing(material.fileArtifactId);
   }
 }
