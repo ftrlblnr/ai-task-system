@@ -36,6 +36,7 @@ const BOOKING_LABELS: Record<string, string> = { BOOKED: 'Забронирова
 const BOOKING_TONE: Record<string, BadgeTone> = { BOOKED: 'ok', PROPOSED: 'info', UNCONFIRMED: 'warn' };
 const LEG_MODE_LABELS: Record<string, string> = { FLIGHT: 'Перелёт', TRAIN: 'Поезд', CAR: 'Автомобиль', OTHER: 'Переезд' };
 const ACCESS_ROLE_LABELS: Record<TripAccessRole, string> = { ORGANIZER: 'Организатор', EDITOR: 'Редактор', APPROVER: 'Утверждающий', VIEWER: 'Наблюдатель' };
+const CONTACT_ROLE_LABELS: Record<string, string> = { ORGANIZER_HOST: 'Принимающая сторона', RECEIVING_PARTY: 'Принимающая сторона', DELEGATE: 'Представитель', OTHER: 'Контакт' };
 const RUN_TERMINAL = new Set(['READY', 'READY_WITH_ISSUES', 'FAILED']);
 
 function fmtDateTime(value: string | null): string {
@@ -58,7 +59,42 @@ function useIdempotencyKey(): { key: () => string; reset: () => void } {
   };
 }
 
-function LegRow({ leg }: { leg: TripLegItem }) {
+// Раздел 7 ТЗ — ручная правка отдельна от предложений агента: полные формы
+// редактирования каждого поля намеренно не строим (основной путь внесения
+// исправлений — approve/reject предложений или новый материал), но удалить
+// явно неверный/дублирующий пункт программы вручную — быть должно.
+function DeleteButton({ onConfirm, confirmText }: { onConfirm: () => void; confirmText: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      loading={busy}
+      onClick={async () => {
+        if (!window.confirm(confirmText)) return;
+        setBusy(true);
+        try {
+          await onConfirm();
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      Удалить
+    </Button>
+  );
+}
+
+function LegRow({ leg, canEdit, onDeleted }: { leg: TripLegItem; canEdit: boolean; onDeleted: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  async function remove() {
+    try {
+      await api.delete(`/trips/${leg.tripId}/legs/${leg.id}`);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить');
+    }
+  }
   return (
     <Card tone="sunken">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -76,14 +112,27 @@ function LegRow({ leg }: { leg: TripLegItem }) {
             {leg.carrier ? ` · ${leg.carrier}` : ''}
             {leg.referenceCode ? ` · ${leg.referenceCode}` : ''}
           </p>
+          {error && <Alert tone="danger">{error}</Alert>}
         </div>
-        <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
+          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить этот перелёт/переезд из программы?" />}
+        </div>
       </div>
     </Card>
   );
 }
 
-function StayRow({ stay }: { stay: TripStayItem }) {
+function StayRow({ stay, canEdit, onDeleted }: { stay: TripStayItem; canEdit: boolean; onDeleted: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  async function remove() {
+    try {
+      await api.delete(`/trips/${stay.tripId}/stays/${stay.id}`);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить');
+    }
+  }
   return (
     <Card tone="sunken">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -97,14 +146,30 @@ function StayRow({ stay }: { stay: TripStayItem }) {
             {stay.checkInAt ? ` · заезд ${fmtDateTime(stay.checkInAt)}` : ''}
             {stay.checkOutAt ? ` · выезд ${fmtDateTime(stay.checkOutAt)}` : ''}
           </p>
+          {error && <Alert tone="danger">{error}</Alert>}
         </div>
-        <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
+          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это проживание из программы?" />}
+        </div>
       </div>
     </Card>
   );
 }
 
-function EventRow({ event, canWriteCalendar, onAddedToCalendar }: { event: TripEventItem; canWriteCalendar: boolean; onAddedToCalendar: () => void }) {
+function EventRow({
+  event,
+  canWriteCalendar,
+  canEdit,
+  onAddedToCalendar,
+  onDeleted,
+}: {
+  event: TripEventItem;
+  canWriteCalendar: boolean;
+  canEdit: boolean;
+  onAddedToCalendar: () => void;
+  onDeleted: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -118,6 +183,15 @@ function EventRow({ event, canWriteCalendar, onAddedToCalendar }: { event: TripE
       setError(err instanceof ApiError ? err.message : 'Не удалось добавить в календарь');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function remove() {
+    try {
+      await api.delete(`/trips/${event.tripId}/events/${event.id}`);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить');
     }
   }
 
@@ -136,11 +210,14 @@ function EventRow({ event, canWriteCalendar, onAddedToCalendar }: { event: TripE
           {event.notes && <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>{event.notes}</p>}
           {error && <Alert tone="danger">{error}</Alert>}
         </div>
-        {canWriteCalendar && event.startAt && event.endAt && (
-          <Button size="sm" variant="ghost" onClick={addToCalendar} loading={busy}>
-            В календарь
-          </Button>
-        )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+          {canWriteCalendar && event.startAt && event.endAt && (
+            <Button size="sm" variant="ghost" onClick={addToCalendar} loading={busy}>
+              В календарь
+            </Button>
+          )}
+          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это событие из программы?" />}
+        </div>
       </div>
     </Card>
   );
@@ -459,9 +536,12 @@ function TripDetailView({ tripId }: { tripId: string }) {
   const pendingChanges = (changes ?? []).filter((c) => c.status === 'PENDING');
 
   const programItems = [
-    ...trip.legs.map((leg) => ({ sortKey: leg.departAt ?? '9999', node: <LegRow key={`leg-${leg.id}`} leg={leg} /> })),
-    ...trip.events.map((event) => ({ sortKey: event.startAt ?? event.dateOnly ?? '9999', node: <EventRow key={`event-${event.id}`} event={event} canWriteCalendar={canWriteCalendar} onAddedToCalendar={loadRevisions} /> })),
-    ...trip.stays.map((stay) => ({ sortKey: stay.checkInAt ?? '9999', node: <StayRow key={`stay-${stay.id}`} stay={stay} /> })),
+    ...trip.legs.map((leg) => ({ sortKey: leg.departAt ?? '9999', node: <LegRow key={`leg-${leg.id}`} leg={leg} canEdit={canEdit} onDeleted={loadTrip} /> })),
+    ...trip.events.map((event) => ({
+      sortKey: event.startAt ?? event.dateOnly ?? '9999',
+      node: <EventRow key={`event-${event.id}`} event={event} canWriteCalendar={canWriteCalendar} canEdit={canEdit} onAddedToCalendar={loadRevisions} onDeleted={loadTrip} />,
+    })),
+    ...trip.stays.map((stay) => ({ sortKey: stay.checkInAt ?? '9999', node: <StayRow key={`stay-${stay.id}`} stay={stay} canEdit={canEdit} onDeleted={loadTrip} /> })),
   ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 
   async function toggleCancelled() {
@@ -578,16 +658,37 @@ function TripDetailView({ tripId }: { tripId: string }) {
       )}
 
       {tab === 'people' && (
-        <Card title="Участники" actions={canManageAccess ? <Button size="sm" icon={UsersIcon} onClick={() => setShowAddMember(true)}>Добавить</Button> : undefined}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {trip.members.map((m) => (
-              <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>{m.employeeId}</span>
-                <Badge tone="info">{ACCESS_ROLE_LABELS[m.accessRole]}</Badge>
+        <>
+          <Card title="Участники (доступ)" actions={canManageAccess ? <Button size="sm" icon={UsersIcon} onClick={() => setShowAddMember(true)}>Добавить</Button> : undefined}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {trip.members.map((m) => (
+                <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{m.employeeId}</span>
+                  <Badge tone="info">{ACCESS_ROLE_LABELS[m.accessRole]}</Badge>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card title="Контакты поездки" style={{ marginTop: 16 }}>
+            {trip.contacts.length === 0 ? (
+              <EmptyState title="Контактов пока нет" description="Появятся из материалов или добавятся вручную позже." />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {trip.contacts.map((c) => (
+                  <div key={c.id}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <strong>{c.name}</strong>
+                      <Badge tone="outline">{CONTACT_ROLE_LABELS[c.role]}</Badge>
+                    </div>
+                    <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>
+                      {[c.organization, c.phone, c.email].filter(Boolean).join(' · ') || 'Нет дополнительных данных'}
+                    </p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </Card>
+            )}
+          </Card>
+        </>
       )}
 
       {tab === 'history' && (
