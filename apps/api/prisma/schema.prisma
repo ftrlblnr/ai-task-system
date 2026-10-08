@@ -62,6 +62,12 @@ model Employee {
   // Администратор профилей (раздел 6.3, 5): либо сам руководитель, либо
   // один доверенный человек — флаг, а не отдельная роль.
   isProfileAdmin Boolean        @default(false)
+  // Агент поездок (ТЗ 08.10.2026, раздел 7) — trips.create: "создать
+  // поездку для разрешённых руководителей", не любой сотрудник. Тот же
+  // приём, что isProfileAdmin — флаг, не отдельная Role. Остальные trips.*
+  // права (view/materials.add/edit/approve/manage_access/archive) —
+  // per-поездка через TripMember.accessRole, не глобальный флаг.
+  canCreateTrips Boolean        @default(false)
 
   positionId String?
   position   Position? @relation(fields: [positionId], references: [id])
@@ -76,9 +82,9 @@ model Employee {
 
   competencies EmployeeCompetency[]
 
-  tasksAssigned Task[] @relation("TaskAssignee")
-  tasksCreated  Task[] @relation("TaskCreator")
-  taskWatching  TaskWatcher[]
+  tasksAssigned       Task[]             @relation("TaskAssignee")
+  tasksCreated        Task[]             @relation("TaskCreator")
+  taskWatching        TaskWatcher[]
   eventParticipations EventParticipant[]
 
   taskComments        TaskComment[]
@@ -89,25 +95,29 @@ model Employee {
   passwordResetTokens PasswordResetToken[]
   meetingsCreated     Meeting[]
 
-  eventsCreated            Event[]
-  googleCalendarConnection GoogleCalendarConnection?
-  calendarPolicy           CalendarPolicy?
-  calendarPlansOwned       CalendarPlan[]
+  eventsCreated              Event[]
+  googleCalendarConnection   GoogleCalendarConnection?
+  calendarPolicy             CalendarPolicy?
+  calendarPlansOwned         CalendarPlan[]
   calendarAuthorizationsMade CalendarAuthorization[]
-  plaudConnection          PlaudConnection?
-  mailbox                  Mailbox?
-  conversations            Conversation[]
-  fileArtifacts            FileArtifact[]
-  aliases                  EmployeeAlias[]
-  meetingSegmentsSpoken    MeetingSegment[]
+  tripsOrganized             Trip[]
+  tripMemberships            TripMember[]
+  agentRunsInitiated         AgentRun[]
+  tripMaterialsAdded         TripMaterial[]
+  plaudConnection            PlaudConnection?
+  mailbox                    Mailbox?
+  conversations              Conversation[]
+  fileArtifacts              FileArtifact[]
+  aliases                    EmployeeAlias[]
+  meetingSegmentsSpoken      MeetingSegment[]
 
-  receptionRequestsAuthored    ReceptionRequest[]
-  receptionEventsActed         ReceptionEvent[]
-  receptionNotificationsToMe   ReceptionNotification[]
+  receptionRequestsAuthored  ReceptionRequest[]
+  receptionEventsActed       ReceptionEvent[]
+  receptionNotificationsToMe ReceptionNotification[]
 
-  mailActionPlansOwned   MailActionPlan[]
+  mailActionPlansOwned    MailActionPlan[]
   mailActionApprovalsMade MailActionApproval[]
-  mailWatchesOwned       MailWatch[]
+  mailWatchesOwned        MailWatch[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -170,8 +180,8 @@ model Conversation {
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
 
-  messages      Message[]
-  fileArtifacts FileArtifact[]
+  messages                  Message[]
+  fileArtifacts             FileArtifact[]
   // Phase L — durable claim одного write-tool'а Assistant Core
   // (create_task_from_meeting), см. TaskFromMeetingExecution ниже.
   taskFromMeetingExecutions TaskFromMeetingExecution[]
@@ -180,11 +190,11 @@ model Conversation {
 }
 
 model Message {
-  id             String        @id @default(cuid())
-  conversationId String
-  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  role           MessageRole
-  status         MessageStatus @default(COMPLETED)
+  id              String        @id @default(cuid())
+  conversationId  String
+  conversation    Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role            MessageRole
+  status          MessageStatus @default(COMPLETED)
   // Идемпотентность повторной отправки (плохой интернет, двойной tap,
   // reconnect) — клиент генерирует один раз, сервер игнорирует повтор той
   // же пары (conversationId, clientRequestId). У сообщений ассистента
@@ -193,7 +203,7 @@ model Message {
   clientRequestId String?
   // Correlation id вызова ассистента, породившего это сообщение (тот же
   // принцип, что requestId в voice-пайплайне) — для логов, не для UI.
-  requestId String?
+  requestId       String?
 
   // Phase F.1 (стабилизация, аудит 16.09.2026) — раньше пара user↔assistant
   // определялась по "первое assistant-сообщение с createdAt позже, чем у
@@ -206,7 +216,7 @@ model Message {
   // user-сообщение" теперь гарантирует сама БД, а не только код;
   // AssistantChatService.createAssistantMessageIdempotent ловит гонку
   // (P2002) двух одновременных запросов с одним clientRequestId.
-  replyToMessageId String? @unique
+  replyToMessageId String?   @unique
   replyToMessage   Message?  @relation("MessageReply", fields: [replyToMessageId], references: [id])
   replies          Message[] @relation("MessageReply")
 
@@ -216,8 +226,8 @@ model Message {
   parts         MessagePart[]
   fileArtifacts FileArtifact[]
 
-  @@index([conversationId, createdAt])
   @@unique([conversationId, clientRequestId])
+  @@index([conversationId, createdAt])
 }
 
 // Только эти 6 типов на первом этапе (см. план этапа) — markdown/error уже
@@ -382,7 +392,7 @@ model Meeting {
   enhancedSummary String?
   // {"Speaker 1": "Иван Иванов", ...} — из чего пересчитывается
   // enhancedSummary (владелец 09.09.2026). Null, пока имена не заданы.
-  speakerNames Json?
+  speakerNames    Json?
 
   // Путь во внешнем объектном хранилище, не blob в БД (раздел 15 ТЗ).
   audioUrl      String?
@@ -393,7 +403,7 @@ model Meeting {
   createdById String
   createdBy   Employee @relation(fields: [createdById], references: [id])
 
-  tasks Task[]
+  tasks         Task[]
   plaudSyncItem PlaudSyncItem?
   segments      MeetingSegment[]
 
@@ -420,9 +430,9 @@ model Meeting {
 // таблица корректны и протестированы независимо от этого; сама выборка
 // данных из Plaud — best-effort, требует проверки на реальном аккаунте.
 model MeetingSegment {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   meetingId         String
-  meeting           Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  meeting           Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   order             Int
   startMs           Int
   endMs             Int
@@ -463,15 +473,15 @@ enum PlaudSyncStatus {
 // способ заметить, что содержимое записи изменилось на стороне Plaud,
 // это перечитать и сравнить хэш с сохранённым.
 model PlaudSyncItem {
-  id               String          @id @default(cuid())
-  employeeId       String
-  plaudRecordingId String          @unique
-  plaudCreatedAt   DateTime
-  status           PlaudSyncStatus
-  contentHash      String?
-  errorMessage     String?
-  meetingId        String?         @unique
-  meeting          Meeting?        @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  id                 String          @id @default(cuid())
+  employeeId         String
+  plaudRecordingId   String          @unique
+  plaudCreatedAt     DateTime
+  status             PlaudSyncStatus
+  contentHash        String?
+  errorMessage       String?
+  meetingId          String?         @unique
+  meeting            Meeting?        @relation(fields: [meetingId], references: [id], onDelete: SetNull)
   // Stage 2, Phase L (внешний аудит 21.09.2026, "Plaud transcript
   // independence", P0) — раньше транскрипт синхронизировался ТОЛЬКО в той
   // же ветке, что и summary/title, и та ветка пропускалась целиком, если
@@ -495,8 +505,8 @@ model PlaudSyncItem {
   // summary и транскрипт — разные note/source в Plaud, меняются
   // независимо друг от друга).
   transcriptHash     String?
-  lastAttemptAt    DateTime        @default(now())
-  createdAt        DateTime        @default(now())
+  lastAttemptAt      DateTime        @default(now())
+  createdAt          DateTime        @default(now())
 }
 
 // Тип задачи: категория + требуемые компетенции (раздел 6.4).
@@ -599,7 +609,7 @@ model Task {
   // При ручной постановке (не из встречи) sourceMeetingId пуст, а
   // sourceContext используется как обычная заметка руководителя.
   sourceMeetingId String?
-  sourceMeeting   Meeting? @relation(fields: [sourceMeetingId], references: [id])
+  sourceMeeting   Meeting?        @relation(fields: [sourceMeetingId], references: [id])
   sourceTimestamp String?
   sourceContext   String?
   // Phase O (Meeting → Task через Assistant-чат, create_task_from_meeting)
@@ -640,8 +650,8 @@ model Task {
   // onDelete: Cascade (аудит 10.09.2026, п. 2.2) — раньше был дефолт Prisma
   // (SetNull): удаление родителя осиротевало подзадачи в общий список/
   // канбан как самостоятельные задачи вместо их удаления.
-  parentTask Task?  @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks   Task[] @relation("TaskSubtasks")
+  parentTask   Task?   @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks     Task[]  @relation("TaskSubtasks")
 
   comments    TaskComment[]
   attachments TaskAttachment[]
@@ -769,13 +779,13 @@ enum TaskFromMeetingStatus {
 // будущие write-tools — второго write-tool'а пока не существует,
 // обобщать преждевременно (см. план Phase O).
 model TaskFromMeetingExecution {
-  id             String @id @default(cuid())
+  id             String       @id @default(cuid())
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
-  dedupeKey String
-  status    TaskFromMeetingStatus @default(CLAIMED)
-  taskId    String?
+  dedupeKey    String
+  status       TaskFromMeetingStatus @default(CLAIMED)
+  taskId       String?
   errorMessage String?
 
   sourcedTask Task?
@@ -884,16 +894,16 @@ enum UndoRecordStatus {
 }
 
 model UndoRecord {
-  id         String           @id @default(cuid())
+  id                    String           @id @default(cuid())
   // Чей голосовой запрос породил это действие — POST /voice/undo
   // (VoiceService.undo) сверяет вызывающего с этим полем: тот же принцип
   // "не раскрываем, какой из случаев" 404, что и у скачивания файлов
   // (см. FilesService.getDownloadStream) — не своя/несуществующая/
   // истёкшая запись отвечают одинаковым безопасным текстом.
-  employeeId String
-  kind       UndoKind
-  action     UndoRecordAction
-  entityId   String
+  employeeId            String
+  kind                  UndoKind
+  action                UndoRecordAction
+  entityId              String
   previous              Json?
   addedParticipantIds   Json?
   removedParticipantIds Json?
@@ -909,7 +919,7 @@ model UndoRecord {
   // Ставится только при переходе в COMPLETED — "когда откат реально
   // произошёл", не "когда его застолбили" (см. status выше).
   consumedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 }
 
 // --- Календарь руководителя (раздел 14.2/Адъютант, скорректировано --------
@@ -1015,7 +1025,7 @@ model GoogleCalendarConnection {
   // channelId на публичный /calendar/google/webhook запускал бы pull от
   // имени этого сотрудника. Google возвращает его назад в заголовке
   // X-Goog-Channel-Token на каждом уведомлении канала.
-  channelToken String?
+  channelToken      String?
 
   connectedAt DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1044,8 +1054,8 @@ model GoogleOAuthAppConfig {
 // значения по умолчанию (calendar-availability.ts: defaultAvailabilityPolicy),
 // пока владелец не сохранил свои через PATCH /calendar/policy.
 model CalendarPolicy {
-  id      String @id @default(cuid())
-  ownerId String @unique
+  id      String   @id @default(cuid())
+  ownerId String   @unique
   owner   Employee @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   // Optimistic concurrency на правку политики — тот же приём, что Event.version.
@@ -1054,12 +1064,12 @@ model CalendarPolicy {
   // Фиксированное смещение (раздел 24 ТЗ: Asia/Almaty, UTC+5, без DST) —
   // полноценный IANA-часовой пояс с переходом на летнее время здесь не
   // нужен (единственный офис без DST, см. common/timezone.ts).
-  timeZoneOffsetMinutes Int @default(300)
+  timeZoneOffsetMinutes Int  @default(300)
   // [{weekday: 0-6, startMinute, endMinute}, ...] — раздел 11 ТЗ.
-  workingHours    Json
-  bufferMinutes   Int @default(15)
-  minNoticeHours  Int @default(4)
-  slotStepMinutes Int @default(15)
+  workingHours          Json
+  bufferMinutes         Int  @default(15)
+  minNoticeHours        Int  @default(4)
+  slotStepMinutes       Int  @default(15)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1326,8 +1336,8 @@ model EmailAnalysis {
 
   // Хэш входа анализа — повторный анализ только если состояние существенно
   // изменилось (контроль стоимости).
-  inputHash String?
-  model     String?
+  inputHash  String?
+  model      String?
   // Ограничивает ретраи структурно «битых» писем (см. MAX_ANALYSIS_ATTEMPTS).
   attempts   Int      @default(1)
   analyzedAt DateTime @default(now())
@@ -1451,11 +1461,11 @@ model MailActionPlan {
   modelVersion String?
   // Раздел 4/14 ТЗ — смена критерия/папок создаёт НОВУЮ версию плана, не
   // правит старую версию на месте.
-  version Int                  @default(1)
-  status  MailActionPlanStatus @default(ANALYZING)
+  version      Int                  @default(1)
+  status       MailActionPlanStatus @default(ANALYZING)
   // Раздел 6 ТЗ — обнаружено/получено/проверено/требует просмотра/ошибки/
   // исчезло + отдельно число действий (не равно числу писем).
-  coverage Json?
+  coverage     Json?
 
   items     MailActionItem[]
   approvals MailActionApproval[]
@@ -1479,7 +1489,7 @@ model MailActionItem {
   stableObjectIds String[]
   // UID/папка/UIDVALIDITY на момент snapshot — сверка "не изменилось ли"
   // перед исполнением (раздел 14/15 ТЗ).
-  sourceLocators Json
+  sourceLocators  Json
 
   reason      String
   evidence    Json?
@@ -1496,13 +1506,13 @@ model MailActionItem {
   // Оптимистическая конкуренция на уровне пункта — тот же приём, что
   // ReceptionRequest.version (раздел 14 ТЗ: изменённые параметры требуют
   // нового согласия).
-  version Int @default(1)
+  version  Int                  @default(1)
 
   approvalId String?
   approval   MailActionApproval? @relation(fields: [approvalId], references: [id], onDelete: SetNull)
 
-  attempts       MailActionAttempt[]
-  compensations  MailActionCompensation[]
+  attempts      MailActionAttempt[]
+  compensations MailActionCompensation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1528,7 +1538,7 @@ model MailActionApproval {
   status                  MailActionApprovalStatus @default(ACTIVE)
   approvedAt              DateTime                 @default(now())
   // Раздел 14 ТЗ — начальный настраиваемый срок актуальности согласия, 24ч.
-  expiresAt DateTime
+  expiresAt               DateTime
 
   items     MailActionItem[]
   execution MailActionExecution?
@@ -1544,10 +1554,10 @@ enum MailActionExecutionState {
 }
 
 model MailActionExecution {
-  id         String                   @id @default(cuid())
-  approvalId String                   @unique
-  approval   MailActionApproval       @relation(fields: [approvalId], references: [id], onDelete: Cascade)
-  state      MailActionExecutionState @default(QUEUED)
+  id                String                   @id @default(cuid())
+  approvalId        String                   @unique
+  approval          MailActionApproval       @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+  state             MailActionExecutionState @default(QUEUED)
   // Раздел 16 ТЗ — агрегированные счётчики по типам действий.
   countersByType    Json?
   cancelRequestedAt DateTime?
@@ -1558,10 +1568,10 @@ model MailActionExecution {
 }
 
 model MailActionAttempt {
-  id            String         @id @default(cuid())
-  actionId      String
-  action        MailActionItem @relation(fields: [actionId], references: [id], onDelete: Cascade)
-  attemptNumber Int
+  id                 String                    @id @default(cuid())
+  actionId           String
+  action             MailActionItem            @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  attemptNumber      Int
   // Раздел 16 ТЗ — durable intent ДО обращения к провайдеру, затем
   // подтверждённый результат.
   intent             Json
@@ -1584,11 +1594,11 @@ enum MailDraftState {
 // Этапы 2-3 ТЗ (DRAFT_REPLY/SEND_REPLY) — модель заведена вместе с общей
 // инфраструктурой (раздел 21, шаг 2), сервис появится при выпуске этапа.
 model MailDraft {
-  id              String   @id @default(cuid())
+  id              String         @id @default(cuid())
   mailboxId       String
-  mailbox         Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  mailbox         Mailbox        @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
   sourceMessageId String?
-  version         Int      @default(1)
+  version         Int            @default(1)
   fromAddress     String?
   toAddresses     String[]
   ccAddresses     String[]
@@ -1639,9 +1649,9 @@ enum MailActionCompensationStatus {
 }
 
 model MailActionCompensation {
-  id                   String                        @id @default(cuid())
+  id                   String                       @id @default(cuid())
   originalActionId     String
-  originalAction       MailActionItem                @relation(fields: [originalActionId], references: [id], onDelete: Cascade)
+  originalAction       MailActionItem               @relation(fields: [originalActionId], references: [id], onDelete: Cascade)
   selectedCompensation String
   approvalId           String?
   status               MailActionCompensationStatus @default(PENDING)
@@ -1717,8 +1727,8 @@ model RegistrationWindow {
 // UPDATE), не SELECT MAX(order)+1 (раздел 7.1 ТЗ — гонка под конкурентной
 // подачей).
 model ReceptionQueue {
-  id        String   @id @default(cuid())
-  nextOrder BigInt   @default(1)
+  id        String             @id @default(cuid())
+  nextOrder BigInt             @default(1)
   requests  ReceptionRequest[]
 
   createdAt DateTime @default(now())
@@ -1746,7 +1756,7 @@ model ReceptionRequest {
   // ожидаемую version, несовпадение → 409 VERSION_CONFLICT. Инкрементируется
   // сервисом на каждый успешный переход/правку, не триггером БД (нужен тот
   // же счётчик в одной транзакции с проверкой + в ReceptionEvent.requestVersion).
-  version Int @default(1)
+  version    Int                    @default(1)
 
   lastCalledAt    DateTime?
   closedAt        DateTime?
@@ -1780,7 +1790,7 @@ model ReceptionEvent {
   // Изменённые поля / причина / результат — раздел 11.3 ТЗ. Содержимое
   // обращений сюда попадает (журнал — не технический лог, доступен OWNER и
   // автору), но не в обычные технические логи приложения.
-  metadata Json?
+  metadata       Json?
 
   createdAt DateTime @default(now())
 
@@ -1795,9 +1805,9 @@ model ReceptionEvent {
 // FOR UPDATE SKIP LOCKED), короткий TTL блокировки — упавший воркер не
 // держит запись вечно.
 model ReceptionNotification {
-  id        String         @id @default(cuid())
+  id        String           @id @default(cuid())
   eventId   String
-  event     ReceptionEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  event     ReceptionEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
   requestId String
   request   ReceptionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
@@ -1830,11 +1840,11 @@ model ReceptionNotification {
 // пришёл с ТЕМ ЖЕ телом (иначе 409 IDEMPOTENCY_CONFLICT, не тихая подмена
 // результата). response — сохранённый ответ для точного повтора.
 model IdempotencyKey {
-  id         String   @id @default(cuid())
-  actorId    String
-  key        String
-  action     String
-  bodyHash   String
+  id          String    @id @default(cuid())
+  actorId     String
+  key         String
+  action      String
+  bodyHash    String
   // null, пока обработка не завершена — claim-паттерн (тот же принцип, что
   // TaskFromMeetingExecution.CLAIMED): строка создаётся ДО выполнения
   // обработчика, чтобы второй одновременный запрос с тем же ключом увидел
@@ -1952,8 +1962,8 @@ model CalendarAction {
   payloadHash String
 
   dependsOnActionIds String[]
-  status              CalendarActionStatus @default(PENDING)
-  version             Int                  @default(1)
+  status             CalendarActionStatus @default(PENDING)
+  version            Int                  @default(1)
 
   authorizationId String?
   authorization   CalendarAuthorization? @relation(fields: [authorizationId], references: [id], onDelete: SetNull)
@@ -2004,16 +2014,295 @@ model CalendarActionExecution {
 }
 
 model CalendarExecutionAttempt {
-  id            String                  @id @default(cuid())
-  actionId      String
-  action        CalendarAction          @relation(fields: [actionId], references: [id], onDelete: Cascade)
-  attemptNumber Int
-  intent        Json
+  id             String                  @id @default(cuid())
+  actionId       String
+  action         CalendarAction          @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  attemptNumber  Int
+  intent         Json
   providerResult Json?
-  errorCode     String?
-  outcome       CalendarAttemptOutcome?
-  startedAt     DateTime                @default(now())
-  finishedAt    DateTime?
+  errorCode      String?
+  outcome        CalendarAttemptOutcome?
+  startedAt      DateTime                @default(now())
+  finishedAt     DateTime?
 
   @@index([actionId, attemptNumber])
+}
+
+// ===========================================================================
+// Агент поездок (продуктовая концепция 08.10.2026). Приоритет 1 — "Материалы
+// → поездка": загрузка пакета материалов, извлечение фактов, сборка карточки
+// поездки. Приоритет 2 (версии/дифф/подтверждение изменений — TripRevision/
+// ProposedChange) и Приоритет 3 (интеграции с календарём/задачами —
+// IntegrationAction) из полного списка сущностей документа сознательно не
+// заведены в этой миграции — появятся отдельно, когда до них дойдёт очередь.
+// Отдельная модель AuditEntry тоже не заводится — уже есть общий AuditLog
+// (actorId/action/entityType/entityId/metadata), поездки пишут туда же.
+// ===========================================================================
+
+// Раздел 8 ТЗ — ровно эти состояния очереди обработки пакета материалов.
+enum AgentRunStatus {
+  RECEIVED
+  EXTRACTING
+  MATCHING
+  COMPOSING
+  READY
+  READY_WITH_ISSUES
+  FAILED
+}
+
+enum TripMaterialStatus {
+  PENDING
+  EXTRACTED
+  FAILED
+  UNREADABLE
+}
+
+// Раздел 4 ТЗ — время поездки и готовность информации - разные признаки.
+// UNKNOWN — дат нет совсем (приглашение без программы), поездка попадает в
+// "без подтверждённых дат" независимо от любых угаданных значений.
+// APPROXIMATE — есть ориентир (например, только месяц/квартал из переписки),
+// EXACT — обе даты подтверждены конкретным источником.
+enum TripPeriodPrecision {
+  UNKNOWN
+  APPROXIMATE
+  EXACT
+}
+
+// Раздел 9 ТЗ — права внутри поездки. OWNER-роль сотрудника НЕ даёт
+// автоматического доступа ко всем поездкам (решение: см. комментарий на
+// модели TripMember) — модель прав тут отдельная, не Role enum.
+enum TripAccessRole {
+  ORGANIZER
+  EDITOR
+  APPROVER
+  VIEWER
+}
+
+enum TripLegMode {
+  FLIGHT
+  TRAIN
+  CAR
+  OTHER
+}
+
+// Раздел 5 ТЗ — "забронировано"/"предложено"/"подтверждения не найдено" -
+// три разных состояния, план никогда не выглядит как купленный билет.
+enum TripBookingStatus {
+  BOOKED
+  PROPOSED
+  UNCONFIRMED
+}
+
+enum TripContactRole {
+  ORGANIZER_HOST
+  RECEIVING_PARTY
+  DELEGATE
+  OTHER
+}
+
+enum ExtractedFactStatus {
+  EXTRACTED
+  CONFIRMED
+  DISPUTED
+  OUTDATED
+}
+
+// Раздел 4/9 ТЗ — карточка поездки. periodStart/periodEnd/periodPrecision
+// хранят то, что РЕАЛЬНО подтверждено источниками; статус "идёт сейчас" /
+// "скоро" / "без подтверждённых дат" / "завершена" вычисляется на чтении из
+// этих полей + текущего времени, не хранится отдельным полем (избыточное
+// дублирование состояния). cancelledAt — единственное явно хранимое
+// состояние, отменённые поездки показываются отдельно и никогда не
+// попадают в "завершена/посещена" (раздел 6 ТЗ).
+model Trip {
+  id              String              @id @default(cuid())
+  humanCode       String              @unique
+  title           String
+  purposeSummary  String?
+  organizerId     String
+  organizer       Employee            @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  periodPrecision TripPeriodPrecision @default(UNKNOWN)
+  cancelledAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members   TripMember[]
+  contacts  TripContact[]
+  legs      TripLeg[]
+  events    TripEvent[]
+  stays     TripStay[]
+  materials TripMaterial[]
+  facts     ExtractedFact[]
+  agentRuns AgentRun[]
+
+  @@index([organizerId, cancelledAt])
+  @@index([periodStart, periodEnd])
+}
+
+// Раздел 9 ТЗ — доступ к конкретной поездке, отдельно от организационной
+// роли сотрудника. Решение (не из документа буквально, но следует из его
+// неоднократного акцента на приватности: "организатор не получает доступ ко
+// всем поездкам", "участие во встрече не даёт доступ к чужим паспортам",
+// "публичных ссылок на весь комплект по умолчанию нет") — здесь OWNER
+// проекта НЕ обходит проверку членства, в отличие от большинства других
+// модулей системы. Создающий OWNER становится ORGANIZER автоматически при
+// создании поездки, но доступ к ЧУЖИМ поездкам требует явного TripMember.
+model TripMember {
+  id         String         @id @default(cuid())
+  tripId     String
+  trip       Trip           @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   Employee       @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  accessRole TripAccessRole @default(VIEWER)
+  createdAt  DateTime       @default(now())
+
+  @@unique([tripId, employeeId])
+  @@index([employeeId])
+}
+
+// Реальные люди/контакты поездки (принимающая сторона, делегаты и т.п.) —
+// не обязательно пользователи системы, в отличие от TripMember.
+model TripContact {
+  id               String          @id @default(cuid())
+  tripId           String
+  trip             Trip            @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  name             String
+  role             TripContactRole @default(OTHER)
+  organization     String?
+  email            String?
+  phone            String?
+  sourceMaterialId String?
+  createdAt        DateTime        @default(now())
+}
+
+// Перегон (сегмент перелёта/поездки) — раздел 3/5 ТЗ.
+model TripLeg {
+  id                          String            @id @default(cuid())
+  tripId                      String
+  trip                        Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  mode                        TripLegMode       @default(OTHER)
+  fromLocation                String?
+  toLocation                  String?
+  departAt                    DateTime?
+  departTimeZoneOffsetMinutes Int?
+  arriveAt                    DateTime?
+  arriveTimeZoneOffsetMinutes Int?
+  carrier                     String?
+  referenceCode               String?
+  bookingStatus               TripBookingStatus @default(UNCONFIRMED)
+  sourceMaterialId            String?
+  createdAt                   DateTime          @default(now())
+  updatedAt                   DateTime          @updatedAt
+
+  @@index([tripId, departAt])
+}
+
+// Программа поездки (раздел 3 ТЗ) — пункт без известного точного времени
+// получает dateOnly (группировка по дню "без времени"), а не придуманный
+// час. startAt остаётся null в этом случае.
+model TripEvent {
+  id                         String    @id @default(cuid())
+  tripId                     String
+  trip                       Trip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  title                      String
+  startAt                    DateTime?
+  startTimeZoneOffsetMinutes Int?
+  dateOnly                   DateTime?
+  endAt                      DateTime?
+  location                   String?
+  notes                      String?
+  sourceMaterialId           String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+
+  @@index([tripId, startAt])
+  @@index([tripId, dateOnly])
+}
+
+model TripStay {
+  id               String            @id @default(cuid())
+  tripId           String
+  trip             Trip              @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  name             String?
+  address          String?
+  checkInAt        DateTime?
+  checkOutAt       DateTime?
+  bookingStatus    TripBookingStatus @default(UNCONFIRMED)
+  sourceMaterialId String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([tripId, checkInAt])
+}
+
+// Раздел 7/18 ТЗ — материал пакета. tripId пустой до тех пор, пока
+// AgentRun не подобрал/создал поездку (материалы живут привязанными к
+// своему AgentRun до COMPOSING). fileArtifactId — без формальной Prisma
+// relation (тот же паттерн, что EmailAttachment.fileArtifactId) — байты
+// читаются через FilesService.readBufferForProcessing по уже известному id.
+model TripMaterial {
+  id                String             @id @default(cuid())
+  tripId            String?
+  trip              Trip?              @relation(fields: [tripId], references: [id], onDelete: SetNull)
+  agentRunId        String
+  agentRun          AgentRun           @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  fileArtifactId    String
+  processingStatus  TripMaterialStatus @default(PENDING)
+  addedByEmployeeId String
+  addedBy           Employee           @relation(fields: [addedByEmployeeId], references: [id], onDelete: Restrict)
+  extractionIssue   String?
+  createdAt         DateTime           @default(now())
+
+  facts ExtractedFact[]
+
+  @@index([tripId])
+  @@index([agentRunId])
+}
+
+// Факты, не укладывающиеся в типизированные сущности выше (виза, бюджет,
+// спорные/устаревшие значения) — раздел 5 ТЗ про прослеживаемость
+// (sourceId/фрагмент/время извлечения/статус). Для типизированных сущностей
+// (TripLeg/TripEvent/TripStay/TripContact) происхождение несёт их
+// собственное sourceMaterialId — отдельный слой сведения факт→сущность для
+// v1 не заводится (сознательное упрощение).
+model ExtractedFact {
+  id          String              @id @default(cuid())
+  tripId      String
+  trip        Trip                @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  materialId  String
+  material    TripMaterial        @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  factKey     String
+  factValue   String
+  status      ExtractedFactStatus @default(EXTRACTED)
+  extractedAt DateTime            @default(now())
+
+  @@index([tripId])
+}
+
+// Раздел 8/18 ТЗ — durable job обработки одного пакета материалов. Claim-
+// паттерн воркера (SELECT...FOR UPDATE SKIP LOCKED) переиспользует тот же
+// подход, что reception-notifications.cron.ts/mail-action-execution.service.ts/
+// calendar-action-execution.service.ts — не изобретается заново.
+model AgentRun {
+  id             String         @id @default(cuid())
+  tripId         String?
+  trip           Trip?          @relation(fields: [tripId], references: [id], onDelete: SetNull)
+  status         AgentRunStatus @default(RECEIVED)
+  initiatorId    String
+  initiator      Employee       @relation(fields: [initiatorId], references: [id], onDelete: Restrict)
+  idempotencyKey String         @unique
+  errorSummary   String?
+  lockedAt       DateTime?
+  lockedBy       String?
+  attempts       Int            @default(0)
+  createdAt      DateTime       @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  materials TripMaterial[]
+
+  @@index([status, lockedAt])
 }

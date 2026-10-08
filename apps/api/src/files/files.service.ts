@@ -165,6 +165,22 @@ export class FilesService {
     return { stream, file };
   }
 
+  // Агент поездок (ТЗ 08.10.2026) — доступ из фонового AgentRun-воркера,
+  // не HTTP-запроса: там нет живого AuthenticatedUser для assertOwnedFile.
+  // Право уже проверено раньше, на этапе привязки файла к TripMaterial
+  // (кто мог прикрепить материал к поездке) — здесь только чтение байтов
+  // по уже известному и легитимному fileId.
+  async readBufferForProcessing(fileId: string): Promise<{ buffer: Buffer; file: FileArtifact }> {
+    const file = await this.prisma.fileArtifact.findUnique({ where: { id: fileId } });
+    if (!file) throw new NotFoundException('Файл не найден');
+    const stream = await this.registry.resolve(file.storageProvider).getStream(file.storageKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk as Buffer);
+    }
+    return { buffer: Buffer.concat(chunks), file };
+  }
+
   // Phase F.1 (аудит 16.09.2026, находка #10 "orphan uploads") — раньше
   // снятие вложения крестиком в composer'е убирало его только из
   // локального React state, физический файл и FileArtifact оставались
