@@ -92,15 +92,15 @@ export function TripsScreen({ active = true }: { active?: boolean }) {
         if (RUN_TERMINAL.has(run.status)) {
           if (pollRef.current) clearInterval(pollRef.current);
           setSubmitting(false);
-          if (run.status === 'FAILED') {
-            setCreateError(run.errorSummary ?? 'Не удалось обработать материалы');
-          } else if (run.tripId) {
+          if (run.status !== 'FAILED' && run.tripId) {
             haptic('medium');
             setCreating(false);
             setFiles([]);
             idem.reset();
             load();
             setOpenTripId(run.tripId);
+          } else {
+            setCreateError(run.errorSummary ?? 'Не удалось обработать материалы');
           }
         }
       } catch {
@@ -122,13 +122,13 @@ export function TripsScreen({ active = true }: { active?: boolean }) {
       const run = await api.postForm<AgentRunDetail>('/trips/runs', formData, { 'Idempotency-Key': idem.key() });
       if (RUN_TERMINAL.has(run.status)) {
         setSubmitting(false);
-        if (run.status === 'FAILED') {
-          setCreateError(run.errorSummary ?? 'Не удалось обработать материалы');
-        } else if (run.tripId) {
+        if (run.status !== 'FAILED' && run.tripId) {
           setCreating(false);
           setFiles([]);
           load();
           setOpenTripId(run.tripId);
+        } else {
+          setCreateError(run.errorSummary ?? 'Не удалось обработать материалы');
         }
       } else {
         pollRun(run.id);

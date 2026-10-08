@@ -93,11 +93,14 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         setRunStatus(run.status);
         if (TERMINAL_STATUSES.has(run.status)) {
           if (pollRef.current) clearInterval(pollRef.current);
-          if (run.status === 'FAILED') {
+          if (run.status !== 'FAILED' && run.tripId) {
+            onCreated(run.tripId);
+          } else {
+            // run.status==='FAILED', либо (редкий случай) терминальный статус без
+            // tripId — например, поездка этого прогона была удалена отдельно.
+            // В обоих случаях диалог не должен молча висеть на "Обрабатываем…".
             setError(run.errorSummary ?? 'Не удалось обработать материалы');
             setSubmitting(false);
-          } else if (run.tripId) {
-            onCreated(run.tripId);
           }
         }
       } catch {
@@ -120,11 +123,11 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       const run = await api.postForm<AgentRunDetail>('/trips/runs', formData, { 'Idempotency-Key': idem.key() });
       setRunStatus(run.status);
       if (TERMINAL_STATUSES.has(run.status)) {
-        if (run.status === 'FAILED') {
+        if (run.status !== 'FAILED' && run.tripId) {
+          onCreated(run.tripId);
+        } else {
           setError(run.errorSummary ?? 'Не удалось обработать материалы');
           setSubmitting(false);
-        } else if (run.tripId) {
-          onCreated(run.tripId);
         }
       } else {
         pollRun(run.id);
