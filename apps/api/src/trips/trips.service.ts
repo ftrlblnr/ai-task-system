@@ -18,13 +18,18 @@ export interface MaterialUpload {
 // другом порядке — тот же пакет, не новый). Отдельно от общего
 // IdempotencyService (см. trips.controller.ts — там Idempotency-Key
 // защищает от повторного HTTP-запроса/дабл-тапа, а не от повторной
-// отправки тех же файлов НОВЫМ запросом).
-export function computeBatchContentHash(files: MaterialUpload[]): string {
+// отправки тех же файлов НОВЫМ запросом). scope — 'NEW' для создания новой
+// поездки, конкретный tripId для добавления материалов к существующей:
+// один и тот же набор байт, отправленный в ДВЕ разные поездки, не должен
+// схлопнуться в один AgentRun.
+export function computeBatchContentHash(files: MaterialUpload[], scope: string = 'NEW'): string {
   const perFileHashes = files
     .map((f) => createHash('sha256').update(f.buffer).update(f.originalName).digest('hex'))
     .sort();
-  return createHash('sha256').update(perFileHashes.join('|')).digest('hex');
+  return createHash('sha256').update(scope).update(perFileHashes.join('|')).digest('hex');
 }
+
+const RUN_INCLUDE = { materials: true } as const;
 
 export const MAX_MATERIALS_PER_RUN = 10;
 
@@ -43,6 +48,19 @@ export class TripsService {
   // computeBatchContentHash.
   async createRun(user: AuthenticatedUser, materials: MaterialUpload[]) {
     await this.rights.assertCanCreateTrips(user.id);
+    return this.createRunInternal(user, materials, null);
+  }
+
+  // Приоритет 2 ТЗ — "Добавить информацию всегда обновляет ВЫБРАННУЮ
+  // поездку, никогда не создаёт тихо новую": AgentRun получает tripId с
+  // самого начала, trip-run-execution.service.ts видит это и идёт по ветке
+  // предложений (ProposedChange), а не прямой записи.
+  async addMaterialsToTrip(user: AuthenticatedUser, tripId: string, materials: MaterialUpload[]) {
+    await this.rights.assertPermission(tripId, user.id, 'materials.add');
+    return this.createRunInternal(user, materials, tripId);
+  }
+
+  private async createRunInternal(user: AuthenticatedUser, materials: MaterialUpload[], targetTripId: string | null) {
     if (materials.length === 0) {
       throw new BadRequestException('Нужен хотя бы один материал');
     }
@@ -50,8 +68,8 @@ export class TripsService {
       throw new BadRequestException(`Не более ${MAX_MATERIALS_PER_RUN} материалов за один пакет`);
     }
 
-    const idempotencyKey = computeBatchContentHash(materials);
-    const existing = await this.prisma.agentRun.findUnique({ where: { idempotencyKey } });
+    const idempotencyKey = computeBatchContentHash(materials, targetTripId ?? 'NEW');
+    const existing = await this.prisma.agentRun.findUnique({ where: { idempotencyKey }, include: RUN_INCLUDE });
     if (existing) return existing;
 
     const artifacts: FileArtifact[] = [];
@@ -65,24 +83,25 @@ export class TripsService {
           initiatorId: user.id,
           idempotencyKey,
           status: 'RECEIVED',
+          tripId: targetTripId,
           materials: {
             create: artifacts.map((a) => ({ fileArtifactId: a.id, addedByEmployeeId: user.id, processingStatus: 'PENDING' })),
           },
         },
-        include: { materials: true },
+        include: RUN_INCLUDE,
       });
     } catch {
       // Гонка: второй параллельный запрос с тем же пакетом успел создать
       // AgentRun первым между проверкой выше и этим create() — отдаём уже
       // созданный, не плодим дубликат (unique-constraint на idempotencyKey).
-      const racedWinner = await this.prisma.agentRun.findUnique({ where: { idempotencyKey } });
+      const racedWinner = await this.prisma.agentRun.findUnique({ where: { idempotencyKey }, include: RUN_INCLUDE });
       if (racedWinner) return racedWinner;
       throw new BadRequestException('Не удалось создать пакет материалов');
     }
   }
 
   async getRun(user: AuthenticatedUser, runId: string) {
-    const run = await this.prisma.agentRun.findUnique({ where: { id: runId }, include: { materials: true } });
+    const run = await this.prisma.agentRun.findUnique({ where: { id: runId }, include: RUN_INCLUDE });
     if (!run || run.initiatorId !== user.id) throw new NotFoundException('Пакет материалов не найден');
     return run;
   }

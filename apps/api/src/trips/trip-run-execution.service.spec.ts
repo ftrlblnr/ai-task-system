@@ -55,9 +55,9 @@ function baseDraft(overrides: {
   };
 }
 
-async function setupRun(prisma: FakeTripsPrisma, initiatorId = 'owner-1') {
+async function setupRun(prisma: FakeTripsPrisma, initiatorId = 'owner-1', tripId: string | null = null) {
   const run = await prisma.agentRun.create({
-    data: { initiatorId, idempotencyKey: `key-${Math.random()}`, materials: { create: [{ fileArtifactId: 'file-1', addedByEmployeeId: initiatorId }] } },
+    data: { initiatorId, tripId, idempotencyKey: `key-${Math.random()}`, materials: { create: [{ fileArtifactId: 'file-1', addedByEmployeeId: initiatorId }] } },
   });
   return run;
 }
@@ -69,7 +69,7 @@ describe('TripRunExecutionService.process', () => {
     const service = new TripRunExecutionService(prisma as never, extraction as never);
     const run = await setupRun(prisma);
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('READY');
@@ -90,7 +90,7 @@ describe('TripRunExecutionService.process', () => {
     const service = new TripRunExecutionService(prisma as never, extraction as never);
     const run = await setupRun(prisma);
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('READY_WITH_ISSUES');
@@ -111,7 +111,7 @@ describe('TripRunExecutionService.process', () => {
     const service = new TripRunExecutionService(prisma as never, extraction as never);
     const run = await setupRun(prisma);
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('READY_WITH_ISSUES');
@@ -127,7 +127,7 @@ describe('TripRunExecutionService.process', () => {
     const service = new TripRunExecutionService(prisma as never, extraction as never);
     const run = await setupRun(prisma, 'owner-1');
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('READY');
@@ -141,7 +141,7 @@ describe('TripRunExecutionService.process', () => {
     const stored = prisma.agentRuns.find((r) => r.id === run.id)!;
     stored.attempts = 1;
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('RECEIVED');
@@ -157,7 +157,7 @@ describe('TripRunExecutionService.process', () => {
     const stored = prisma.agentRuns.find((r) => r.id === run.id)!;
     stored.attempts = 3;
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
     expect(updated.status).toBe('FAILED');
@@ -172,10 +172,85 @@ describe('TripRunExecutionService.process', () => {
     const service = new TripRunExecutionService(prisma as never, extraction as never);
     const run = await setupRun(prisma);
 
-    await service.process({ id: run.id, initiatorId: 'owner-1' });
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: null });
 
     const created = prisma.trips.find((t) => t.organizerId === 'owner-1' && t.humanCode !== `TR-${year}-001`);
     expect(created).toBeDefined();
     expect(created!.humanCode).toBe(`TR-${year}-002`);
+  });
+});
+
+describe('TripRunExecutionService.process — обновление СУЩЕСТВУЮЩЕЙ поездки (Приоритет 2)', () => {
+  async function setupExistingTrip(prisma: FakeTripsPrisma) {
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: 'owner-1' } });
+    await prisma.tripMember.create({ data: { tripId: trip.id, employeeId: 'owner-1', accessRole: 'ORGANIZER' } });
+    return trip;
+  }
+
+  it('новый перелёт из материала — становится ProposedChange, НЕ пишется в TripLeg прямо', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupExistingTrip(prisma);
+    const extraction = { extractOne: jest.fn().mockResolvedValue(extractedOutcome()) };
+    const service = new TripRunExecutionService(prisma as never, extraction as never);
+    const run = await setupRun(prisma, 'owner-1', trip.id);
+
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: trip.id });
+
+    expect(prisma.tripLegs).toHaveLength(0);
+    const legChanges = prisma.proposedChanges.filter((c) => c.entityType === 'TRIP_LEG');
+    expect(legChanges).toHaveLength(1);
+    expect(legChanges[0].status).toBe('PENDING');
+    const updated = prisma.agentRuns.find((r) => r.id === run.id)!;
+    expect(updated.status).toBe('READY_WITH_ISSUES');
+    expect(updated.tripId).toBe(trip.id);
+  });
+
+  it('расширение периода — предлагается полевое изменение TRIP(period)', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupExistingTrip(prisma);
+    const extraction = { extractOne: jest.fn().mockResolvedValue(extractedOutcome()) };
+    const service = new TripRunExecutionService(prisma as never, extraction as never);
+    const run = await setupRun(prisma, 'owner-1', trip.id);
+
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: trip.id });
+
+    const fieldChange = prisma.proposedChanges.find((c) => c.entityType === 'TRIP' && c.fieldKey === 'period');
+    expect(fieldChange).toBeDefined();
+  });
+
+  it('материал без ничего извлекаемого, кроме факта — факт пишется прямо, не как ProposedChange', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupExistingTrip(prisma);
+    const extraction = {
+      extractOne: jest.fn().mockResolvedValue({
+        status: 'EXTRACTED',
+        fileName: 'note.txt',
+        draft: { readable: true, summaryHint: null, destinationHint: null, legs: [], events: [], stays: [], contacts: [], facts: [{ key: 'виза', value: 'нужна' }], issues: [] },
+      }),
+    };
+    const service = new TripRunExecutionService(prisma as never, extraction as never);
+    const run = await setupRun(prisma, 'owner-1', trip.id);
+
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: trip.id });
+
+    // Факт пишется прямо (ExtractedFact — "мягкий" слой, см. trip-change-rules.ts),
+    // не становится ProposedChange — именно это проверяет тест, не итоговый
+    // статус прогона (тот READY_WITH_ISSUES по другой причине: ни одного
+    // leg/event/stay не нашлось ни в одном материале, см. composeTripFromMaterials).
+    expect(prisma.extractedFacts).toHaveLength(1);
+    expect(prisma.proposedChanges).toHaveLength(0);
+  });
+
+  it('материалы добавленного пакета получают tripId существующей поездки', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupExistingTrip(prisma);
+    const extraction = { extractOne: jest.fn().mockResolvedValue(extractedOutcome()) };
+    const service = new TripRunExecutionService(prisma as never, extraction as never);
+    const run = await setupRun(prisma, 'owner-1', trip.id);
+
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: trip.id });
+
+    const material = prisma.tripMaterials.find((m) => m.agentRunId === run.id)!;
+    expect(material.tripId).toBe(trip.id);
   });
 });

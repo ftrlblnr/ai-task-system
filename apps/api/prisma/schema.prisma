@@ -2129,14 +2129,16 @@ model Trip {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members   TripMember[]
-  contacts  TripContact[]
-  legs      TripLeg[]
-  events    TripEvent[]
-  stays     TripStay[]
-  materials TripMaterial[]
-  facts     ExtractedFact[]
-  agentRuns AgentRun[]
+  members         TripMember[]
+  contacts        TripContact[]
+  legs            TripLeg[]
+  events          TripEvent[]
+  stays           TripStay[]
+  materials       TripMaterial[]
+  facts           ExtractedFact[]
+  agentRuns       AgentRun[]
+  proposedChanges ProposedChange[]
+  revisions       TripRevision[]
 
   @@index([organizerId, cancelledAt])
   @@index([periodStart, periodEnd])
@@ -2305,4 +2307,73 @@ model AgentRun {
   materials TripMaterial[]
 
   @@index([status, lockedAt])
+}
+
+// Приоритет 2 ТЗ — "Добавить информацию всегда обновляет ВЫБРАННУЮ поездку,
+// никогда не создаёт тихо новую" + "никогда не меняет тихо подтверждённые
+// даты/время/адреса/состав поездки". Поэтому обработка пакета материалов,
+// адресованного УЖЕ существующей поездке (AgentRun.tripId задан с самого
+// начала, см. trips.service.ts.createRun), не пишет в Trip/TripLeg/... сама
+// — только создаёт ProposedChange, применение — отдельное явное действие
+// (approve). Для НОВОЙ поездки (AgentRun.tripId пуст при старте) поведение
+// не меняется — прямая запись, как раньше (раздел 3 ТЗ: "карточка
+// появляется сразу, без подтверждения по каждому полю" — именно для
+// создания, не для обновлений).
+enum ProposedChangeEntityType {
+  TRIP
+  TRIP_LEG
+  TRIP_EVENT
+  TRIP_STAY
+  TRIP_CONTACT
+}
+
+enum ProposedChangeStatus {
+  PENDING
+  APPLIED
+  REJECTED
+}
+
+model ProposedChange {
+  id                   String                   @id @default(cuid())
+  tripId               String
+  trip                 Trip                     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  agentRunId           String?
+  materialId           String?
+  entityType           ProposedChangeEntityType
+  // null — предложение НОВОЙ записи (новый перелёт/событие/проживание/
+  // контакт), не правка существующей.
+  entityId             String?
+  // Заполнено только для точечных правок уровня Trip (например
+  // periodEnd) — какое именно поле меняется. Для предложения новой записи
+  // (entityId=null) — null, proposedValue несёт данные всей записи целиком.
+  fieldKey             String?
+  previousValue        Json?
+  proposedValue        Json
+  reason               String?
+  consequences         String?
+  status               ProposedChangeStatus     @default(PENDING)
+  createdAt            DateTime                 @default(now())
+  resolvedAt           DateTime?
+  resolvedByEmployeeId String?
+
+  @@index([tripId, status])
+}
+
+// Раздел 6 ТЗ — вкладка "История". Отдельно от общего AuditLog (тот
+// write-only и нигде не читается через API) — это пользовательская лента
+// изменений конкретной поездки, нужна собственная читаемая модель.
+model TripRevision {
+  id                  String                   @id @default(cuid())
+  tripId              String
+  trip                Trip                     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  changeId            String?
+  entityType          ProposedChangeEntityType
+  entityId            String?
+  summary             String
+  // null — изменение внесено при изначальной сборке карточки (агент, без
+  // участия человека), не ручная правка и не подтверждённое предложение.
+  appliedByEmployeeId String?
+  appliedAt           DateTime                 @default(now())
+
+  @@index([tripId, appliedAt])
 }

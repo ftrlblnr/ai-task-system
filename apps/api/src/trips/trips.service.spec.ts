@@ -52,6 +52,11 @@ describe('computeBatchContentHash', () => {
   it('меняется при изменении содержимого файла', () => {
     expect(computeBatchContentHash([material('AAA')])).not.toBe(computeBatchContentHash([material('BBB')]));
   });
+
+  it('тот же набор файлов с разным scope (новая/существующая поездка) — разный хэш', () => {
+    const files = [material('AAA')];
+    expect(computeBatchContentHash(files, 'NEW')).not.toBe(computeBatchContentHash(files, 'trip-123'));
+  });
 });
 
 describe('TripsService.createRun', () => {
@@ -106,6 +111,43 @@ describe('TripsService.createRun', () => {
     const prisma = new FakeTripsPrisma();
     const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights({ canCreate: false }) as never);
     await expect(service.createRun(USER, [material('AAA')])).rejects.toThrow('forbidden');
+  });
+});
+
+describe('TripsService.addMaterialsToTrip', () => {
+  it('создаёт AgentRun с tripId, заданным с самого начала', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const run = await service.addMaterialsToTrip(USER, 'trip-1', [material('AAA')]);
+    expect(run.tripId).toBe('trip-1');
+  });
+
+  it('те же файлы, отправленные в ДВЕ разные поездки — два разных AgentRun, не дедуплицируются', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const materials = [material('AAA')];
+    const runA = await service.addMaterialsToTrip(USER, 'trip-a', materials);
+    const runB = await service.addMaterialsToTrip(USER, 'trip-b', materials);
+    expect(runA.id).not.toBe(runB.id);
+    expect(prisma.agentRuns).toHaveLength(2);
+  });
+
+  it('повтор того же пакета в ту же поездку — дедуплицируется (не создаёт второй AgentRun)', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const materials = [material('AAA')];
+    const first = await service.addMaterialsToTrip(USER, 'trip-1', materials);
+    const second = await service.addMaterialsToTrip(USER, 'trip-1', materials);
+    expect(second.id).toBe(first.id);
+    expect(prisma.agentRuns).toHaveLength(1);
+  });
+
+  it('без права materials.add (DENY) — исключение прокидывается, файлы не загружаются', async () => {
+    const prisma = new FakeTripsPrisma();
+    const files = fakeFilesService();
+    const service = new TripsService(prisma as never, files as never, fakeRights({ permission: 'DENY' }) as never);
+    await expect(service.addMaterialsToTrip(USER, 'trip-1', [material('AAA')])).rejects.toBeInstanceOf(NotFoundException);
+    expect(files.upload).not.toHaveBeenCalled();
   });
 });
 

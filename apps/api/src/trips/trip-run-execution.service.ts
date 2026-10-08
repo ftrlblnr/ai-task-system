@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TripExtractionService } from './trip-extraction.service';
 import { composeTripFromMaterials, parseDateOrNull, type ComposedTrip, type MaterialDraft } from './trip-compose';
+import { buildEntityChanges, buildTripFieldChanges } from './trip-change-rules';
 
 // Раздел 8/18 ТЗ — durable job обработки одного пакета материалов. Claim-
 // паттерн (SELECT...FOR UPDATE SKIP LOCKED) — тот же приём, что
@@ -30,6 +31,7 @@ function isUniqueConstraintError(err: unknown): boolean {
 interface ClaimedRun {
   id: string;
   initiatorId: string;
+  tripId: string | null;
 }
 
 @Injectable()
@@ -69,7 +71,7 @@ export class TripRunExecutionService {
         where: { id: { in: ids } },
         data: { lockedAt: now, lockedBy: this.workerId, attempts: { increment: 1 }, status: 'RECEIVED' },
       });
-      return tx.agentRun.findMany({ where: { id: { in: ids } }, select: { id: true, initiatorId: true } });
+      return tx.agentRun.findMany({ where: { id: { in: ids } }, select: { id: true, initiatorId: true, tripId: true } });
     });
   }
 
@@ -98,17 +100,13 @@ export class TripRunExecutionService {
 
       await this.prisma.agentRun.update({ where: { id: run.id }, data: { status: 'MATCHING' } });
       const composed = composeTripFromMaterials(materialDrafts);
-      const matchIssue = await this.findPossibleExistingTripIssue(run.initiatorId, composed);
+      const materialIds = materials.map((m) => m.id);
 
-      await this.prisma.agentRun.update({ where: { id: run.id }, data: { status: 'COMPOSING' } });
-      const trip = await this.createTripFromComposed(run.initiatorId, composed, materials.map((m) => m.id));
-
-      const issues = matchIssue ? [...composed.issues, matchIssue] : composed.issues;
-      const finalStatus = anyUnreadable || issues.length > 0 ? 'READY_WITH_ISSUES' : 'READY';
-      await this.prisma.agentRun.update({
-        where: { id: run.id },
-        data: { status: finalStatus, tripId: trip.id, finishedAt: new Date(), lockedAt: null, errorSummary: issues.length > 0 ? issues.join(' | ') : null },
-      });
+      if (run.tripId) {
+        await this.processUpdateToExistingTrip(run.id, run.tripId, composed, materialIds, anyUnreadable);
+      } else {
+        await this.processNewTrip(run.id, run.initiatorId, composed, materialIds, anyUnreadable);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`trip run ${run.id} failed: ${message}`);
@@ -135,6 +133,78 @@ export class TripRunExecutionService {
       }
     }
     return null;
+  }
+
+  // Раздел 3 ТЗ — создание новой поездки: карточка появляется сразу,
+  // прямой записью, без подтверждения по каждому полю.
+  private async processNewTrip(runId: string, initiatorId: string, composed: ComposedTrip, materialIds: string[], anyUnreadable: boolean): Promise<void> {
+    const matchIssue = await this.findPossibleExistingTripIssue(initiatorId, composed);
+    await this.prisma.agentRun.update({ where: { id: runId }, data: { status: 'COMPOSING' } });
+    const trip = await this.createTripFromComposed(initiatorId, composed, materialIds);
+
+    const issues = matchIssue ? [...composed.issues, matchIssue] : composed.issues;
+    const finalStatus = anyUnreadable || issues.length > 0 ? 'READY_WITH_ISSUES' : 'READY';
+    await this.prisma.agentRun.update({
+      where: { id: runId },
+      data: { status: finalStatus, tripId: trip.id, finishedAt: new Date(), lockedAt: null, errorSummary: issues.length > 0 ? issues.join(' | ') : null },
+    });
+  }
+
+  // Приоритет 2 ТЗ — добавление материалов к СУЩЕСТВУЮЩЕЙ поездке: ничего
+  // не пишется в Trip/TripLeg/TripEvent/TripStay/TripContact прямо — только
+  // ProposedChange (см. trip-change-rules.ts), заявка ждёт approve/reject.
+  // ExtractedFact — исключение (см. комментарий на trip-change-rules.ts):
+  // это и так "мягкий", не авторитетный слой, пишется прямо как при
+  // создании. Поиск дублирующей поездки здесь не нужен — трип уже известен.
+  private async processUpdateToExistingTrip(runId: string, tripId: string, composed: ComposedTrip, materialIds: string[], anyUnreadable: boolean): Promise<void> {
+    await this.prisma.agentRun.update({ where: { id: runId }, data: { status: 'COMPOSING' } });
+    const existingTrip = await this.prisma.trip.findUniqueOrThrow({ where: { id: tripId } });
+
+    const entityChanges = buildEntityChanges(composed);
+    const fieldChanges = buildTripFieldChanges(existingTrip, composed);
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const change of entityChanges) {
+        await tx.proposedChange.create({
+          data: {
+            tripId,
+            agentRunId: runId,
+            materialId: change.materialId,
+            entityType: change.entityType,
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- ложное срабатывание:
+            // без `as object` tsc реально отказывает (ComposedLeg|... не проходит в InputJsonValue без индексной
+            // сигнатуры), просто сам линтер не видит эту ошибку в своей упрощённой проверке типов.
+            proposedValue: change.proposedValue as object,
+          },
+        });
+      }
+      for (const change of fieldChanges) {
+        await tx.proposedChange.create({
+          data: {
+            tripId,
+            agentRunId: runId,
+            entityType: 'TRIP',
+            fieldKey: change.fieldKey,
+            previousValue: change.previousValue as object,
+            proposedValue: change.proposedValue as object,
+            reason: change.reason,
+            consequences: change.consequences,
+          },
+        });
+      }
+      for (const fact of composed.facts) {
+        await tx.extractedFact.create({ data: { tripId, materialId: fact.sourceMaterialId, factKey: fact.key, factValue: fact.value, status: 'EXTRACTED' } });
+      }
+      await tx.tripMaterial.updateMany({ where: { id: { in: materialIds } }, data: { tripId } });
+    });
+
+    const pendingCount = entityChanges.length + fieldChanges.length;
+    const issues = pendingCount > 0 ? [...composed.issues, `${pendingCount} предложений ожидает подтверждения`] : composed.issues;
+    const finalStatus = anyUnreadable || issues.length > 0 ? 'READY_WITH_ISSUES' : 'READY';
+    await this.prisma.agentRun.update({
+      where: { id: runId },
+      data: { status: finalStatus, finishedAt: new Date(), lockedAt: null, errorSummary: issues.length > 0 ? issues.join(' | ') : null },
+    });
   }
 
   private async createTripFromComposed(organizerId: string, composed: ComposedTrip, materialIds: string[]) {
