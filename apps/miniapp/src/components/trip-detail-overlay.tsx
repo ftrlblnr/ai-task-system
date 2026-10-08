@@ -96,6 +96,55 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
   const pendingChanges = (changes ?? []).filter((c) => c.status === 'PENDING');
   const nextThing = trip ? computeNextThing(trip) : null;
 
+  // Живой баг 08.10.2026 — программа в Mini App рендерилась тремя
+  // отдельными списками (все перелёты, потом все события, потом все
+  // проживания), не по хронологии. Тот же приём, что в web
+  // (apps/web/src/app/trips/[id]/page.tsx): один объединённый список,
+  // отсортированный по sortKey (ISO-строка или '9999' для неизвестного
+  // времени — такие уезжают в конец, не выдумываем им место).
+  const programItems = trip
+    ? [
+        ...trip.legs.map((leg) => ({
+          sortKey: leg.departAt ?? '9999',
+          node: (
+            <div key={`leg-${leg.id}`} className="task-card" style={{ display: 'block' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <span>
+                  {LEG_MODE_LABELS[leg.mode]}: {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
+                </span>
+                <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
+              </div>
+              <div className="ds-field-hint">{leg.departAt ? fmtDateTime(leg.departAt) : 'Время не подтверждено'}</div>
+            </div>
+          ),
+        })),
+        ...trip.events.map((event) => ({
+          sortKey: event.startAt ?? event.dateOnly ?? '9999',
+          node: (
+            <div key={`event-${event.id}`} className="task-card" style={{ display: 'block' }}>
+              <div>{event.title}</div>
+              <div className="ds-field-hint">
+                {event.startAt ? fmtDateTime(event.startAt) : event.dateOnly ? `${event.dateOnly.slice(0, 10)} · время не подтверждено` : 'Дата не подтверждена'}
+                {event.location ? ` · ${event.location}` : ''}
+              </div>
+            </div>
+          ),
+        })),
+        ...trip.stays.map((stay) => ({
+          sortKey: stay.checkInAt ?? '9999',
+          node: (
+            <div key={`stay-${stay.id}`} className="task-card" style={{ display: 'block' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <span>{stay.name ?? stay.address ?? 'Проживание'}</span>
+                <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
+              </div>
+              <div className="ds-field-hint">{stay.address ?? 'Адрес не указан'}</div>
+            </div>
+          ),
+        })),
+      ].sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+    : [];
+
   return (
     <OverlayPortal>
       <div className="overlay">
@@ -164,36 +213,7 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
 
               {tab === 'program' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {trip.legs.length === 0 && trip.events.length === 0 && trip.stays.length === 0 && <EmptyState title="Программа пока пуста" />}
-                  {trip.legs.map((leg) => (
-                    <div key={leg.id} className="task-card" style={{ display: 'block' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <span>
-                          {LEG_MODE_LABELS[leg.mode]}: {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
-                        </span>
-                        <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
-                      </div>
-                      <div className="ds-field-hint">{leg.departAt ? fmtDateTime(leg.departAt) : 'Время не подтверждено'}</div>
-                    </div>
-                  ))}
-                  {trip.events.map((event) => (
-                    <div key={event.id} className="task-card" style={{ display: 'block' }}>
-                      <div>{event.title}</div>
-                      <div className="ds-field-hint">
-                        {event.startAt ? fmtDateTime(event.startAt) : event.dateOnly ? `${event.dateOnly.slice(0, 10)} · время не подтверждено` : 'Дата не подтверждена'}
-                        {event.location ? ` · ${event.location}` : ''}
-                      </div>
-                    </div>
-                  ))}
-                  {trip.stays.map((stay) => (
-                    <div key={stay.id} className="task-card" style={{ display: 'block' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                        <span>{stay.name ?? 'Проживание'}</span>
-                        <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
-                      </div>
-                      <div className="ds-field-hint">{stay.address ?? 'Адрес не указан'}</div>
-                    </div>
-                  ))}
+                  {programItems.length === 0 ? <EmptyState title="Программа пока пуста" /> : programItems.map((i) => i.node)}
                 </div>
               )}
 
