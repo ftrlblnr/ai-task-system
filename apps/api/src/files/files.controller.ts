@@ -5,20 +5,9 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { contentDisposition } from '../common/http/content-disposition';
+import { fixMultipartFileName } from '../common/http/multipart-filename';
 import { FilesService } from './files.service';
 import { ALLOWED_UPLOAD_MIME_TYPES, MAX_UPLOAD_FILE_SIZE } from './dto/upload-file.dto';
-
-// Busboy/Multer декодируют имя файла из multipart-заголовка как latin1
-// (исторический дефолт HTTP multipart, RFC 7578 не требует UTF-8) — не-
-// ASCII имя (кириллица — обычный случай в этом проекте) приходит в
-// originalname искажённым (каждый UTF-8 байт интерпретирован как отдельный
-// latin1-символ). Обратное перекодирование latin1→utf8 — стандартный
-// обходной путь для этого известного поведения Busboy, а не специфика
-// этого проекта (найдено 16.09.2026 живым тестом с реальным кириллическим
-// именем файла — "Отчёт.txt" превращалось в мусор без этой строки).
-function fixMultipartFileName(originalName: string): string {
-  return Buffer.from(originalName, 'latin1').toString('utf8');
-}
 
 // Без @Roles(...) — как VoiceController/AssistantChatController: вложения
 // доступны любому сотруднику, владение конкретным файлом проверяется в
