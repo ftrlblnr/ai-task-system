@@ -28,6 +28,16 @@ server {
     listen 80;
     server_name api-adyutant.glb-engineering.kz;
 
+    # Агент поездок (ТЗ 08.10.2026) — без этого nginx отвечал 413 раньше,
+    # чем запрос доходил до приложения: дефолт nginx — 1MB, а загрузка
+    # билета/программы (до MAX_UPLOAD_FILE_SIZE=20MB в самом API,
+    # files/dto/upload-file.dto.ts) тихо резалась на уровне веб-сервера,
+    # не самого Nest. 25MB — с запасом от 20MB лимита приложения на
+    # multipart-обёртку (boundary/заголовки частей). Найдено живым багом
+    # 08.10.2026 — пользователь приложил PDF, "собрать поездку" не
+    # сработало, в nginx access.log — "POST /trips/runs ... 413".
+    client_max_body_size 25m;
+
     location / {
         proxy_pass http://127.0.0.1:3021;
         proxy_set_header Host $host;
