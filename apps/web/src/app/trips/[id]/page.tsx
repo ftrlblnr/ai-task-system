@@ -422,6 +422,8 @@ function TripDetailView({ tripId }: { tripId: string }) {
   const [showAddMaterials, setShowAddMaterials] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showProposeTask, setShowProposeTask] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const loadTrip = useCallback(() => {
     api
@@ -462,6 +464,20 @@ function TripDetailView({ tripId }: { tripId: string }) {
     ...trip.stays.map((stay) => ({ sortKey: stay.checkInAt ?? '9999', node: <StayRow key={`stay-${stay.id}`} stay={stay} /> })),
   ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
 
+  async function toggleCancelled() {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await api.patch(`/trips/${tripId}`, { cancelledAt: trip!.cancelledAt ? null : new Date().toISOString() });
+      loadTrip();
+      loadRevisions();
+    } catch (err) {
+      setCancelError(err instanceof ApiError ? err.message : 'Не удалось изменить статус поездки');
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   return (
     <>
       <Button variant="ghost" icon={ArrowLeft} onClick={() => router.push('/trips')} style={{ marginBottom: 12 }}>
@@ -501,6 +517,17 @@ function TripDetailView({ tripId }: { tripId: string }) {
 
       {tab === 'overview' && (
         <>
+          {canEdit && (
+            <Card tone={trip.cancelledAt ? undefined : 'sunken'} style={{ marginBottom: 16 }}>
+              {cancelError && <Alert tone="danger">{cancelError}</Alert>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>{trip.cancelledAt ? `Поездка отменена ${fmtDateTime(trip.cancelledAt)}` : 'Поездка активна'}</span>
+                <Button size="sm" variant={trip.cancelledAt ? 'secondary' : 'danger'} onClick={toggleCancelled} loading={cancelling}>
+                  {trip.cancelledAt ? 'Снять отмену' : 'Отменить поездку'}
+                </Button>
+              </div>
+            </Card>
+          )}
           <Card title="Материалы" actions={canEdit ? <Button size="sm" icon={Upload} onClick={() => setShowAddMaterials(true)}>Добавить материалы</Button> : undefined}>
             {trip.materials.length === 0 ? (
               <EmptyState icon={FileText} title="Материалов пока нет" />
