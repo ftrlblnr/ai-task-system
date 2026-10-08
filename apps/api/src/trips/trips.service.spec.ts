@@ -221,3 +221,58 @@ describe('TripsService.listTrips / getTrip', () => {
     expect(result.timeStatus).toBe('NO_CONFIRMED_DATES');
   });
 });
+
+describe('TripsService.createManual', () => {
+  it('создаёт поездку без материалов, ORGANIZER и запись в истории', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await service.createManual(USER, { title: 'Командировка в Астану' });
+    expect(trip.title).toBe('Командировка в Астану');
+    expect(trip.humanCode).toMatch(/^TR-\d{4}-\d{3}$/);
+    expect(trip.periodPrecision).toBe('UNKNOWN');
+    expect(prisma.tripMembers).toHaveLength(1);
+    expect(prisma.tripMembers[0].accessRole).toBe('ORGANIZER');
+    expect(prisma.tripRevisions).toHaveLength(1);
+  });
+
+  it('с periodStart — periodPrecision по умолчанию EXACT', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await service.createManual(USER, { title: 'X', periodStart: '2026-12-01T00:00:00.000Z' });
+    expect(trip.periodPrecision).toBe('EXACT');
+  });
+
+  it('без права trips.create — исключение прокидывается, поездка не создаётся', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights({ canCreate: false }) as never);
+    await expect(service.createManual(USER, { title: 'X' })).rejects.toThrow('forbidden');
+    expect(prisma.trips).toHaveLength(0);
+  });
+
+  it('humanCode при конфликте уникальности пробует следующий номер', async () => {
+    const prisma = new FakeTripsPrisma();
+    const year = new Date().getFullYear();
+    await prisma.trip.create({ data: { humanCode: `TR-${year}-001`, title: 'Существующая', organizerId: USER.id } });
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await service.createManual(USER, { title: 'Новая' });
+    expect(trip.humanCode).toBe(`TR-${year}-002`);
+  });
+});
+
+describe('TripsService.deleteTrip', () => {
+  it('ORGANIZER (право archive) удаляет поездку', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'X', organizerId: USER.id } });
+    await service.deleteTrip(USER, trip.id);
+    expect(prisma.trips.find((t) => t.id === trip.id)).toBeUndefined();
+  });
+
+  it('без права archive — исключение прокидывается, поездка не удаляется', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights({ permission: 'DENY' }) as never);
+    const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'X', organizerId: USER.id } });
+    await expect(service.deleteTrip(USER, trip.id)).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.trips.find((t) => t.id === trip.id)).toBeDefined();
+  });
+});

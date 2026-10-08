@@ -1165,3 +1165,63 @@ export interface ProposeTripTaskInput {
   assigneeId: string;
   dueDate: string;
 }
+
+// Полный CRUD (08.10.2026) — ручное создание сущностей поездки, без
+// материалов/агента. Зеркало apps/api/src/trips/dto/create-*.dto.ts.
+export interface CreateTripInput {
+  title: string;
+  purposeSummary?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  periodPrecision?: TripPeriodPrecision;
+}
+
+export interface CreateTripLegInput {
+  mode: TripLegMode;
+  fromLocation?: string;
+  toLocation?: string;
+  departAt?: string;
+  departTimeZoneOffsetMinutes?: number;
+  arriveAt?: string;
+  arriveTimeZoneOffsetMinutes?: number;
+  carrier?: string;
+  referenceCode?: string;
+  bookingStatus: TripBookingStatus;
+}
+
+export interface CreateTripEventInput {
+  title: string;
+  startAt?: string;
+  startTimeZoneOffsetMinutes?: number;
+  dateOnly?: string;
+  endAt?: string;
+  location?: string;
+  notes?: string;
+}
+
+export interface CreateTripStayInput {
+  name?: string;
+  address?: string;
+  checkInAt?: string;
+  checkOutAt?: string;
+  bookingStatus: TripBookingStatus;
+}
+
+export interface CreateTripContactInput {
+  name: string;
+  role: TripContactRole;
+  organization?: string;
+  email?: string;
+  phone?: string;
+}
+
+export interface CreateExtractedFactInput {
+  factKey: string;
+  factValue: string;
+}
+
+export interface UpdateExtractedFactInput {
+  factKey?: string;
+  factValue?: string;
+  status?: ExtractedFactStatus;
+}

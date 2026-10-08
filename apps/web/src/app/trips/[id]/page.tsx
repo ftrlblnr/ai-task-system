@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText } from 'lucide-react';
+import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText, Plus, Trash2 } from 'lucide-react';
 import type {
   AddTripMemberInput,
   AgentRunDetail,
+  CreateExtractedFactInput,
+  CreateTripContactInput,
+  CreateTripEventInput,
+  CreateTripLegInput,
+  CreateTripStayInput,
   EmployeeSummary,
   ProposedChangeItem,
   ProposeTripTaskInput,
@@ -20,7 +25,7 @@ import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
 import { Card, PageHeader } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
@@ -488,6 +493,313 @@ function ProposeTaskDialog({ tripId, onClose, onDone }: { tripId: string; onClos
   );
 }
 
+// Полный CRUD — ручное добавление пункта программы без материала. Намеренно
+// без каждого опционального поля формы (например, часовых поясов отдельно
+// от самой даты) — то, что не покрыто формой, всегда доступно через PATCH
+// позже; это не ограничение API, только сознательно упрощённая форма.
+function CreateLegDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
+  const [fromLocation, setFromLocation] = useState('');
+  const [toLocation, setToLocation] = useState('');
+  const [departAt, setDepartAt] = useState('');
+  const [arriveAt, setArriveAt] = useState('');
+  const [carrier, setCarrier] = useState('');
+  const [bookingStatus, setBookingStatus] = useState<CreateTripLegInput['bookingStatus']>('UNCONFIRMED');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateTripLegInput = {
+        mode: 'FLIGHT',
+        fromLocation: fromLocation || undefined,
+        toLocation: toLocation || undefined,
+        departAt: departAt || undefined,
+        arriveAt: arriveAt || undefined,
+        carrier: carrier || undefined,
+        bookingStatus,
+      };
+      await api.post(`/trips/${tripId}/legs`, payload);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось добавить перелёт/переезд');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Добавить перелёт/переезд"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy}>
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Field label="Откуда">
+        <Input value={fromLocation} onChange={(e) => setFromLocation(e.target.value)} />
+      </Field>
+      <Field label="Куда">
+        <Input value={toLocation} onChange={(e) => setToLocation(e.target.value)} />
+      </Field>
+      <Field label="Вылет/отправление (если известно)">
+        <Input type="datetime-local" value={departAt} onChange={(e) => setDepartAt(e.target.value)} />
+      </Field>
+      <Field label="Прилёт/прибытие (если известно)">
+        <Input type="datetime-local" value={arriveAt} onChange={(e) => setArriveAt(e.target.value)} />
+      </Field>
+      <Field label="Перевозчик/номер рейса">
+        <Input value={carrier} onChange={(e) => setCarrier(e.target.value)} />
+      </Field>
+      <Field label="Статус">
+        <Select
+          value={bookingStatus}
+          onChange={(e) => setBookingStatus(e.target.value as CreateTripLegInput['bookingStatus'])}
+          options={[
+            { value: 'UNCONFIRMED', label: 'Подтверждения не найдено' },
+            { value: 'PROPOSED', label: 'Предложено' },
+            { value: 'BOOKED', label: 'Забронировано' },
+          ]}
+        />
+      </Field>
+    </Dialog>
+  );
+}
+
+function CreateEventDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState('');
+  const [startAt, setStartAt] = useState('');
+  const [location, setLocation] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    if (!title.trim()) {
+      setError('Укажите название события');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateTripEventInput = { title: title.trim(), startAt: startAt || undefined, location: location || undefined };
+      await api.post(`/trips/${tripId}/events`, payload);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось добавить событие');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Добавить событие программы"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy}>
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Field label="Название">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+      </Field>
+      <Field label="Дата и время (если известно)">
+        <Input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} />
+      </Field>
+      <Field label="Место">
+        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
+function CreateStayDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [checkInAt, setCheckInAt] = useState('');
+  const [checkOutAt, setCheckOutAt] = useState('');
+  const [bookingStatus, setBookingStatus] = useState<CreateTripStayInput['bookingStatus']>('UNCONFIRMED');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateTripStayInput = { name: name || undefined, address: address || undefined, checkInAt: checkInAt || undefined, checkOutAt: checkOutAt || undefined, bookingStatus };
+      await api.post(`/trips/${tripId}/stays`, payload);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось добавить проживание');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Добавить проживание"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy}>
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Field label="Название">
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Адрес">
+        <Input value={address} onChange={(e) => setAddress(e.target.value)} />
+      </Field>
+      <Field label="Заезд (если известно)">
+        <Input type="date" value={checkInAt} onChange={(e) => setCheckInAt(e.target.value)} />
+      </Field>
+      <Field label="Выезд (если известно)">
+        <Input type="date" value={checkOutAt} onChange={(e) => setCheckOutAt(e.target.value)} />
+      </Field>
+      <Field label="Статус">
+        <Select
+          value={bookingStatus}
+          onChange={(e) => setBookingStatus(e.target.value as CreateTripStayInput['bookingStatus'])}
+          options={[
+            { value: 'UNCONFIRMED', label: 'Подтверждения не найдено' },
+            { value: 'PROPOSED', label: 'Предложено' },
+            { value: 'BOOKED', label: 'Забронировано' },
+          ]}
+        />
+      </Field>
+    </Dialog>
+  );
+}
+
+function CreateContactDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState<CreateTripContactInput['role']>('OTHER');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    if (!name.trim()) {
+      setError('Укажите имя контакта');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateTripContactInput = { name: name.trim(), role, phone: phone || undefined, email: email || undefined };
+      await api.post(`/trips/${tripId}/contacts`, payload);
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось добавить контакт');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Добавить контакт"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy}>
+            Добавить
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Field label="Имя">
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Field label="Роль">
+        <Select
+          value={role}
+          onChange={(e) => setRole(e.target.value as CreateTripContactInput['role'])}
+          options={[
+            { value: 'OTHER', label: 'Контакт' },
+            { value: 'RECEIVING_PARTY', label: 'Принимающая сторона' },
+            { value: 'DELEGATE', label: 'Представитель' },
+          ]}
+        />
+      </Field>
+      <Field label="Телефон">
+        <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+      </Field>
+      <Field label="Email">
+        <Input value={email} onChange={(e) => setEmail(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
+// Факты — простая форма из двух полей, без модалки (ExtractedFact — самый
+// "мягкий" слой данных, не заслуживает отдельного диалога).
+function AddFactInline({ tripId, onDone }: { tripId: string; onDone: () => void }) {
+  const [factKey, setFactKey] = useState('');
+  const [factValue, setFactValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    if (!factKey.trim() || !factValue.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateExtractedFactInput = { factKey: factKey.trim(), factValue: factValue.trim() };
+      await api.post(`/trips/${tripId}/facts`, payload);
+      setFactKey('');
+      setFactValue('');
+      onDone();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось добавить факт');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <Input placeholder="Например, виза" value={factKey} onChange={(e) => setFactKey(e.target.value)} style={{ maxWidth: 180 }} />
+        <Input placeholder="Например, нужна" value={factValue} onChange={(e) => setFactValue(e.target.value)} style={{ maxWidth: 220 }} />
+        <Button size="sm" icon={Plus} onClick={handleSubmit} loading={busy}>
+          Добавить
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function TripDetailView({ tripId }: { tripId: string }) {
   const router = useRouter();
   const { user } = useAuth();
@@ -501,6 +813,12 @@ function TripDetailView({ tripId }: { tripId: string }) {
   const [showProposeTask, setShowProposeTask] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showCreateLeg, setShowCreateLeg] = useState(false);
+  const [showCreateEvent, setShowCreateEvent] = useState(false);
+  const [showCreateStay, setShowCreateStay] = useState(false);
+  const [showCreateContact, setShowCreateContact] = useState(false);
 
   const loadTrip = useCallback(() => {
     api
@@ -558,6 +876,20 @@ function TripDetailView({ tripId }: { tripId: string }) {
     }
   }
 
+  // Полный CRUD — trips.archive, безвозвратно (в отличие от отмены выше).
+  async function handleDeleteTrip() {
+    if (!window.confirm('Удалить поездку безвозвратно? Это действие нельзя отменить.')) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.delete(`/trips/${tripId}`);
+      router.push('/trips');
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Не удалось удалить поездку');
+      setDeleting(false);
+    }
+  }
+
   return (
     <>
       <Button variant="ghost" icon={ArrowLeft} onClick={() => router.push('/trips')} style={{ marginBottom: 12 }}>
@@ -608,6 +940,17 @@ function TripDetailView({ tripId }: { tripId: string }) {
               </div>
             </Card>
           )}
+          {canManageAccess && (
+            <Card tone="sunken" style={{ marginBottom: 16 }}>
+              {deleteError && <Alert tone="danger">{deleteError}</Alert>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="ds-field-hint">Удаление безвозвратно (в отличие от отмены выше)</span>
+                <Button size="sm" variant="danger" icon={Trash2} onClick={handleDeleteTrip} loading={deleting}>
+                  Удалить поездку
+                </Button>
+              </div>
+            </Card>
+          )}
           <Card title="Материалы" actions={canEdit ? <Button size="sm" icon={Upload} onClick={() => setShowAddMaterials(true)}>Добавить материалы</Button> : undefined}>
             {trip.materials.length === 0 ? (
               <EmptyState icon={FileText} title="Материалов пока нет" />
@@ -622,17 +965,31 @@ function TripDetailView({ tripId }: { tripId: string }) {
               </div>
             )}
           </Card>
-          {trip.facts.length > 0 && (
-            <Card title="Прочие факты" style={{ marginTop: 16 }}>
+          <Card title="Прочие факты" style={{ marginTop: 16 }}>
+            {trip.facts.length === 0 ? (
+              <p className="ds-field-hint">Фактов пока нет — виза, бюджет, особые требования и т.п.</p>
+            ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {trip.facts.map((f) => (
-                  <div key={f.id}>
-                    <strong>{f.factKey}:</strong> {f.factValue}
+                  <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>
+                      <strong>{f.factKey}:</strong> {f.factValue}
+                    </span>
+                    {canEdit && (
+                      <IconButton
+                        icon={Trash2}
+                        label="Удалить факт"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => api.delete(`/trips/${tripId}/facts/${f.id}`).then(loadTrip)}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
-            </Card>
-          )}
+            )}
+            {canEdit && <AddFactInline tripId={tripId} onDone={loadTrip} />}
+          </Card>
           {canEdit && (
             <Card title="Задачи по поездке" style={{ marginTop: 16 }} actions={<Button size="sm" onClick={() => setShowProposeTask(true)}>Создать задачу</Button>}>
               <p className="ds-field-hint">Задача создаётся с явным исполнителем и сроком.</p>
@@ -643,6 +1000,19 @@ function TripDetailView({ tripId }: { tripId: string }) {
 
       {tab === 'program' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {canEdit && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <Button size="sm" variant="ghost" icon={Plane} onClick={() => setShowCreateLeg(true)}>
+                Добавить перелёт
+              </Button>
+              <Button size="sm" variant="ghost" icon={CalendarIcon} onClick={() => setShowCreateEvent(true)}>
+                Добавить событие
+              </Button>
+              <Button size="sm" variant="ghost" icon={Hotel} onClick={() => setShowCreateStay(true)}>
+                Добавить проживание
+              </Button>
+            </div>
+          )}
           {programItems.length === 0 ? <EmptyState title="Программа пока пуста" /> : programItems.map((i) => i.node)}
         </div>
       )}
@@ -669,7 +1039,11 @@ function TripDetailView({ tripId }: { tripId: string }) {
               ))}
             </div>
           </Card>
-          <Card title="Контакты поездки" style={{ marginTop: 16 }}>
+          <Card
+            title="Контакты поездки"
+            style={{ marginTop: 16 }}
+            actions={canEdit ? <Button size="sm" icon={Plus} onClick={() => setShowCreateContact(true)}>Добавить контакт</Button> : undefined}
+          >
             {trip.contacts.length === 0 ? (
               <EmptyState title="Контактов пока нет" description="Появятся из материалов или добавятся вручную позже." />
             ) : (
@@ -709,6 +1083,10 @@ function TripDetailView({ tripId }: { tripId: string }) {
       {showAddMaterials && <AddMaterialsDialog tripId={tripId} onClose={() => setShowAddMaterials(false)} onDone={() => { setShowAddMaterials(false); loadTrip(); loadChanges(); }} />}
       {showAddMember && <AddMemberDialog tripId={tripId} onClose={() => setShowAddMember(false)} onDone={() => { setShowAddMember(false); loadTrip(); }} />}
       {showProposeTask && <ProposeTaskDialog tripId={tripId} onClose={() => setShowProposeTask(false)} onDone={() => { setShowProposeTask(false); loadRevisions(); }} />}
+      {showCreateLeg && <CreateLegDialog tripId={tripId} onClose={() => setShowCreateLeg(false)} onDone={() => { setShowCreateLeg(false); loadTrip(); }} />}
+      {showCreateEvent && <CreateEventDialog tripId={tripId} onClose={() => setShowCreateEvent(false)} onDone={() => { setShowCreateEvent(false); loadTrip(); }} />}
+      {showCreateStay && <CreateStayDialog tripId={tripId} onClose={() => setShowCreateStay(false)} onDone={() => { setShowCreateStay(false); loadTrip(); }} />}
+      {showCreateContact && <CreateContactDialog tripId={tripId} onClose={() => setShowCreateContact(false)} onDone={() => { setShowCreateContact(false); loadTrip(); }} />}
     </>
   );
 }

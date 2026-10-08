@@ -122,7 +122,7 @@ export interface FakeTripContact {
 export interface FakeExtractedFact {
   id: string;
   tripId: string;
-  materialId: string;
+  materialId: string | null;
   factKey: string;
   factValue: string;
   status: ExtractedFactStatus;
@@ -280,6 +280,26 @@ export class FakeTripsPrisma {
       applyUpdate(row, data);
       return row;
     },
+    // Каскад — тот же, что в реальной схеме (onDelete: Cascade на legs/
+    // events/stays/contacts/materials/facts/members/proposedChanges/
+    // revisions; AgentRun.tripId — SetNull, не удаляется).
+    delete: async ({ where }: { where: { id: string } }) => {
+      const idx = this.trips.findIndex((t) => t.id === where.id);
+      const [row] = this.trips.splice(idx, 1);
+      this.tripLegs = this.tripLegs.filter((l) => l.tripId !== where.id);
+      this.tripEvents = this.tripEvents.filter((e) => e.tripId !== where.id);
+      this.tripStays = this.tripStays.filter((s) => s.tripId !== where.id);
+      this.tripContacts = this.tripContacts.filter((c) => c.tripId !== where.id);
+      this.tripMaterials = this.tripMaterials.filter((m) => m.tripId !== where.id);
+      this.extractedFacts = this.extractedFacts.filter((f) => f.tripId !== where.id);
+      this.tripMembers = this.tripMembers.filter((m) => m.tripId !== where.id);
+      this.proposedChanges = this.proposedChanges.filter((c) => c.tripId !== where.id);
+      this.tripRevisions = this.tripRevisions.filter((r) => r.tripId !== where.id);
+      for (const run of this.agentRuns) {
+        if (run.tripId === where.id) run.tripId = null;
+      }
+      return row;
+    },
     count: async ({ where }: { where: { humanCode: { startsWith: string } } }) => this.trips.filter((t) => t.humanCode.startsWith(where.humanCode.startsWith)).length,
     findMany: async ({ where }: { where: { id?: { in: string[] }; organizerId?: string; cancelledAt?: null } }) =>
       this.trips.filter(
@@ -421,9 +441,20 @@ export class FakeTripsPrisma {
   };
 
   extractedFact = {
-    create: async ({ data }: { data: Omit<FakeExtractedFact, 'id' | 'extractedAt'> }) => {
-      const row: FakeExtractedFact = { id: randomUUID(), extractedAt: new Date(), ...data };
+    create: async ({ data }: { data: Partial<FakeExtractedFact> & { tripId: string; factKey: string; factValue: string } }) => {
+      const row: FakeExtractedFact = { id: randomUUID(), materialId: null, status: 'EXTRACTED', extractedAt: new Date(), ...data };
       this.extractedFacts.push(row);
+      return row;
+    },
+    findUnique: async ({ where }: { where: { id: string } }) => this.extractedFacts.find((f) => f.id === where.id) ?? null,
+    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+      const row = this.extractedFacts.find((f) => f.id === where.id)!;
+      applyUpdate(row, data);
+      return row;
+    },
+    delete: async ({ where }: { where: { id: string } }) => {
+      const idx = this.extractedFacts.findIndex((f) => f.id === where.id);
+      const [row] = this.extractedFacts.splice(idx, 1);
       return row;
     },
   };

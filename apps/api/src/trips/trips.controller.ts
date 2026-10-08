@@ -19,6 +19,13 @@ import { UpdateTripStayDto } from './dto/update-trip-stay.dto';
 import { UpdateTripContactDto } from './dto/update-trip-contact.dto';
 import { AddTripMemberDto } from './dto/add-trip-member.dto';
 import { ProposeTripTaskDto } from './dto/propose-trip-task.dto';
+import { CreateTripDto } from './dto/create-trip.dto';
+import { CreateTripLegDto } from './dto/create-trip-leg.dto';
+import { CreateTripEventDto } from './dto/create-trip-event.dto';
+import { CreateTripStayDto } from './dto/create-trip-stay.dto';
+import { CreateTripContactDto } from './dto/create-trip-contact.dto';
+import { CreateExtractedFactDto } from './dto/create-extracted-fact.dto';
+import { UpdateExtractedFactDto } from './dto/update-extracted-fact.dto';
 
 function toMaterials(files: Express.Multer.File[] | undefined): MaterialUpload[] {
   if (!files || files.length === 0) throw new BadRequestException('Нужен хотя бы один материал');
@@ -71,6 +78,18 @@ export class TripsController {
   @Get()
   listTrips(@CurrentUser() user: AuthenticatedUser) {
     return this.trips.listTrips(user);
+  }
+
+  // Полный CRUD — создание карточки напрямую, без материалов.
+  @Post()
+  createManual(@Body() dto: CreateTripDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.trips.createManual(user, dto);
+  }
+
+  @Delete(':id')
+  async deleteTrip(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    await this.trips.deleteTrip(user, id);
+    return { ok: true };
   }
 
   // Приоритет 2 ТЗ — "Добавить информацию" всегда адресовано ВЫБРАННОЙ
@@ -148,6 +167,11 @@ export class TripsController {
     return this.edit.updateTrip(user, id, dto);
   }
 
+  @Post(':id/legs')
+  createLeg(@Param('id') id: string, @Body() dto: CreateTripLegDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.createLeg(user, id, dto);
+  }
+
   @Patch(':id/legs/:legId')
   updateLeg(@Param('id') id: string, @Param('legId') legId: string, @Body() dto: UpdateTripLegDto, @CurrentUser() user: AuthenticatedUser) {
     return this.edit.updateLeg(user, id, legId, dto);
@@ -157,6 +181,11 @@ export class TripsController {
   async deleteLeg(@Param('id') id: string, @Param('legId') legId: string, @CurrentUser() user: AuthenticatedUser) {
     await this.edit.deleteLeg(user, id, legId);
     return { ok: true };
+  }
+
+  @Post(':id/events')
+  createEvent(@Param('id') id: string, @Body() dto: CreateTripEventDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.createEvent(user, id, dto);
   }
 
   @Patch(':id/events/:eventId')
@@ -170,6 +199,11 @@ export class TripsController {
     return { ok: true };
   }
 
+  @Post(':id/stays')
+  createStay(@Param('id') id: string, @Body() dto: CreateTripStayDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.createStay(user, id, dto);
+  }
+
   @Patch(':id/stays/:stayId')
   updateStay(@Param('id') id: string, @Param('stayId') stayId: string, @Body() dto: UpdateTripStayDto, @CurrentUser() user: AuthenticatedUser) {
     return this.edit.updateStay(user, id, stayId, dto);
@@ -181,6 +215,11 @@ export class TripsController {
     return { ok: true };
   }
 
+  @Post(':id/contacts')
+  createContact(@Param('id') id: string, @Body() dto: CreateTripContactDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.createContact(user, id, dto);
+  }
+
   @Patch(':id/contacts/:contactId')
   updateContact(@Param('id') id: string, @Param('contactId') contactId: string, @Body() dto: UpdateTripContactDto, @CurrentUser() user: AuthenticatedUser) {
     return this.edit.updateContact(user, id, contactId, dto);
@@ -189,6 +228,22 @@ export class TripsController {
   @Delete(':id/contacts/:contactId')
   async deleteContact(@Param('id') id: string, @Param('contactId') contactId: string, @CurrentUser() user: AuthenticatedUser) {
     await this.edit.deleteContact(user, id, contactId);
+    return { ok: true };
+  }
+
+  @Post(':id/facts')
+  createFact(@Param('id') id: string, @Body() dto: CreateExtractedFactDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.createFact(user, id, dto);
+  }
+
+  @Patch(':id/facts/:factId')
+  updateFact(@Param('id') id: string, @Param('factId') factId: string, @Body() dto: UpdateExtractedFactDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.edit.updateFact(user, id, factId, dto);
+  }
+
+  @Delete(':id/facts/:factId')
+  async deleteFact(@Param('id') id: string, @Param('factId') factId: string, @CurrentUser() user: AuthenticatedUser) {
+    await this.edit.deleteFact(user, id, factId);
     return { ok: true };
   }
 

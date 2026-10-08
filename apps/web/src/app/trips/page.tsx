@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plane, Upload } from 'lucide-react';
-import type { AgentRunDetail, TripSummary, TripTimeStatus } from '@ai-task-system/shared-types';
+import { Plane, Upload, Plus } from 'lucide-react';
+import type { AgentRunDetail, CreateTripInput, TripSummary, TripTimeStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Card, PageHeader } from '@/components/ui/card';
@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Dialog } from '@/components/ui/dialog';
+import { Field, Input, Textarea } from '@/components/ui/field';
 import { FileChip } from '@/components/ui/file-chip';
 
 // Раздел 4 ТЗ — "статус времени поездки и готовность информации — разные
@@ -183,6 +184,69 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   );
 }
 
+// Полный CRUD — создание карточки напрямую, без материалов. Второстепенное
+// действие (основной путь — "Собрать из материалов", раздел 3 ТЗ), поэтому
+// кнопка secondary, без Idempotency-Key (не файловая загрузка, двойной
+// клик создаёт максимум лишнюю карточку, не дублирующий дорогой AgentRun).
+function CreateTripManualDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (tripId: string) => void }) {
+  const [title, setTitle] = useState('');
+  const [purposeSummary, setPurposeSummary] = useState('');
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit() {
+    if (!title.trim()) {
+      setError('Укажите название поездки');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const payload: CreateTripInput = { title: title.trim(), purposeSummary: purposeSummary.trim() || undefined, periodStart: periodStart || undefined, periodEnd: periodEnd || undefined };
+      const trip = await api.post<TripSummary>('/trips', payload);
+      onCreated(trip.id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать поездку');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      title="Создать поездку вручную"
+      description="Без материалов — просто карточка, которую можно дополнить позже."
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+          <Button variant="primary" onClick={handleSubmit} loading={busy}>
+            Создать
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+      <Field label="Название">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+      </Field>
+      <Field label="Цель поездки (необязательно)">
+        <Textarea value={purposeSummary} onChange={(e) => setPurposeSummary(e.target.value)} />
+      </Field>
+      <Field label="Начало (необязательно)">
+        <Input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+      </Field>
+      <Field label="Окончание (необязательно)">
+        <Input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
 function TripRow({ trip, onOpen }: { trip: TripSummary; onOpen: () => void }) {
   return (
     <button type="button" onClick={onOpen} className="ds-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', cursor: 'pointer', gap: 12 }}>
@@ -206,6 +270,7 @@ function TripsView() {
   const [trips, setTrips] = useState<TripSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [creatingManual, setCreatingManual] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -227,9 +292,14 @@ function TripsView() {
         title="Поездки"
         description="Соберите поездку из материалов — билетов, программы, приглашения, скриншотов"
         actions={
-          <Button variant="primary" icon={Plane} onClick={() => setCreating(true)}>
-            Собрать из материалов
-          </Button>
+          <>
+            <Button variant="ghost" icon={Plus} onClick={() => setCreatingManual(true)}>
+              Создать вручную
+            </Button>
+            <Button variant="primary" icon={Plane} onClick={() => setCreating(true)}>
+              Собрать из материалов
+            </Button>
+          </>
         }
       />
       {error && <Alert tone="danger">{error}</Alert>}
@@ -251,6 +321,15 @@ function TripsView() {
           onClose={() => setCreating(false)}
           onCreated={(tripId) => {
             setCreating(false);
+            router.push(`/trips/${tripId}`);
+          }}
+        />
+      )}
+      {creatingManual && (
+        <CreateTripManualDialog
+          onClose={() => setCreatingManual(false)}
+          onCreated={(tripId) => {
+            setCreatingManual(false);
             router.push(`/trips/${tripId}`);
           }}
         />

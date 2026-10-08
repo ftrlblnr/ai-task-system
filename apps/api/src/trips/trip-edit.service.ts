@@ -7,6 +7,12 @@ import { UpdateTripLegDto } from './dto/update-trip-leg.dto';
 import { UpdateTripEventDto } from './dto/update-trip-event.dto';
 import { UpdateTripStayDto } from './dto/update-trip-stay.dto';
 import { UpdateTripContactDto } from './dto/update-trip-contact.dto';
+import { CreateTripLegDto } from './dto/create-trip-leg.dto';
+import { CreateTripEventDto } from './dto/create-trip-event.dto';
+import { CreateTripStayDto } from './dto/create-trip-stay.dto';
+import { CreateTripContactDto } from './dto/create-trip-contact.dto';
+import { CreateExtractedFactDto } from './dto/create-extracted-fact.dto';
+import { UpdateExtractedFactDto } from './dto/update-extracted-fact.dto';
 
 function toDateOrUndefined(value: string | null | undefined): Date | null | undefined {
   if (value === undefined) return undefined;
@@ -39,6 +45,19 @@ export class TripEditService {
     return updated;
   }
 
+  // Полный CRUD — добавление перелёта/переезда вручную, без материала
+  // (sourceMaterialId=null — отличает ручной ввод от извлечённого агентом,
+  // раздел 5 ТЗ про происхождение факта). Требует 'edit', как и любая
+  // ручная правка.
+  async createLeg(user: AuthenticatedUser, tripId: string, dto: CreateTripLegDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const created = await this.prisma.tripLeg.create({
+      data: { ...dto, tripId, departAt: toDateOrUndefined(dto.departAt) ?? null, arriveAt: toDateOrUndefined(dto.arriveAt) ?? null, sourceMaterialId: null },
+    });
+    await this.recordRevision(user.id, tripId, 'TRIP_LEG', created.id, 'Перелёт/переезд добавлен вручную');
+    return created;
+  }
+
   async updateLeg(user: AuthenticatedUser, tripId: string, legId: string, dto: UpdateTripLegDto) {
     await this.rights.assertPermission(tripId, user.id, 'edit');
     await this.assertBelongsToTrip('tripLeg', legId, tripId);
@@ -55,6 +74,15 @@ export class TripEditService {
     await this.assertBelongsToTrip('tripLeg', legId, tripId);
     await this.prisma.tripLeg.delete({ where: { id: legId } });
     await this.recordRevision(user.id, tripId, 'TRIP_LEG', legId, 'Перелёт/переезд удалён вручную');
+  }
+
+  async createEvent(user: AuthenticatedUser, tripId: string, dto: CreateTripEventDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const created = await this.prisma.tripEvent.create({
+      data: { ...dto, tripId, startAt: toDateOrUndefined(dto.startAt) ?? null, dateOnly: toDateOrUndefined(dto.dateOnly) ?? null, endAt: toDateOrUndefined(dto.endAt) ?? null, sourceMaterialId: null },
+    });
+    await this.recordRevision(user.id, tripId, 'TRIP_EVENT', created.id, 'Событие программы добавлено вручную');
+    return created;
   }
 
   async updateEvent(user: AuthenticatedUser, tripId: string, eventId: string, dto: UpdateTripEventDto) {
@@ -75,6 +103,15 @@ export class TripEditService {
     await this.recordRevision(user.id, tripId, 'TRIP_EVENT', eventId, 'Событие программы удалено вручную');
   }
 
+  async createStay(user: AuthenticatedUser, tripId: string, dto: CreateTripStayDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const created = await this.prisma.tripStay.create({
+      data: { ...dto, tripId, checkInAt: toDateOrUndefined(dto.checkInAt) ?? null, checkOutAt: toDateOrUndefined(dto.checkOutAt) ?? null, sourceMaterialId: null },
+    });
+    await this.recordRevision(user.id, tripId, 'TRIP_STAY', created.id, 'Проживание добавлено вручную');
+    return created;
+  }
+
   async updateStay(user: AuthenticatedUser, tripId: string, stayId: string, dto: UpdateTripStayDto) {
     await this.rights.assertPermission(tripId, user.id, 'edit');
     await this.assertBelongsToTrip('tripStay', stayId, tripId);
@@ -93,6 +130,13 @@ export class TripEditService {
     await this.recordRevision(user.id, tripId, 'TRIP_STAY', stayId, 'Проживание удалено вручную');
   }
 
+  async createContact(user: AuthenticatedUser, tripId: string, dto: CreateTripContactDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const created = await this.prisma.tripContact.create({ data: { ...dto, tripId, sourceMaterialId: null } });
+    await this.recordRevision(user.id, tripId, 'TRIP_CONTACT', created.id, 'Контакт добавлен вручную');
+    return created;
+  }
+
   async updateContact(user: AuthenticatedUser, tripId: string, contactId: string, dto: UpdateTripContactDto) {
     await this.rights.assertPermission(tripId, user.id, 'edit');
     await this.assertBelongsToTrip('tripContact', contactId, tripId);
@@ -106,6 +150,33 @@ export class TripEditService {
     await this.assertBelongsToTrip('tripContact', contactId, tripId);
     await this.prisma.tripContact.delete({ where: { id: contactId } });
     await this.recordRevision(user.id, tripId, 'TRIP_CONTACT', contactId, 'Контакт удалён вручную');
+  }
+
+  // ExtractedFact — "мягкий" слой (раздел 5 ТЗ), пишется напрямую и в
+  // ручном варианте тоже, тот же уровень доверия, что у остальных ручных
+  // правок в этом сервисе.
+  async createFact(user: AuthenticatedUser, tripId: string, dto: CreateExtractedFactDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const created = await this.prisma.extractedFact.create({ data: { tripId, materialId: null, factKey: dto.factKey, factValue: dto.factValue, status: 'CONFIRMED' } });
+    await this.recordRevision(user.id, tripId, 'TRIP', created.id, `Добавлен факт «${dto.factKey}»`);
+    return created;
+  }
+
+  async updateFact(user: AuthenticatedUser, tripId: string, factId: string, dto: UpdateExtractedFactDto) {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const fact = await this.prisma.extractedFact.findUnique({ where: { id: factId } });
+    if (!fact || fact.tripId !== tripId) throw new NotFoundException('Факт не найден');
+    const updated = await this.prisma.extractedFact.update({ where: { id: factId }, data: dto });
+    await this.recordRevision(user.id, tripId, 'TRIP', factId, `Факт «${updated.factKey}» отредактирован вручную`);
+    return updated;
+  }
+
+  async deleteFact(user: AuthenticatedUser, tripId: string, factId: string): Promise<void> {
+    await this.rights.assertPermission(tripId, user.id, 'edit');
+    const fact = await this.prisma.extractedFact.findUnique({ where: { id: factId } });
+    if (!fact || fact.tripId !== tripId) throw new NotFoundException('Факт не найден');
+    await this.prisma.extractedFact.delete({ where: { id: factId } });
+    await this.recordRevision(user.id, tripId, 'TRIP', factId, `Факт «${fact.factKey}» удалён вручную`);
   }
 
   // 404, не 403 — тот же принцип, что везде в модуле: чужая/несвязанная

@@ -111,3 +111,104 @@ describe('TripEditService — перелёты/события/проживани
     await expect(svc.deleteStay(ORGANIZER, trip.id, 'missing')).rejects.toBeInstanceOf(NotFoundException);
   });
 });
+
+describe('TripEditService — полный CRUD: ручное создание', () => {
+  it('createLeg добавляет перелёт без sourceMaterialId, пишет TripRevision', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    const created = await svc.createLeg(ORGANIZER, trip.id, { mode: 'FLIGHT', fromLocation: 'ALA', toLocation: 'IST', bookingStatus: 'UNCONFIRMED' });
+
+    expect(created.sourceMaterialId).toBeNull();
+    expect(prisma.tripLegs).toHaveLength(1);
+    expect(prisma.tripRevisions[0].summary).toContain('добавлен вручную');
+  });
+
+  it('createEvent добавляет событие', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    const created = await svc.createEvent(ORGANIZER, trip.id, { title: 'Переговоры' });
+
+    expect(created.title).toBe('Переговоры');
+    expect(prisma.tripEvents).toHaveLength(1);
+  });
+
+  it('createStay добавляет проживание', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    const created = await svc.createStay(ORGANIZER, trip.id, { name: 'Hilton', bookingStatus: 'PROPOSED' });
+
+    expect(created.name).toBe('Hilton');
+    expect(prisma.tripStays).toHaveLength(1);
+  });
+
+  it('createContact добавляет контакт', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    const created = await svc.createContact(ORGANIZER, trip.id, { name: 'Иван Иванов', role: 'OTHER' });
+
+    expect(created.name).toBe('Иван Иванов');
+    expect(prisma.tripContacts).toHaveLength(1);
+  });
+
+  it('VIEWER не может создавать (нет edit) — NotFoundException', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    await expect(svc.createLeg(VIEWER, trip.id, { mode: 'FLIGHT', bookingStatus: 'UNCONFIRMED' })).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('TripEditService — полный CRUD: ExtractedFact', () => {
+  it('createFact создаёт факт со статусом CONFIRMED (ручной ввод, не извлечение)', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const svc = service(prisma);
+
+    const created = await svc.createFact(ORGANIZER, trip.id, { factKey: 'виза', factValue: 'нужна' });
+
+    expect(created.status).toBe('CONFIRMED');
+    expect(created.materialId).toBeNull();
+    expect(prisma.tripRevisions).toHaveLength(1);
+  });
+
+  it('updateFact правит значение факта', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const fact = await prisma.extractedFact.create({ data: { tripId: trip.id, factKey: 'виза', factValue: 'нужна' } });
+    const svc = service(prisma);
+
+    const updated = await svc.updateFact(ORGANIZER, trip.id, fact.id, { factValue: 'не нужна' });
+
+    expect(updated.factValue).toBe('не нужна');
+  });
+
+  it('deleteFact удаляет факт', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const fact = await prisma.extractedFact.create({ data: { tripId: trip.id, factKey: 'виза', factValue: 'нужна' } });
+    const svc = service(prisma);
+
+    await svc.deleteFact(ORGANIZER, trip.id, fact.id);
+
+    expect(prisma.extractedFacts).toHaveLength(0);
+  });
+
+  it('updateFact на факт другой поездки — NotFoundException', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupTrip(prisma);
+    const otherTrip = await prisma.trip.create({ data: { humanCode: 'TR-2026-999', title: 'Другая', organizerId: ORGANIZER.id } });
+    const fact = await prisma.extractedFact.create({ data: { tripId: otherTrip.id, factKey: 'x', factValue: 'y' } });
+    const svc = service(prisma);
+
+    await expect(svc.updateFact(ORGANIZER, trip.id, fact.id, { factValue: 'z' })).rejects.toBeInstanceOf(NotFoundException);
+  });
+});

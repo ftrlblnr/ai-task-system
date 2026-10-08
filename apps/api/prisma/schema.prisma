@@ -2258,8 +2258,6 @@ model TripMaterial {
   extractionIssue   String?
   createdAt         DateTime           @default(now())
 
-  facts ExtractedFact[]
-
   @@index([tripId])
   @@index([agentRunId])
 }
@@ -2270,12 +2268,18 @@ model TripMaterial {
 // (TripLeg/TripEvent/TripStay/TripContact) происхождение несёт их
 // собственное sourceMaterialId — отдельный слой сведения факт→сущность для
 // v1 не заводится (сознательное упрощение).
+// Полный CRUD (08.10.2026) — materialId стал String? без формальной
+// Prisma-relation (была @relation(onDelete: Cascade) на TripMaterial) —
+// тот же приём, что sourceMaterialId у TripLeg/TripEvent/TripStay/
+// TripContact: простая строковая пометка происхождения, не настоящий
+// FK. Нужно для ручного создания факта без материала (createFact,
+// trip-edit.service.ts) — раньше это было физически невозможно
+// (materialId был NOT NULL с обязательным FK).
 model ExtractedFact {
   id          String              @id @default(cuid())
   tripId      String
   trip        Trip                @relation(fields: [tripId], references: [id], onDelete: Cascade)
-  materialId  String
-  material    TripMaterial        @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  materialId  String?
   factKey     String
   factValue   String
   status      ExtractedFactStatus @default(EXTRACTED)

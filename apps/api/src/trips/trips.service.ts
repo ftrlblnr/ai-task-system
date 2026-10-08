@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import type { FileArtifact } from '@prisma/client';
+import { Prisma, type FileArtifact } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
 import { TripRightsService } from './trip-rights.service';
 import { computeTripTimeStatus } from './trip-status';
+import { CreateTripDto } from './dto/create-trip.dto';
+
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
 
 export interface MaterialUpload {
   buffer: Buffer;
@@ -116,6 +121,55 @@ export class TripsService {
     if (tripIds.length === 0) return [];
     const trips = await this.prisma.trip.findMany({ where: { id: { in: tripIds } }, orderBy: { createdAt: 'desc' } });
     return trips.map((trip) => ({ ...trip, timeStatus: computeTripTimeStatus(trip) }));
+  }
+
+  // Полный CRUD — создание карточки напрямую, без материалов (частный
+  // случай "создание не требует полноты материалов", раздел 3 ТЗ: здесь
+  // материалов вообще нет). Та же retry-на-конфликт логика выделения
+  // humanCode, что в trip-run-execution.service.ts.createTripFromComposed
+  // (отдельная копия, не общий helper — два вызывающих места достаточно
+  // разные по контексту транзакции, чтобы делить код не стоило).
+  async createManual(user: AuthenticatedUser, dto: CreateTripDto) {
+    await this.rights.assertCanCreateTrips(user.id);
+    const year = new Date().getFullYear();
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existingCount = await this.prisma.trip.count({ where: { humanCode: { startsWith: `TR-${year}-` } } });
+      const humanCode = `TR-${year}-${String(existingCount + 1 + attempt).padStart(3, '0')}`;
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const trip = await tx.trip.create({
+            data: {
+              humanCode,
+              title: dto.title,
+              purposeSummary: dto.purposeSummary,
+              organizerId: user.id,
+              periodStart: dto.periodStart ? new Date(dto.periodStart) : null,
+              periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : null,
+              periodPrecision: dto.periodPrecision ?? (dto.periodStart ? 'EXACT' : 'UNKNOWN'),
+            },
+          });
+          await tx.tripMember.create({ data: { tripId: trip.id, employeeId: user.id, accessRole: 'ORGANIZER' } });
+          await tx.tripRevision.create({ data: { tripId: trip.id, entityType: 'TRIP', summary: 'Поездка создана вручную', appliedByEmployeeId: user.id } });
+          return trip;
+        });
+      } catch (err) {
+        if (isUniqueConstraintError(err) && attempt < 4) continue;
+        throw err;
+      }
+    }
+    throw new BadRequestException('Не удалось выделить код поездки после нескольких попыток');
+  }
+
+  // Полный CRUD — trips.archive (раздел 9 ТЗ), только ORGANIZER. Жёсткое
+  // удаление, не "отмена" (та — PATCH cancelledAt, отдельное действие):
+  // каскадно удаляет legs/events/stays/contacts/materials/facts/members/
+  // ProposedChange/TripRevision этой поездки (onDelete: Cascade в схеме),
+  // AgentRun этой поездки остаётся (tripId становится null, см.
+  // onDelete: SetNull) — сам пакет обработки не часть поездки как сущности.
+  async deleteTrip(user: AuthenticatedUser, tripId: string): Promise<void> {
+    await this.rights.assertPermission(tripId, user.id, 'archive');
+    await this.prisma.trip.delete({ where: { id: tripId } });
   }
 
   async getTrip(user: AuthenticatedUser, tripId: string) {
