@@ -30,4 +30,23 @@ describe('buildMessageText (раздел 10.1 ТЗ — тексты уведом
       'Вызов по вопросу „Согласовать бюджет“ отменён. Вопрос возвращён в очередь; ожидайте нового вызова.',
     );
   });
+
+  it('ANSWERED с задачей — исполнителю-автору «вам», со сроком', () => {
+    const n = {
+      id: 'n1',
+      kind: 'ANSWERED',
+      attemptCount: 0,
+      recipientId: 'e1',
+      request: {
+        title: 'Согласовать бюджет',
+        rejectionReason: null,
+        resolution: 'Согласовано.',
+        task: { title: 'Заказать оборудование', dueDate: new Date('2026-11-05T12:00:00Z'), assigneeId: 'e1', assignee: { fullName: 'Сотрудник 1' } },
+      },
+      recipient: { telegramId: '123' },
+    } as any;
+    expect(buildMessageText(n)).toBe(
+      'Ответ руководителя по вопросу „Согласовать бюджет“:\nСогласовано.\n\nПоставлена задача вам: „Заказать оборудование“, срок 05.11.2026.',
+    );
+  });
 });

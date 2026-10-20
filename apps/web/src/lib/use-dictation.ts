@@ -10,7 +10,9 @@ const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'a
 
 export type DictationPhase = 'idle' | 'recording' | 'processing';
 
-export function useDictation(endpoint: string, onText: (text: string) => void) {
+// fields — дополнительные поля формы (например, requestId приёмной: вопрос
+// служит контекстом, когда сервер приводит надиктованное к аккуратному тексту).
+export function useDictation(endpoint: string, onText: (text: string) => void, fields?: Record<string, string>) {
   const [phase, setPhase] = useState<DictationPhase>('idle');
   const [elapsedSec, setElapsedSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -20,10 +22,12 @@ export function useDictation(endpoint: string, onText: (text: string) => void) {
   const timersRef = useRef<{ tick: ReturnType<typeof setInterval> | null; stop: ReturnType<typeof setTimeout> | null }>({ tick: null, stop: null });
   const cancelledRef = useRef(false);
   const onTextRef = useRef(onText);
+  const fieldsRef = useRef(fields);
 
   useEffect(() => {
     onTextRef.current = onText;
-  }, [onText]);
+    fieldsRef.current = fields;
+  }, [onText, fields]);
 
   function clearTimers() {
     if (timersRef.current.tick) clearInterval(timersRef.current.tick);
@@ -86,6 +90,7 @@ export function useDictation(endpoint: string, onText: (text: string) => void) {
       const ext = mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm';
       const formData = new FormData();
       formData.append('audio', blob, `voice.${ext}`);
+      for (const [key, value] of Object.entries(fieldsRef.current ?? {})) formData.append(key, value);
       const { text } = await api.postForm<{ text: string }>(endpoint, formData);
       if (cancelledRef.current) return;
       if (text) onTextRef.current(text);

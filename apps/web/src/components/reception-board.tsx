@@ -1,21 +1,25 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { ArrowDownToLine, CheckCheck, DoorOpen, GripVertical, Handshake, Mic, RefreshCw, Square, type LucideIcon } from 'lucide-react';
+import { ArrowDownToLine, CheckCheck, DoorOpen, GripVertical, Handshake, ListPlus, Mic, Pencil, Plus, RefreshCw, Square, X, type LucideIcon } from 'lucide-react';
 import type {
   AnswerReceptionRequestInput,
   CompleteReceptionRequestInput,
   DelegateReceptionRequestInput,
+  EmployeeSummary,
+  ReceptionAnswerTemplate,
   ReceptionBoardView,
   ReceptionRequestItem,
   ReceptionRequestType,
   RejectReceptionRequestInput,
+  ReorderReceptionRequestInput,
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { useDictation } from '@/lib/use-dictation';
-import { Alert, Badge, Button, Dialog, IconButton, SearchInput, Textarea, cx } from '@/components/ui';
+import { Alert, Badge, Button, Dialog, IconButton, Input, SearchInput, Select, Textarea, cx } from '@/components/ui';
 import { Avatar } from '@/components/avatar';
 
 // Приёмная руководителя (владелец 20.10.2026): по центру — весь список
@@ -90,6 +94,9 @@ function RequestDialog({
   intent,
   hasOtherCalled,
   notificationStatus,
+  templates,
+  employees,
+  onTemplatesChange,
   onClose,
   onDone,
 }: {
@@ -97,18 +104,29 @@ function RequestDialog({
   intent: Intent;
   hasOtherCalled: boolean;
   notificationStatus: string | null;
+  templates: ReceptionAnswerTemplate[];
+  employees: EmployeeSummary[];
+  onTemplatesChange: (next: ReceptionAnswerTemplate[]) => void;
   onClose: () => void;
   onDone: () => void;
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editTemplates, setEditTemplates] = useState(false);
+  // «Ответить и поставить задачу»: по умолчанию — автору вопроса, тема — тема вопроса.
+  const [task, setTask] = useState<{ title: string; assigneeId: string; dueDate: string } | null>(null);
   const idem = useIdempotencyKey();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const dictation = useDictation('/reception/transcribe', (spoken) => {
-    setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
-    textareaRef.current?.focus();
-  });
+  const [dictationFields] = useState(() => ({ requestId: item.id }));
+  const dictation = useDictation(
+    '/reception/transcribe',
+    (spoken) => {
+      setText((prev) => (prev.trim() ? `${prev.trimEnd()}\n${spoken}` : spoken));
+      textareaRef.current?.focus();
+    },
+    dictationFields,
+  );
 
   const active = item.status === 'WAITING' || item.status === 'CALLED';
   const waiting = item.status === 'WAITING';
@@ -134,7 +152,43 @@ function RequestDialog({
     }
   }
 
-  const answer = () => run('answer', 'answer', { version: item.version, text: trimmed } satisfies AnswerReceptionRequestInput);
+  const taskReady = !task || task.title.trim().length > 0;
+  const answer = () =>
+    run('answer', 'answer', {
+      version: item.version,
+      text: trimmed,
+      task: task
+        ? {
+            title: task.title.trim(),
+            assigneeId: task.assigneeId,
+            // Срок — конец выбранного дня по местному времени.
+            dueDate: task.dueDate ? new Date(`${task.dueDate}T18:00:00`).toISOString() : undefined,
+          }
+        : undefined,
+    } satisfies AnswerReceptionRequestInput);
+
+  function insertTemplate(t: ReceptionAnswerTemplate) {
+    setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${t.text}` : t.text));
+    textareaRef.current?.focus();
+  }
+
+  async function saveTemplate() {
+    try {
+      const created = await api.post<ReceptionAnswerTemplate>('/reception/templates', { text: trimmed });
+      if (!templates.some((t) => t.id === created.id)) onTemplatesChange([...templates, created]);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить шаблон');
+    }
+  }
+
+  async function deleteTemplate(t: ReceptionAnswerTemplate) {
+    onTemplatesChange(templates.filter((x) => x.id !== t.id));
+    try {
+      await api.delete(`/reception/templates/${t.id}`);
+    } catch {
+      onTemplatesChange(templates); // вернуть как было
+    }
+  }
   const delegate = () => run('delegate', 'delegate', { version: item.version, comment: trimmed || undefined } satisfies DelegateReceptionRequestInput);
   const complete = () => run('complete', 'complete', { version: item.version, resolution: trimmed || undefined } satisfies CompleteReceptionRequestInput);
   const reject = () => run('reject', 'reject', { version: item.version, reason: trimmed || undefined } satisfies RejectReceptionRequestInput);
@@ -144,7 +198,7 @@ function RequestDialog({
 
   // Главная кнопка — по тому, куда перетащили карточку; по клику на
   // ожидающий вопрос — «Ответить», на вызванного — «Завершить приём».
-  const primary = intent === 'delegate' ? 'delegate' : intent === 'answer' || (intent === null && waiting) ? 'answer' : 'complete';
+  const primary = task ? 'answer' : intent === 'delegate' ? 'delegate' : intent === 'answer' || (intent === null && waiting) ? 'answer' : 'complete';
   const placeholder =
     primary === 'answer'
       ? 'Ответ сотруднику — напишите или надиктуйте'
@@ -195,6 +249,14 @@ function RequestDialog({
           </div>
         )}
         {!active && item.rejectionReason && <p style={{ margin: 0 }}>Причина отказа: {item.rejectionReason}</p>}
+        {item.task && (
+          <Link className="rcp-task-link" href={`/tasks/${item.task.id}`}>
+            <ListPlus size={16} strokeWidth={1.75} />
+            Задача: {item.task.title}
+            {item.task.assignee && ` · ${item.task.assignee.fullName}`}
+            {item.task.dueDate && ` · до ${new Date(item.task.dueDate).toLocaleDateString('ru-RU')}`}
+          </Link>
+        )}
 
         {active && (
           <>
@@ -203,7 +265,7 @@ function RequestDialog({
                 ref={textareaRef}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                placeholder={processing ? 'Распознаю запись…' : placeholder}
+                placeholder={processing ? 'Распознаю и оформляю ответ…' : placeholder}
                 maxLength={3000}
                 rows={4}
                 disabled={processing}
@@ -211,7 +273,7 @@ function RequestDialog({
                   // Ctrl/⌘+Enter — выполнить главное действие.
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !locked) {
                     e.preventDefault();
-                    if (primary === 'answer' && trimmed) void answer();
+                    if (primary === 'answer' && trimmed && taskReady) void answer();
                     if (primary === 'delegate') void delegate();
                     if (primary === 'complete') void complete();
                   }
@@ -235,6 +297,69 @@ function RequestDialog({
               </p>
             )}
             {dictation.error && <Alert tone="danger">{dictation.error}</Alert>}
+
+            <div className="rcp-templates">
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={cx('rcp-template', editTemplates && 'is-editing')}
+                  onClick={() => (editTemplates ? void deleteTemplate(t) : insertTemplate(t))}
+                  disabled={locked}
+                  title={editTemplates ? 'Удалить шаблон' : t.text}
+                >
+                  {t.text}
+                  {editTemplates && <X size={12} strokeWidth={2} />}
+                </button>
+              ))}
+              {editTemplates && trimmed && trimmed.length <= 500 && !templates.some((t) => t.text === trimmed) && (
+                <button type="button" className="rcp-template is-add" onClick={() => void saveTemplate()} disabled={locked}>
+                  <Plus size={12} strokeWidth={2} />
+                  Сохранить текст как шаблон
+                </button>
+              )}
+              <IconButton
+                icon={editTemplates ? CheckCheck : Pencil}
+                label={editTemplates ? 'Готово' : 'Настроить шаблоны'}
+                size="sm"
+                onClick={() => setEditTemplates((v) => !v)}
+              />
+            </div>
+
+            {task ? (
+              <div className="rcp-task">
+                <div className="rcp-task-head">
+                  <ListPlus size={16} strokeWidth={1.75} />
+                  <strong>Задача</strong>
+                  <IconButton icon={X} label="Без задачи" size="sm" onClick={() => setTask(null)} />
+                </div>
+                <Input value={task.title} onChange={(e) => setTask({ ...task, title: e.target.value })} placeholder="Что сделать" maxLength={300} />
+                <div className="rcp-task-row">
+                  <Select
+                    value={task.assigneeId}
+                    onChange={(e) => setTask({ ...task, assigneeId: e.target.value })}
+                    aria-label="Исполнитель"
+                    options={(employees.some((e) => e.id === item.author.id) ? employees : [item.author, ...employees]).map((e) => ({
+                      value: e.id,
+                      label: e.id === item.author.id ? `${e.fullName} — автор вопроса` : e.fullName,
+                    }))}
+                  />
+                  <Input type="date" value={task.dueDate} onChange={(e) => setTask({ ...task, dueDate: e.target.value })} aria-label="Срок" />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={ListPlus}
+                  onClick={() => setTask({ title: item.title, assigneeId: item.author.id, dueDate: '' })}
+                  disabled={locked}
+                >
+                  Ответить и поставить задачу
+                </Button>
+              </div>
+            )}
           </>
         )}
 
@@ -243,8 +368,8 @@ function RequestDialog({
         {active && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {primary === 'answer' && (
-              <Button variant="primary" onClick={answer} disabled={locked || !trimmed} loading={busy === 'answer'}>
-                Ответить
+              <Button variant="primary" onClick={answer} disabled={locked || !trimmed || !taskReady} loading={busy === 'answer'}>
+                {task ? 'Ответить и поставить задачу' : 'Ответить'}
               </Button>
             )}
             {primary === 'complete' && (
@@ -252,10 +377,12 @@ function RequestDialog({
                 Завершить приём
               </Button>
             )}
-            <Button variant={primary === 'delegate' ? 'primary' : 'secondary'} onClick={delegate} disabled={locked} loading={busy === 'delegate'}>
-              Разберитесь сами
-            </Button>
-            {waiting && (
+            {!task && (
+              <Button variant={primary === 'delegate' ? 'primary' : 'secondary'} onClick={delegate} disabled={locked} loading={busy === 'delegate'}>
+                Разберитесь сами
+              </Button>
+            )}
+            {waiting && !task && (
               <Button
                 variant="secondary"
                 onClick={call}
@@ -266,22 +393,22 @@ function RequestDialog({
                 Заходите
               </Button>
             )}
-            {waiting && primary !== 'answer' && (
+            {waiting && primary !== 'answer' && !task && (
               <Button variant="secondary" onClick={answer} disabled={locked || !trimmed} loading={busy === 'answer'}>
                 Ответить
               </Button>
             )}
-            {waiting && (
+            {waiting && !task && (
               <Button variant="ghost" onClick={moveToEnd} disabled={locked} loading={busy === 'moveToEnd'}>
                 В конец очереди
               </Button>
             )}
-            {item.status === 'CALLED' && (
+            {item.status === 'CALLED' && !task && (
               <Button variant="ghost" onClick={returnToQueue} disabled={locked} loading={busy === 'returnToQueue'}>
                 Вернуть в очередь
               </Button>
             )}
-            {waiting && (
+            {waiting && !task && (
               <Button variant="ghost" onClick={reject} disabled={locked} loading={busy === 'reject'} title="Текст из поля уйдёт сотруднику как причина">
                 Отказать
               </Button>
@@ -300,6 +427,7 @@ function QueueCard({
   position,
   now,
   lifted,
+  shifted,
   highlighted,
   cardRef,
   onPointerDown,
@@ -309,6 +437,7 @@ function QueueCard({
   position: number | null;
   now: number;
   lifted: boolean;
+  shifted: boolean;
   highlighted: boolean;
   cardRef: (el: HTMLElement | null) => void;
   onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
@@ -319,7 +448,7 @@ function QueueCard({
   return (
     <article
       ref={cardRef}
-      className={cx('rcp-card', called && 'is-called', lifted && 'is-lifted', highlighted && 'is-highlighted')}
+      className={cx('rcp-card', called && 'is-called', lifted && 'is-lifted', shifted && 'is-shifted', highlighted && 'is-highlighted')}
       tabIndex={0}
       role="button"
       aria-label={`${item.author.fullName}: ${item.title}`}
@@ -502,8 +631,18 @@ interface DragSession {
   lastX: number;
   tilt: number;
   over: CloudId | null;
+  slot: Slot | null;
   transform: string;
 }
+
+// Место вставки при перестановке внутри очереди: перед beforeId (null — в
+// конец), y — где рисовать линию, от верха списка.
+interface Slot {
+  beforeId: string | null;
+  y: number;
+}
+
+const LIST_GAP_PX = 10; // .rcp-list gap
 
 const EMPTY_CLOUD_COUNTERS: Record<CloudId, number> = { call: 0, end: 0, delegate: 0, answer: 0 };
 
@@ -523,6 +662,9 @@ export function ReceptionBoard() {
   const [dragItem, setDragItem] = useState<ReceptionRequestItem | null>(null);
   const [ghostWidth, setGhostWidth] = useState(0);
   const [overCloud, setOverCloud] = useState<CloudId | null>(null);
+  const [slot, setSlot] = useState<Slot | null>(null);
+  const [templates, setTemplates] = useState<ReceptionAnswerTemplate[]>([]);
+  const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [gulps, setGulps] = useState(EMPTY_CLOUD_COUNTERS);
   const [shakes, setShakes] = useState(EMPTY_CLOUD_COUNTERS);
@@ -532,6 +674,7 @@ export function ReceptionBoard() {
   const dragRef = useRef<DragSession | null>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
   const cloudEls = useRef<Partial<Record<CloudId, HTMLDivElement | null>>>({});
+  const listRef = useRef<HTMLDivElement>(null);
   const cardEls = useRef(new Map<string, HTMLElement>());
   const prevOffsets = useRef(new Map<string, number>());
   const suppressClickRef = useRef(false);
@@ -554,6 +697,12 @@ export function ReceptionBoard() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Шаблоны и сотрудники (исполнитель задачи) — один раз, не на каждом опросе.
+  useEffect(() => {
+    api.get<ReceptionAnswerTemplate[]>('/reception/templates').then(setTemplates).catch(() => {});
+    api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
+  }, []);
 
   const paused = Boolean(opened || dragItem || cloudList);
   useEffect(() => {
@@ -639,7 +788,54 @@ export function ReceptionBoard() {
     }
   }
 
+  // Перестановка внутри очереди: сразу двигаем карточку локально (FLIP
+  // доводит её до места), сервер подтверждает, опрос сверяет.
+  async function reorderTo(item: ReceptionRequestItem, beforeId: string | null) {
+    setData((prev) => {
+      if (!prev) return prev;
+      const rest = prev.waiting.filter((w) => w.id !== item.id);
+      const at = beforeId ? rest.findIndex((w) => w.id === beforeId) : rest.length;
+      return { ...prev, waiting: [...rest.slice(0, at), item, ...rest.slice(at)] };
+    });
+    setError(null);
+    try {
+      await api.post(
+        `/reception/requests/${item.id}/reorder`,
+        { version: item.version, beforeId: beforeId ?? undefined } satisfies ReorderReceptionRequestInput,
+        { 'Idempotency-Key': crypto.randomUUID() },
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось переставить вопрос');
+    }
+    void load();
+  }
+
   // --- перетаскивание ---
+
+  function slotAt(item: ReceptionRequestItem, x: number, y: number): Slot | null {
+    const listEl = listRef.current;
+    if (!listEl || !data || item.status !== 'WAITING' || search.trim()) return null;
+    const r = listEl.getBoundingClientRect();
+    if (x < r.left - 40 || x > r.right + 40 || y < r.top - 40 || y > r.bottom + 40) return null;
+    const py = y - r.top;
+    let next: Slot | null = null;
+    for (const w of data.waiting) {
+      if (w.id === item.id) continue;
+      const el = cardEls.current.get(w.id);
+      if (!el) continue;
+      // offsetTop не зависит от transform — раздвинутые карточки не «дрожат».
+      if (py < el.offsetTop + el.offsetHeight / 2) {
+        next = { beforeId: w.id, y: el.offsetTop }; // карточка уедет вниз — линия в открывшейся щели
+        break;
+      }
+      next = { beforeId: null, y: el.offsetTop + el.offsetHeight + LIST_GAP_PX / 2 - 2 };
+    }
+    if (!next) return null;
+    // То же место, где карточка и так стоит, — не предлагаем.
+    const index = data.waiting.findIndex((w) => w.id === item.id);
+    const after = data.waiting[index + 1]?.id ?? null;
+    return next.beforeId === after ? null : next;
+  }
 
   function cloudAt(x: number, y: number): CloudId | null {
     for (const def of CLOUDS) {
@@ -684,6 +880,7 @@ export function ReceptionBoard() {
       lastX: e.clientX,
       tilt: 0,
       over: null,
+      slot: null,
       transform: `translate(${rect.left}px, ${rect.top}px)`,
     };
     window.addEventListener('pointermove', onPointerMove);
@@ -724,6 +921,11 @@ export function ReceptionBoard() {
       s.over = over;
       setOverCloud(over);
     }
+    const nextSlot = over ? null : slotAt(s.item, e.clientX, e.clientY);
+    if (nextSlot?.beforeId !== s.slot?.beforeId || nextSlot?.y !== s.slot?.y) {
+      s.slot = nextSlot;
+      setSlot(nextSlot);
+    }
   }
 
   function detach() {
@@ -737,6 +939,7 @@ export function ReceptionBoard() {
     document.body.classList.remove('rcp-dragging');
     setDragItem(null);
     setOverCloud(null);
+    setSlot(null);
   }
 
   function flyBack(s: DragSession) {
@@ -771,6 +974,28 @@ export function ReceptionBoard() {
     setTimeout(() => (suppressClickRef.current = false), 0);
 
     const cloud = s.over;
+    const target = s.slot;
+    if (!cloud && target && listRef.current) {
+      const item = s.item;
+      const finish = () => {
+        endDrag();
+        void reorderTo(item, target.beforeId);
+      };
+      const ghost = ghostRef.current;
+      if (!ghost || prefersReducedMotion()) return finish();
+      // Карточка «укладывается» в щель между соседями.
+      const r = listRef.current.getBoundingClientRect();
+      ghost
+        .animate(
+          [
+            { transform: s.transform },
+            { transform: `translate(${r.left + (r.width - s.width) / 2}px, ${r.top + target.y - 24}px) rotate(0deg) scale(0.96)` },
+          ],
+          { duration: 220, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
+        )
+        .finished.then(finish, finish);
+      return;
+    }
     if (!cloud || !canDrop(s.item, cloud)) {
       if (cloud) bump(setShakes, cloud);
       flyBack(s);
@@ -807,6 +1032,8 @@ export function ReceptionBoard() {
   const query = search.trim();
   const list = [...(current ? [current] : []), ...data.waiting].filter((i) => matchesSearch(i, query));
   const dragging = Boolean(dragItem);
+  // Карточки ниже места вставки расступаются.
+  const shiftFrom = slot ? (slot.beforeId ? data.waiting.findIndex((w) => w.id === slot.beforeId) : data.waiting.length) : Infinity;
 
   function cloudState(cloud: CloudId): CloudState {
     if (!dragItem) return 'idle';
@@ -915,7 +1142,8 @@ export function ReceptionBoard() {
               {!query && <span>Все вопросы разобраны — можно выдохнуть.</span>}
             </div>
           ) : (
-            <div className="rcp-list">
+            <div className={cx('rcp-list', slot && 'is-sorting')} ref={listRef}>
+              {slot && <div className="rcp-drop-line" style={{ top: slot.y }} aria-hidden />}
               {list.map((item) => {
                 const index = data.waiting.indexOf(item);
                 return (
@@ -925,6 +1153,7 @@ export function ReceptionBoard() {
                     position={index >= 0 ? index + 1 : null}
                     now={now}
                     lifted={dragItem?.id === item.id || pending.has(item.id)}
+                    shifted={Boolean(slot && index >= 0 && item.id !== dragItem?.id && index >= shiftFrom)}
                     highlighted={focusId === item.id}
                     cardRef={(el) => {
                       if (el) cardEls.current.set(item.id, el);
@@ -983,6 +1212,9 @@ export function ReceptionBoard() {
           intent={opened.intent}
           hasOtherCalled={Boolean(current) && current?.id !== openedItem.id}
           notificationStatus={current?.id === openedItem.id ? current.notificationStatus : null}
+          templates={templates}
+          employees={employees}
+          onTemplatesChange={setTemplates}
           onClose={() => {
             markPending(openedItem.id, false);
             setOpened(null);

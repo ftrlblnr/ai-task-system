@@ -315,6 +315,7 @@ function MineView() {
                 {item.status === 'COMPLETED' && item.resolution && <p className="ds-field-hint">Результат: {item.resolution}</p>}
                 {item.status === 'ANSWERED' && item.resolution && <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</p>}
                 {item.status === 'DELEGATED' && item.resolution && <p className="ds-field-hint">Комментарий: {item.resolution}</p>}
+                {item.task && <p className="ds-field-hint">Задача: {item.task.title}{item.task.dueDate && ` · до ${new Date(item.task.dueDate).toLocaleDateString('ru-RU')}`}</p>}
               </div>
               {item.status === 'WAITING' && (
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>

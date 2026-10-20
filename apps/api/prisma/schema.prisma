@@ -54,14 +54,14 @@ model Direction {
 }
 
 model Employee {
-  id             String         @id @default(cuid())
-  fullName       String
-  photoUrl       String?
-  email          String         @unique
-  passwordHash   String
-  telegramId     String?        @unique
-  status         EmployeeStatus @default(ACTIVE)
-  role           Role           @default(EMPLOYEE)
+  id           String         @id @default(cuid())
+  fullName     String
+  photoUrl     String?
+  email        String         @unique
+  passwordHash String
+  telegramId   String?        @unique
+  status       EmployeeStatus @default(ACTIVE)
+  role         Role           @default(EMPLOYEE)
 
   positionId String?
   position   Position? @relation(fields: [positionId], references: [id])
@@ -651,6 +651,8 @@ model Task {
   attachments TaskAttachment[]
   history     TaskHistory[]
   watchers    TaskWatcher[]
+
+  receptionRequests ReceptionRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1682,6 +1684,7 @@ enum ReceptionEventType {
   CREATED
   EDITED
   MOVED_TO_END
+  REORDERED
   CALLED
   REJECTED
   WITHDRAWN
@@ -1716,13 +1719,13 @@ enum ReceptionNotificationStatus {
 // и закрывает обратно. Единственная запись в MVP, тот же bootstrap-паттерн
 // фиксированным id, что ReceptionQueue (см. ниже).
 model RegistrationWindow {
-  id        String   @id @default(cuid())
-  isOpen    Boolean  @default(false)
+  id        String    @id @default(cuid())
+  isOpen    Boolean   @default(false)
   // Владелец 20.10.2026 — окно открывается на срок и закрывается само;
   // null — без срока (до ручного закрытия).
   closesAt  DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 // Единственная запись в MVP (раздел 11.1 ТЗ) — bootstrap фиксированным id в
@@ -1767,6 +1770,12 @@ model ReceptionRequest {
   rejectionReason String?
   resolution      String?
 
+  // «Ответить и поставить задачу» (владелец 20.10.2026) — задача,
+  // поставленная вместе с ответом. SetNull: удаление задачи не трогает
+  // историю приёмной.
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1776,6 +1785,19 @@ model ReceptionRequest {
   @@index([queueId, status, queueOrder, id])
   @@index([authorId, status, createdAt])
   @@index([queueId, closedAt, id])
+}
+
+// Шаблоны быстрых ответов руководителя (владелец 20.10.2026) — общие для
+// OWNER и ADMIN, который отвечает от её имени.
+model ReceptionAnswerTemplate {
+  id        String @id @default(cuid())
+  text      String
+  sortOrder Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sortOrder])
 }
 
 model ReceptionEvent {

@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { Prisma, ReceptionEventType, ReceptionRequestStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isManager } from '../auth/roles';
@@ -7,7 +7,8 @@ import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';
 import { CompleteReceptionRequestDto } from './dto/complete.dto';
-import { AnswerReceptionRequestDto, DelegateReceptionRequestDto } from './dto/answer.dto';
+import { AnswerReceptionRequestDto, AnswerTaskDto, DelegateReceptionRequestDto } from './dto/answer.dto';
+import { TelegramBotService } from '../telegram/telegram-bot.service';
 
 // Единственная запись очереди в MVP (раздел 11.1 ТЗ) — фиксированный id,
 // upsert по PK вместо отдельного bootstrap-шага/сида; гонки на создании нет
@@ -41,6 +42,7 @@ const CLOSED_STATUSES: ReceptionRequestStatus[] = ['COMPLETED', 'ANSWERED', 'DEL
 const BOARD_RECENT_DAYS = 7;
 const BOARD_RECENT_LIMIT = 30;
 const BOARD_WAITING_LIMIT = 100;
+const MAX_ANSWER_TEMPLATES = 30;
 
 const DETAIL_SELECT = {
   id: true,
@@ -59,6 +61,7 @@ const DETAIL_SELECT = {
   closedAt: true,
   rejectionReason: true,
   resolution: true,
+  task: { select: { id: true, title: true, dueDate: true, assignee: { select: { id: true, fullName: true } } } },
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ReceptionRequestSelect;
@@ -77,7 +80,12 @@ interface TransitionSpec {
 
 @Injectable()
 export class ReceptionService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Только для «вам назначена задача», когда исполнитель — не автор
+    // вопроса (автору всё уходит одним сообщением через outbox).
+    @Optional() private readonly bot?: TelegramBotService,
+  ) {}
 
   private async ensureQueue(tx: Prisma.TransactionClient): Promise<void> {
     await tx.receptionQueue.upsert({ where: { id: QUEUE_ID }, create: { id: QUEUE_ID }, update: {} });
@@ -212,6 +220,60 @@ export class ReceptionService {
     return serializeRequest(request);
   }
 
+  // Ручной порядок очереди (владелец 20.10.2026): вопрос встаёт перед
+  // beforeId (без него — в конец). Номера очереди не выдаются заново —
+  // тот же набор queueOrder раскладывается в новом порядке, меняются только
+  // вопросы между старым и новым местом; version растёт только у
+  // перемещённого (у остальных содержимое не менялось).
+  async reorder(owner: AuthenticatedUser, id: string, expectedVersion: number, beforeId?: string) {
+    if (beforeId === id) throw new BadRequestException('Нельзя поставить вопрос перед самим собой');
+    const request = await this.prisma.$transaction(async (tx) => {
+      // Перестановки и новые обращения (nextQueueOrder) идут по одной.
+      await this.ensureQueue(tx);
+      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "ReceptionQueue" WHERE "id" = ${QUEUE_ID} FOR UPDATE`);
+
+      const waiting = await tx.receptionRequest.findMany({
+        where: { queueId: QUEUE_ID, status: 'WAITING' },
+        select: { id: true, queueOrder: true },
+        orderBy: [{ queueOrder: 'asc' }, { id: 'asc' }],
+      });
+      const fromIndex = waiting.findIndex((r) => r.id === id);
+      if (fromIndex < 0) throw await this.classifyTransitionFailure(tx, id, undefined, expectedVersion, 'WAITING');
+      const rest = waiting.filter((r) => r.id !== id);
+      const toIndex = beforeId ? rest.findIndex((r) => r.id === beforeId) : rest.length;
+      if (toIndex < 0) throw new ConflictException('VERSION_CONFLICT: очередь уже изменилась. Список обновлён');
+      if (toIndex === fromIndex) {
+        return tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT }); // место не изменилось
+      }
+
+      const reordered = [...rest.slice(0, toIndex), waiting[fromIndex], ...rest.slice(toIndex)];
+      const moved = await tx.receptionRequest.updateMany({
+        where: { id, version: expectedVersion, status: 'WAITING' },
+        data: { queueOrder: waiting[toIndex].queueOrder, version: { increment: 1 } },
+      });
+      if (moved.count === 0) throw await this.classifyTransitionFailure(tx, id, undefined, expectedVersion, 'WAITING');
+      for (let i = 0; i < reordered.length; i++) {
+        if (reordered[i].id === id || reordered[i].id === waiting[i].id) continue;
+        await tx.receptionRequest.updateMany({ where: { id: reordered[i].id, status: 'WAITING' }, data: { queueOrder: waiting[i].queueOrder } });
+      }
+
+      const updated = await tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT });
+      await tx.receptionEvent.create({
+        data: {
+          requestId: id,
+          actorId: owner.id,
+          type: 'REORDERED',
+          fromStatus: 'WAITING',
+          toStatus: 'WAITING',
+          requestVersion: updated.version,
+          metadata: { fromPosition: fromIndex + 1, toPosition: toIndex + 1 },
+        },
+      });
+      return updated;
+    });
+    return serializeRequest(request);
+  }
+
   async call(owner: AuthenticatedUser, id: string, expectedVersion: number) {
     return this.runOwnerTransition(owner, id, expectedVersion, {
       fromStatus: 'WAITING',
@@ -245,7 +307,15 @@ export class ReceptionService {
   async answer(owner: AuthenticatedUser, id: string, dto: AnswerReceptionRequestDto) {
     const text = normalizeOptionalText(dto.text);
     if (!text) throw new BadRequestException('Напишите или надиктуйте ответ');
-    return this.closeByOwner(owner, id, dto.version, 'ANSWERED', text);
+    const result = await this.closeByOwner(owner, id, dto.version, 'ANSWERED', text, dto.task);
+    const task = result.task;
+    if (task?.assignee && task.assignee.id !== result.authorId && task.assignee.id !== owner.id) {
+      const due = task.dueDate ? ` (срок: ${task.dueDate.toLocaleDateString('ru-RU')})` : '';
+      void this.prisma.employee
+        .findUnique({ where: { id: task.assignee.id }, select: { telegramId: true } })
+        .then((emp) => this.bot?.sendMessage(emp?.telegramId, `Вам назначена задача: «${task.title}»${due}`));
+    }
+    return result;
   }
 
   // «Разберитесь сами» — тоже из очереди или из вызова.
@@ -259,19 +329,46 @@ export class ReceptionService {
     expectedVersion: number,
     toStatus: 'ANSWERED' | 'DELEGATED',
     resolution: string | null,
+    task?: AnswerTaskDto,
   ) {
     const request = await this.prisma.$transaction(async (tx) => {
-      const current = await tx.receptionRequest.findUnique({ where: { id }, select: { status: true } });
+      const current = await tx.receptionRequest.findUnique({
+        where: { id },
+        select: { status: true, authorId: true, title: true, description: true },
+      });
       if (!current) throw new NotFoundException('Обращение не найдено');
       if (current.status !== 'WAITING' && current.status !== 'CALLED') {
         throw new ConflictException('INVALID_TRANSITION: обращение уже закрыто');
       }
       const fromStatus = current.status;
+      const taskTitle = task?.title.trim();
+      const assigneeId = task?.assigneeId ?? current.authorId;
+      if (task) {
+        if (!taskTitle) throw new BadRequestException('Укажите название задачи');
+        const assignee = await tx.employee.findFirst({ where: { id: assigneeId, status: 'ACTIVE' }, select: { id: true } });
+        if (!assignee) throw new BadRequestException('Исполнитель задачи не найден или неактивен');
+      }
+
       const result = await tx.receptionRequest.updateMany({
         where: { id, version: expectedVersion, status: fromStatus },
         data: { status: toStatus, version: { increment: 1 }, closedAt: new Date(), resolution },
       });
       if (result.count === 0) throw await this.classifyTransitionFailure(tx, id, undefined, expectedVersion, fromStatus);
+
+      if (task && taskTitle) {
+        const created = await tx.task.create({
+          data: {
+            title: taskTitle,
+            description: `Вопрос из приёмной: «${current.title}»\n${current.description}\n\nОтвет руководителя:\n${resolution ?? ''}`,
+            assigneeId,
+            creatorId: owner.id,
+            status: 'NEW',
+            dueDate: task.dueDate ? new Date(task.dueDate) : undefined,
+          },
+          select: { id: true },
+        });
+        await tx.receptionRequest.update({ where: { id }, data: { taskId: created.id } });
+      }
 
       const updated = await tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT });
       const event = await tx.receptionEvent.create({
@@ -288,6 +385,35 @@ export class ReceptionService {
       return updated;
     });
     return serializeRequest(request);
+  }
+
+  // --- шаблоны быстрых ответов ---
+
+  listTemplates() {
+    return this.prisma.receptionAnswerTemplate.findMany({
+      select: { id: true, text: true },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  async createTemplate(text: string) {
+    const normalized = text.trim();
+    if (!normalized) throw new BadRequestException('Пустой шаблон');
+    const existing = await this.prisma.receptionAnswerTemplate.findFirst({ where: { text: normalized }, select: { id: true, text: true } });
+    if (existing) return existing;
+    const count = await this.prisma.receptionAnswerTemplate.count();
+    if (count >= MAX_ANSWER_TEMPLATES) throw new BadRequestException(`Не больше ${MAX_ANSWER_TEMPLATES} шаблонов — удалите ненужные`);
+    const { _max } = await this.prisma.receptionAnswerTemplate.aggregate({ _max: { sortOrder: true } });
+    return this.prisma.receptionAnswerTemplate.create({
+      data: { text: normalized, sortOrder: (_max.sortOrder ?? 0) + 1 },
+      select: { id: true, text: true },
+    });
+  }
+
+  async deleteTemplate(id: string) {
+    const { count } = await this.prisma.receptionAnswerTemplate.deleteMany({ where: { id } });
+    if (count === 0) throw new NotFoundException('Шаблон не найден');
+    return { ok: true };
   }
 
   async returnToQueue(owner: AuthenticatedUser, id: string, expectedVersion: number) {

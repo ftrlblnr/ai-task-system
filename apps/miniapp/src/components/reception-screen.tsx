@@ -127,6 +127,7 @@ export function ReceptionScreen({ active = true }: { active?: boolean }) {
           {item.status === 'COMPLETED' && item.resolution && <div className="ds-field-hint">Результат: {item.resolution}</div>}
           {item.status === 'ANSWERED' && item.resolution && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</div>}
           {item.status === 'DELEGATED' && item.resolution && <div className="ds-field-hint">Комментарий: {item.resolution}</div>}
+          {item.task && <div className="ds-field-hint">Задача: {item.task.title}{item.task.dueDate && ` · до ${new Date(item.task.dueDate).toLocaleDateString('ru-RU')}`}</div>}
           {item.status === 'WAITING' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               <Button variant="secondary" size="sm" onClick={() => setFormOpen(item)}>

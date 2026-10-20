@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -30,6 +31,9 @@ import { RejectReceptionRequestDto } from './dto/reject.dto';
 import { CompleteReceptionRequestDto } from './dto/complete.dto';
 import { AnswerReceptionRequestDto, DelegateReceptionRequestDto } from './dto/answer.dto';
 import { WhisperService } from '../voice/whisper.service';
+import { AnswerStructuringService } from './answer-structuring.service';
+import { ReorderReceptionRequestDto } from './dto/reorder.dto';
+import { CreateAnswerTemplateDto } from './dto/template.dto';
 
 // Тот же набор форматов, что у голосового ввода (VoiceController).
 const AUDIO_MIME_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-m4a'];
@@ -58,6 +62,7 @@ export class ReceptionController {
     private readonly reception: ReceptionService,
     private readonly idempotency: IdempotencyService,
     private readonly whisper: WhisperService,
+    private readonly structuring: AnswerStructuringService,
   ) {}
 
   private requireIdempotencyKey(key: string | undefined): string {
@@ -102,9 +107,10 @@ export class ReceptionController {
     return this.reception.getBoard();
   }
 
-  // Голосовой ответ: запись → текст, который руководитель проверяет и
-  // отправляет через POST /requests/:id/answer. Ничего не меняет, поэтому
-  // без Idempotency-Key.
+  // Голосовой ответ: запись → Whisper → структурированный текст (владелец
+  // 20.10.2026), который руководитель проверяет и отправляет через POST
+  // /requests/:id/answer. requestId — вопрос как контекст для редактуры.
+  // Ничего не меняет, поэтому без Idempotency-Key.
   @Post('transcribe')
   @Roles(...MANAGER_ROLES)
   @UseInterceptors(
@@ -113,14 +119,39 @@ export class ReceptionController {
       fileFilter: (_req, file, cb) => cb(null, AUDIO_MIME_TYPES.includes(file.mimetype)),
     }),
   )
-  async transcribe(@UploadedFile() audio: Express.Multer.File | undefined) {
+  async transcribe(
+    @UploadedFile() audio: Express.Multer.File | undefined,
+    @Body('requestId') requestId: string | undefined,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
     if (!audio) throw new BadRequestException('Нужна аудиозапись (webm, ogg, mp4, mp3, wav)');
+    let raw: string;
     try {
-      const { text } = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname);
-      return { text: text.trim() };
+      raw = (await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname)).text.trim();
     } catch {
       throw new BadGatewayException('Не удалось распознать запись — попробуйте ещё раз или напишите текстом');
     }
+    if (!raw) return { text: '' };
+    const question = requestId ? await this.reception.getOne(user, requestId).catch(() => null) : null;
+    return { text: await this.structuring.structure(raw, question ?? undefined) };
+  }
+
+  @Get('templates')
+  @Roles(...MANAGER_ROLES)
+  listTemplates() {
+    return this.reception.listTemplates();
+  }
+
+  @Post('templates')
+  @Roles(...MANAGER_ROLES)
+  createTemplate(@Body() dto: CreateAnswerTemplateDto) {
+    return this.reception.createTemplate(dto.text);
+  }
+
+  @Delete('templates/:id')
+  @Roles(...MANAGER_ROLES)
+  deleteTemplate(@Param('id') id: string) {
+    return this.reception.deleteTemplate(id);
   }
 
   @Get('history')
@@ -197,6 +228,21 @@ export class ReceptionController {
     const key = this.requireIdempotencyKey(idemKey);
     const { body } = await this.idempotency.run(user.id, key, 'reception.requests.move-to-end', { id, dto }, () =>
       this.reception.moveToEnd(user, id, dto.version),
+    );
+    return body;
+  }
+
+  @Post('requests/:id/reorder')
+  @Roles(...MANAGER_ROLES)
+  async reorder(
+    @Param('id') id: string,
+    @Body() dto: ReorderReceptionRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') idemKey?: string,
+  ) {
+    const key = this.requireIdempotencyKey(idemKey);
+    const { body } = await this.idempotency.run(user.id, key, 'reception.requests.reorder', { id, dto }, () =>
+      this.reception.reorder(user, id, dto.version, dto.beforeId),
     );
     return body;
   }

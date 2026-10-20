@@ -1524,7 +1524,36 @@ select {
 }
 .rcp-center-head h1 { margin: 0 0 2px; }
 .rcp-center-head p { margin: 0; }
-.rcp-list { display: flex; flex-direction: column; gap: 10px; }
+.rcp-list { position: relative; display: flex; flex-direction: column; gap: 10px; }
+/* Перестановка внутри очереди: карточки ниже места вставки расступаются,
+   в щели светится линия. */
+.rcp-list .rcp-card.is-shifted { transform: translateY(14px); }
+.rcp-drop-line {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--agent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--agent) 18%, transparent), 0 0 18px color-mix(in srgb, var(--agent) 55%, transparent);
+  z-index: 2;
+  pointer-events: none;
+  transition: top 0.18s cubic-bezier(.2, .8, .2, 1);
+  animation: rcp-line-in 0.2s ease-out;
+}
+.rcp-drop-line::before,
+.rcp-drop-line::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--agent);
+}
+.rcp-drop-line::before { left: -6px; }
+.rcp-drop-line::after { right: -6px; }
+@keyframes rcp-line-in { from { transform: scaleX(0.3); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* --- карточка --- */
 .rcp-card {
@@ -1749,3 +1778,45 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
   .rcp-cloud { min-height: 88px; }
   .rcp-cloud-label { font-size: 12px; flex-direction: column; gap: 2px; }
 }
+
+/* Приёмная: шаблоны ответов и «ответить и поставить задачу». */
+.rcp-templates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rcp-template {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.rcp-template:hover:not(:disabled) { border-color: var(--line-control); background: var(--surface-2); }
+.rcp-template:active:not(:disabled) { transform: scale(0.96); }
+.rcp-template:disabled { opacity: 0.5; cursor: default; }
+.rcp-template.is-editing { border-style: dashed; color: var(--danger); }
+.rcp-template.is-add { border-style: dashed; color: var(--ink-3); }
+.rcp-task {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  animation: rcp-card-in 0.25s cubic-bezier(.2, .8, .2, 1);
+}
+.rcp-task-head { display: flex; align-items: center; gap: 8px; }
+.rcp-task-head strong { flex: 1; font-size: 14px; }
+.rcp-task-row { display: grid; grid-template-columns: 1fr 160px; gap: 8px; }
+@media (max-width: 560px) { .rcp-task-row { grid-template-columns: 1fr; } }
+.rcp-task-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 14px; }
+.rcp-task-link:hover { color: var(--ink); }

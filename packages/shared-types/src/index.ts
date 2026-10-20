@@ -819,6 +819,7 @@ export type ReceptionEventType =
   | 'CREATED'
   | 'EDITED'
   | 'MOVED_TO_END'
+  | 'REORDERED'
   | 'CALLED'
   | 'REJECTED'
   | 'WITHDRAWN'
@@ -847,6 +848,8 @@ export interface ReceptionRequestItem {
   closedAt: string | null;
   rejectionReason: string | null;
   resolution: string | null;
+  // «Ответить и поставить задачу» — задача, поставленная вместе с ответом.
+  task: { id: string; title: string; dueDate: string | null; assignee: { id: string; fullName: string } | null } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -901,6 +904,19 @@ export interface CompleteReceptionRequestInput {
 
 export interface AnswerReceptionRequestInput {
   version: number;
+  text: string;
+  // Исполнитель по умолчанию — автор вопроса.
+  task?: { title: string; assigneeId?: string; dueDate?: string };
+}
+
+// POST /reception/requests/:id/reorder — встать перед beforeId (без него — в конец).
+export interface ReorderReceptionRequestInput {
+  version: number;
+  beforeId?: string;
+}
+
+export interface ReceptionAnswerTemplate {
+  id: string;
   text: string;
 }
 

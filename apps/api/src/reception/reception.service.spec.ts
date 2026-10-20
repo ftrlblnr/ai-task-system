@@ -48,6 +48,8 @@ class FakePrisma {
     ['e1', { id: 'e1', fullName: 'Сотрудник 1', status: 'ACTIVE' }],
     ['e2', { id: 'e2', fullName: 'Сотрудник 2', status: 'ACTIVE' }],
   ]);
+  tasks: any[] = [];
+  templates: { id: string; text: string; sortOrder: number; createdAt: Date }[] = [];
   nextOrderCounter = 1n;
   seq = 0;
 
@@ -67,6 +69,42 @@ class FakePrisma {
 
   receptionQueue = {
     upsert: async () => ({ id: 'default' }),
+  };
+
+  employee = {
+    findFirst: async ({ where }: { where: { id: string; status: string } }) => {
+      const e = this.employees.get(where.id);
+      return e && e.status === where.status ? { id: e.id } : null;
+    },
+    findUnique: async ({ where }: { where: { id: string } }) => (this.employees.has(where.id) ? { telegramId: `tg-${where.id}` } : null),
+  };
+
+  task = {
+    create: async ({ data }: { data: any }) => {
+      const row = { id: `t${++this.seq}`, ...data };
+      this.tasks.push(row);
+      return { id: row.id };
+    },
+  };
+
+  receptionAnswerTemplate = {
+    findMany: async () => [...this.templates].sort((a, b) => a.sortOrder - b.sortOrder).map(({ id, text }) => ({ id, text })),
+    findFirst: async ({ where }: { where: { text: string } }) => {
+      const t = this.templates.find((x) => x.text === where.text);
+      return t ? { id: t.id, text: t.text } : null;
+    },
+    count: async () => this.templates.length,
+    aggregate: async () => ({ _max: { sortOrder: this.templates.length ? Math.max(...this.templates.map((t) => t.sortOrder)) : null } }),
+    create: async ({ data }: { data: { text: string; sortOrder: number } }) => {
+      const t = { id: `tpl${++this.seq}`, createdAt: new Date(), ...data };
+      this.templates.push(t);
+      return { id: t.id, text: t.text };
+    },
+    deleteMany: async ({ where }: { where: { id: string } }) => {
+      const before = this.templates.length;
+      this.templates = this.templates.filter((t) => t.id !== where.id);
+      return { count: before - this.templates.length };
+    },
   };
 
   private withAuthor(r: FakeRequest) {
@@ -117,6 +155,11 @@ class FakePrisma {
       return rows.map((r) => this.withAuthor(r));
     },
     count: async ({ where }: { where: any }) => this.requests.filter((r) => matches(r, where)).length,
+    update: async ({ where, data }: { where: { id: string }; data: any }) => {
+      const row = this.requests.find((r) => r.id === where.id)!;
+      Object.assign(row, data);
+      return this.withAuthor(row);
+    },
     aggregate: async ({ where, _max }: { where: any; _max: { queueOrder: true } }) => {
       void _max;
       const rows = this.requests.filter((r) => matches(r, where));
@@ -457,6 +500,126 @@ describe('ReceptionService.answer/delegate', () => {
     expect(board.waiting.map((r) => r.id)).toEqual([waiting.id]);
     expect(board.delegated.map((r) => r.id)).toEqual([toDelegate.id]);
     expect(board.answered.map((r) => r.id).sort()).toEqual([toAnswer.id, toComplete.id].sort());
+  });
+});
+
+describe('ReceptionService.reorder', () => {
+  async function queueOf(prisma: FakePrisma) {
+    return prisma.requests
+      .filter((r) => r.status === 'WAITING')
+      .sort((a, b) => (a.queueOrder < b.queueOrder ? -1 : 1))
+      .map((r) => r.id);
+  }
+
+  it('ставит перед указанным, номера переразложены, version растёт только у перемещённого', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const a = await service.create(user('e1'), baseDto());
+    const b = await service.create(user('e2'), baseDto());
+    const c = await service.create(user('e1'), baseDto());
+
+    const moved = await service.reorder(user('boss', 'OWNER'), c.id, c.version, a.id);
+
+    expect(await queueOf(prisma)).toEqual([c.id, a.id, b.id]);
+    expect(moved.version).toBe(c.version + 1);
+    expect(prisma.requests.find((r) => r.id === a.id)!.version).toBe(a.version);
+    const event = prisma.events.at(-1)!;
+    expect(event.type).toBe('REORDERED');
+    expect(event.metadata).toEqual({ fromPosition: 3, toPosition: 1 });
+  });
+
+  it('без beforeId — в конец', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const a = await service.create(user('e1'), baseDto());
+    const b = await service.create(user('e2'), baseDto());
+    const c = await service.create(user('e1'), baseDto());
+
+    await service.reorder(user('boss', 'OWNER'), a.id, a.version);
+
+    expect(await queueOf(prisma)).toEqual([b.id, c.id, a.id]);
+  });
+
+  it('то же место — без изменений и без события', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const a = await service.create(user('e1'), baseDto());
+    const b = await service.create(user('e2'), baseDto());
+    const eventsBefore = prisma.events.length;
+
+    const result = await service.reorder(user('boss', 'OWNER'), a.id, a.version, b.id);
+
+    expect(result.version).toBe(a.version);
+    expect(prisma.events.length).toBe(eventsBefore);
+  });
+
+  it('beforeId уже не в очереди — 409 VERSION_CONFLICT', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const a = await service.create(user('e1'), baseDto());
+    const b = await service.create(user('e2'), baseDto());
+    await service.call(user('boss', 'OWNER'), a.id, a.version);
+
+    await expect(service.reorder(user('boss', 'OWNER'), b.id, b.version, a.id)).rejects.toThrow(/VERSION_CONFLICT/);
+  });
+
+  it('устаревшая version — 409 VERSION_CONFLICT, порядок не меняется', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const a = await service.create(user('e1'), baseDto());
+    const b = await service.create(user('e2'), baseDto());
+
+    await expect(service.reorder(user('boss', 'OWNER'), b.id, b.version + 1, a.id)).rejects.toThrow(/VERSION_CONFLICT/);
+    expect(await queueOf(prisma)).toEqual([a.id, b.id]);
+  });
+});
+
+describe('ReceptionService ответ с задачей и шаблоны', () => {
+  it('ставит задачу автору вопроса по умолчанию и связывает её с вопросом', async () => {
+    const prisma = new FakePrisma();
+    const bot = { sendMessage: jest.fn() };
+    const service = new ReceptionService(prisma as any, bot as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    await service.answer(user('boss', 'OWNER'), created.id, {
+      version: created.version,
+      text: 'Согласовано',
+      task: { title: ' Заказать оборудование ', dueDate: '2026-11-01T00:00:00.000Z' },
+    });
+
+    expect(prisma.tasks).toHaveLength(1);
+    expect(prisma.tasks[0]).toMatchObject({ title: 'Заказать оборудование', assigneeId: 'e1', creatorId: 'boss', status: 'NEW' });
+    expect(prisma.tasks[0].description).toContain('Согласовано');
+    expect(prisma.requests[0]).toMatchObject({ status: 'ANSWERED', taskId: prisma.tasks[0].id });
+    expect(bot.sendMessage).not.toHaveBeenCalled(); // автору — одним сообщением через outbox
+  });
+
+  it('неактивный исполнитель — 400, вопрос остаётся в очереди', async () => {
+    const prisma = new FakePrisma();
+    prisma.employees.set('gone', { id: 'gone', fullName: 'Уволен', status: 'INACTIVE' });
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    await expect(
+      service.answer(user('boss', 'OWNER'), created.id, { version: created.version, text: 'Да', task: { title: 'X', assigneeId: 'gone' } }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.requests[0].status).toBe('WAITING');
+    expect(prisma.tasks).toHaveLength(0);
+  });
+
+  it('шаблоны: обрезка пробелов, без дублей, удаление несуществующего — 404', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+
+    const first = await service.createTemplate('  Согласовано. ');
+    const again = await service.createTemplate('Согласовано.');
+    await service.createTemplate('Зайдите после обеда.');
+
+    expect(again.id).toBe(first.id);
+    expect((await service.listTemplates()).map((t) => t.text)).toEqual(['Согласовано.', 'Зайдите после обеда.']);
+    await service.deleteTemplate(first.id);
+    expect(await service.listTemplates()).toHaveLength(1);
+    await expect(service.deleteTemplate('nope')).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 
