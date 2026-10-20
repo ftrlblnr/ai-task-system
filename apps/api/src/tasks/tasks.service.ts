@@ -377,7 +377,7 @@ export class TasksService {
   // сам на себя; добавить наблюдателем ДРУГОГО человека может только
   // руководитель — как и остальные значимые назначения в системе.
   async addWatcher(taskId: string, employeeId: string | undefined, actor: AuthenticatedUser) {
-    const task = await this.getOrThrow(taskId);
+    await this.getOrThrow(taskId);
     const targetId = employeeId ?? actor.id;
     if (targetId !== actor.id && !isManager(actor.role)) {
       throw new ForbiddenException('Добавить наблюдателем другого человека может только руководитель');
@@ -391,7 +391,7 @@ export class TasksService {
   }
 
   async removeWatcher(taskId: string, employeeId: string, actor: AuthenticatedUser) {
-    const task = await this.getOrThrow(taskId);
+    await this.getOrThrow(taskId);
     if (employeeId !== actor.id && !isManager(actor.role)) {
       throw new ForbiddenException('Убрать другого наблюдателя может только руководитель');
     }

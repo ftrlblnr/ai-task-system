@@ -17,7 +17,7 @@ export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
   @Get()
-  findAll(@CurrentUser() user: AuthenticatedUser) {
+  findAll() {
     return this.tasksService.findAll();
   }
 
@@ -30,7 +30,7 @@ export class TasksController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+  findOne(@Param('id') id: string) {
     return this.tasksService.findOne(id);
   }
 

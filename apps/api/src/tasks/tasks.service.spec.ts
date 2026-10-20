@@ -3,13 +3,8 @@ import { Role, TaskStatus } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { EMPLOYEE_ALLOWED_STATUSES, isTaskOverdue, TasksService } from './tasks.service';
 
-// isTaskOverdue не трогает this.prisma/this.bot — зависимости
-// заглушены, тестируем только саму границу видимости и признак просрочки
-// (аудит 10.09.2026, п. 5.1: "чистые функции — тестировать легко").
-function makeService(): TasksService {
-  return new TasksService({} as any, {} as any);
-}
-
+// isTaskOverdue — чистая функция (аудит 10.09.2026, п. 5.1: "чистые
+// функции — тестировать легко"); сервис — на заглушках prisma/bot.
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
   return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
