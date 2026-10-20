@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, Sparkles, LayoutDashboard, Plane } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
@@ -19,15 +19,18 @@ import { Avatar } from './avatar';
 // NAV_ITEMS начинается с "Задачи" и это не должно меняться для остальных.
 const DASHBOARD_ITEM = { href: '/', label: 'Стол руководителя', icon: LayoutDashboard, ownerOnly: true };
 
+// Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
+// AI-чат с историей на сервере (GET/POST /assistant/conversations[...]),
+// доступен всем, как задачи (видимость конкретных tools уже решает
+// backend через buildTools(user)). Отдельная страница /voice убрана
+// (владелец 05.10.2026) — голос и так доступен внутри Ассистента
+// (микрофон в композере, тот же VoiceService). Владелец 20.10.2026 —
+// стоит над меню на месте бывшей командной строки «Спросить или найти»,
+// отдельно от остальных пунктов.
+const ASSISTANT_ITEM = { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false };
+
 const NAV_ITEMS = [
   { href: '/tasks', label: 'Задачи', icon: KanbanSquare, ownerOnly: false },
-  // Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
-  // AI-чат с историей на сервере (GET/POST /assistant/conversations[...]),
-  // доступен всем, как задачи (видимость конкретных tools уже решает
-  // backend через buildTools(user)). Отдельная страница /voice убрана
-  // (владелец 05.10.2026) — голос и так доступен внутри Ассистента
-  // (микрофон в композере, тот же VoiceService).
-  { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false },
   // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем (сотрудник
   // подаёт обращение, руководитель управляет очередью), видимость действий
   // внутри страницы решает backend по роли, не пункт меню.
@@ -45,9 +48,9 @@ const NAV_ITEMS = [
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 5)
 // — порт Sidebar из project/components/src/index.jsx: светлый сайдбар на
-// bg, бренд с AgentMark, командная строка «Спросить или найти ⌘K» (та же
-// команда работает глобально по Ctrl+K/Cmd+K — см. useEffect ниже), группа
-// «Руководитель» перед ownerOnly-пунктами.
+// bg, бренд с AgentMark, «Ассистент» сразу под брендом (Ctrl+K/Cmd+K
+// открывает его глобально — см. useEffect ниже), группа «Руководитель»
+// перед ownerOnly-пунктами.
 //
 // «live»-индикатор у «Ассистента» (точка с AgentMark, пока где-то в фоне
 // стримится ответ) НЕ реализован — состояние стрима сейчас живёт целиком
@@ -73,7 +76,6 @@ function useGlobalAssistantShortcut() {
 export function Sidebar() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
-  const router = useRouter();
   useGlobalAssistantShortcut();
 
   if (!user) return null;
@@ -102,11 +104,7 @@ export function Sidebar() {
         Адъютант
       </Link>
 
-      <button type="button" className="ds-cmd ds-focusable" onClick={() => router.push('/assistant')}>
-        <Sparkles size={16} strokeWidth={1.75} />
-        <span>Спросить или найти</span>
-        <span className="ds-kbd">⌘K</span>
-      </button>
+      <nav style={{ marginBottom: 'var(--space-4)' }}>{renderItem(ASSISTANT_ITEM)}</nav>
 
       <nav>
         {isOwner && renderItem(DASHBOARD_ITEM)}
