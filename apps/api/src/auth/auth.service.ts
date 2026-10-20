@@ -65,18 +65,26 @@ export class AuthService {
   // используется для отправки писем) и пароль, минуя приглашение
   // руководителя. Публичный эндпоинт — но ничего не создаёт, пока окно не
   // открыто явным переключателем на странице «Сотрудники».
-  async getRegistrationWindow() {
+  // Окно со сроком (closesAt) считается закрытым, как только срок прошёл —
+  // отдельного cron'а, который сбрасывал бы isOpen, не нужно.
+  async getRegistrationWindow(now: Date = new Date()) {
     const window = await this.prisma.registrationWindow.findUnique({ where: { id: REGISTRATION_WINDOW_ID } });
-    return { isOpen: window?.isOpen ?? false };
+    return this.toWindowStatus(window, now);
   }
 
-  async setRegistrationWindow(isOpen: boolean) {
+  async setRegistrationWindow(isOpen: boolean, days?: number, now: Date = new Date()) {
+    const closesAt = isOpen && days ? new Date(now.getTime() + days * 24 * 60 * 60 * 1000) : null;
     const window = await this.prisma.registrationWindow.upsert({
       where: { id: REGISTRATION_WINDOW_ID },
-      create: { id: REGISTRATION_WINDOW_ID, isOpen },
-      update: { isOpen },
+      create: { id: REGISTRATION_WINDOW_ID, isOpen, closesAt },
+      update: { isOpen, closesAt },
     });
-    return { isOpen: window.isOpen };
+    return this.toWindowStatus(window, now);
+  }
+
+  private toWindowStatus(window: { isOpen: boolean; closesAt: Date | null } | null, now: Date) {
+    const isOpen = Boolean(window?.isOpen) && (!window?.closesAt || window.closesAt > now);
+    return { isOpen, closesAt: isOpen ? (window?.closesAt ?? null) : null };
   }
 
   async register(login: string, password: string, fullName: string, positionId?: string, directionId?: string) {

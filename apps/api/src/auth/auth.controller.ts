@@ -37,7 +37,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.OWNER)
   setRegistrationWindow(@Body() dto: SetRegistrationWindowDto) {
-    return this.authService.setRegistrationWindow(dto.isOpen);
+    return this.authService.setRegistrationWindow(dto.isOpen, dto.days);
   }
 
   // Публичный — список должностей/направлений для выпадающих списков на

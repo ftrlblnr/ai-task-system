@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { Select } from '@/components/ui/field';
 
 // Переключатель временного окна самостоятельной регистрации (владелец
 // 02.10.2026) — человек сам заводит логин/пароль на /register, пока окно
@@ -21,6 +22,8 @@ function RegistrationWindowToggle() {
   const [status, setStatus] = useState<RegistrationWindowStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Срок окна (владелец 20.10.2026) — регистрация закрывается сама; '' — без срока.
+  const [days, setDays] = useState('10');
 
   useEffect(() => {
     api.get<RegistrationWindowStatus>('/auth/registration-window').then(setStatus).catch(() => {});
@@ -31,7 +34,7 @@ function RegistrationWindowToggle() {
     setBusy(true);
     setError(null);
     try {
-      const next = await api.patch<RegistrationWindowStatus>('/auth/registration-window', { isOpen: !status.isOpen });
+      const next = await api.patch<RegistrationWindowStatus>('/auth/registration-window', status.isOpen ? { isOpen: false } : { isOpen: true, ...(days ? { days: Number(days) } : {}) });
       setStatus(next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось изменить окно регистрации');
@@ -48,14 +51,30 @@ function RegistrationWindowToggle() {
         <strong>Самостоятельная регистрация</strong>
         <p className="ds-field-hint" style={{ margin: 0 }}>
           {status.isOpen
-            ? 'Открыта — любой человек может завести логин/пароль на /register'
+            ? `Открыта${status.closesAt ? ` до ${new Date(status.closesAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''} — любой человек может завести логин/пароль на /register`
             : 'Закрыта — новые учётки заводит только руководитель'}
         </p>
         {error && <Alert tone="danger">{error}</Alert>}
       </div>
-      <Button variant={status.isOpen ? 'secondary' : 'primary'} onClick={toggle} disabled={busy}>
-        {status.isOpen ? 'Закрыть' : 'Открыть'}
-      </Button>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {!status.isOpen && (
+          <Select
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            aria-label="Срок регистрации"
+            options={[
+              { value: '3', label: 'на 3 дня' },
+              { value: '7', label: 'на 7 дней' },
+              { value: '10', label: 'на 10 дней' },
+              { value: '30', label: 'на 30 дней' },
+              { value: '', label: 'без срока' },
+            ]}
+          />
+        )}
+        <Button variant={status.isOpen ? 'secondary' : 'primary'} onClick={toggle} disabled={busy}>
+          {status.isOpen ? 'Закрыть' : 'Открыть'}
+        </Button>
+      </div>
     </div>
   );
 }

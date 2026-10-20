@@ -35,7 +35,7 @@ function RegisterForm() {
   const [directionId, setDirectionId] = useState('');
 
   useEffect(() => {
-    api.get<RegistrationWindowStatus>('/auth/registration-window').then(setWindowStatus).catch(() => setWindowStatus({ isOpen: false }));
+    api.get<RegistrationWindowStatus>('/auth/registration-window').then(setWindowStatus).catch(() => setWindowStatus({ isOpen: false, closesAt: null }));
     api.get<RegisterOptions>('/auth/register/options').then(setOptions).catch(() => {});
   }, []);
 

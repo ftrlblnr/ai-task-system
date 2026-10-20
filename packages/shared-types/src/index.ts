@@ -668,6 +668,8 @@ export interface LoginResponse {
 // Временное окно самостоятельной регистрации (владелец 02.10.2026).
 export interface RegistrationWindowStatus {
   isOpen: boolean;
+  // Когда окно закроется само; null — без срока (или окно закрыто).
+  closesAt: string | null;
 }
 
 export interface RegisterOptions {

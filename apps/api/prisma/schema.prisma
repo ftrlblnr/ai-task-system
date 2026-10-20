@@ -1717,6 +1717,9 @@ enum ReceptionNotificationStatus {
 model RegistrationWindow {
   id        String   @id @default(cuid())
   isOpen    Boolean  @default(false)
+  // Владелец 20.10.2026 — окно открывается на срок и закрывается само;
+  // null — без срока (до ручного закрытия).
+  closesAt  DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

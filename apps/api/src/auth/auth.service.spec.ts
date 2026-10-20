@@ -26,7 +26,7 @@ function p2003(): Prisma.PrismaClientKnownRequestError {
 
 class FakePrisma {
   employees: EmployeeRow[] = [];
-  window: { id: string; isOpen: boolean } | null = null;
+  window: { id: string; isOpen: boolean; closesAt: Date | null } | null = null;
   seq = 0;
 
   employee = {
@@ -52,7 +52,7 @@ class FakePrisma {
     findUnique: async ({ where }: { where: { id: string } }) => {
       return this.window?.id === where.id ? this.window : null;
     },
-    upsert: async ({ where, create, update }: { where: { id: string }; create: { id: string; isOpen: boolean }; update: { isOpen: boolean } }) => {
+    upsert: async ({ where, create, update }: { where: { id: string }; create: { id: string; isOpen: boolean; closesAt: Date | null }; update: { isOpen: boolean; closesAt: Date | null } }) => {
       if (this.window?.id === where.id) {
         this.window = { ...this.window, ...update };
       } else {
@@ -119,18 +119,33 @@ describe('AuthService', () => {
     it('окно по умолчанию закрыто (строки ещё нет в базе)', async () => {
       const prisma = new FakePrisma();
       const service = buildService(prisma);
-      expect(await service.getRegistrationWindow()).toEqual({ isOpen: false });
+      expect(await service.getRegistrationWindow()).toEqual({ isOpen: false, closesAt: null });
     });
 
     it('setRegistrationWindow открывает/закрывает и getRegistrationWindow видит изменение', async () => {
       const prisma = new FakePrisma();
       const service = buildService(prisma);
 
-      expect(await service.setRegistrationWindow(true)).toEqual({ isOpen: true });
-      expect(await service.getRegistrationWindow()).toEqual({ isOpen: true });
+      expect(await service.setRegistrationWindow(true)).toEqual({ isOpen: true, closesAt: null });
+      expect(await service.getRegistrationWindow()).toEqual({ isOpen: true, closesAt: null });
 
-      expect(await service.setRegistrationWindow(false)).toEqual({ isOpen: false });
-      expect(await service.getRegistrationWindow()).toEqual({ isOpen: false });
+      expect(await service.setRegistrationWindow(false)).toEqual({ isOpen: false, closesAt: null });
+      expect(await service.getRegistrationWindow()).toEqual({ isOpen: false, closesAt: null });
+    });
+
+    it('окно со сроком закрывается само, когда срок прошёл (владелец 20.10.2026)', async () => {
+      const prisma = new FakePrisma();
+      const service = buildService(prisma);
+      const now = new Date('2026-10-20T10:00:00Z');
+      const closesAt = new Date('2026-10-30T10:00:00Z');
+
+      expect(await service.setRegistrationWindow(true, 10, now)).toEqual({ isOpen: true, closesAt });
+      expect(await service.getRegistrationWindow(new Date('2026-10-30T09:59:00Z'))).toEqual({ isOpen: true, closesAt });
+      expect(await service.getRegistrationWindow(closesAt)).toEqual({ isOpen: false, closesAt: null });
+
+      // закрытие вручную сбрасывает срок
+      expect(await service.setRegistrationWindow(false, undefined, now)).toEqual({ isOpen: false, closesAt: null });
+      expect(prisma.window?.closesAt).toBeNull();
     });
 
     it('register() при закрытом окне — UnauthorizedException, сотрудник не создаётся', async () => {
