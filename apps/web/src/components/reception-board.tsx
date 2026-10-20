@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Mic, RefreshCw, Square } from 'lucide-react';
+import { ArrowDownToLine, CheckCheck, DoorOpen, GripVertical, Handshake, Mic, RefreshCw, Square, type LucideIcon } from 'lucide-react';
 import type {
   AnswerReceptionRequestInput,
   CompleteReceptionRequestInput,
@@ -16,15 +16,19 @@ import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { useDictation } from '@/lib/use-dictation';
 import { Alert, Badge, Button, Dialog, IconButton, SearchInput, Textarea, cx } from '@/components/ui';
+import { Avatar } from '@/components/avatar';
 
-// Доска приёмной руководителя (владелец 20.10.2026). Вопрос перетаскивают
-// в нужный блок — «Заходите» вызывает сотрудника, на «Очередь» — в конец
-// очереди, на «Разберитесь сами»/«Отвечено» открывается карточка с полем
-// ответа. Или открыть карточку кликом и сделать всё оттуда, в том числе
-// ответить текстом или голосом — ответ уходит сотруднику в Telegram, а
-// вопрос — в «Отвечено».
+// Приёмная руководителя (владелец 20.10.2026): по центру — весь список
+// вопросов, по бокам — «облака». Карточку бросают в облако: слева
+// «Заходите» (вызвать) и «В конец очереди», справа «Разберитесь сами» и
+// «Отвечено» (открывается карточка с полем ответа — текстом или голосом).
+// Клик по карточке — все действия сразу. Перетаскивание на pointer-событиях,
+// а не HTML5 DnD: работает и пальцем (за ручку), карточка летит за курсором
+// и «впитывается» облаком.
 
 const POLL_MS = 5_000;
+const DRAG_THRESHOLD_PX = 5;
+const GHOST_MAX_WIDTH = 320;
 
 const REQUEST_TYPE_LABELS: Record<ReceptionRequestType, string> = {
   DECISION: 'Решение',
@@ -33,18 +37,40 @@ const REQUEST_TYPE_LABELS: Record<ReceptionRequestType, string> = {
   HELP: 'Помощь',
 };
 
-type ColumnId = 'queue' | 'called' | 'delegated' | 'answered';
 type Intent = 'answer' | 'delegate' | 'complete' | null;
+type CloudId = 'call' | 'end' | 'delegate' | 'answer';
 
-const COLUMNS: { id: ColumnId; label: string; dot: string; empty: string }[] = [
-  { id: 'queue', label: 'Очередь', dot: 'var(--ink-3)', empty: 'Ожидающих вопросов нет' },
-  { id: 'called', label: 'Заходите', dot: 'var(--warn)', empty: 'Перетащите вопрос сюда, чтобы пригласить' },
-  { id: 'delegated', label: 'Разберитесь сами', dot: 'var(--info)', empty: 'Перетащите сюда — сотрудник решит сам' },
-  { id: 'answered', label: 'Отвечено', dot: 'var(--ok)', empty: 'Перетащите сюда, чтобы ответить' },
+interface CloudDef {
+  id: CloudId;
+  label: string;
+  color: string;
+  icon: LucideIcon;
+  side: 'left' | 'right';
+}
+
+const CLOUDS: CloudDef[] = [
+  { id: 'call', label: 'Заходите', color: 'var(--warn)', icon: DoorOpen, side: 'left' },
+  { id: 'end', label: 'В конец очереди', color: 'var(--ink-3)', icon: ArrowDownToLine, side: 'left' },
+  { id: 'delegate', label: 'Разберитесь сами', color: 'var(--info)', icon: Handshake, side: 'right' },
+  { id: 'answer', label: 'Отвечено', color: 'var(--ok)', icon: CheckCheck, side: 'right' },
 ];
 
 function formatDateTime(value: string | null): string {
   return value ? new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+}
+
+function formatTime(value: string | null): string {
+  return value ? new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+}
+
+// «ждёт 2 ч 15 мин» — сколько человек уже в очереди.
+function waitingFor(createdAt: string, now: number): string {
+  const minutes = Math.max(0, Math.round((now - new Date(createdAt).getTime()) / 60_000));
+  if (minutes < 1) return 'только что';
+  if (minutes < 60) return `ждёт ${minutes} мин`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `ждёт ${hours} ч ${minutes % 60} мин`;
+  return `ждёт ${Math.floor(hours / 24)} дн`;
 }
 
 function isExpired(item: ReceptionRequestItem): boolean {
@@ -55,80 +81,6 @@ function matchesSearch(item: ReceptionRequestItem, query: string): boolean {
   if (!query) return true;
   const q = query.toLowerCase();
   return item.title.toLowerCase().includes(q) || item.author.fullName.toLowerCase().includes(q);
-}
-
-// --- карточка на доске ---
-
-function RequestCard({
-  item,
-  draggable,
-  dragging,
-  highlighted,
-  onOpen,
-  onDragStart,
-  onDragEnd,
-}: {
-  item: ReceptionRequestItem;
-  draggable: boolean;
-  dragging: boolean;
-  highlighted: boolean;
-  onOpen: () => void;
-  onDragStart: (e: DragEvent<HTMLElement>) => void;
-  onDragEnd: () => void;
-}) {
-  const closed = item.status !== 'WAITING' && item.status !== 'CALLED';
-  return (
-    <article
-      className={cx('ds-task', dragging && 'is-dragging')}
-      style={{ cursor: draggable ? 'grab' : 'pointer', outline: highlighted ? '2px solid var(--agent)' : undefined }}
-      tabIndex={0}
-      role="button"
-      draggable={draggable}
-      onClick={onOpen}
-      onKeyDown={(e: KeyboardEvent<HTMLElement>) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-    >
-      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{item.author.fullName}</div>
-      <h3 className="ds-task-title">{item.title}</h3>
-      {closed ? (
-        item.resolution && (
-          <p
-            style={{ margin: 0, fontSize: 13, lineHeight: '18px', color: 'var(--ink-2)', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-          >
-            {item.resolution}
-          </p>
-        )
-      ) : (
-        <div className="ds-task-meta">
-          <Badge>{REQUEST_TYPE_LABELS[item.requestType]}</Badge>
-          {item.expectedMinutes && <Badge>~{item.expectedMinutes} мин</Badge>}
-          {isExpired(item) && <Badge tone="warn">Истёк срок</Badge>}
-          {item.author.status === 'INACTIVE' && <Badge>Неактивен</Badge>}
-        </div>
-      )}
-      <div className="ds-task-foot">
-        {closed ? (
-          <>
-            {item.status === 'COMPLETED' && 'Обсудили · '}
-            {formatDateTime(item.closedAt)}
-          </>
-        ) : item.status === 'CALLED' ? (
-          <>Вызван {formatDateTime(item.lastCalledAt)}</>
-        ) : (
-          <>
-            Подано {formatDateTime(item.createdAt)}
-            {item.desiredBy && <> · до {formatDateTime(item.desiredBy)}</>}
-          </>
-        )}
-      </div>
-    </article>
-  );
 }
 
 // --- карточка вопроса: подробности, действия, ответ текстом/голосом ---
@@ -341,7 +293,223 @@ function RequestDialog({
   );
 }
 
-// --- доска ---
+// --- карточка в центральном списке ---
+
+function QueueCard({
+  item,
+  position,
+  now,
+  lifted,
+  highlighted,
+  cardRef,
+  onPointerDown,
+  onOpen,
+}: {
+  item: ReceptionRequestItem;
+  position: number | null;
+  now: number;
+  lifted: boolean;
+  highlighted: boolean;
+  cardRef: (el: HTMLElement | null) => void;
+  onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
+  onOpen: () => void;
+}) {
+  const called = item.status === 'CALLED';
+  const expired = isExpired(item);
+  return (
+    <article
+      ref={cardRef}
+      className={cx('rcp-card', called && 'is-called', lifted && 'is-lifted', highlighted && 'is-highlighted')}
+      tabIndex={0}
+      role="button"
+      aria-label={`${item.author.fullName}: ${item.title}`}
+      onPointerDown={onPointerDown}
+      onClick={onOpen}
+      onKeyDown={(e: KeyboardEvent<HTMLElement>) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <span className="rcp-grip" data-grip aria-hidden>
+        <GripVertical size={16} strokeWidth={1.75} />
+      </span>
+      <div className="rcp-card-pos">{called ? <DoorOpen size={16} strokeWidth={1.75} /> : position}</div>
+      <div className="rcp-card-body">
+        <div className="rcp-card-who">
+          <Avatar name={item.author.fullName} size={22} />
+          <span className="rcp-card-name">{item.author.fullName}</span>
+          <span className="rcp-card-wait">{called ? `на приёме с ${formatTime(item.lastCalledAt)}` : waitingFor(item.createdAt, now)}</span>
+        </div>
+        <h3 className="rcp-card-title">{item.title}</h3>
+        <div className="rcp-card-meta">
+          <Badge>{REQUEST_TYPE_LABELS[item.requestType]}</Badge>
+          {item.expectedMinutes && <Badge>~{item.expectedMinutes} мин</Badge>}
+          {item.desiredBy && <Badge tone={expired ? 'danger' : 'warn'}>{expired ? 'срок истёк' : `до ${formatDateTime(item.desiredBy)}`}</Badge>}
+          {item.author.status === 'INACTIVE' && <Badge>неактивен</Badge>}
+        </div>
+      </div>
+      {expired && <span className="rcp-urgent" aria-hidden />}
+    </article>
+  );
+}
+
+// --- облако ---
+
+type CloudState = 'idle' | 'ready' | 'over' | 'blocked' | 'blocked-over';
+
+function burstDots(color: string) {
+  return Array.from({ length: 12 }, (_, i) => {
+    const angle = (i / 12) * Math.PI * 2;
+    const distance = 70 + (i % 3) * 18;
+    const style = {
+      '--dx': `${Math.cos(angle) * distance}px`,
+      '--dy': `${Math.sin(angle) * distance}px`,
+      background: color,
+      animationDelay: `${(i % 4) * 25}ms`,
+    } as CSSProperties;
+    return <span key={i} style={style} />;
+  });
+}
+
+function Cloud({
+  def,
+  state,
+  index,
+  subtitle,
+  overText,
+  people,
+  count,
+  gulpKey,
+  shakeKey,
+  cloudRef,
+  onClick,
+}: {
+  def: CloudDef;
+  state: CloudState;
+  index: number;
+  subtitle: string;
+  overText: string;
+  people: ReceptionRequestItem[];
+  count: number | null;
+  gulpKey: number;
+  shakeKey: number;
+  cloudRef: (el: HTMLDivElement | null) => void;
+  onClick?: () => void;
+}) {
+  const Icon = def.icon;
+  return (
+    <div className="rcp-cloud-wrap" style={{ animationDelay: `${index * -1.7}s` }}>
+      <div
+        ref={cloudRef}
+        className={cx('rcp-cloud', `is-${state}`, onClick && 'is-clickable')}
+        style={{ '--c': def.color } as CSSProperties}
+        role={onClick ? 'button' : undefined}
+        tabIndex={onClick ? 0 : undefined}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (onClick && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            onClick();
+          }
+        }}
+      >
+        <div key={`g${gulpKey}-s${shakeKey}`} className={cx('rcp-cloud-inner', gulpKey > 0 && 'is-gulp', shakeKey > 0 && 'is-shake')}>
+          <span className="rcp-cloud-icon">
+            <Icon size={22} strokeWidth={1.75} />
+          </span>
+          <span className="rcp-cloud-label">
+            {def.label}
+            {count !== null && (
+              <span key={count} className="rcp-cloud-count">
+                {count}
+              </span>
+            )}
+          </span>
+          <span className="rcp-cloud-sub">{state === 'over' || state === 'blocked-over' ? overText : subtitle}</span>
+          {people.length > 0 && (
+            <span className="rcp-cloud-people">
+              {people.slice(0, 4).map((p) => (
+                <Avatar key={p.id} name={p.author.fullName} size={22} />
+              ))}
+            </span>
+          )}
+        </div>
+        {gulpKey > 0 && (
+          <span key={gulpKey} className="rcp-burst" aria-hidden>
+            {burstDots(def.color)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- список закрытых в облаке («Разберитесь сами» / «Отвечено») ---
+
+function CloudListDialog({
+  title,
+  items,
+  onPick,
+  onClose,
+}: {
+  title: string;
+  items: ReceptionRequestItem[];
+  onPick: (item: ReceptionRequestItem) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog title={title} description="За последние 7 дней" onClose={onClose}>
+      {items.length === 0 ? (
+        <p className="ds-field-hint">Пока пусто.</p>
+      ) : (
+        <ul className="rcp-closed-list">
+          {items.map((item) => (
+            <li key={item.id}>
+              <button type="button" onClick={() => onPick(item)}>
+                <span className="rcp-card-who">
+                  <Avatar name={item.author.fullName} size={22} />
+                  <span className="rcp-card-name">{item.author.fullName}</span>
+                  <span className="rcp-card-wait">
+                    {item.status === 'COMPLETED' ? 'обсудили · ' : ''}
+                    {formatDateTime(item.closedAt)}
+                  </span>
+                </span>
+                <strong>{item.title}</strong>
+                {item.resolution && <span className="rcp-closed-text">{item.resolution}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+}
+
+// --- сцена: облака + список ---
+
+interface DragSession {
+  item: ReceptionRequestItem;
+  origin: HTMLElement;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  active: boolean;
+  lastX: number;
+  tilt: number;
+  over: CloudId | null;
+  transform: string;
+}
+
+const EMPTY_CLOUD_COUNTERS: Record<CloudId, number> = { call: 0, end: 0, delegate: 0, answer: 0 };
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
 
 export function ReceptionBoard() {
   const searchParams = useSearchParams();
@@ -351,191 +519,478 @@ export function ReceptionBoard() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [opened, setOpened] = useState<{ id: string; intent: Intent } | null>(null);
-  const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [overColumn, setOverColumn] = useState<ColumnId | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [cloudList, setCloudList] = useState<'delegate' | 'answer' | null>(null);
+  const [dragItem, setDragItem] = useState<ReceptionRequestItem | null>(null);
+  const [ghostWidth, setGhostWidth] = useState(0);
+  const [overCloud, setOverCloud] = useState<CloudId | null>(null);
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const [gulps, setGulps] = useState(EMPTY_CLOUD_COUNTERS);
+  const [shakes, setShakes] = useState(EMPTY_CLOUD_COUNTERS);
+  const [now, setNow] = useState(() => Date.now());
   const [focusHandled, setFocusHandled] = useState(false);
   const requestIdRef = useRef(0);
+  const dragRef = useRef<DragSession | null>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  const cloudEls = useRef<Partial<Record<CloudId, HTMLDivElement | null>>>({});
+  const cardEls = useRef(new Map<string, HTMLElement>());
+  const prevOffsets = useRef(new Map<string, number>());
+  const suppressClickRef = useRef(false);
 
-  const load = useCallback(() => {
+  const load = useCallback((): Promise<void> => {
     const requestId = ++requestIdRef.current;
-    api
+    return api
       .get<ReceptionBoardView>('/reception/board')
       .then((r) => {
         if (requestId !== requestIdRef.current) return;
         setData(r);
         setError(null);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         if (requestId !== requestIdRef.current) return;
         setError(err instanceof ApiError ? err.message : 'Не удалось загрузить приёмную');
       });
   }, []);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  // Опрос, пока вкладка видна и руководитель ничего не делает с карточкой.
-  const paused = Boolean(opened || draggedId);
+  const paused = Boolean(opened || dragItem || cloudList);
   useEffect(() => {
     if (paused) return;
     const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') load();
+      if (document.visibilityState === 'visible') void load();
     }, POLL_MS);
     return () => clearInterval(timer);
   }, [paused, load]);
 
-  const all: ReceptionRequestItem[] = data ? [...(data.current ? [data.current] : []), ...data.waiting, ...data.delegated, ...data.answered] : [];
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Плавная перестановка списка (FLIP): карточка, сменившая место,
+  // доезжает до него, а не прыгает.
+  useLayoutEffect(() => {
+    const next = new Map<string, number>();
+    const animate = !prefersReducedMotion();
+    cardEls.current.forEach((el, id) => {
+      const top = el.offsetTop;
+      next.set(id, top);
+      const prev = prevOffsets.current.get(id);
+      if (animate && prev !== undefined && Math.abs(prev - top) > 2) {
+        el.animate([{ transform: `translateY(${prev - top}px)` }, { transform: 'none' }], { duration: 380, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      }
+    });
+    prevOffsets.current = next;
+  });
+
+  const current = data?.current ?? null;
+  const all: ReceptionRequestItem[] = data ? [...(current ? [current] : []), ...data.waiting, ...data.delegated, ...data.answered] : [];
   const byId = (id: string | null) => (id ? (all.find((i) => i.id === id) ?? null) : null);
-  const dragged = byId(draggedId);
   const openedItem = opened ? byId(opened.id) : null;
   const focusMissing = Boolean(focusId && data && !byId(focusId));
 
-  // Переход со «Стола руководителя» — открыть карточку один раз.
   if (focusId && data && !focusHandled && byId(focusId)) {
     setFocusHandled(true);
     setOpened({ id: focusId, intent: null });
   }
 
-  const hasCurrent = Boolean(data?.current);
-
-  function canDrop(item: ReceptionRequestItem, column: ColumnId): boolean {
-    if (item.status === 'WAITING') return column !== 'called' || !hasCurrent;
-    if (item.status === 'CALLED') return column !== 'called';
+  function canDrop(item: ReceptionRequestItem, cloud: CloudId): boolean {
+    if (item.status === 'WAITING') return cloud !== 'call' || !current;
+    if (item.status === 'CALLED') return cloud !== 'call';
     return false;
   }
 
-  async function quickAction(item: ReceptionRequestItem, path: 'call' | 'move-to-end' | 'return-to-queue') {
-    setBusyId(item.id);
+  function bump(setter: typeof setGulps, cloud: CloudId) {
+    setter((prev) => ({ ...prev, [cloud]: prev[cloud] + 1 }));
+  }
+
+  function markPending(id: string, on: boolean) {
+    setPending((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  async function quickAction(item: ReceptionRequestItem, path: 'call' | 'move-to-end' | 'return-to-queue', cloud: CloudId) {
+    markPending(item.id, true);
     setError(null);
     try {
       await api.post(`/reception/requests/${item.id}/${path}`, { version: item.version }, { 'Idempotency-Key': crypto.randomUUID() });
+      await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось выполнить действие');
+      bump(setShakes, cloud);
+      void load();
     } finally {
-      setBusyId(null);
-      load();
+      markPending(item.id, false);
     }
   }
 
-  function drop(item: ReceptionRequestItem, column: ColumnId) {
-    if (!canDrop(item, column)) return;
-    if (column === 'queue') void quickAction(item, item.status === 'CALLED' ? 'return-to-queue' : 'move-to-end');
-    else if (column === 'called') void quickAction(item, 'call');
-    else if (column === 'delegated') setOpened({ id: item.id, intent: 'delegate' });
-    else setOpened({ id: item.id, intent: item.status === 'CALLED' ? 'complete' : 'answer' });
+  function perform(item: ReceptionRequestItem, cloud: CloudId) {
+    if (cloud === 'call') void quickAction(item, 'call', cloud);
+    else if (cloud === 'end') void quickAction(item, item.status === 'CALLED' ? 'return-to-queue' : 'move-to-end', cloud);
+    else {
+      markPending(item.id, true);
+      setOpened({ id: item.id, intent: cloud === 'delegate' ? 'delegate' : item.status === 'CALLED' ? 'complete' : 'answer' });
+    }
   }
 
-  function columnItems(column: ColumnId): ReceptionRequestItem[] {
-    if (!data) return [];
-    const items =
-      column === 'queue' ? data.waiting : column === 'called' ? (data.current ? [data.current] : []) : column === 'delegated' ? data.delegated : data.answered;
-    return items.filter((i) => matchesSearch(i, search.trim()));
+  // --- перетаскивание ---
+
+  function cloudAt(x: number, y: number): CloudId | null {
+    for (const def of CLOUDS) {
+      const el = cloudEls.current[def.id];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      const pad = 28;
+      if (x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad) return def.id;
+    }
+    return null;
   }
 
-  function columnCount(column: ColumnId): number {
-    if (!data) return 0;
-    if (column === 'queue') return data.totalWaiting;
-    return columnItems(column).length;
+  function applyGhost(transform: string) {
+    if (dragRef.current) dragRef.current.transform = transform;
+    if (ghostRef.current) ghostRef.current.style.transform = transform;
   }
+
+  // Призрак появляется после рендера — ставим его в текущую позицию сразу.
+  useLayoutEffect(() => {
+    if (dragItem && ghostRef.current && dragRef.current) ghostRef.current.style.transform = dragRef.current.transform;
+  }, [dragItem]);
+
+  function onCardPointerDown(e: ReactPointerEvent<HTMLElement>, item: ReceptionRequestItem) {
+    if (e.button !== 0 || dragRef.current) return;
+    // Пальцем — только за ручку, иначе список не прокрутить.
+    if (e.pointerType === 'touch' && !(e.target as HTMLElement).closest('[data-grip]')) return;
+    const origin = e.currentTarget;
+    const rect = origin.getBoundingClientRect();
+    // Летящая карточка компактнее строки списка — иначе широкая карточка
+    // перекрывает облако и вылезает за край экрана.
+    const width = Math.min(rect.width, GHOST_MAX_WIDTH);
+    dragRef.current = {
+      item,
+      origin,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: ((e.clientX - rect.left) * width) / rect.width,
+      offsetY: e.clientY - rect.top,
+      width,
+      active: false,
+      lastX: e.clientX,
+      tilt: 0,
+      over: null,
+      transform: `translate(${rect.left}px, ${rect.top}px)`,
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    const s = dragRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    if (!s.active) {
+      if (Math.hypot(e.clientX - s.startX, e.clientY - s.startY) < DRAG_THRESHOLD_PX) return;
+      s.active = true;
+      document.body.classList.add('rcp-dragging');
+      setGhostWidth(s.width);
+      setDragItem(s.item);
+    }
+    e.preventDefault();
+    const velocity = e.clientX - s.lastX;
+    s.lastX = e.clientX;
+    s.tilt = Math.max(-12, Math.min(12, s.tilt * 0.75 + velocity * 0.6));
+
+    const over = cloudAt(e.clientX, e.clientY);
+    let x = e.clientX - s.offsetX;
+    let y = e.clientY - s.offsetY;
+    let scale = 1.03;
+    // Над облаком карточку слегка «притягивает» к центру и она уменьшается.
+    if (over && canDrop(s.item, over)) {
+      const r = cloudEls.current[over]!.getBoundingClientRect();
+      const cx = r.left + r.width / 2 - s.width / 2;
+      const cy = r.top + r.height / 2 - 40;
+      x += (cx - x) * 0.3;
+      y += (cy - y) * 0.3;
+      scale = 0.82;
+    }
+    applyGhost(`translate(${x}px, ${y}px) rotate(${s.tilt}deg) scale(${scale})`);
+    if (over !== s.over) {
+      s.over = over;
+      setOverCloud(over);
+    }
+  }
+
+  function detach() {
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerCancel);
+  }
+
+  function endDrag() {
+    dragRef.current = null;
+    document.body.classList.remove('rcp-dragging');
+    setDragItem(null);
+    setOverCloud(null);
+  }
+
+  function flyBack(s: DragSession) {
+    const ghost = ghostRef.current;
+    const r = s.origin.getBoundingClientRect();
+    if (!ghost || prefersReducedMotion()) return endDrag();
+    ghost
+      .animate([{ transform: s.transform }, { transform: `translate(${r.left}px, ${r.top}px) rotate(0deg) scale(1)` }], {
+        duration: 320,
+        easing: 'cubic-bezier(.2,.9,.3,1.2)',
+        fill: 'forwards',
+      })
+      .finished.then(endDrag, endDrag);
+  }
+
+  function onPointerCancel() {
+    const s = dragRef.current;
+    detach();
+    if (s?.active) flyBack(s);
+    else dragRef.current = null;
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    const s = dragRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    detach();
+    if (!s.active) {
+      dragRef.current = null;
+      return; // обычный клик — откроет карточку через onClick
+    }
+    suppressClickRef.current = true;
+    setTimeout(() => (suppressClickRef.current = false), 0);
+
+    const cloud = s.over;
+    if (!cloud || !canDrop(s.item, cloud)) {
+      if (cloud) bump(setShakes, cloud);
+      flyBack(s);
+      return;
+    }
+
+    const item = s.item;
+    const finish = () => {
+      endDrag();
+      bump(setGulps, cloud);
+      perform(item, cloud);
+    };
+    const ghost = ghostRef.current;
+    const r = cloudEls.current[cloud]!.getBoundingClientRect();
+    if (!ghost || prefersReducedMotion()) return finish();
+    // Карточка «впитывается» облаком: летит в центр, сжимаясь и тая.
+    markPending(item.id, true);
+    ghost
+      .animate(
+        [
+          { transform: s.transform, opacity: 1 },
+          { transform: `translate(${r.left + r.width / 2 - s.width / 2}px, ${r.top + r.height / 2 - 30}px) rotate(${s.tilt * -1.5}deg) scale(0.12)`, opacity: 0 },
+        ],
+        { duration: 420, easing: 'cubic-bezier(.55,0,.75,.2)', fill: 'forwards' },
+      )
+      .finished.then(finish, finish);
+  }
+
+  useEffect(() => () => document.body.classList.remove('rcp-dragging'), []);
 
   if (error && !data) return <Alert tone="danger">{error}</Alert>;
   if (!data) return <p className="ds-field-hint">Загрузка…</p>;
 
+  const query = search.trim();
+  const list = [...(current ? [current] : []), ...data.waiting].filter((i) => matchesSearch(i, query));
+  const dragging = Boolean(dragItem);
+
+  function cloudState(cloud: CloudId): CloudState {
+    if (!dragItem) return 'idle';
+    const allowed = canDrop(dragItem, cloud);
+    if (overCloud === cloud) return allowed ? 'over' : 'blocked-over';
+    return allowed ? 'ready' : 'blocked';
+  }
+
+  function cloudProps(def: CloudDef) {
+    switch (def.id) {
+      case 'call':
+        return {
+          subtitle: current ? `сейчас: ${current.author.fullName}` : 'кабинет свободен',
+          overText: current && dragItem?.id !== current.id ? 'сначала завершите приём' : 'пригласить сейчас',
+          people: current ? [current] : [],
+          count: null,
+          onClick: current ? () => setOpened({ id: current.id, intent: null }) : undefined,
+        };
+      case 'end':
+        return {
+          subtitle: `в очереди ${data!.totalWaiting}`,
+          overText: dragItem?.status === 'CALLED' ? 'вернуть в очередь' : 'подождёт',
+          people: [],
+          count: null,
+          onClick: undefined,
+        };
+      case 'delegate':
+        return {
+          subtitle: 'за неделю',
+          overText: 'пусть решит сам',
+          people: data!.delegated,
+          count: data!.delegated.length,
+          onClick: () => setCloudList('delegate'),
+        };
+      case 'answer':
+        return {
+          subtitle: 'за неделю',
+          overText: dragItem?.status === 'CALLED' ? 'завершить приём' : 'ответить',
+          people: data!.answered,
+          count: data!.answered.length,
+          onClick: () => setCloudList('answer'),
+        };
+    }
+  }
+
+  function renderSide(side: 'left' | 'right') {
+    return (
+      <div className={cx('rcp-side', `is-${side}`)}>
+        {CLOUDS.filter((c) => c.side === side).map((def) => {
+          const index = CLOUDS.indexOf(def);
+          return (
+            <Cloud
+              key={def.id}
+              def={def}
+              index={index}
+              state={cloudState(def.id)}
+              gulpKey={gulps[def.id]}
+              shakeKey={shakes[def.id]}
+              cloudRef={(el) => {
+                cloudEls.current[def.id] = el;
+              }}
+              {...cloudProps(def)}
+            />
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <>
-      <div className="board-filters" style={{ alignItems: 'center' }}>
-        <div style={{ flex: '1 1 240px', maxWidth: 420 }}>
-          <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по теме или сотруднику" />
-        </div>
-        <IconButton icon={RefreshCw} label="Обновить" variant="outline" size="sm" onClick={load} />
-      </div>
+      <div className={cx('rcp-stage', dragging && 'is-dragging')}>
+        {renderSide('left')}
 
-      {focusMissing && (
-        <div style={{ marginBottom: 12 }}>
-          <Alert tone="info">Статус вопроса изменился</Alert>
-        </div>
-      )}
-      {error && (
-        <div style={{ marginBottom: 12 }}>
-          <Alert tone="danger">{error}</Alert>
-        </div>
-      )}
+        <section className="rcp-center" aria-label="Очередь">
+          <div className="rcp-center-head">
+            <div>
+              <h1>Приёмная</h1>
+              <p className="ds-field-hint">
+                {data.totalWaiting === 0 ? 'никто не ждёт' : `ждут ${data.totalWaiting}`}
+                {current && ' · идёт приём'}
+              </p>
+            </div>
+            <IconButton icon={RefreshCw} label="Обновить" variant="outline" size="sm" onClick={() => void load()} />
+          </div>
+          {(data.totalWaiting > 5 || query) && (
+            <div style={{ marginBottom: 12 }}>
+              <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по теме или сотруднику" />
+            </div>
+          )}
+          {focusMissing && (
+            <div style={{ marginBottom: 12 }}>
+              <Alert tone="info">Статус вопроса изменился</Alert>
+            </div>
+          )}
+          {error && (
+            <div style={{ marginBottom: 12 }}>
+              <Alert tone="danger">{error}</Alert>
+            </div>
+          )}
 
-      <div className="board-scroll">
-        <div className="board">
-          {COLUMNS.map((column) => {
-            const items = columnItems(column.id);
-            const dropAllowed = dragged ? canDrop(dragged, column.id) : false;
-            // «Очередь» как цель: ожидающий вопрос — в конец, вызванный — обратно.
-            const queueHint = dragged && column.id === 'queue' && dropAllowed ? (dragged.status === 'CALLED' ? 'Вернуть в очередь' : 'В конец очереди') : null;
-            return (
-              <section
-                key={column.id}
-                className={cx('ds-col', overColumn === column.id && dropAllowed && 'is-over')}
-                style={{ flex: '1 1 0', minWidth: 240, width: 'auto', opacity: dragged && !dropAllowed ? 0.55 : 1 }}
-                aria-label={column.label}
-                onDragOver={(e) => {
-                  if (!dropAllowed) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  setOverColumn(column.id);
-                }}
-                onDragLeave={() => setOverColumn((c) => (c === column.id ? null : c))}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setOverColumn(null);
-                  if (dragged && dropAllowed) drop(dragged, column.id);
-                  setDraggedId(null);
-                }}
-              >
-                <header className="ds-col-head">
-                  <span style={{ width: 8, height: 8, borderRadius: 999, background: column.dot }} />
-                  {column.label}
-                  <span className="ds-col-count">{columnCount(column.id)}</span>
-                </header>
-                {items.length === 0 && !queueHint && <div className="ds-col-empty">{column.id === 'queue' && search ? 'Ничего не найдено' : column.empty}</div>}
-                {items.map((item) => (
-                  <RequestCard
+          {list.length === 0 ? (
+            <div className="rcp-empty">
+              <CheckCheck size={28} strokeWidth={1.5} />
+              <strong>{query ? 'Ничего не найдено' : 'Очередь пуста'}</strong>
+              {!query && <span>Все вопросы разобраны — можно выдохнуть.</span>}
+            </div>
+          ) : (
+            <div className="rcp-list">
+              {list.map((item) => {
+                const index = data.waiting.indexOf(item);
+                return (
+                  <QueueCard
                     key={item.id}
                     item={item}
-                    draggable={(item.status === 'WAITING' || item.status === 'CALLED') && busyId !== item.id}
-                    dragging={draggedId === item.id}
+                    position={index >= 0 ? index + 1 : null}
+                    now={now}
+                    lifted={dragItem?.id === item.id || pending.has(item.id)}
                     highlighted={focusId === item.id}
-                    onOpen={() => setOpened({ id: item.id, intent: null })}
-                    onDragStart={(e) => {
-                      setDraggedId(item.id);
-                      e.dataTransfer.effectAllowed = 'move';
-                      e.dataTransfer.setData('text/plain', item.id);
+                    cardRef={(el) => {
+                      if (el) cardEls.current.set(item.id, el);
+                      else cardEls.current.delete(item.id);
                     }}
-                    onDragEnd={() => {
-                      setDraggedId(null);
-                      setOverColumn(null);
+                    onPointerDown={(e) => onCardPointerDown(e, item)}
+                    onOpen={() => {
+                      if (suppressClickRef.current) return;
+                      setOpened({ id: item.id, intent: null });
                     }}
                   />
-                ))}
-                {queueHint && <div className="ds-col-empty">↓ {queueHint}</div>}
-                {column.id === 'queue' && data.totalWaiting > data.waiting.length && (
-                  <p className="ds-field-hint" style={{ margin: 0, padding: '0 6px' }}>
-                    Показаны первые {data.waiting.length} из {data.totalWaiting}
-                  </p>
-                )}
-              </section>
-            );
-          })}
-        </div>
+                );
+              })}
+              {data.totalWaiting > data.waiting.length && (
+                <p className="ds-field-hint" style={{ textAlign: 'center' }}>
+                  Показаны первые {data.waiting.length} из {data.totalWaiting}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+
+        {renderSide('right')}
       </div>
+
+      {dragItem && (
+        <div ref={ghostRef} className="rcp-ghost" style={{ width: ghostWidth }} aria-hidden>
+          <div className="rcp-card is-ghost">
+            <div className="rcp-card-body">
+              <div className="rcp-card-who">
+                <Avatar name={dragItem.author.fullName} size={22} />
+                <span className="rcp-card-name">{dragItem.author.fullName}</span>
+              </div>
+              <h3 className="rcp-card-title">{dragItem.title}</h3>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cloudList && (
+        <CloudListDialog
+          title={cloudList === 'delegate' ? 'Разберитесь сами' : 'Отвечено'}
+          items={cloudList === 'delegate' ? data.delegated : data.answered}
+          onClose={() => setCloudList(null)}
+          onPick={(item) => {
+            setCloudList(null);
+            setOpened({ id: item.id, intent: null });
+          }}
+        />
+      )}
 
       {opened && openedItem && (
         <RequestDialog
           key={`${openedItem.id}-${opened.intent ?? 'open'}`}
           item={openedItem}
           intent={opened.intent}
-          hasOtherCalled={hasCurrent && data.current?.id !== openedItem.id}
-          notificationStatus={data.current?.id === openedItem.id ? data.current.notificationStatus : null}
-          onClose={() => setOpened(null)}
-          onDone={() => {
+          hasOtherCalled={Boolean(current) && current?.id !== openedItem.id}
+          notificationStatus={current?.id === openedItem.id ? current.notificationStatus : null}
+          onClose={() => {
+            markPending(openedItem.id, false);
             setOpened(null);
-            load();
+          }}
+          onDone={async () => {
+            setOpened(null);
+            await load();
+            markPending(openedItem.id, false);
           }}
         />
       )}
