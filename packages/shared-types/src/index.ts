@@ -812,7 +812,9 @@ export interface MailDigestDetail {
 // ============ Приёмная руководителя (ТЗ v1.0, 02.10.2026) ============
 
 export type ReceptionRequestType = 'DECISION' | 'APPROVAL' | 'DISCUSSION' | 'HELP';
-export type ReceptionRequestStatus = 'WAITING' | 'CALLED' | 'COMPLETED' | 'REJECTED' | 'WITHDRAWN';
+// ANSWERED/DELEGATED (владелец 20.10.2026) — закрыто без встречи: ответ
+// текстом/голосом или «разберитесь сами».
+export type ReceptionRequestStatus = 'WAITING' | 'CALLED' | 'COMPLETED' | 'ANSWERED' | 'DELEGATED' | 'REJECTED' | 'WITHDRAWN';
 export type ReceptionEventType =
   | 'CREATED'
   | 'EDITED'
@@ -821,7 +823,9 @@ export type ReceptionEventType =
   | 'REJECTED'
   | 'WITHDRAWN'
   | 'COMPLETED'
-  | 'RETURNED_TO_QUEUE';
+  | 'RETURNED_TO_QUEUE'
+  | 'ANSWERED'
+  | 'DELEGATED';
 
 export interface ReceptionRequestItem {
   id: string;
@@ -893,6 +897,25 @@ export interface RejectReceptionRequestInput {
 export interface CompleteReceptionRequestInput {
   version: number;
   resolution?: string;
+}
+
+export interface AnswerReceptionRequestInput {
+  version: number;
+  text: string;
+}
+
+export interface DelegateReceptionRequestInput {
+  version: number;
+  comment?: string;
+}
+
+// GET /reception/board — доска руководителя: закрытые за последние 7 дней.
+export interface ReceptionBoardView {
+  current: (ReceptionRequestItem & { notificationStatus: ReceptionNotificationStatus | null }) | null;
+  waiting: ReceptionRequestItem[];
+  totalWaiting: number;
+  delegated: ReceptionRequestItem[];
+  answered: ReceptionRequestItem[];
 }
 
 // --- «Стол руководителя» (ТЗ v1.0, владелец 05.10.2026) ---------------------

@@ -25,7 +25,7 @@ const MESSAGE_SELECT = {
   id: true,
   kind: true,
   attemptCount: true,
-  request: { select: { title: true, rejectionReason: true } },
+  request: { select: { title: true, rejectionReason: true, resolution: true } },
   recipient: { select: { telegramId: true } },
 } satisfies Prisma.ReceptionNotificationSelect;
 
@@ -46,6 +46,12 @@ function buildMessageText(n: ClaimedNotification): string {
         : `Ваше обращение „${title}“ отклонено.`;
     case 'RETURNED_TO_QUEUE':
       return `Вызов по вопросу „${title}“ отменён. Вопрос возвращён в очередь; ожидайте нового вызова.`;
+    case 'ANSWERED':
+      return `Ответ руководителя по вопросу „${title}“:\n${n.request.resolution ?? ''}`;
+    case 'DELEGATED':
+      return n.request.resolution
+        ? `По вопросу „${title}“ руководитель просит решить самостоятельно. Комментарий: ${n.request.resolution}`
+        : `По вопросу „${title}“ руководитель просит решить самостоятельно.`;
   }
 }
 

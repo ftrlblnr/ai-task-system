@@ -1,33 +1,27 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { RefreshCw } from 'lucide-react';
 import type {
-  CompleteReceptionRequestInput,
   CreateReceptionRequestInput,
   EditReceptionRequestInput,
   EmployeeSummary,
   ReceptionListResponse,
-  ReceptionQueueView,
   ReceptionRequestItem,
   ReceptionRequestStatus,
   ReceptionRequestType,
-  RejectReceptionRequestInput,
 } from '@ai-task-system/shared-types';
 import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
-import { Card } from '@/components/ui/card';
-import { Button, IconButton } from '@/components/ui/button';
+import { ReceptionBoard } from '@/components/reception-board';
+import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
-import { Field, Input, Textarea, Select, Checkbox } from '@/components/ui/field';
+import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
-import { Dialog } from '@/components/ui/dialog';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026). Polling 5с, пока экран
 // открыт/виден (раздел 10.3 ТЗ) — применяется к очереди OWNER и к активным
@@ -46,6 +40,8 @@ const STATUS_LABELS: Record<ReceptionRequestStatus, string> = {
   WAITING: 'Ожидает',
   CALLED: 'Вызван',
   COMPLETED: 'Обсуждено',
+  ANSWERED: 'Отвечено',
+  DELEGATED: 'Разберитесь сами',
   REJECTED: 'Отклонено',
   WITHDRAWN: 'Отозвано',
 };
@@ -54,6 +50,8 @@ const STATUS_BADGE_TONE: Record<ReceptionRequestStatus, BadgeTone> = {
   WAITING: 'neutral',
   CALLED: 'warn',
   COMPLETED: 'ok',
+  ANSWERED: 'ok',
+  DELEGATED: 'info',
   REJECTED: 'danger',
   WITHDRAWN: 'neutral',
 };
@@ -315,6 +313,8 @@ function MineView() {
                 </p>
                 {item.status === 'REJECTED' && item.rejectionReason && <p className="ds-field-hint">Причина: {item.rejectionReason}</p>}
                 {item.status === 'COMPLETED' && item.resolution && <p className="ds-field-hint">Результат: {item.resolution}</p>}
+                {item.status === 'ANSWERED' && item.resolution && <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</p>}
+                {item.status === 'DELEGATED' && item.resolution && <p className="ds-field-hint">Комментарий: {item.resolution}</p>}
               </div>
               {item.status === 'WAITING' && (
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
@@ -329,340 +329,6 @@ function MineView() {
             </li>
           ))}
         </ul>
-      )}
-    </>
-  );
-}
-
-// --- диалоги владельца: отказ / завершение ---
-
-function RejectDialog({ item, onClose, onDone }: { item: ReceptionRequestItem; onClose: () => void; onDone: () => void }) {
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const idem = useIdempotencyKey();
-
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      const payload: RejectReceptionRequestInput = { version: item.version, reason: reason.trim() || undefined };
-      await api.post(`/reception/requests/${item.id}/reject`, payload, { 'Idempotency-Key': idem.key() });
-      idem.reset();
-      onDone();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось отклонить обращение');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog
-      title={`Отказать «${item.title}»`}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            Назад
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={busy} loading={busy}>
-            Отказать
-          </Button>
-        </>
-      }
-    >
-      <Field label="Причина — необязательно">
-        <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} />
-      </Field>
-      {error && <Alert tone="danger">{error}</Alert>}
-    </Dialog>
-  );
-}
-
-function CompleteDialog({ item, onClose, onDone }: { item: ReceptionRequestItem; onClose: () => void; onDone: () => void }) {
-  const [resolution, setResolution] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const idem = useIdempotencyKey();
-
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      const payload: CompleteReceptionRequestInput = { version: item.version, resolution: resolution.trim() || undefined };
-      await api.post(`/reception/requests/${item.id}/complete`, payload, { 'Idempotency-Key': idem.key() });
-      idem.reset();
-      onDone();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось завершить приём');
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog
-      title={`Завершить «${item.title}»`}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            Назад
-          </Button>
-          <Button variant="primary" onClick={submit} disabled={busy} loading={busy}>
-            Завершить обсуждение
-          </Button>
-        </>
-      }
-    >
-      <Field label="Результат обсуждения — необязательно">
-        <Textarea value={resolution} onChange={(e) => setResolution(e.target.value)} maxLength={3000} rows={3} />
-      </Field>
-      {error && <Alert tone="danger">{error}</Alert>}
-    </Dialog>
-  );
-}
-
-// --- вкладка владельца: очередь ---
-
-function QueueView() {
-  const searchParams = useSearchParams();
-  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 9) — переход с главной
-  // по конкретному обращению: ?focus=<id> подсвечивает и прокручивает к
-  // нему, если оно всё ещё в доступной очереди; если уже нет — обычная
-  // очередь + "Статус вопроса изменился" (ниже, после загрузки данных).
-  const focusId = searchParams.get('focus');
-  const [data, setData] = useState<ReceptionQueueView | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [submittedSearch, setSubmittedSearch] = useState('');
-  const [expiredOnly, setExpiredOnly] = useState(false);
-  const [rejecting, setRejecting] = useState<ReceptionRequestItem | null>(null);
-  const [completing, setCompleting] = useState<ReceptionRequestItem | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-  const dialogOpen = Boolean(rejecting || completing);
-
-  const load = useCallback(() => {
-    const requestId = ++requestIdRef.current;
-    const params = new URLSearchParams({ limit: '50' });
-    if (submittedSearch) params.set('search', submittedSearch);
-    if (expiredOnly) params.set('expiredOnly', 'true');
-    api
-      .get<ReceptionQueueView>(`/reception/queue?${params.toString()}`)
-      .then((r) => {
-        if (requestId !== requestIdRef.current) return;
-        setData(r);
-        setError(null);
-      })
-      .catch((err) => {
-        if (requestId !== requestIdRef.current) return;
-        setError(err instanceof ApiError ? err.message : 'Не удалось загрузить очередь');
-      });
-  }, [submittedSearch, expiredOnly]);
-
-  useEffect(load, [load]);
-  useVisiblePolling(load, !dialogOpen);
-
-  // focusMissing — производное значение (не отдельный useState + setState в
-  // эффекте: React-антипаттерн, лишний рендер), скролл к карточке — настоящий
-  // DOM-эффект, остаётся в useEffect.
-  const focusMissing = Boolean(
-    focusId && data && data.current?.id !== focusId && !data.items.some((i) => i.id === focusId),
-  );
-
-  useEffect(() => {
-    if (!focusId || !data) return;
-    if (data.current?.id === focusId || data.items.some((i) => i.id === focusId)) {
-      document.getElementById(`reception-item-${focusId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [focusId, data]);
-
-  async function moveToEnd(item: ReceptionRequestItem) {
-    setBusyId(item.id);
-    try {
-      await api.post(`/reception/requests/${item.id}/move-to-end`, { version: item.version }, { 'Idempotency-Key': crypto.randomUUID() });
-      load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось перенести обращение');
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function call(item: ReceptionRequestItem) {
-    setBusyId(item.id);
-    try {
-      await api.post(`/reception/requests/${item.id}/call`, { version: item.version }, { 'Idempotency-Key': crypto.randomUUID() });
-      load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось вызвать сотрудника');
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function returnToQueue(item: ReceptionRequestItem) {
-    setBusyId(item.id);
-    try {
-      await api.post(`/reception/requests/${item.id}/return-to-queue`, { version: item.version }, { 'Idempotency-Key': crypto.randomUUID() });
-      load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось вернуть в очередь');
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  const hasCurrent = Boolean(data?.current);
-
-  return (
-    <>
-      <h1 style={{ marginBottom: 4 }}>Приёмная</h1>
-      <p className="ds-field-hint" style={{ marginBottom: 16 }}>
-        Ожидают: {data?.totalWaiting ?? '—'}
-      </p>
-
-      {focusMissing && (
-        <div style={{ marginBottom: 12 }}>
-          <Alert tone="info">Статус вопроса изменился</Alert>
-        </div>
-      )}
-
-      {data?.current && (
-        <div id={`reception-item-${data.current.id}`}>
-        <Card style={{ marginBottom: 16, borderLeft: `3px solid ${focusId === data.current.id ? 'var(--agent)' : 'var(--warn)'}` }}>
-          <h2 style={{ marginBottom: 6 }}>Сейчас вызван</h2>
-          <p>
-            <strong>{data.current.author.fullName}</strong> — {data.current.title}
-          </p>
-          <p className="ds-field-hint">
-            Вызван {formatDateTime(data.current.lastCalledAt)}
-            {' · '}
-            {data.current.notificationStatus === 'SENT' && 'уведомление доставлено'}
-            {data.current.notificationStatus === 'PENDING' && 'уведомление отправляется…'}
-            {data.current.notificationStatus === 'FAILED' && 'не удалось отправить уведомление'}
-            {data.current.notificationStatus === 'SKIPPED' && 'уведомление не отправлено — сообщите сотруднику другим способом'}
-          </p>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button variant="primary" onClick={() => setCompleting(data.current)} disabled={busyId === data.current.id}>
-              Завершить
-            </Button>
-            <Button variant="secondary" onClick={() => returnToQueue(data.current!)} disabled={busyId === data.current.id}>
-              Вернуть в очередь
-            </Button>
-          </div>
-        </Card>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setSubmittedSearch(search.trim());
-          }}
-          style={{ display: 'flex', gap: 6 }}
-        >
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по теме/сотруднику" style={{ minWidth: 220 }} />
-          <Button type="submit" variant="secondary" size="sm">
-            Искать
-          </Button>
-        </form>
-        <Checkbox label="Только с истёкшим сроком" checked={expiredOnly} onChange={(e) => setExpiredOnly(e.target.checked)} />
-        <IconButton icon={RefreshCw} label="Обновить" variant="outline" size="sm" onClick={load} style={{ marginLeft: 'auto' }} />
-      </div>
-
-      {error && <Alert tone="danger">{error}</Alert>}
-      {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
-      {data && data.items.length === 0 && (
-        <EmptyState title={submittedSearch || expiredOnly ? 'Ничего не найдено' : 'Ожидающих вопросов нет'}>
-          {(submittedSearch || expiredOnly) && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => {
-                setSearch('');
-                setSubmittedSearch('');
-                setExpiredOnly(false);
-              }}
-            >
-              Сбросить фильтры
-            </Button>
-          )}
-        </EmptyState>
-      )}
-      {data && data.items.length > 0 && (
-        <>
-          <ul className="plain-list">
-            {data.items.map((item) => (
-              <li
-                key={item.id}
-                id={`reception-item-${item.id}`}
-                className="plain-list-row"
-                style={{ alignItems: 'flex-start', background: focusId === item.id ? 'var(--surface-2)' : undefined }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <strong>{item.author.fullName}</strong>
-                    {item.author.status === 'INACTIVE' && <Badge>Сотрудник неактивен</Badge>}
-                    <span>— {item.title}</span>
-                    {isExpired(item.desiredBy) && <Badge tone="warn">Истёк срок</Badge>}
-                  </div>
-                  <p className="ds-field-hint" style={{ marginTop: 4 }}>
-                    {REQUEST_TYPE_LABELS[item.requestType]}
-                    {item.expectedMinutes && <> · ~{item.expectedMinutes} мин</>}
-                    {' · подано '}
-                    {formatDateTime(item.createdAt)}
-                    {item.desiredBy && <> · нужен ответ до {formatDateTime(item.desiredBy)}</>}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
-                  <Button variant="secondary" size="sm" onClick={() => moveToEnd(item)} disabled={busyId === item.id || hasCurrent}>
-                    В конец
-                  </Button>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => call(item)}
-                    disabled={busyId === item.id || hasCurrent}
-                    title={hasCurrent ? 'Сначала завершите текущий приём или верните вопрос в очередь' : undefined}
-                  >
-                    Вызвать
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={() => setRejecting(item)} disabled={busyId === item.id}>
-                    Отказать
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          {data.totalCount > data.items.length && (
-            <p className="ds-field-hint" style={{ marginTop: 8 }}>
-              Показано {data.items.length} из {data.totalCount}.
-            </p>
-          )}
-        </>
-      )}
-
-      {rejecting && (
-        <RejectDialog
-          item={rejecting}
-          onClose={() => setRejecting(null)}
-          onDone={() => {
-            setRejecting(null);
-            load();
-          }}
-        />
-      )}
-      {completing && (
-        <CompleteDialog
-          item={completing}
-          onClose={() => setCompleting(null)}
-          onDone={() => {
-            setCompleting(null);
-            load();
-          }}
-        />
       )}
     </>
   );
@@ -709,7 +375,9 @@ function HistoryView() {
           onChange={(e) => setStatus(e.target.value)}
           options={[
             { value: '', label: 'Любой статус' },
+            { value: 'ANSWERED', label: 'Отвечено' },
             { value: 'COMPLETED', label: 'Обсуждено' },
+            { value: 'DELEGATED', label: 'Разберитесь сами' },
             { value: 'REJECTED', label: 'Отклонено' },
             { value: 'WITHDRAWN', label: 'Отозвано' },
           ]}
@@ -770,7 +438,7 @@ function ReceptionView() {
       <div style={{ marginBottom: 16 }}>
         <SegmentedControl
           options={[
-            { value: 'queue', label: 'Очередь' },
+            { value: 'queue', label: 'Доска' },
             { value: 'history', label: 'История' },
             { value: 'mine', label: 'Мои обращения' },
           ]}
@@ -778,7 +446,7 @@ function ReceptionView() {
           onChange={(v) => setTab(v as OwnerTab)}
         />
       </div>
-      {tab === 'queue' && <QueueView />}
+      {tab === 'queue' && <ReceptionBoard />}
       {tab === 'history' && <HistoryView />}
       {tab === 'mine' && <MineView />}
     </>

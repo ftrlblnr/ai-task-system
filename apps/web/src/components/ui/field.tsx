@@ -8,7 +8,7 @@ import {
   type ReactElement,
   type ReactNode,
   type SelectHTMLAttributes,
-  type TextareaHTMLAttributes,
+  type ComponentProps,
 } from 'react';
 import { CircleAlert, Search } from 'lucide-react';
 import { cx } from './button';
@@ -60,7 +60,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cx('ds-input', props.className)} />;
 }
 
-export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function Textarea(props: ComponentProps<'textarea'>) {
   return <textarea {...props} className={cx('ds-input', props.className)} />;
 }
 

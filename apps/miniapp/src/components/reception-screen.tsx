@@ -21,6 +21,8 @@ const STATUS_LABELS: Record<ReceptionRequestStatus, string> = {
   WAITING: 'Ожидает',
   CALLED: 'Вызван',
   COMPLETED: 'Обсуждено',
+  ANSWERED: 'Отвечено',
+  DELEGATED: 'Разберитесь сами',
   REJECTED: 'Отклонено',
   WITHDRAWN: 'Отозвано',
 };
@@ -28,6 +30,8 @@ const STATUS_BADGE_TONE: Record<ReceptionRequestStatus, BadgeTone> = {
   WAITING: 'neutral',
   CALLED: 'warn',
   COMPLETED: 'ok',
+  ANSWERED: 'ok',
+  DELEGATED: 'info',
   REJECTED: 'danger',
   WITHDRAWN: 'neutral',
 };
@@ -121,6 +125,8 @@ export function ReceptionScreen({ active = true }: { active?: boolean }) {
           </div>
           {item.status === 'REJECTED' && item.rejectionReason && <div className="ds-field-hint">Причина: {item.rejectionReason}</div>}
           {item.status === 'COMPLETED' && item.resolution && <div className="ds-field-hint">Результат: {item.resolution}</div>}
+          {item.status === 'ANSWERED' && item.resolution && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</div>}
+          {item.status === 'DELEGATED' && item.resolution && <div className="ds-field-hint">Комментарий: {item.resolution}</div>}
           {item.status === 'WAITING' && (
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
               <Button variant="secondary" size="sm" onClick={() => setFormOpen(item)}>

@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Body,
   Controller,
@@ -8,8 +9,11 @@ import {
   Post,
   Patch,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ReceptionRequestStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -24,6 +28,11 @@ import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto, VersionOnlyDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';
 import { CompleteReceptionRequestDto } from './dto/complete.dto';
+import { AnswerReceptionRequestDto, DelegateReceptionRequestDto } from './dto/answer.dto';
+import { WhisperService } from '../voice/whisper.service';
+
+// Тот же набор форматов, что у голосового ввода (VoiceController).
+const AUDIO_MIME_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-m4a'];
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
@@ -48,6 +57,7 @@ export class ReceptionController {
   constructor(
     private readonly reception: ReceptionService,
     private readonly idempotency: IdempotencyService,
+    private readonly whisper: WhisperService,
   ) {}
 
   private requireIdempotencyKey(key: string | undefined): string {
@@ -86,6 +96,33 @@ export class ReceptionController {
     return this.reception.getQueueView({ search: search || undefined, authorId: authorId || undefined, expiredOnly: expiredOnly === 'true' }, l, o);
   }
 
+  @Get('board')
+  @Roles(...MANAGER_ROLES)
+  getBoard() {
+    return this.reception.getBoard();
+  }
+
+  // Голосовой ответ: запись → текст, который руководитель проверяет и
+  // отправляет через POST /requests/:id/answer. Ничего не меняет, поэтому
+  // без Idempotency-Key.
+  @Post('transcribe')
+  @Roles(...MANAGER_ROLES)
+  @UseInterceptors(
+    FileInterceptor('audio', {
+      limits: { fileSize: 25 * 1024 * 1024 }, // лимит Whisper API
+      fileFilter: (_req, file, cb) => cb(null, AUDIO_MIME_TYPES.includes(file.mimetype)),
+    }),
+  )
+  async transcribe(@UploadedFile() audio: Express.Multer.File | undefined) {
+    if (!audio) throw new BadRequestException('Нужна аудиозапись (webm, ogg, mp4, mp3, wav)');
+    try {
+      const { text } = await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname);
+      return { text: text.trim() };
+    } catch {
+      throw new BadGatewayException('Не удалось распознать запись — попробуйте ещё раз или напишите текстом');
+    }
+  }
+
   @Get('history')
   @Roles(...MANAGER_ROLES)
   getHistory(
@@ -97,7 +134,7 @@ export class ReceptionController {
     @Query('offset') offset: string | undefined,
   ) {
     const { limit: l, offset: o } = parsePaging(limit, offset);
-    const terminalStatuses: string[] = ['COMPLETED', 'REJECTED', 'WITHDRAWN'];
+    const terminalStatuses: string[] = ['COMPLETED', 'ANSWERED', 'DELEGATED', 'REJECTED', 'WITHDRAWN'];
     const parsedStatus = status && terminalStatuses.includes(status) ? (status as ReceptionRequestStatus) : undefined;
     const parsedFrom = dateFrom ? new Date(dateFrom) : undefined;
     const parsedTo = dateTo ? new Date(dateTo) : undefined;
@@ -201,6 +238,34 @@ export class ReceptionController {
     const key = this.requireIdempotencyKey(idemKey);
     const { body } = await this.idempotency.run(user.id, key, 'reception.requests.complete', { id, dto }, () =>
       this.reception.complete(user, id, dto),
+    );
+    return body;
+  }
+
+  @Post('requests/:id/answer')
+  @Roles(...MANAGER_ROLES)
+  async answer(
+    @Param('id') id: string,
+    @Body() dto: AnswerReceptionRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') idemKey?: string,
+  ) {
+    const key = this.requireIdempotencyKey(idemKey);
+    const { body } = await this.idempotency.run(user.id, key, 'reception.requests.answer', { id, dto }, () => this.reception.answer(user, id, dto));
+    return body;
+  }
+
+  @Post('requests/:id/delegate')
+  @Roles(...MANAGER_ROLES)
+  async delegate(
+    @Param('id') id: string,
+    @Body() dto: DelegateReceptionRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') idemKey?: string,
+  ) {
+    const key = this.requireIdempotencyKey(idemKey);
+    const { body } = await this.idempotency.run(user.id, key, 'reception.requests.delegate', { id, dto }, () =>
+      this.reception.delegate(user, id, dto),
     );
     return body;
   }

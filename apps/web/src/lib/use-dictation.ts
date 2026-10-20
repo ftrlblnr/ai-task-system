@@ -1,0 +1,101 @@
+import { useEffect, useRef, useState } from 'react';
+import { api, ApiError } from './api';
+
+// Надиктовать текст: запись в браузере → POST <endpoint> (Whisper) → текст.
+// Тот же MediaRecorder-флоу и формулировки ошибок, что у голоса в
+// assistant/page.tsx; распознанный текст отдаётся в onText, дальше его
+// можно поправить руками перед отправкой.
+const MAX_DURATION_MS = 120_000;
+const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+
+export type DictationPhase = 'idle' | 'recording' | 'processing';
+
+export function useDictation(endpoint: string, onText: (text: string) => void) {
+  const [phase, setPhase] = useState<DictationPhase>('idle');
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timersRef = useRef<{ tick: ReturnType<typeof setInterval> | null; stop: ReturnType<typeof setTimeout> | null }>({ tick: null, stop: null });
+  const cancelledRef = useRef(false);
+  const onTextRef = useRef(onText);
+
+  useEffect(() => {
+    onTextRef.current = onText;
+  }, [onText]);
+
+  function clearTimers() {
+    if (timersRef.current.tick) clearInterval(timersRef.current.tick);
+    if (timersRef.current.stop) clearTimeout(timersRef.current.stop);
+    timersRef.current = { tick: null, stop: null };
+  }
+
+  // Закрыли диалог посреди записи — микрофон освобождаем, текст не нужен.
+  useEffect(() => {
+    cancelledRef.current = false;
+    return () => {
+      cancelledRef.current = true;
+      clearTimers();
+      if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  async function start() {
+    setError(null);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      const name = err instanceof DOMException ? err.name : '';
+      if (name === 'NotAllowedError') setError('Доступ к микрофону запрещён — разрешите его в настройках браузера для этого сайта.');
+      else if (name === 'NotFoundError') setError('Микрофон не найден на этом устройстве.');
+      else setError('Не удалось получить доступ к микрофону.');
+      return;
+    }
+    const mimeType = typeof MediaRecorder !== 'undefined' ? MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) : undefined;
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => void upload(recorder.mimeType || 'audio/webm');
+    streamRef.current = stream;
+    recorderRef.current = recorder;
+    recorder.start();
+    setElapsedSec(0);
+    setPhase('recording');
+    timersRef.current = {
+      tick: setInterval(() => setElapsedSec((s) => s + 1), 1000),
+      stop: setTimeout(stop, MAX_DURATION_MS),
+    };
+  }
+
+  function stop() {
+    clearTimers();
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+  }
+
+  async function upload(mimeType: string) {
+    if (cancelledRef.current) return;
+    setPhase('processing');
+    try {
+      const blob = new Blob(chunksRef.current, { type: mimeType });
+      const ext = mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+      const formData = new FormData();
+      formData.append('audio', blob, `voice.${ext}`);
+      const { text } = await api.postForm<{ text: string }>(endpoint, formData);
+      if (cancelledRef.current) return;
+      if (text) onTextRef.current(text);
+      else setError('Не удалось разобрать речь — попробуйте ещё раз.');
+    } catch (err) {
+      if (!cancelledRef.current) setError(err instanceof ApiError ? err.message : 'Не удалось распознать запись.');
+    } finally {
+      if (!cancelledRef.current) setPhase('idle');
+    }
+  }
+
+  return { phase, elapsedSec, error, start, stop };
+}

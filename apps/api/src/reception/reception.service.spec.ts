@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/require-await -- in-memory fake Prisma */
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ReceptionService } from './reception.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
@@ -153,6 +153,7 @@ class FakePrisma {
       this.notifications.push(n);
       return n;
     },
+    findFirst: async ({ where }: { where: any }) => this.notifications.filter((n) => matchesNotification(n, where)).at(-1) ?? null,
     updateMany: async ({ where, data }: { where: any; data: any }) => {
       const matched = this.notifications.filter((n) => matchesNotification(n, where));
       for (const n of matched) Object.assign(n, data);
@@ -366,6 +367,96 @@ describe('ReceptionService.call/reject/complete/returnToQueue', () => {
     expect(BigInt(returned.queueOrder)).toBeGreaterThan(BigInt(b.queueOrder));
     expect(prisma.notifications.find((n) => n.kind === 'CALLED')!.status).toBe('SUPERSEDED');
     expect(prisma.notifications).toContainEqual(expect.objectContaining({ kind: 'RETURNED_TO_QUEUE' }));
+  });
+});
+
+// Владелец 20.10.2026 — закрыть вопрос без встречи: ответом или «разберитесь сами».
+describe('ReceptionService.answer/delegate', () => {
+  it('answer из очереди: WAITING → ANSWERED, текст в resolution, уведомление ANSWERED', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    const answered = await service.answer(user('boss', 'OWNER'), created.id, { version: created.version, text: '  Согласовано  ' });
+
+    expect(answered.status).toBe('ANSWERED');
+    expect(answered.resolution).toBe('Согласовано');
+    expect(answered.closedAt).toBeInstanceOf(Date);
+    expect(prisma.events.at(-1)).toEqual(expect.objectContaining({ type: 'ANSWERED', fromStatus: 'WAITING', toStatus: 'ANSWERED' }));
+    expect(prisma.notifications).toContainEqual(expect.objectContaining({ kind: 'ANSWERED', recipientId: 'e1', status: 'PENDING' }));
+  });
+
+  it('answer вызванному: CALLED → ANSWERED, неотправленный вызов снимается', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+    const called = await service.call(user('boss', 'OWNER'), created.id, created.version);
+
+    await service.answer(user('boss', 'OWNER'), created.id, { version: called.version, text: 'Делайте' });
+
+    expect(prisma.requests[0].status).toBe('ANSWERED');
+    expect(prisma.notifications.find((n) => n.kind === 'CALLED')!.status).toBe('SUPERSEDED');
+  });
+
+  it('answer пустым текстом — 400, статус не меняется', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    await expect(service.answer(user('boss', 'OWNER'), created.id, { version: created.version, text: '   ' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.requests[0].status).toBe('WAITING');
+  });
+
+  it('delegate: WAITING → DELEGATED, комментарий необязателен', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    const delegated = await service.delegate(user('boss', 'OWNER'), created.id, { version: created.version });
+
+    expect(delegated.status).toBe('DELEGATED');
+    expect(delegated.resolution).toBeNull();
+    expect(prisma.notifications).toContainEqual(expect.objectContaining({ kind: 'DELEGATED' }));
+  });
+
+  it('закрытое обращение — 409 INVALID_TRANSITION', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+    const delegated = await service.delegate(user('boss', 'OWNER'), created.id, { version: created.version });
+
+    await expect(service.answer(user('boss', 'OWNER'), created.id, { version: delegated.version, text: 'X' })).rejects.toThrow(/INVALID_TRANSITION/);
+  });
+
+  it('устаревшая version — 409 VERSION_CONFLICT', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const created = await service.create(user('e1'), baseDto());
+
+    await expect(service.delegate(user('boss', 'OWNER'), created.id, { version: created.version + 1 })).rejects.toThrow(/VERSION_CONFLICT/);
+  });
+
+  it('getBoard: очередь, вызов, «Разберитесь сами» и «Отвечено» (ответы и обсуждённые)', async () => {
+    const prisma = new FakePrisma();
+    const service = new ReceptionService(prisma as any);
+    const boss = user('boss', 'OWNER');
+    const waiting = await service.create(user('e1'), baseDto());
+    const toCall = await service.create(user('e2'), baseDto());
+    const toDelegate = await service.create(user('e1'), baseDto());
+    const toAnswer = await service.create(user('e2'), baseDto());
+    const toComplete = await service.create(user('e1'), baseDto());
+    await service.delegate(boss, toDelegate.id, { version: toDelegate.version });
+    await service.answer(boss, toAnswer.id, { version: toAnswer.version, text: 'Да' });
+    const c = await service.call(boss, toComplete.id, toComplete.version);
+    await service.complete(boss, toComplete.id, { version: c.version });
+    await service.call(boss, toCall.id, toCall.version);
+
+    const board = await service.getBoard();
+
+    expect(board.current?.id).toBe(toCall.id);
+    expect(board.waiting.map((r) => r.id)).toEqual([waiting.id]);
+    expect(board.delegated.map((r) => r.id)).toEqual([toDelegate.id]);
+    expect(board.answered.map((r) => r.id).sort()).toEqual([toAnswer.id, toComplete.id].sort());
   });
 });
 

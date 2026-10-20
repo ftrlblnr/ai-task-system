@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ReceptionEventType, ReceptionRequestStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isManager } from '../auth/roles';
@@ -7,6 +7,7 @@ import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';
 import { CompleteReceptionRequestDto } from './dto/complete.dto';
+import { AnswerReceptionRequestDto, DelegateReceptionRequestDto } from './dto/answer.dto';
 
 // Единственная запись очереди в MVP (раздел 11.1 ТЗ) — фиксированный id,
 // upsert по PK вместо отдельного bootstrap-шага/сида; гонки на создании нет
@@ -31,6 +32,15 @@ function normalizeOptionalText(value: string | undefined): string | null {
 function serializeRequest<T extends { queueOrder: bigint }>(row: T): Omit<T, 'queueOrder'> & { queueOrder: string } {
   return { ...row, queueOrder: row.queueOrder.toString() };
 }
+
+// Закрытые статусы — история автора и вкладка «История» руководителя.
+const CLOSED_STATUSES: ReceptionRequestStatus[] = ['COMPLETED', 'ANSWERED', 'DELEGATED', 'REJECTED', 'WITHDRAWN'];
+
+// Доска руководителя показывает закрытые за последнюю неделю, остальное —
+// во вкладке «История».
+const BOARD_RECENT_DAYS = 7;
+const BOARD_RECENT_LIMIT = 30;
+const BOARD_WAITING_LIMIT = 100;
 
 const DETAIL_SELECT = {
   id: true,
@@ -229,6 +239,57 @@ export class ReceptionService {
     }, { supersedeCalledNotification: true });
   }
 
+  // Владелец 20.10.2026 — ответить без встречи (текстом или надиктовав)
+  // можно и ожидающему, и уже вызванному: вопрос уходит в «Отвечено»,
+  // автор получает текст ответа в Telegram.
+  async answer(owner: AuthenticatedUser, id: string, dto: AnswerReceptionRequestDto) {
+    const text = normalizeOptionalText(dto.text);
+    if (!text) throw new BadRequestException('Напишите или надиктуйте ответ');
+    return this.closeByOwner(owner, id, dto.version, 'ANSWERED', text);
+  }
+
+  // «Разберитесь сами» — тоже из очереди или из вызова.
+  async delegate(owner: AuthenticatedUser, id: string, dto: DelegateReceptionRequestDto) {
+    return this.closeByOwner(owner, id, dto.version, 'DELEGATED', normalizeOptionalText(dto.comment));
+  }
+
+  private async closeByOwner(
+    owner: AuthenticatedUser,
+    id: string,
+    expectedVersion: number,
+    toStatus: 'ANSWERED' | 'DELEGATED',
+    resolution: string | null,
+  ) {
+    const request = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.receptionRequest.findUnique({ where: { id }, select: { status: true } });
+      if (!current) throw new NotFoundException('Обращение не найдено');
+      if (current.status !== 'WAITING' && current.status !== 'CALLED') {
+        throw new ConflictException('INVALID_TRANSITION: обращение уже закрыто');
+      }
+      const fromStatus = current.status;
+      const result = await tx.receptionRequest.updateMany({
+        where: { id, version: expectedVersion, status: fromStatus },
+        data: { status: toStatus, version: { increment: 1 }, closedAt: new Date(), resolution },
+      });
+      if (result.count === 0) throw await this.classifyTransitionFailure(tx, id, undefined, expectedVersion, fromStatus);
+
+      const updated = await tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT });
+      const event = await tx.receptionEvent.create({
+        data: { requestId: id, actorId: owner.id, type: toStatus, fromStatus, toStatus, requestVersion: updated.version },
+      });
+      // Ещё не отправленное «вас приглашают» больше не актуально.
+      await tx.receptionNotification.updateMany({
+        where: { requestId: id, kind: 'CALLED', status: 'PENDING' },
+        data: { status: 'SUPERSEDED' },
+      });
+      await tx.receptionNotification.create({
+        data: { eventId: event.id, requestId: id, recipientId: updated.authorId, kind: toStatus },
+      });
+      return updated;
+    });
+    return serializeRequest(request);
+  }
+
   async returnToQueue(owner: AuthenticatedUser, id: string, expectedVersion: number) {
     return this.prisma.$transaction(async (tx) => {
       const queueOrder = await this.nextQueueOrder(tx);
@@ -359,7 +420,7 @@ export class ReceptionService {
   }
 
   async getMine(actor: AuthenticatedUser, scope: 'active' | 'history', limit: number, offset: number) {
-    const statuses: ReceptionRequestStatus[] = scope === 'active' ? ['WAITING', 'CALLED'] : ['COMPLETED', 'REJECTED', 'WITHDRAWN'];
+    const statuses: ReceptionRequestStatus[] = scope === 'active' ? ['WAITING', 'CALLED'] : CLOSED_STATUSES;
     const where: Prisma.ReceptionRequestWhereInput = { authorId: actor.id, status: { in: statuses } };
     const orderBy: Prisma.ReceptionRequestOrderByWithRelationInput =
       scope === 'active' ? { queueOrder: 'asc' } : { closedAt: 'desc' };
@@ -410,6 +471,32 @@ export class ReceptionService {
     };
   }
 
+  // Доска руководителя (владелец 20.10.2026): очередь, текущий вызов и
+  // закрытые за неделю — «Разберитесь сами» и «Отвечено» (ответ без
+  // встречи + обсуждённые лично).
+  async getBoard() {
+    const recentSince = new Date(Date.now() - BOARD_RECENT_DAYS * 24 * 60 * 60 * 1000);
+    const recent = (statuses: ReceptionRequestStatus[]) =>
+      this.prisma.receptionRequest.findMany({
+        where: { queueId: QUEUE_ID, status: { in: statuses }, closedAt: { gte: recentSince } },
+        select: DETAIL_SELECT,
+        orderBy: [{ closedAt: 'desc' }, { id: 'desc' }],
+        take: BOARD_RECENT_LIMIT,
+      });
+    const [queue, delegated, answered] = await Promise.all([
+      this.getQueueView({}, BOARD_WAITING_LIMIT, 0),
+      recent(['DELEGATED']),
+      recent(['ANSWERED', 'COMPLETED']),
+    ]);
+    return {
+      current: queue.current,
+      waiting: queue.items,
+      totalWaiting: queue.totalWaiting,
+      delegated: delegated.map(serializeRequest),
+      answered: answered.map(serializeRequest),
+    };
+  }
+
   async getHistory(
     filters: { authorId?: string; status?: ReceptionRequestStatus; closedFrom?: Date; closedTo?: Date },
     limit: number,
@@ -417,7 +504,7 @@ export class ReceptionService {
   ) {
     const where: Prisma.ReceptionRequestWhereInput = {
       queueId: QUEUE_ID,
-      status: { in: ['COMPLETED', 'REJECTED', 'WITHDRAWN'] },
+      status: { in: CLOSED_STATUSES },
     };
     if (filters.authorId) where.authorId = filters.authorId;
     if (filters.status) where.status = filters.status;

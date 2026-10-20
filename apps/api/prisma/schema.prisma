@@ -1673,6 +1673,9 @@ enum ReceptionRequestStatus {
   COMPLETED
   REJECTED
   WITHDRAWN
+  // Владелец 20.10.2026 — руководитель закрывает вопрос без встречи:
+  ANSWERED // ответила текстом или голосом (текст в resolution)
+  DELEGATED // «разберитесь сами» (необязательный комментарий в resolution)
 }
 
 enum ReceptionEventType {
@@ -1684,12 +1687,16 @@ enum ReceptionEventType {
   WITHDRAWN
   COMPLETED
   RETURNED_TO_QUEUE
+  ANSWERED
+  DELEGATED
 }
 
 enum ReceptionNotificationKind {
   CALLED
   REJECTED
   RETURNED_TO_QUEUE
+  ANSWERED
+  DELEGATED
 }
 
 enum ReceptionNotificationStatus {
