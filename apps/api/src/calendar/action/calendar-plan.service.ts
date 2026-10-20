@@ -1,5 +1,5 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { CalendarAction, CalendarActionStatus, CalendarActionType, CalendarAttemptOutcome, Prisma } from '@prisma/client';
+import { CalendarAction, CalendarActionStatus, CalendarActionType, CalendarAttemptOutcome, CalendarExecutionState, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { computeCalendarActionPayloadHash } from './calendar-action-rules';
@@ -22,6 +22,19 @@ const EDITABLE_ACTION_STATUSES: ReadonlySet<CalendarActionStatus> = new Set(['PE
 
 export interface CalendarActionView extends CalendarAction {
   lastAttempt: { errorCode: string | null; outcome: CalendarAttemptOutcome | null; finishedAt: Date | null } | null;
+}
+
+// Экран «Планы агента» (web /calendar) — executionId иначе живёт только в
+// ответе approve; после перезагрузки страницы владелец должен видеть ход
+// исполнения и иметь stop/retry.
+export interface CalendarPlanExecutionView {
+  id: string;
+  state: CalendarExecutionState;
+  actionIds: string[];
+  approvedAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  cancelRequestedAt: Date | null;
 }
 
 export interface PatchCalendarActionInput {
@@ -95,6 +108,30 @@ export class CalendarPlanService {
   // Раздел 14 ТЗ — правка параметров снимает согласие (authorizationId),
   // новое согласие нужно получить заново. Тот же принцип, что у почтового
   // агента (patchItem), не распространяется на другие действия плана.
+  async listExecutions(ownerId: string, planId: string): Promise<CalendarPlanExecutionView[]> {
+    const plan = await this.getPlanOrThrow(ownerId, planId);
+    const authorizations = await this.prisma.calendarAuthorization.findMany({
+      where: { planId: plan.id },
+      orderBy: { approvedAt: 'desc' },
+      include: { execution: true },
+    });
+    return authorizations.flatMap((a) =>
+      a.execution
+        ? [
+            {
+              id: a.execution.id,
+              state: a.execution.state,
+              actionIds: a.actionIds,
+              approvedAt: a.approvedAt,
+              startedAt: a.execution.startedAt,
+              finishedAt: a.execution.finishedAt,
+              cancelRequestedAt: a.execution.cancelRequestedAt,
+            },
+          ]
+        : [],
+    );
+  }
+
   async patchAction(ownerId: string, planId: string, actionId: string, dto: PatchCalendarActionInput): Promise<CalendarAction> {
     const plan = await this.getPlanOrThrow(ownerId, planId);
     const action = await this.prisma.calendarAction.findUnique({ where: { id: actionId } });

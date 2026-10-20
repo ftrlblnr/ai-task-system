@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import {
   MailActionAttemptOutcome,
+  MailActionExecutionState,
+  MailActionGroupType,
   MailActionItem,
   MailActionItemStatus,
   MailActionRelevance,
@@ -62,6 +64,24 @@ export interface MailActionItemView extends MailActionItem {
 export interface PlanItemsView {
   items: MailActionItemView[];
   conflicts: MailActionConflict[];
+}
+
+// Экран согласования (web /mail, вкладка «Разбор») — пункт хранит только
+// stableObjectIds, а владельцу нужно видеть, О КАКОМ письме речь; и после
+// перезагрузки страницы — найти исполнения своих согласий (executionId
+// иначе живёт только в ответе approve).
+export interface PlanContextView {
+  messages: Record<string, { subject: string | null; fromName: string | null; fromAddress: string; receivedAt: Date | null }>;
+  executions: {
+    id: string;
+    state: MailActionExecutionState;
+    groupType: MailActionGroupType;
+    itemIds: string[];
+    approvedAt: Date;
+    startedAt: Date | null;
+    finishedAt: Date | null;
+    cancelRequestedAt: Date | null;
+  }[];
 }
 
 // Почтовый ИИ-агент v2.0 — план/пункты (раздел 4/6/14 ТЗ). Сам анализ
@@ -193,6 +213,44 @@ export class MailActionPlanService {
       })),
     );
     return { items, conflicts };
+  }
+
+  async getPlanContext(ownerId: string, planId: string): Promise<PlanContextView> {
+    const plan = await this.getPlanOrThrow(ownerId, planId);
+    const [items, approvals] = await Promise.all([
+      this.prisma.mailActionItem.findMany({ where: { planId: plan.id }, select: { stableObjectIds: true } }),
+      this.prisma.mailActionApproval.findMany({
+        where: { planId: plan.id },
+        orderBy: { approvedAt: 'desc' },
+        include: { execution: true },
+      }),
+    ]);
+    const messageIds = [...new Set(items.flatMap((i) => i.stableObjectIds))];
+    const messages = messageIds.length
+      ? await this.prisma.emailMessage.findMany({
+          where: { id: { in: messageIds }, mailboxId: plan.mailboxId },
+          select: { id: true, subject: true, fromName: true, fromAddress: true, receivedAt: true },
+        })
+      : [];
+    return {
+      messages: Object.fromEntries(messages.map(({ id, ...m }) => [id, m])),
+      executions: approvals.flatMap((a) =>
+        a.execution
+          ? [
+              {
+                id: a.execution.id,
+                state: a.execution.state,
+                groupType: a.groupType,
+                itemIds: a.itemIds,
+                approvedAt: a.approvedAt,
+                startedAt: a.execution.startedAt,
+                finishedAt: a.execution.finishedAt,
+                cancelRequestedAt: a.execution.cancelRequestedAt,
+              },
+            ]
+          : [],
+      ),
+    };
   }
 
   // Раздел 14 ТЗ — правка параметров/выбора пункта. Если пункт уже был

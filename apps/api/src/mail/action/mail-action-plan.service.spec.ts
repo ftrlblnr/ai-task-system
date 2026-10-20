@@ -243,3 +243,60 @@ describe('MailActionPlanService (ТЗ разд. 4/6/14)', () => {
     expect(patched.parameters).toEqual({ folderPath: 'INBOX/Archive' });
   });
 });
+
+describe('MailActionPlanService.getPlanContext (экран согласования)', () => {
+  const plan = { id: 'plan-1', ownerId: 'owner', mailboxId: 'mbx-1' };
+  const receivedAt = new Date('2026-10-01T10:00:00Z');
+  const approvedAt = new Date('2026-10-02T10:00:00Z');
+
+  function makeService(overrides: { plan?: unknown } = {}) {
+    const prisma = {
+      mailActionPlan: { findUnique: jest.fn().mockResolvedValue(overrides.plan === undefined ? plan : overrides.plan) },
+      mailActionItem: {
+        findMany: jest.fn().mockResolvedValue([{ stableObjectIds: ['m1'] }, { stableObjectIds: ['m1', 'm2'] }]),
+      },
+      mailActionApproval: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            groupType: 'MAILBOX_ORDER',
+            itemIds: ['i1'],
+            approvedAt,
+            execution: { id: 'ex-1', state: 'DONE', startedAt: null, finishedAt: null, cancelRequestedAt: null },
+          },
+          { groupType: 'TRASH', itemIds: ['i2'], approvedAt, execution: null },
+        ]),
+      },
+      emailMessage: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'm1', subject: 'Счёт', fromName: null, fromAddress: 'a@b.kz', receivedAt }]),
+      },
+    };
+    return { prisma, service: new MailActionPlanService(prisma as never) };
+  }
+
+  it('отдаёт письма пунктов (по ящику плана, без дублей id) и исполнения согласий', async () => {
+    const { prisma, service } = makeService();
+    const ctx = await service.getPlanContext('owner', 'plan-1');
+
+    expect(prisma.emailMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ['m1', 'm2'] }, mailboxId: 'mbx-1' } }),
+    );
+    expect(ctx.messages).toEqual({ m1: { subject: 'Счёт', fromName: null, fromAddress: 'a@b.kz', receivedAt } });
+    expect(ctx.executions).toEqual([
+      {
+        id: 'ex-1',
+        state: 'DONE',
+        groupType: 'MAILBOX_ORDER',
+        itemIds: ['i1'],
+        approvedAt,
+        startedAt: null,
+        finishedAt: null,
+        cancelRequestedAt: null,
+      },
+    ]);
+  });
+
+  it('чужой план — 404', async () => {
+    const { service } = makeService({ plan: { ...plan, ownerId: 'other' } });
+    await expect(service.getPlanContext('owner', 'plan-1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+});

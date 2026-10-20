@@ -78,6 +78,11 @@ export class MailActionController {
     return this.plans.listItemsWithConflicts(user.id, id);
   }
 
+  @Get('action-plans/:id/context')
+  async getPlanContext(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.plans.getPlanContext(user.id, id);
+  }
+
   @Patch('action-plans/:id/items/:itemId')
   async patchItem(
     @Param('id') id: string,

@@ -19,6 +19,8 @@ import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
+import { SegmentedControl } from '@/components/ui/segmented-control';
+import { CalendarAgent, type CalendarAgentTab } from '@/components/calendar-agent';
 
 function GoogleConnectionCard() {
   const params = useSearchParams();
@@ -460,13 +462,34 @@ function EventsAgenda() {
   );
 }
 
+type CalendarTab = 'events' | CalendarAgentTab;
+
 function CalendarBody() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [tab, setTab] = useState<CalendarTab>('events');
   return (
     <>
       <GoogleConnectionCard />
-      <NewEventForm onCreated={() => setRefreshKey((k) => k + 1)} />
-      <EventsAgenda key={refreshKey} />
+      <div style={{ marginBottom: 16 }}>
+        <SegmentedControl
+          options={[
+            { value: 'events', label: 'События' },
+            { value: 'availability', label: 'Свободное время' },
+            { value: 'plans', label: 'Планы агента' },
+            { value: 'policy', label: 'Рабочие часы' },
+          ]}
+          value={tab}
+          onChange={(v) => setTab(v as CalendarTab)}
+        />
+      </div>
+      {tab === 'events' ? (
+        <>
+          <NewEventForm onCreated={() => setRefreshKey((k) => k + 1)} />
+          <EventsAgenda key={refreshKey} />
+        </>
+      ) : (
+        <CalendarAgent tab={tab} onTabChange={setTab} />
+      )}
     </>
   );
 }

@@ -23,6 +23,7 @@ import type { BadgeTone } from '@/components/ui/badge';
 import { Field, Input, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { MailAgentTab } from '@/components/mail-agent';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -579,7 +580,7 @@ function DigestList() {
   );
 }
 
-type MailTab = 'messages' | 'digests';
+type MailTab = 'messages' | 'digests' | 'agent';
 
 function MailView() {
   const [status, setStatus] = useState<MailStatus | null>(null);
@@ -618,12 +619,15 @@ function MailView() {
           options={[
             { value: 'messages', label: 'Письма' },
             { value: 'digests', label: 'Дайджест' },
+            { value: 'agent', label: 'Разбор' },
           ]}
           value={tab}
           onChange={(v) => setTab(v as MailTab)}
         />
       </div>
-      {tab === 'messages' ? <MessageList /> : <DigestList />}
+      {tab === 'messages' && <MessageList />}
+      {tab === 'digests' && <DigestList />}
+      {tab === 'agent' && <MailAgentTab />}
     </>
   );
 }

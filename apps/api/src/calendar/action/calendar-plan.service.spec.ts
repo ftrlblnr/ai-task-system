@@ -69,3 +69,38 @@ describe('CalendarPlanService (ТЗ разд. 7/20)', () => {
     });
   });
 });
+
+describe('CalendarPlanService.listExecutions (экран «Планы агента»)', () => {
+  const approvedAt = new Date('2026-10-02T10:00:00Z');
+
+  function makeService(ownerId = 'owner-1') {
+    const prisma = {
+      calendarPlan: { findUnique: jest.fn().mockResolvedValue({ id: 'plan-1', ownerId }) },
+      calendarAuthorization: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            actionIds: ['a1'],
+            approvedAt,
+            execution: { id: 'ex-1', state: 'RUNNING', startedAt: approvedAt, finishedAt: null, cancelRequestedAt: null },
+          },
+          { actionIds: ['a2'], approvedAt, execution: null },
+        ]),
+      },
+    };
+    return { prisma, service: new CalendarPlanService(prisma as never) };
+  }
+
+  it('отдаёт исполнения согласий плана, пропуская согласия без исполнения', async () => {
+    const { prisma, service } = makeService();
+    const executions = await service.listExecutions('owner-1', 'plan-1');
+    expect(prisma.calendarAuthorization.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { planId: 'plan-1' } }));
+    expect(executions).toEqual([
+      { id: 'ex-1', state: 'RUNNING', actionIds: ['a1'], approvedAt, startedAt: approvedAt, finishedAt: null, cancelRequestedAt: null },
+    ]);
+  });
+
+  it('чужой план — 404', async () => {
+    const { service } = makeService('other');
+    await expect(service.listExecutions('owner-1', 'plan-1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+});

@@ -1233,3 +1233,196 @@ export interface UpdateExtractedFactInput {
   factValue?: string;
   status?: ExtractedFactStatus;
 }
+
+// Почтовый ИИ-агент v2.0 (ТЗ 05.10.2026) — /mail/action-plans*, /mail/folders,
+// /mail/action-executions/*. Зеркало Prisma-моделей MailAction* под web.
+export type MailActionType =
+  | 'ARCHIVE'
+  | 'MOVE'
+  | 'CREATE_FOLDER'
+  | 'SET_READ'
+  | 'SET_UNREAD'
+  | 'FLAG'
+  | 'UNFLAG'
+  | 'TRASH'
+  | 'CREATE_TASK'
+  | 'SAVE_ATTACHMENT'
+  | 'DRAFT_REPLY'
+  | 'SEND_REPLY'
+  | 'FORWARD'
+  | 'PROPOSE_MEETING'
+  | 'CREATE_EVENT'
+  | 'WATCH_REPLY'
+  | 'WATCH_COMMITMENT'
+  | 'DRAFT_REMINDER';
+export type MailActionGroupType = 'MAILBOX_ORDER' | 'WORK_OBJECTS' | 'EXTERNAL_SEND' | 'TRASH';
+export type MailActionPlanStatus = 'ANALYZING' | 'READY' | 'EXECUTING' | 'DONE' | 'CANCELLED';
+export type MailActionItemStatus =
+  | 'DRAFT'
+  | 'NEEDS_REVIEW'
+  | 'APPROVED'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'UNKNOWN'
+  | 'SKIPPED_CHANGED'
+  | 'BLOCKED_DEPENDENCY'
+  | 'CANCELLED'
+  | 'COMPENSATED';
+export type MailActionRelevance = 'RECOMMENDED' | 'KEEP' | 'NEEDS_REVIEW' | 'UNVERIFIED';
+export type MailActionExecutionState = 'QUEUED' | 'RUNNING' | 'DONE' | 'STOPPED';
+export type AgentAttemptOutcome = 'SUCCEEDED' | 'FAILED' | 'UNKNOWN';
+
+export interface MailActionPlan {
+  id: string;
+  requestText: string;
+  scope: { folderPaths: string[] | null; since: string | null; until: string | null };
+  version: number;
+  status: MailActionPlanStatus;
+  // { error } — анализ не удался; иначе произвольная сводка анализатора.
+  coverage: { error?: string; [key: string]: unknown } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateMailActionPlanInput {
+  requestText: string;
+  folderPaths?: string[];
+  since?: string;
+  until?: string;
+}
+
+export interface AgentLastAttempt {
+  errorCode: string | null;
+  outcome: AgentAttemptOutcome | null;
+  finishedAt: string | null;
+}
+
+export interface MailActionItem {
+  id: string;
+  planId: string;
+  type: MailActionType;
+  groupType: MailActionGroupType;
+  stableObjectIds: string[];
+  reason: string;
+  relevance: MailActionRelevance | null;
+  parameters: { folderPath?: string | null; [key: string]: unknown };
+  dependsOnItemIds: string[];
+  selected: boolean;
+  status: MailActionItemStatus;
+  version: number;
+  approvalId: string | null;
+  lastAttempt: AgentLastAttempt | null;
+}
+
+export interface MailActionConflict {
+  code: 'TERMINAL_MOVE' | 'FLAG_STATE' | 'MISSING_DEPENDENCY' | 'DEPENDENCY_CYCLE';
+  itemLocalIds: string[];
+  stableObjectId?: string;
+}
+
+export interface MailActionPlanItems {
+  items: MailActionItem[];
+  conflicts: MailActionConflict[];
+}
+
+export interface MailActionPlanExecution {
+  id: string;
+  state: MailActionExecutionState;
+  groupType: MailActionGroupType;
+  itemIds: string[];
+  approvedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelRequestedAt: string | null;
+}
+
+export interface MailActionPlanContext {
+  messages: Record<string, { subject: string | null; fromName: string | null; fromAddress: string; receivedAt: string | null }>;
+  executions: MailActionPlanExecution[];
+}
+
+export interface MailFolder {
+  path: string;
+  role: string;
+  specialUse: string | null;
+}
+
+// Календарный агент (ТЗ календарного агента, 07.10.2026) — /calendar/policy,
+// /calendar/availability, /calendar/plans*, /calendar/action-executions/*.
+export interface WorkingHoursRule {
+  weekday: number; // 0 — воскресенье
+  startMinute: number;
+  endMinute: number;
+}
+
+export interface CalendarPolicy {
+  version: number | null; // null — политика ещё не сохранялась, действуют значения по умолчанию
+  timeZoneOffsetMinutes: number;
+  workingHours: WorkingHoursRule[];
+  bufferMinutes: number;
+  minNoticeHours: number;
+  slotStepMinutes: number;
+}
+
+export interface UpdateCalendarPolicyInput {
+  version?: number;
+  workingHours?: WorkingHoursRule[];
+  bufferMinutes?: number;
+  minNoticeHours?: number;
+  slotStepMinutes?: number;
+}
+
+export interface FindAvailabilityInput {
+  from: string;
+  to: string;
+  durationMinutes: 15 | 30 | 60;
+  maxResults?: number;
+}
+
+export type AvailabilityResult = { status: 'OK'; slots: { start: string; end: string }[] } | { status: 'UNKNOWN' };
+
+export type CalendarActionType = 'CREATE_EVENT' | 'UPDATE_EVENT' | 'RESCHEDULE_EVENT' | 'CANCEL_EVENT';
+export type CalendarPlanStatus = 'DRAFT' | 'NEEDS_APPROVAL' | 'APPROVED' | 'EXECUTING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
+export type CalendarActionStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'UNKNOWN' | 'SKIPPED_CHANGED' | 'BLOCKED_DEPENDENCY' | 'CANCELLED';
+export type CalendarExecutionState = 'QUEUED' | 'RUNNING' | 'DONE' | 'STOPPED';
+
+export interface CalendarPlan {
+  id: string;
+  requestText: string;
+  version: number;
+  status: CalendarPlanStatus;
+  createdAt: string;
+}
+
+export interface CalendarAction {
+  id: string;
+  type: CalendarActionType;
+  targetEventId: string | null;
+  parameters: { title?: string; startAt?: string; endAt?: string; location?: string; description?: string; [key: string]: unknown };
+  status: CalendarActionStatus;
+  version: number;
+  authorizationId: string | null;
+  lastAttempt: AgentLastAttempt | null;
+}
+
+export interface CalendarPlanExecution {
+  id: string;
+  state: CalendarExecutionState;
+  actionIds: string[];
+  approvedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelRequestedAt: string | null;
+}
+
+export interface CreateCalendarPlanInput {
+  requestText: string;
+  actions?: {
+    localId: string;
+    type: CalendarActionType;
+    targetEventId?: string;
+    parameters: Record<string, unknown>;
+  }[];
+}

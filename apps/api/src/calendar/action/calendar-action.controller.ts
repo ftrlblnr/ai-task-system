@@ -55,6 +55,11 @@ export class CalendarActionController {
     return this.plans.listActions(user.id, id);
   }
 
+  @Get('plans/:id/executions')
+  listExecutions(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.plans.listExecutions(user.id, id);
+  }
+
   @Patch('plans/:id/actions/:actionId')
   patchAction(@Param('id') id: string, @Param('actionId') actionId: string, @Body() dto: PatchCalendarActionDto, @CurrentUser() user: AuthenticatedUser) {
     return this.plans.patchAction(user.id, id, actionId, dto);
