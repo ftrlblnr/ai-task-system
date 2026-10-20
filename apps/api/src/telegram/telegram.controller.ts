@@ -1,9 +1,11 @@
 import { Body, Controller, Delete, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { MANAGER_ROLES } from '../auth/roles';
 import { AuthService } from '../auth/auth.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TelegramService } from './telegram.service';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
 
@@ -18,18 +20,18 @@ export class TelegramController {
   // (deep-link в Telegram Mini App, см. TelegramService.createInvite).
   @Post('employees/:id/telegram-invite')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.OWNER)
-  createInvite(@Param('id') id: string) {
-    return this.telegramService.createInvite(id);
+  @Roles(...MANAGER_ROLES)
+  createInvite(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.telegramService.createInvite(id, user);
   }
 
   // Отвязать Telegram (например, сотрудник сменил телефон).
   @Delete('employees/:id/telegram-link')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   @HttpCode(HttpStatus.NO_CONTENT)
-  async unlink(@Param('id') id: string) {
-    await this.telegramService.unlink(id);
+  async unlink(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    await this.telegramService.unlink(id, user);
   }
 
   // Вызывается Telegram Mini App при каждом открытии — не пользовательский

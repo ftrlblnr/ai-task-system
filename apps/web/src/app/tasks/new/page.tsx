@@ -11,6 +11,7 @@ import type {
   TaskDetail,
   TaskPriority,
 } from '@ai-task-system/shared-types';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { useAuth } from '@/lib/auth-context';
@@ -37,16 +38,16 @@ function NewTaskForm() {
   const [sourceTimestamp, setSourceTimestamp] = useState('');
   const [sourceContext, setSourceContext] = useState('');
 
-  const isOwner = user?.role === 'OWNER';
+  const isManager = isManagerRole(user?.role);
 
   useEffect(() => {
     api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
     // Раздел 9 ТЗ: задачи из встречи ставит только руководитель — сотруднику
     // /meetings всё равно недоступен (403), поэтому даже не запрашиваем.
-    if (isOwner) {
+    if (isManager) {
       api.get<MeetingSummary[]>('/meetings').then(setMeetings).catch(() => {});
     }
-  }, [isOwner]);
+  }, [isManager]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -101,7 +102,7 @@ function NewTaskForm() {
         <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
       </Field>
 
-      {isOwner && (
+      {isManager && (
         <>
           <div className="form-section-divider">Источник (раздел 9 ТЗ) — необязательно</div>
 

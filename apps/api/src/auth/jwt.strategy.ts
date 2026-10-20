@@ -8,14 +8,12 @@ export interface AuthenticatedUser {
   id: string;
   email: string;
   role: Role;
-  isProfileAdmin: boolean;
 }
 
 interface JwtPayload {
   sub: string;
   email: string;
   role: Role;
-  isProfileAdmin: boolean;
 }
 
 @Injectable()
@@ -33,7 +31,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       id: payload.sub,
       email: payload.email,
       role: payload.role,
-      isProfileAdmin: payload.isProfileAdmin,
     };
   }
 }

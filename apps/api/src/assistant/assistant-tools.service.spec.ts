@@ -11,7 +11,7 @@ function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRe
 // Phase C, §16 — LLM не сочиняет данные карточек, только решает вызвать
 // инструмент).
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
 
 describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уровне видимости инструмента, не постфактум)', () => {

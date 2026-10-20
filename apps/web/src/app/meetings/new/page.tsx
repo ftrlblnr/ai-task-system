@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import type { CreateMeetingInput, MeetingSummary } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Field, Input, Textarea } from '@/components/ui/field';
@@ -64,7 +65,7 @@ function NewMeetingForm() {
 
 export default function NewMeetingPage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <Link href="/meetings" className="back-link">
         <ArrowLeft size={14} strokeWidth={1.75} />
         Встречи

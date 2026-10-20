@@ -1,11 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { EmployeeStatus, Role } from '@prisma/client';
+import { EmployeeStatus } from '@prisma/client';
+import { isManager } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import { localDateString } from '../common/timezone';
 import { TasksService } from './tasks.service';
-import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
 // Владелец 08.09.2026 (по итогам аудита best-practices): один компактный
 // дайджест в фиксированное время вместо разрозненных пушей — снижает
@@ -30,18 +30,16 @@ export class DailyDigestCron {
   async sendDigest() {
     const employees = await this.prisma.employee.findMany({
       where: { status: EmployeeStatus.ACTIVE, telegramId: { not: null } },
-      select: { id: true, email: true, role: true, telegramId: true },
+      select: { id: true, role: true, telegramId: true },
     });
 
     for (const employee of employees) {
       try {
-        const actor: AuthenticatedUser = {
-          id: employee.id,
-          email: employee.email,
-          role: employee.role,
-          isProfileAdmin: false,
-        };
-        const allTasks = await this.tasks.findAll(actor);
+        // Задачи видят все (владелец 20.10.2026), но утренний дайджест —
+        // личный: руководству — все задачи (контроль поручений),
+        // пользователю — только поставленные им или ему.
+        const tasks = await this.tasks.findAll();
+        const allTasks = isManager(employee.role) ? tasks : tasks.filter((t) => t.assigneeId === employee.id || t.creatorId === employee.id);
 
         // Просрочка — вычисляемый признак (isOverdue от TasksService), не
         // статус, см. аудит 10.09.2026 п. 2.1.
@@ -62,7 +60,7 @@ export class DailyDigestCron {
         // Только руководителю — задачи, которые сам голосовой агент
         // пометил низкой уверенностью разбора, стоит перепроверить.
         const needsReview =
-          employee.role === Role.OWNER ? allTasks.filter((t) => t.aiConfidence === 'LOW') : [];
+          isManager(employee.role) ? allTasks.filter((t) => t.aiConfidence === 'LOW') : [];
 
         if (overdue.length === 0 && dueToday.length === 0 && needsReview.length === 0) continue;
 

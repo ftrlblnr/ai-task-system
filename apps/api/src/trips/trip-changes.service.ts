@@ -26,23 +26,23 @@ export class TripChangesService {
   ) {}
 
   async listChanges(user: AuthenticatedUser, tripId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
+    await this.rights.assertPermission(tripId, user, 'view');
     return this.prisma.proposedChange.findMany({ where: { tripId }, orderBy: { createdAt: 'desc' } });
   }
 
   async listRevisions(user: AuthenticatedUser, tripId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
+    await this.rights.assertPermission(tripId, user, 'view');
     return this.prisma.tripRevision.findMany({ where: { tripId }, orderBy: { appliedAt: 'desc' } });
   }
 
   async approve(user: AuthenticatedUser, tripId: string, changeId: string): Promise<void> {
-    await this.rights.assertPermission(tripId, user.id, 'approve');
+    await this.rights.assertPermission(tripId, user, 'approve');
     const change = await this.getPendingOrThrow(tripId, changeId);
     await this.applyChange(user.id, change);
   }
 
   async reject(user: AuthenticatedUser, tripId: string, changeId: string): Promise<void> {
-    await this.rights.assertPermission(tripId, user.id, 'approve');
+    await this.rights.assertPermission(tripId, user, 'approve');
     const change = await this.getPendingOrThrow(tripId, changeId);
     await this.prisma.proposedChange.update({
       where: { id: change.id },
@@ -51,7 +51,7 @@ export class TripChangesService {
   }
 
   async approveAll(user: AuthenticatedUser, tripId: string): Promise<{ approved: number }> {
-    await this.rights.assertPermission(tripId, user.id, 'approve');
+    await this.rights.assertPermission(tripId, user, 'approve');
     const pending = await this.prisma.proposedChange.findMany({ where: { tripId, status: 'PENDING' } });
     for (const change of pending) await this.applyChange(user.id, change);
     return { approved: pending.length };

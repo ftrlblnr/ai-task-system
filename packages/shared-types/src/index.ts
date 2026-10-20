@@ -2,7 +2,21 @@
 // select-проекций API вручную (пакет не зависит от @prisma/client), чтобы
 // Prisma не тянулась в браузерный бандл web-приложения.
 
-export type Role = 'OWNER' | 'EMPLOYEE';
+// Ролевая модель 20.10.2026: руководитель (один), администратор (всё, кроме
+// «Стола руководителя»), пользователь.
+export type Role = 'OWNER' | 'ADMIN' | 'EMPLOYEE';
+
+export const ROLE_LABELS: Record<Role, string> = {
+  OWNER: 'Руководитель',
+  ADMIN: 'Администратор',
+  EMPLOYEE: 'Пользователь',
+};
+
+export const MANAGER_ROLES: readonly Role[] = ['OWNER', 'ADMIN'];
+
+export function isManagerRole(role: Role | undefined | null): boolean {
+  return role === 'OWNER' || role === 'ADMIN';
+}
 
 export type EmployeeStatus = 'ACTIVE' | 'INACTIVE';
 
@@ -127,7 +141,6 @@ export interface EmployeeProfile {
   telegramId: string | null;
   status: EmployeeStatus;
   role: Role;
-  isProfileAdmin: boolean;
   positionId: string | null;
   position: { id: string; title: string } | null;
   directionId: string | null;
@@ -167,7 +180,6 @@ export interface CreateEmployeeInput {
   positionId?: string;
   directionId?: string;
   role?: Role;
-  isProfileAdmin?: boolean;
 }
 
 export interface CreateTaskInput {
@@ -661,7 +673,6 @@ export interface LoginResponse {
     fullName: string;
     email: string;
     role: Role;
-    isProfileAdmin: boolean;
   };
 }
 
@@ -1089,6 +1100,9 @@ export interface TripDetail extends TripSummary {
   materials: TripMaterialItem[];
   facts: ExtractedFactItem[];
   members: TripMemberItem[];
+  // Права текущего пользователя на эту поездку; руководитель и
+  // администратор — всегда ORGANIZER (ролевая модель 20.10.2026).
+  myAccessRole: TripAccessRole;
 }
 
 export interface ProposedChangeItem {

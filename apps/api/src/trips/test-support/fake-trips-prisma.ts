@@ -320,13 +320,17 @@ export class FakeTripsPrisma {
       return row;
     },
     count: async ({ where }: { where: { humanCode: { startsWith: string } } }) => this.trips.filter((t) => t.humanCode.startsWith(where.humanCode.startsWith)).length,
-    findMany: async ({ where }: { where: { id?: { in: string[] }; organizerId?: string; cancelledAt?: null } }) =>
+    findMany: async ({ where = {} }: { where?: { id?: { in: string[] }; organizerId?: string; cancelledAt?: null } } = {}) =>
       this.trips.filter(
         (t) =>
           (where.id ? where.id.in.includes(t.id) : true) &&
           (where.organizerId ? t.organizerId === where.organizerId : true) &&
           (where.cancelledAt === null ? t.cancelledAt === null : true),
       ),
+    findUnique: async ({ where }: { where: { id: string } }) => {
+      const row = this.trips.find((t) => t.id === where.id);
+      return row ? { ...row } : null;
+    },
     findUniqueOrThrow: async ({ where }: { where: { id: string } }) => {
       const row = this.trips.find((t) => t.id === where.id);
       if (!row) throw new Error('Trip not found');

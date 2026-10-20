@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Employee, Prisma, Role } from '@prisma/client';
@@ -11,7 +11,6 @@ interface TokenSubject {
   fullName: string;
   email: string;
   role: Role;
-  isProfileAdmin: boolean;
 }
 
 // Тот же SALT_ROUNDS, что в employees.service.ts (bcrypt.hash при создании
@@ -111,7 +110,6 @@ export class AuthService {
           // прав руководителя ни при каких условиях, значение из запроса
           // клиента сюда никогда не попадает (его там и нет в DTO).
           role: Role.EMPLOYEE,
-          isProfileAdmin: false,
         },
       });
     } catch (err) {
@@ -133,7 +131,6 @@ export class AuthService {
       sub: employee.id,
       email: employee.email,
       role: employee.role,
-      isProfileAdmin: employee.isProfileAdmin,
     });
 
     return {
@@ -143,7 +140,6 @@ export class AuthService {
         fullName: employee.fullName,
         email: employee.email,
         role: employee.role,
-        isProfileAdmin: employee.isProfileAdmin,
       },
     };
   }
@@ -151,12 +147,17 @@ export class AuthService {
   // Владелец жмёт «Сбросить пароль» на карточке сотрудника — тот же UX,
   // что уже есть для привязки Telegram (TelegramService.createInvite):
   // сгенерировать одноразовую ссылку и передать сотруднику самому, лично.
-  async createPasswordResetInvite(employeeId: string) {
+  async createPasswordResetInvite(employeeId: string, actor: { id: string; role: Role }) {
     const employee = await this.prisma.employee.findUnique({
       where: { id: employeeId },
-      select: { id: true },
+      select: { id: true, role: true },
     });
     if (!employee) throw new NotFoundException('Сотрудник не найден');
+    // Ролевая модель 20.10.2026: ссылка сброса = вход в чужой аккаунт.
+    // Учётку руководителя администратор не трогает.
+    if (employee.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Сбросить пароль руководителя может только она сама');
+    }
 
     // Предыдущие неиспользованные ссылки — аннулируем, действует только
     // последняя (тот же принцип, что у TelegramInvite).

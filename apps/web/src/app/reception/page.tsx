@@ -15,6 +15,7 @@ import type {
   ReceptionRequestType,
   RejectReceptionRequestInput,
 } from '@ai-task-system/shared-types';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
@@ -752,10 +753,10 @@ type OwnerTab = 'queue' | 'history' | 'mine';
 
 function ReceptionView() {
   const { user } = useAuth();
-  const isOwner = user?.role === 'OWNER';
+  const isManager = isManagerRole(user?.role);
   const [tab, setTab] = useState<OwnerTab>('queue');
 
-  if (!isOwner) {
+  if (!isManager) {
     return (
       <>
         <h1 style={{ marginBottom: 16 }}>Приёмная</h1>

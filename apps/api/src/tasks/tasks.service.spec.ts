@@ -3,7 +3,7 @@ import { Role, TaskStatus } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { EMPLOYEE_ALLOWED_STATUSES, isTaskOverdue, TasksService } from './tasks.service';
 
-// assertVisible/isTaskOverdue не трогают this.prisma/this.bot — зависимости
+// isTaskOverdue не трогает this.prisma/this.bot — зависимости
 // заглушены, тестируем только саму границу видимости и признак просрочки
 // (аудит 10.09.2026, п. 5.1: "чистые функции — тестировать легко").
 function makeService(): TasksService {
@@ -11,26 +11,39 @@ function makeService(): TasksService {
 }
 
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
 
-describe('TasksService.assertVisible (RBAC-граница видимости задачи)', () => {
-  const service = makeService() as any;
+// Ролевая модель 20.10.2026: задачи видят все, но переставлять чужие на
+// канбане может только руководитель/администратор.
+describe('TasksService.reorder (граница прав)', () => {
+  function serviceWith(tasks: { id: string; creatorId: string; assigneeId: string | null }[]) {
+    const prisma = {
+      task: { findMany: jest.fn().mockResolvedValue(tasks), update: jest.fn() },
+      $transaction: jest.fn().mockResolvedValue([]),
+    };
+    return { service: new TasksService(prisma as any, {} as any), prisma };
+  }
 
-  it('руководитель видит любую задачу', () => {
-    expect(() => service.assertVisible({ assigneeId: 'someone-else', creatorId: 'someone-else' }, user({ role: Role.OWNER }))).not.toThrow();
+  it('администратор переставляет любые задачи', async () => {
+    const { service, prisma } = serviceWith([{ id: 't1', creatorId: 'x', assigneeId: 'y' }]);
+    await service.reorder(['t1'], user({ role: Role.ADMIN }));
+    expect(prisma.$transaction).toHaveBeenCalled();
   });
 
-  it('исполнитель видит задачу, назначенную на него', () => {
-    expect(() => service.assertVisible({ assigneeId: 'u1', creatorId: 'other' }, user())).not.toThrow();
+  it('пользователь переставляет свою задачу (исполнитель или постановщик)', async () => {
+    const { service, prisma } = serviceWith([
+      { id: 't1', creatorId: 'u1', assigneeId: 'y' },
+      { id: 't2', creatorId: 'x', assigneeId: 'u1' },
+    ]);
+    await service.reorder(['t1', 't2'], user());
+    expect(prisma.$transaction).toHaveBeenCalled();
   });
 
-  it('постановщик видит поставленную им задачу', () => {
-    expect(() => service.assertVisible({ assigneeId: 'other', creatorId: 'u1' }, user())).not.toThrow();
-  });
-
-  it('посторонний сотрудник (ни исполнитель, ни постановщик) не видит задачу', () => {
-    expect(() => service.assertVisible({ assigneeId: 'other', creatorId: 'other2' }, user())).toThrow(ForbiddenException);
+  it('пользователь не может переставить чужую задачу', async () => {
+    const { service, prisma } = serviceWith([{ id: 't1', creatorId: 'x', assigneeId: 'y' }]);
+    await expect(service.reorder(['t1'], user())).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
 
@@ -76,7 +89,7 @@ describe('isTaskOverdue (аудит 10.09.2026, п. 2.1 — вычисляемы
 // проверку, мог передать sourceSegmentId без sourceMeetingId, либо
 // sourceSegmentId из СОВСЕМ ДРУГОЙ встречи.
 describe('TasksService.create — source integrity (hardening 22.09.2026, P1)', () => {
-  const owner: AuthenticatedUser = { id: 'owner1', email: 'o@example.com', role: Role.OWNER, isProfileAdmin: false };
+  const owner: AuthenticatedUser = { id: 'owner1', email: 'o@example.com', role: Role.OWNER };
   const employee: AuthenticatedUser = user();
 
   function makeDeps() {

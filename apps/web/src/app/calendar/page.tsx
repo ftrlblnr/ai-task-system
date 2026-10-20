@@ -10,8 +10,10 @@ import type {
   GoogleCalendarStatus,
   SetGoogleOAuthConfigInput,
 } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
+import { DataOwnerScope, useActingAsLeader } from '@/components/data-owner-scope';
 import { Avatar } from '@/components/avatar';
 import { Card, PageHeader } from '@/components/ui/card';
 import { Button, IconButton } from '@/components/ui/button';
@@ -29,6 +31,7 @@ function GoogleConnectionCard() {
   const [error, setError] = useState<string | null>(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const actingAsLeader = useActingAsLeader();
 
   function load() {
     api
@@ -94,6 +97,16 @@ function GoogleConnectionCard() {
   }
 
   if (!status) return null;
+
+  // Подключение Google — личное действие руководителя (вход в её аккаунт),
+  // администратору в её режиме — только статус и синхронизация.
+  if (actingAsLeader && !status.connected) {
+    return (
+      <div style={{ marginBottom: 20 }}>
+        <Alert tone="info">Google Calendar руководителя не подключён — подключить его может только она сама.</Alert>
+      </div>
+    );
+  }
 
   // configured=false — на сервере нет GOOGLE_CLIENT_ID/SECRET (см. комментарий
   // в CalendarController.status): кнопка «Подключить» в этом состоянии всегда
@@ -187,9 +200,11 @@ function GoogleConnectionCard() {
           <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy}>
             Синхронизировать
           </Button>
-          <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
-            Отключить
-          </Button>
+          {!actingAsLeader && (
+            <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
+              Отключить
+            </Button>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -496,7 +511,7 @@ function CalendarBody() {
 
 export default function CalendarPage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <PageHeader
         title={
           <>
@@ -504,10 +519,12 @@ export default function CalendarPage() {
             Календарь
           </>
         }
-        description="Личный календарь руководителя, двусторонне синхронизированный с Google Calendar (раздел 14.2 ТЗ / Адъютант). Единственный писатель с обеих сторон — руководитель."
+        description="Личный календарь, двусторонне синхронизированный с Google Calendar."
       />
       <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
-        <CalendarBody />
+        <DataOwnerScope>
+          <CalendarBody />
+        </DataOwnerScope>
       </Suspense>
     </Protected>
   );

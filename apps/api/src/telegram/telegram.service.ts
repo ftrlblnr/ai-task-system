@@ -1,6 +1,7 @@
-import { ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes, createHash } from 'crypto';
+import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import {
@@ -16,7 +17,6 @@ const AUTH_SELECT = {
   fullName: true,
   email: true,
   role: true,
-  isProfileAdmin: true,
   status: true,
 } as const;
 
@@ -32,12 +32,13 @@ export class TelegramService {
   // одноразовый токен. Ссылка открывает Telegram Mini App (не бота): в
   // Mini App попадает start_param = токен внутри подписанной initData,
   // и сотрудник привязывает себя сам через POST /auth/telegram.
-  async createInvite(employeeId: string) {
+  async createInvite(employeeId: string, actor: { role: Role }) {
     const employee = await this.prisma.employee.findUnique({
       where: { id: employeeId },
-      select: { id: true, telegramId: true },
+      select: { id: true, telegramId: true, role: true },
     });
     if (!employee) throw new NotFoundException('Сотрудник не найден');
+    assertNotLeaderAccount(employee.role, actor.role);
     if (employee.telegramId) {
       throw new ConflictException('У сотрудника уже привязан Telegram — сначала отвяжите текущий');
     }
@@ -175,14 +176,24 @@ export class TelegramService {
     }
   }
 
-  async unlink(employeeId: string) {
-    const employee = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { id: true } });
+  async unlink(employeeId: string, actor: { role: Role }) {
+    const employee = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { id: true, role: true } });
     if (!employee) throw new NotFoundException('Сотрудник не найден');
+    assertNotLeaderAccount(employee.role, actor.role);
 
     await this.prisma.employee.update({ where: { id: employeeId }, data: { telegramId: null } });
   }
 
   private hash(token: string): string {
     return createHash('sha256').update(token).digest('hex');
+  }
+}
+
+// Ролевая модель 20.10.2026: привязка Telegram = вход в Mini App под этим
+// сотрудником. Telegram руководителя администратор не привязывает и не
+// отвязывает.
+function assertNotLeaderAccount(targetRole: Role, actorRole: Role): void {
+  if (targetRole === Role.OWNER && actorRole !== Role.OWNER) {
+    throw new ForbiddenException('Telegram руководителя может привязать только она сама');
   }
 }

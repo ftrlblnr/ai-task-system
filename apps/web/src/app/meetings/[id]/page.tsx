@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { ArrowLeft, ListTodo, Mic } from 'lucide-react';
 import type { MeetingDetail } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { TaskExtractionModal } from '@/components/task-extraction-modal';
@@ -174,7 +175,7 @@ function MeetingDetailView({ id }: { id: string }) {
 export default function MeetingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <MeetingDetailView id={id} />
     </Protected>
   );

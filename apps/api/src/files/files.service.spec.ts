@@ -21,7 +21,7 @@ function registryFor(storage: unknown) {
 // AssistantChatService.findOwnedConversation (404, не 403 — не
 // подтверждаем чужому пользователю сам факт существования файла, спека §30).
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
 
 describe('FilesService.assertOwnedFile', () => {

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { UserPlus } from 'lucide-react';
 import type { EmployeeProfile, RegistrationWindowStatus } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES, ROLE_LABELS } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
@@ -119,7 +120,7 @@ function EmployeesList() {
               </td>
               <td>{e.position?.title ?? '—'}</td>
               <td>{e.email}</td>
-              <td>{e.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</td>
+              <td>{ROLE_LABELS[e.role]}</td>
               <td>
                 <Badge tone={e.status === 'ACTIVE' ? 'ok' : 'neutral'}>{e.status === 'ACTIVE' ? 'Активен' : 'Неактивен'}</Badge>
               </td>
@@ -133,7 +134,7 @@ function EmployeesList() {
 
 export default function EmployeesPage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <PageHeader
         title="Сотрудники"
         actions={

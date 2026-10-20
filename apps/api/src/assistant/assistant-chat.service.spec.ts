@@ -12,7 +12,7 @@ function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRe
 // продолжается в Stage 2: RBAC-границы и идемпотентность — то, что должно
 // быть протестировано отдельно от реального Anthropic/Postgres).
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
 
 describe('AssistantChatService.findOwnedConversation (Stage 2 §30 — conversationId одного пользователя не должен открывать чужой диалог)', () => {

@@ -13,9 +13,12 @@ datasource db {
 
 // --- Права доступа (раздел 5 ТЗ) -------------------------------------------
 
+// Владелец 20.10.2026 — три роли. Система в первую очередь разгружает
+// руководителя от мелких задач и контролирует исполнение поручений.
 enum Role {
-  OWNER // Руководитель — видит всё, подтверждает AI-назначения
-  EMPLOYEE // Подчинённый — видит только свои задачи и минимальный контекст
+  OWNER // Руководитель — единственный; всё, включая «Стол руководителя»
+  ADMIN // Администратор — правая рука руководителя: всё, что у руководителя, кроме «Стола»; свой календарь/почта + работа с календарём/почтой руководителя
+  EMPLOYEE // Пользователь — видит все задачи, правит только свой профиль
 }
 
 enum EmployeeStatus {
@@ -59,15 +62,6 @@ model Employee {
   telegramId     String?        @unique
   status         EmployeeStatus @default(ACTIVE)
   role           Role           @default(EMPLOYEE)
-  // Администратор профилей (раздел 6.3, 5): либо сам руководитель, либо
-  // один доверенный человек — флаг, а не отдельная роль.
-  isProfileAdmin Boolean        @default(false)
-  // Агент поездок (ТЗ 08.10.2026, раздел 7) — trips.create: "создать
-  // поездку для разрешённых руководителей", не любой сотрудник. Тот же
-  // приём, что isProfileAdmin — флаг, не отдельная Role. Остальные trips.*
-  // права (view/materials.add/edit/approve/manage_access/archive) —
-  // per-поездка через TripMember.accessRole, не глобальный флаг.
-  canCreateTrips Boolean        @default(false)
 
   positionId String?
   position   Position? @relation(fields: [positionId], references: [id])

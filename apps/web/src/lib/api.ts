@@ -9,6 +9,20 @@ export class ApiError extends Error {
   }
 }
 
+// Ролевая модель 20.10.2026 — администратор на страницах «Календарь» и
+// «Почта» переключается на данные руководителя. Флаг ставит страница
+// (setActAsLeader), сбрасывает при уходе; заголовок уходит только в
+// /calendar и /mail — остальные модули его не читают (DataOwnerGuard на API).
+let actAsLeader = false;
+
+export function setActAsLeader(value: boolean): void {
+  actAsLeader = value;
+}
+
+function actingHeaders(path: string): Record<string, string> {
+  return actAsLeader && (path.startsWith('/calendar') || path.startsWith('/mail')) ? { 'X-Act-As': 'leader' } : {};
+}
+
 // signal — «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 14): клиентский
 // таймаут на источник обзора, чтобы один зависший запрос не держал всю
 // страницу в Loading бесконечно (тот же optional-параметр приём, что у
@@ -22,6 +36,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...actingHeaders(path),
       ...options.headers,
     },
   });
@@ -63,7 +78,7 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Header
 
   const res = await fetch(`${API_URL}${path}`, {
     method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...actingHeaders(path), ...headers },
     body: formData,
   });
 
@@ -124,7 +139,7 @@ async function downloadBlob(path: string): Promise<Blob> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...actingHeaders(path) },
   });
 
   if (!res.ok) {

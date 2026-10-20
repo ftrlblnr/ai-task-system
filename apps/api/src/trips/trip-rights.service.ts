@@ -1,13 +1,18 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { TripAccessRole } from '@prisma/client';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Role, TripAccessRole } from '@prisma/client';
+import { isManager } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
 
-// Агент поездок (ТЗ 08.10.2026, раздел 9) — права отдельные от Role enum:
-// "организатор не получает доступ ко всем поездкам", "участие во встрече
-// не даёт доступ к чужим паспортам/билетам/внутренним заметкам". Поэтому
-// OWNER-роль сотрудника здесь НЕ проверяется и не даёт обхода — единственный
-// источник правды про доступ к конкретной поездке — TripMember.
+// Агент поездок (ТЗ 08.10.2026, раздел 9) — права на конкретную поездку
+// идут через TripMember. Ролевая модель 20.10.2026: руководитель и
+// администратор видят и ведут ВСЕ поездки (как ORGANIZER, даже без
+// членства); пользователь — только свои и те, куда его добавил создатель.
 export type TripPermission = 'view' | 'materials.add' | 'edit' | 'approve' | 'manage_access' | 'archive';
+
+export interface TripActor {
+  id: string;
+  role: Role;
+}
 
 const ROLE_PERMISSIONS: Record<TripAccessRole, ReadonlySet<TripPermission>> = {
   ORGANIZER: new Set<TripPermission>(['view', 'materials.add', 'edit', 'approve', 'manage_access', 'archive']),
@@ -20,16 +25,6 @@ const ROLE_PERMISSIONS: Record<TripAccessRole, ReadonlySet<TripPermission>> = {
 export class TripRightsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // trips.create — "создать поездку для разрешённых руководителей", не
-  // привязано к конкретной поездке, поэтому 403 (не 404) уместен: нет
-  // ресурса, факт существования которого можно бы было скрывать.
-  async assertCanCreateTrips(employeeId: string): Promise<void> {
-    const employee = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { canCreateTrips: true } });
-    if (!employee?.canCreateTrips) {
-      throw new ForbiddenException('TRIPS_CREATE_NOT_ALLOWED: нет права создавать поездки');
-    }
-  }
-
   async getMembership(tripId: string, employeeId: string) {
     return this.prisma.tripMember.findUnique({ where: { tripId_employeeId: { tripId, employeeId } } });
   }
@@ -37,8 +32,13 @@ export class TripRightsService {
   // 404, не 403 — тот же принцип, что FilesService.assertOwnedFile и
   // calendar EventsService.findOne: отсутствие прав на конкретную поездку
   // не должно подтверждать клиенту даже факт её существования.
-  async assertPermission(tripId: string, employeeId: string, permission: TripPermission): Promise<TripAccessRole> {
-    const member = await this.getMembership(tripId, employeeId);
+  async assertPermission(tripId: string, user: TripActor, permission: TripPermission): Promise<TripAccessRole> {
+    if (isManager(user.role)) {
+      const trip = await this.prisma.trip.findUnique({ where: { id: tripId }, select: { id: true } });
+      if (!trip) throw new NotFoundException('Поездка не найдена');
+      return 'ORGANIZER';
+    }
+    const member = await this.getMembership(tripId, user.id);
     if (!member || !ROLE_PERMISSIONS[member.accessRole].has(permission)) {
       throw new NotFoundException('Поездка не найдена');
     }

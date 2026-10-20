@@ -1,11 +1,13 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { PositionsService } from '../positions/positions.service';
 import { DirectionsService } from '../directions/directions.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { RolesGuard } from './roles.guard';
 import { Roles } from './roles.decorator';
+import { MANAGER_ROLES } from './roles';
 import { AuthService } from './auth.service';
+import { CurrentUser } from './current-user.decorator';
+import type { AuthenticatedUser } from './jwt.strategy';
 import { LoginDto } from './dto/login.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -35,7 +37,7 @@ export class AuthController {
   // Переключатель на странице «Сотрудники» — владелец 02.10.2026.
   @Patch('registration-window')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   setRegistrationWindow(@Body() dto: SetRegistrationWindowDto) {
     return this.authService.setRegistrationWindow(dto.isOpen, dto.days);
   }
@@ -43,8 +45,8 @@ export class AuthController {
   // Публичный — список должностей/направлений для выпадающих списков на
   // странице регистрации. Только чтение существующих: создавать новую
   // должность/направление анонимный посетитель не может (POST /positions,
-  // POST /directions по-прежнему только для OWNER) — если нужного варианта
-  // нет в списке, руководитель назначит его позже на карточке сотрудника.
+  // POST /directions — только после входа) — если нужного варианта нет в
+  // списке, сотрудник добавит его сам в «Моём профиле».
   @Get('register/options')
   async getRegisterOptions() {
     const [positions, directions] = await Promise.all([
@@ -66,9 +68,9 @@ export class AuthController {
   // что у привязки Telegram (POST employees/:id/telegram-invite).
   @Post('employees/:id/password-reset-invite')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.OWNER)
-  createPasswordResetInvite(@Param('id') id: string) {
-    return this.authService.createPasswordResetInvite(id);
+  @Roles(...MANAGER_ROLES)
+  createPasswordResetInvite(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.authService.createPasswordResetInvite(id, user);
   }
 
   // Публичный — сотрудник переходит по ссылке без предварительного входа

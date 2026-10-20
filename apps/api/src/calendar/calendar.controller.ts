@@ -17,12 +17,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
-import { CurrentUser } from '../auth/current-user.decorator';
-import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { assertOwnIntegration, CurrentDataOwner, DataOwnerGuard, type DataOwner } from '../auth/data-owner';
+import { MANAGER_ROLES } from '../auth/roles';
 import { IdempotencyService } from '../common/idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CalendarAvailabilityService } from './calendar-availability.service';
@@ -38,9 +37,11 @@ import { FindAvailabilityDto } from './dto/find-availability.dto';
 import { UpdateCalendarPolicyDto } from './dto/update-calendar-policy.dto';
 
 // Календарь руководителя (раздел 14.2 ТЗ / Адъютант, скорректировано
-// 28.08.2026) — личный, не общий: весь модуль ограничен ролью OWNER.
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.OWNER)
+// 28.08.2026) — личный, не общий. С 20.10.2026 свой календарь есть и у
+// администратора, а в режиме X-Act-As: leader он работает с календарём
+// руководителя (см. DataOwnerGuard).
+@UseGuards(JwtAuthGuard, RolesGuard, DataOwnerGuard)
+@Roles(...MANAGER_ROLES)
 @Controller()
 export class CalendarController {
   constructor(
@@ -56,23 +57,23 @@ export class CalendarController {
   // FIND_SLOTS (раздел 6/11/22 ТЗ календарного агента). Чтение — не
   // мутация, Idempotency-Key не требуется.
   @Post('calendar/availability')
-  findAvailability(@Body() dto: FindAvailabilityDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.availability.findSlots(user.id, new Date(dto.from), new Date(dto.to), dto.durationMinutes, dto.maxResults);
+  findAvailability(@Body() dto: FindAvailabilityDto, @CurrentDataOwner() owner: DataOwner) {
+    return this.availability.findSlots(owner.id, new Date(dto.from), new Date(dto.to), dto.durationMinutes, dto.maxResults);
   }
 
   @Get('calendar/policy')
-  getPolicy(@CurrentUser() user: AuthenticatedUser) {
-    return this.policy.getOrDefault(user.id);
+  getPolicy(@CurrentDataOwner() owner: DataOwner) {
+    return this.policy.getOrDefault(owner.id);
   }
 
   @Patch('calendar/policy')
-  updatePolicy(@Body() dto: UpdateCalendarPolicyDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.policy.update(user.id, dto);
+  updatePolicy(@Body() dto: UpdateCalendarPolicyDto, @CurrentDataOwner() owner: DataOwner) {
+    return this.policy.update(owner.id, dto);
   }
 
   @Get('events')
-  findAll(@CurrentUser() user: AuthenticatedUser) {
-    return this.events.findAll(user.id);
+  findAll(@CurrentDataOwner() owner: DataOwner) {
+    return this.events.findAll(owner.id);
   }
 
   // Idempotency-Key обязателен (раздел 18.2 ТЗ календарного агента) —
@@ -81,39 +82,39 @@ export class CalendarController {
   @Post('events')
   async create(
     @Body() dto: CreateEventDto,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentDataOwner() owner: DataOwner,
     @Headers('idempotency-key') idemKey?: string,
   ) {
     if (!idemKey) throw new BadRequestException('Заголовок Idempotency-Key обязателен для этого действия');
-    const { body } = await this.idempotency.run(user.id, idemKey, 'calendar.events.create', dto, () => this.events.create(dto, user.id));
+    const { body } = await this.idempotency.run(owner.id, idemKey, 'calendar.events.create', dto, () => this.events.create(dto, owner.id));
     return body;
   }
 
   @Patch('events/:id')
-  update(@Param('id') id: string, @Body() dto: UpdateEventDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.events.update(id, dto, user.id);
+  update(@Param('id') id: string, @Body() dto: UpdateEventDto, @CurrentDataOwner() owner: DataOwner) {
+    return this.events.update(id, dto, owner.id);
   }
 
   @Delete('events/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.events.remove(id, user.id);
+  remove(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.events.remove(id, owner.id);
   }
 
   @Post('events/:id/participants')
-  addParticipant(@Param('id') id: string, @Body() dto: AddEventParticipantDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.events.addParticipant(id, dto.employeeId, user.id);
+  addParticipant(@Param('id') id: string, @Body() dto: AddEventParticipantDto, @CurrentDataOwner() owner: DataOwner) {
+    return this.events.addParticipant(id, dto.employeeId, owner.id);
   }
 
   @Delete('events/:id/participants/:employeeId')
-  removeParticipant(@Param('id') id: string, @Param('employeeId') employeeId: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.events.removeParticipant(id, employeeId, user.id);
+  removeParticipant(@Param('id') id: string, @Param('employeeId') employeeId: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.events.removeParticipant(id, employeeId, owner.id);
   }
 
   @Get('calendar/google/status')
-  async status(@CurrentUser() user: AuthenticatedUser) {
+  async status(@CurrentDataOwner() owner: DataOwner) {
     const connection = await this.prisma.googleCalendarConnection.findUnique({
-      where: { employeeId: user.id },
+      where: { employeeId: owner.id },
       select: { googleAccountEmail: true, connectedAt: true, lastSyncAt: true },
     });
     // configured — отдельно от connected: без OAuth-клиента (GoogleOAuthAppConfig)
@@ -129,25 +130,28 @@ export class CalendarController {
   // шифруется в GoogleOAuthService.setCredentials, здесь только валидация
   // формы.
   @Post('calendar/google/oauth-config')
-  async setOAuthConfig(@Body() dto: SetGoogleOAuthConfigDto) {
+  async setOAuthConfig(@Body() dto: SetGoogleOAuthConfigDto, @CurrentDataOwner() owner: DataOwner) {
+    assertOwnIntegration(owner);
     await this.oauth.setCredentials(dto.clientId, dto.clientSecret);
     return { ok: true };
   }
 
   @Get('calendar/google/connect')
-  async connect(@CurrentUser() user: AuthenticatedUser) {
-    return { url: await this.oauth.buildAuthUrl(user.id) };
+  async connect(@CurrentDataOwner() owner: DataOwner) {
+    assertOwnIntegration(owner);
+    return { url: await this.oauth.buildAuthUrl(owner.id) };
   }
 
   @Delete('calendar/google/disconnect')
   @HttpCode(HttpStatus.NO_CONTENT)
-  disconnect(@CurrentUser() user: AuthenticatedUser) {
-    return this.oauth.disconnect(user.id);
+  disconnect(@CurrentDataOwner() owner: DataOwner) {
+    assertOwnIntegration(owner);
+    return this.oauth.disconnect(owner.id);
   }
 
   @Post('calendar/google/sync')
-  async syncNow(@CurrentUser() user: AuthenticatedUser) {
-    await this.sync.pullChanges(user.id);
+  async syncNow(@CurrentDataOwner() owner: DataOwner) {
+    await this.sync.pullChanges(owner.id);
     return { ok: true };
   }
 }

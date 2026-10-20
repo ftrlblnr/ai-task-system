@@ -1,12 +1,9 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
-import { Roles } from '../auth/roles.decorator';
 import { DirectionsService } from './directions.service';
 import { CreateDirectionDto } from './dto/direction.dto';
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard)
 @Controller('directions')
 export class DirectionsController {
   constructor(private readonly directionsService: DirectionsService) {}
@@ -16,8 +13,9 @@ export class DirectionsController {
     return this.directionsService.findAll();
   }
 
+  // Владелец 20.10.2026 — любой пользователь может завести новую
+  // должность/направление, заполняя свой профиль.
   @Post()
-  @Roles(Role.OWNER)
   create(@Body() dto: CreateDirectionDto) {
     return this.directionsService.create(dto);
   }

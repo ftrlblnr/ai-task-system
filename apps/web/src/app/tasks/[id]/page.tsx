@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CornerDownRight, Eye, EyeOff, FileAudio, Pencil, Trash2 } from 'lucide-react';
 import type { EmployeeSummary, TaskDetail, TaskPriority, TaskStatus } from '@ai-task-system/shared-types';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { useAuth } from '@/lib/auth-context';
@@ -216,14 +217,14 @@ function TaskDetailView({ id }: { id: string }) {
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!task) return <p className="ds-field-hint">Загрузка…</p>;
 
-  const isOwner = user?.role === 'OWNER';
+  const isManager = isManagerRole(user?.role);
   // Раздел 5/10 ТЗ (скорректировано 28.08.2026): видеть задачу может и
   // постановщик, но менять статус — только исполнитель или руководитель.
-  const canChangeStatus = isOwner || task.assignee?.id === user?.id;
-  const availableStatuses = isOwner ? (Object.keys(STATUS_LABELS) as TaskStatus[]) : EMPLOYEE_SETTABLE_STATUSES;
+  const canChangeStatus = isManager || task.assignee?.id === user?.id;
+  const availableStatuses = isManager ? (Object.keys(STATUS_LABELS) as TaskStatus[]) : EMPLOYEE_SETTABLE_STATUSES;
   // Удалить может тот же круг, что и редактировать (см. TasksService.remove
   // на бэкенде — это реальная граница, кнопка здесь просто её отражает).
-  const canDelete = isOwner || task.creator.id === user?.id;
+  const canDelete = isManager || task.creator.id === user?.id;
   const isWatching = task.watchers.some((w) => w.id === user?.id);
   // Владелец добавляет наблюдателем любого; выбор ограничен теми, кто ещё
   // не наблюдает и не сам актор (себя добавляют кнопкой «Наблюдать» ниже).
@@ -310,13 +311,13 @@ function TaskDetailView({ id }: { id: string }) {
         {task.watchers.length > 0 && (
           <div className="watchers-avatars" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {task.watchers.map((w) => (
-              <Chip key={w.id} avatar={w.fullName} onRemove={isOwner ? () => removeWatcher(w.id) : undefined}>
+              <Chip key={w.id} avatar={w.fullName} onRemove={isManager ? () => removeWatcher(w.id) : undefined}>
                 {w.fullName}
               </Chip>
             ))}
           </div>
         )}
-        {isOwner && watchableEmployees.length > 0 && (
+        {isManager && watchableEmployees.length > 0 && (
           <form className="watcher-add-form" onSubmit={addWatcher} style={{ display: 'flex', gap: 8 }}>
             <Select
               value={addWatcherId}
@@ -338,7 +339,7 @@ function TaskDetailView({ id }: { id: string }) {
             <FileAudio size={16} strokeWidth={1.75} className="source-icon" />
             <div>
               {task.sourceMeeting &&
-                (user?.role === 'OWNER' ? (
+                (isManagerRole(user?.role) ? (
                   <Link href={`/meetings/${task.sourceMeeting.id}`}>
                     {task.sourceMeeting.title} · {new Date(task.sourceMeeting.meetingDate).toLocaleDateString('ru-RU')}
                   </Link>

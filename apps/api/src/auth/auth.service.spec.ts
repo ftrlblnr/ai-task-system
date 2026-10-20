@@ -11,7 +11,6 @@ interface EmployeeRow {
   passwordHash: string;
   status: 'ACTIVE' | 'INACTIVE';
   role: Role;
-  isProfileAdmin: boolean;
   positionId: string | null;
   directionId: string | null;
 }
@@ -76,7 +75,7 @@ describe('AuthService', () => {
       const passwordHash = await bcrypt.hash('password123', 4);
       prisma.employees.push({
         id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', passwordHash, status: 'ACTIVE',
-        role: Role.EMPLOYEE, isProfileAdmin: false, positionId: null, directionId: null,
+        role: Role.EMPLOYEE, positionId: null, directionId: null,
       });
       const service = buildService(prisma);
 
@@ -89,7 +88,7 @@ describe('AuthService', () => {
       const passwordHash = await bcrypt.hash('password123', 4);
       prisma.employees.push({
         id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', passwordHash, status: 'ACTIVE',
-        role: Role.EMPLOYEE, isProfileAdmin: false, positionId: null, directionId: null,
+        role: Role.EMPLOYEE, positionId: null, directionId: null,
       });
       const service = buildService(prisma);
 
@@ -101,7 +100,7 @@ describe('AuthService', () => {
       const passwordHash = await bcrypt.hash('password123', 4);
       prisma.employees.push({
         id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', passwordHash, status: 'INACTIVE',
-        role: Role.EMPLOYEE, isProfileAdmin: false, positionId: null, directionId: null,
+        role: Role.EMPLOYEE, positionId: null, directionId: null,
       });
       const service = buildService(prisma);
 
@@ -166,7 +165,6 @@ describe('AuthService', () => {
       expect(result.accessToken).toBe('signed.jwt.token');
       expect(result.user.email).toBe('newlogin');
       expect(prisma.employees[0].role).toBe(Role.EMPLOYEE);
-      expect(prisma.employees[0].isProfileAdmin).toBe(false);
       expect(prisma.employees[0].positionId).toBe('pos1');
       expect(prisma.employees[0].directionId).toBe('dir1');
     });

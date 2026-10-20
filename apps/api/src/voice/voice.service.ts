@@ -37,6 +37,7 @@ import type {
   VoiceTaskActionDraft,
 } from './dto/voice-draft-response.dto';
 import type { VoiceUndoDto } from './dto/voice-undo.dto';
+import { isManager } from '../auth/roles';
 
 // Минимальные структурные формы, нужные toTaskCardData/toEventCardData
 // (assistant-tools.service.ts) — TasksService.create/update и
@@ -472,7 +473,7 @@ export class VoiceService {
             // TasksService.create(). Прямой prisma-запрос, а не
             // MeetingsService.findOne() — тот пишет audit-log READ на
             // каждый вызов, здесь это не нужный побочный эффект.
-            meetingId && user.role === Role.OWNER
+            meetingId && isManager(user.role)
               ? this.prisma.meeting.findUnique({
                   where: { id: meetingId },
                   select: { title: true, rawSummary: true, enhancedSummary: true },
@@ -486,8 +487,8 @@ export class VoiceService {
             // — те же правила видимости (сотрудник видит своё, руководитель
             // — всё; календарь целиком закрыт на OWNER), без отдельной
             // копии RBAC здесь.
-            this.tasks.findAll(user),
-            user.role === Role.OWNER ? this.events.findAll(user.id) : Promise.resolve([]),
+            this.tasks.findAll(),
+            isManager(user.role) ? this.events.findAll(user.id) : Promise.resolve([]),
             this.loadHistory(conversation.id),
           ]);
           contextDbMs = Date.now() - start;
@@ -917,7 +918,7 @@ export class VoiceService {
 
         // Снимок ДО патча — единственный способ узнать старые значения,
         // черновик их не несёт.
-        const before = await this.tasks.findOne(draft.targetTaskId, user);
+        const before = await this.tasks.findOne(draft.targetTaskId);
         const previous: TaskRevertPayload = {};
         if (dto.title !== undefined) previous.title = before.title;
         if (dto.description !== undefined) previous.description = before.description ?? '';
@@ -1153,7 +1154,7 @@ export class VoiceService {
     // Кнопка "Отменить" для события в принципе не показывается не-OWNER на
     // фронте, но это не граница безопасности сама по себе (тот же принцип,
     // что и у enforceEventRbac).
-    if (record.kind === UndoKind.EVENT && user.role !== Role.OWNER) {
+    if (record.kind === UndoKind.EVENT && !isManager(user.role)) {
       const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
       await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
       return { ok: false, error, warning: null };
@@ -1389,7 +1390,7 @@ export class VoiceService {
   // этого — второй элемент массива: тот же task_action, плюс отдельная
   // chat-реплика с объяснением сразу следом.
   private enforceEventRbac(draft: VoiceDraft, role: Role): VoiceDraft[] {
-    if (role === Role.OWNER || draft.type !== 'event_action') return [draft];
+    if (isManager(role) || draft.type !== 'event_action') return [draft];
 
     if (draft.action === 'create') {
       const taskDraft: VoiceDraft = {

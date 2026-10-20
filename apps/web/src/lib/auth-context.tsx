@@ -16,6 +16,8 @@ interface AuthState {
   // отдельного повторного /auth/login не нужно, просто применяем готовый
   // ответ к сессии (та же запись в localStorage + redirect, что login()).
   applySession: (res: LoginResponse) => void;
+  // «Мой профиль» (20.10.2026) — поменял ФИО, сайдбар должен увидеть сразу.
+  updateUser: (patch: Partial<CurrentUser>) => void;
   logout: () => void;
 }
 
@@ -54,6 +56,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/tasks');
   }
 
+  function updateUser(patch: Partial<CurrentUser>) {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      localStorage.setItem('user', JSON.stringify(next));
+      return next;
+    });
+  }
+
   function logout() {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('user');
@@ -61,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login');
   }
 
-  return <AuthContext.Provider value={{ user, loading, login, applySession, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, applySession, updateUser, logout }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

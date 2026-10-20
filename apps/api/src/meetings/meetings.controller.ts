@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { MANAGER_ROLES } from '../auth/roles';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { MeetingsService } from './meetings.service';
@@ -17,7 +17,7 @@ import { CreateTasksFromMeetingDto } from './dto/create-tasks-from-meeting.dto';
 // не доступ к этому контроллеру.
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('meetings')
-@Roles(Role.OWNER)
+@Roles(...MANAGER_ROLES)
 export class MeetingsController {
   constructor(private readonly meetingsService: MeetingsService) {}
 

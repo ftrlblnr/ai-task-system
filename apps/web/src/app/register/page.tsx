@@ -18,9 +18,9 @@ import { Alert } from '@/components/ui/alert';
 // кроме роли (всегда EMPLOYEE на бэкенде, здесь её вообще нет в форме) и
 // кроме "+ Новая должность/направление…" — анонимный посетитель выбирает
 // только из уже существующего списка, создавать новые организационные
-// единицы без входа нельзя (POST /positions, POST /directions остаются
-// только для OWNER); если нужного варианта нет — руководитель назначит его
-// позже на карточке сотрудника.
+// единицы без входа нельзя (POST /positions, POST /directions — только
+// после входа); если нужного варианта нет — сотрудник добавит его сам в
+// «Моём профиле» (/profile).
 function RegisterForm() {
   const { applySession } = useAuth();
   const [windowStatus, setWindowStatus] = useState<RegistrationWindowStatus | null>(null);

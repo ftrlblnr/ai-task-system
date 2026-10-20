@@ -29,7 +29,7 @@ function FakeSocketProxy(this: unknown, url: string, options: { headers: Record<
 (FakeSocketProxy as unknown as { OPEN: number }).OPEN = 1;
 
 function user(id = 'emp1') {
-  return { id, email: `${id}@x.kz`, role: 'OWNER', isProfileAdmin: true } as any;
+  return { id, email: `${id}@x.kz`, role: 'OWNER' } as any;
 }
 
 // Ответ VoiceService.parseTranscript: выполненные results[] (см. VoiceParseResponse).

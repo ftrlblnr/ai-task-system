@@ -15,6 +15,7 @@ import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { isManagerRole } from '@ai-task-system/shared-types';
 
 // История изменений (аудит 10.09.2026, п. 2.3) — та же логика, что в
 // apps/web/src/app/tasks/[id]/page.tsx.
@@ -194,12 +195,12 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
     }
   }
 
-  const isOwner = user?.role === 'OWNER';
-  const canChangeStatus = task && (isOwner || task.assignee?.id === user?.id);
-  const availableStatuses = isOwner ? (Object.keys(STATUS_LABELS) as TaskStatus[]) : EMPLOYEE_SETTABLE_STATUSES;
+  const isManager = isManagerRole(user?.role);
+  const canChangeStatus = task && (isManager || task.assignee?.id === user?.id);
+  const availableStatuses = isManager ? (Object.keys(STATUS_LABELS) as TaskStatus[]) : EMPLOYEE_SETTABLE_STATUSES;
   // Тот же круг, что и у общего редактирования (см. TasksService.remove на
   // бэкенде) — кнопка здесь только отражает реальную границу.
-  const canDelete = task && (isOwner || task.creator.id === user?.id);
+  const canDelete = task && (isManager || task.creator.id === user?.id);
   const isWatching = task?.watchers.some((w) => w.id === user?.id) ?? false;
   const watchableEmployees = employees.filter(
     (e) => e.id !== user?.id && !task?.watchers.some((w) => w.id === e.id),
@@ -305,7 +306,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
                   {task.watchers.map((w) => (
                     <span key={w.id} className="watcher-chip" title={w.fullName}>
                       <Avatar name={w.fullName} size={18} />
-                      {isOwner && (
+                      {isManager && (
                         <button
                           type="button"
                           className="watcher-remove"
@@ -319,7 +320,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
                   ))}
                 </div>
               )}
-              {isOwner && watchableEmployees.length > 0 && (
+              {isManager && watchableEmployees.length > 0 && (
                 <form className="watcher-add-form" onSubmit={addWatcher} style={{ display: 'flex', gap: 6 }}>
                   <Select
                     value={addWatcherId}

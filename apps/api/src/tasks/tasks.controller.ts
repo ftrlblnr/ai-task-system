@@ -18,7 +18,7 @@ export class TasksController {
 
   @Get()
   findAll(@CurrentUser() user: AuthenticatedUser) {
-    return this.tasksService.findAll(user);
+    return this.tasksService.findAll();
   }
 
   // ВАЖНО: должен идти раньше @Patch(':id') — иначе Nest матчит
@@ -31,7 +31,7 @@ export class TasksController {
 
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.tasksService.findOne(id, user);
+    return this.tasksService.findOne(id);
   }
 
   // Раздел 5 ТЗ (скорректировано владельцем 28.08.2026): задачи друг другу,

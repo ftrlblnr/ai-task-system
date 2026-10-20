@@ -21,6 +21,7 @@ import type {
   TripStayItem,
   TripRevisionItem,
 } from '@ai-task-system/shared-types';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
@@ -891,12 +892,13 @@ function TripDetailView({ tripId }: { tripId: string }) {
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!trip) return <p className="ds-field-hint">Загрузка…</p>;
 
-  const myMembership = trip.members.find((m) => m.employeeId === user?.id);
-  const myRole = myMembership?.accessRole ?? null;
+  // Права считает API (руководитель и администратор — ORGANIZER на любой
+  // поездке, ролевая модель 20.10.2026), не членство в списке.
+  const myRole = trip.myAccessRole;
   const canEdit = myRole === 'ORGANIZER' || myRole === 'EDITOR';
   const canApprove = myRole === 'ORGANIZER' || myRole === 'APPROVER';
   const canManageAccess = myRole === 'ORGANIZER';
-  const canWriteCalendar = user?.role === 'OWNER';
+  const canWriteCalendar = isManagerRole(user?.role);
   const pendingChanges = (changes ?? []).filter((c) => c.status === 'PENDING');
 
   const programItems = [

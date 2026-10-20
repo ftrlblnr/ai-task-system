@@ -1,8 +1,8 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { MANAGER_ROLES } from '../auth/roles';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,7 +13,7 @@ import { ConnectPlaudTokenDto } from './dto/connect-plaud-token.dto';
 // Синхронизация встреч из Plaud (владелец 08.09.2026) — как и календарь,
 // личная интеграция руководителя, весь модуль ограничен ролью OWNER.
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.OWNER)
+@Roles(...MANAGER_ROLES)
 @Controller('plaud')
 export class PlaudOAuthController {
   constructor(

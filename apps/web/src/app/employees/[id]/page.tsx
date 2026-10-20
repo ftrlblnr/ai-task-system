@@ -3,7 +3,9 @@
 import { use, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import type { Direction, EmployeeDetail, PasswordResetLink, TelegramInvite } from '@ai-task-system/shared-types';
+import type { Direction, EmployeeDetail, PasswordResetLink, Role, TelegramInvite } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES, ROLE_LABELS } from '@ai-task-system/shared-types';
+import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
@@ -359,7 +361,43 @@ function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; on
   );
 }
 
+// Ролевая модель 20.10.2026: назначать и снимать администратора может
+// только руководитель; её собственную роль здесь не меняют.
+function RoleSection({ employee, onChange }: { employee: EmployeeDetail; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(role: Role) {
+    setError(null);
+    setBusy(true);
+    try {
+      await api.patch(`/employees/${employee.id}`, { role });
+      onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сменить роль');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Роль">
+      <Select
+        value={employee.role}
+        onChange={(e) => save(e.target.value as Role)}
+        disabled={busy}
+        options={[
+          { value: 'EMPLOYEE', label: ROLE_LABELS.EMPLOYEE },
+          { value: 'ADMIN', label: ROLE_LABELS.ADMIN },
+        ]}
+      />
+      {error && <Alert tone="danger">{error}</Alert>}
+    </Card>
+  );
+}
+
 function EmployeeDetailView({ id }: { id: string }) {
+  const { user } = useAuth();
   const [employee, setEmployee] = useState<EmployeeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -398,9 +436,8 @@ function EmployeeDetailView({ id }: { id: string }) {
           <h1>{employee.fullName}</h1>
           <div className="task-meta">
             <Badge>{employee.position?.title ?? 'Должность не указана'}</Badge>
-            <Badge>{employee.role === 'OWNER' ? 'Руководитель' : 'Подчинённый'}</Badge>
+            <Badge>{ROLE_LABELS[employee.role]}</Badge>
             <Badge>{employee.email}</Badge>
-            {employee.isProfileAdmin && <Badge>Администратор профилей</Badge>}
           </div>
         </div>
       </div>
@@ -431,10 +468,16 @@ function EmployeeDetailView({ id }: { id: string }) {
         />
       </Card>
 
-      <DirectionSection employee={employee} onChange={load} />
-
-      <TelegramSection employee={employee} onChange={load} />
-      <PasswordResetSection employeeId={employee.id} />
+      {/* Учётку руководителя (направление, Telegram, пароль) администратор
+          не меняет — API ответит 403, поэтому разделы просто не показываем. */}
+      {(employee.role !== 'OWNER' || user?.role === 'OWNER') && (
+        <>
+          {user?.role === 'OWNER' && employee.role !== 'OWNER' && <RoleSection employee={employee} onChange={load} />}
+          <DirectionSection employee={employee} onChange={load} />
+          <TelegramSection employee={employee} onChange={load} />
+          <PasswordResetSection employeeId={employee.id} />
+        </>
+      )}
     </div>
   );
 }
@@ -442,7 +485,7 @@ function EmployeeDetailView({ id }: { id: string }) {
 export default function EmployeePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <EmployeeDetailView id={id} />
     </Protected>
   );

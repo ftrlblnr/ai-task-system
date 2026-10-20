@@ -17,12 +17,12 @@ export class TripMembersService {
   ) {}
 
   async listMembers(user: AuthenticatedUser, tripId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
+    await this.rights.assertPermission(tripId, user, 'view');
     return this.prisma.tripMember.findMany({ where: { tripId }, orderBy: { createdAt: 'asc' } });
   }
 
   async addOrUpdateMember(user: AuthenticatedUser, tripId: string, dto: AddTripMemberDto) {
-    await this.rights.assertPermission(tripId, user.id, 'manage_access');
+    await this.rights.assertPermission(tripId, user, 'manage_access');
     return this.prisma.tripMember.upsert({
       where: { tripId_employeeId: { tripId, employeeId: dto.employeeId } },
       create: { tripId, employeeId: dto.employeeId, accessRole: dto.accessRole },
@@ -33,7 +33,7 @@ export class TripMembersService {
   // Не даём остаться поездке без единого ORGANIZER — иначе никто больше не
   // сможет управлять доступом (manage_access есть только у ORGANIZER).
   async removeMember(user: AuthenticatedUser, tripId: string, employeeId: string): Promise<void> {
-    await this.rights.assertPermission(tripId, user.id, 'manage_access');
+    await this.rights.assertPermission(tripId, user, 'manage_access');
     const member = await this.prisma.tripMember.findUnique({ where: { tripId_employeeId: { tripId, employeeId } } });
     if (!member) throw new NotFoundException('Участник не найден');
     if (member.accessRole === 'ORGANIZER') {

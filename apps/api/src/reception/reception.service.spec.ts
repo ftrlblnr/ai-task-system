@@ -209,7 +209,7 @@ function sortRows(rows: FakeRequest[], orderBy: any): FakeRequest[] {
 }
 
 function user(id: string, role: 'OWNER' | 'EMPLOYEE' = 'EMPLOYEE'): AuthenticatedUser {
-  return { id, email: `${id}@x.com`, role, isProfileAdmin: false };
+  return { id, email: `${id}@x.com`, role };
 }
 
 function baseDto() {

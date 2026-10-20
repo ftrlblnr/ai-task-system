@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Alert, KanbanColumn, SearchInput, Select } from '@/components/ui';
@@ -85,14 +86,14 @@ export function KanbanBoard() {
   // видит задачу на доске, но менять статус может только исполнитель или
   // руководитель — постановщик сам по себе такого права не получает.
   function canManageStatus(task: TaskListItem): boolean {
-    return user?.role === 'OWNER' || task.assignee?.id === user?.id;
+    return isManagerRole(user?.role) || task.assignee?.id === user?.id;
   }
 
   function canDropOn(status: TaskStatus): boolean {
     if (!draggedTask) return false;
     if (status === draggedTask.status) return true;
     if (!canManageStatus(draggedTask)) return false;
-    if (user?.role === 'OWNER') return true;
+    if (isManagerRole(user?.role)) return true;
     return EMPLOYEE_SETTABLE_STATUSES.includes(status);
   }
 

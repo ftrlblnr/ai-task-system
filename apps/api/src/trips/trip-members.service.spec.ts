@@ -4,8 +4,8 @@ import { TripRightsService } from './trip-rights.service';
 import { FakeTripsPrisma } from './test-support/fake-trips-prisma';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
-const ORGANIZER: AuthenticatedUser = { id: 'owner-1', email: 'o@x.com', role: 'OWNER', isProfileAdmin: false };
-const VIEWER: AuthenticatedUser = { id: 'viewer-1', email: 'v@x.com', role: 'EMPLOYEE', isProfileAdmin: false };
+const ORGANIZER: AuthenticatedUser = { id: 'owner-1', email: 'o@x.com', role: 'OWNER' };
+const VIEWER: AuthenticatedUser = { id: 'viewer-1', email: 'v@x.com', role: 'EMPLOYEE' };
 
 async function setupTrip(prisma: FakeTripsPrisma) {
   const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: ORGANIZER.id } });

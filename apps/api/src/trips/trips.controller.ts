@@ -35,11 +35,10 @@ function toMaterials(files: Express.Multer.File[] | undefined): MaterialUpload[]
   return files.map((f) => ({ buffer: f.buffer, originalName: fixMultipartFileName(f.originalname), mimeType: f.mimetype }));
 }
 
-// Агент поездок (ТЗ 08.10.2026) — без @Roles(OWNER): trips.create
-// проверяется флагом canCreateTrips (не все руководители), остальной
-// доступ — через TripMember конкретной поездки (раздел 9: создатель и
-// путешествующий руководитель могут быть разными людьми, участник не
-// обязан быть OWNER).
+// Агент поездок (ТЗ 08.10.2026) — без @Roles: создавать поездки может
+// любой сотрудник (ролевая модель 20.10.2026), доступ к конкретной
+// поездке — через TripRightsService (участник по TripMember; руководитель
+// и администратор — ко всем поездкам).
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('trips')
 export class TripsController {

@@ -1,11 +1,10 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, StreamableFile, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { IsEmail, IsIn, IsInt, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
-import { CurrentUser } from '../auth/current-user.decorator';
-import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { assertOwnIntegration, CurrentDataOwner, DataOwnerGuard, type DataOwner } from '../auth/data-owner';
+import { MANAGER_ROLES } from '../auth/roles';
 import { contentDisposition } from '../common/http/content-disposition';
 import { FilesService } from '../files/files.service';
 import { MailActionSessionFactory } from './action/mail-action-session-factory';
@@ -33,11 +32,12 @@ export class ConnectMailboxDto {
   initialDays?: number;
 }
 
-// Как Plaud/календарь — личная интеграция руководителя: весь модуль OWNER-only
-// (решение владельца 25.09.2026). Каждый запрос работает только с ящиком ТЕКУЩЕГО
-// пользователя (Mailbox.employeeId), чужие письма недоступны по id (404).
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.OWNER)
+// Как Plaud/календарь — личная интеграция (решение владельца 25.09.2026). Каждый
+// запрос работает только с ящиком владельца данных (Mailbox.employeeId), чужие
+// письма недоступны по id (404). С 20.10.2026 ящик есть и у администратора, а
+// в режиме X-Act-As: leader он работает с ящиком руководителя (DataOwnerGuard).
+@UseGuards(JwtAuthGuard, RolesGuard, DataOwnerGuard)
+@Roles(...MANAGER_ROLES)
 @Controller('mail')
 export class MailController {
   constructor(
@@ -50,32 +50,34 @@ export class MailController {
   ) {}
 
   @Get('status')
-  status(@CurrentUser() user: AuthenticatedUser) {
-    return this.connection.status(user.id);
+  status(@CurrentDataOwner() owner: DataOwner) {
+    return this.connection.status(owner.id);
   }
 
   @Post('connect')
-  connect(@Body() dto: ConnectMailboxDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.connection.connect(user.id, dto);
+  connect(@Body() dto: ConnectMailboxDto, @CurrentDataOwner() owner: DataOwner) {
+    assertOwnIntegration(owner);
+    return this.connection.connect(owner.id, dto);
   }
 
   @Delete('disconnect')
   @HttpCode(HttpStatus.NO_CONTENT)
-  disconnect(@CurrentUser() user: AuthenticatedUser) {
-    return this.connection.disconnect(user.id);
+  disconnect(@CurrentDataOwner() owner: DataOwner) {
+    assertOwnIntegration(owner);
+    return this.connection.disconnect(owner.id);
   }
 
   // Ручное обновление — синк идёт в фоне (минуты на большой ящик), UI опрашивает статус.
   @Post('sync')
-  async syncNow(@CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async syncNow(@CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     void this.sync.syncMailbox(mailbox.id).catch(() => undefined);
     return { started: true };
   }
 
   @Get('messages')
-  async list(@Query() raw: Record<string, string | undefined>, @CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async list(@Query() raw: Record<string, string | undefined>, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     return this.query.search(mailbox.id, parseEmailFilters(raw), {
       limit: raw.limit ? Number(raw.limit) : undefined,
       offset: raw.offset ? Number(raw.offset) : undefined,
@@ -83,22 +85,21 @@ export class MailController {
   }
 
   @Get('messages/:id')
-  async getOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async getOne(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     return this.query.getMessage(mailbox.id, id);
   }
 
   // Release 2 — скачивание вложения. Владение проверяется дважды: сначала
-  // вложение принадлежит ящику пользователя (getAttachmentForDownload,
-  // 404 если нет), затем FilesService.getDownloadStream сверяет
-  // FileArtifact.employeeId === user.id — совпадает естественно, т.к.
-  // MailSyncService сохранял вложение с employeeId = mailbox.employeeId,
-  // а mailbox принадлежит этому же user.
+  // вложение принадлежит ящику владельца данных (getAttachmentForDownload,
+  // 404 если нет) — этого достаточно: личное владение файлом не сверяется,
+  // потому что администратор в режиме руководителя скачивает вложение из
+  // её ящика (FileArtifact.employeeId — руководитель, не он).
   @Get('attachments/:id/download')
-  async downloadAttachment(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
-    const mailbox = await this.requireMailbox(user);
+  async downloadAttachment(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner): Promise<StreamableFile> {
+    const mailbox = await this.requireMailbox(owner);
     const { fileArtifactId } = await this.query.getAttachmentForDownload(mailbox.id, id);
-    const { stream, file } = await this.files.getDownloadStream(user, fileArtifactId);
+    const { stream, file } = await this.files.getStreamForProcessing(fileArtifactId);
     return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
   }
 
@@ -109,8 +110,8 @@ export class MailController {
   // момент открытия, не на момент генерации сводки, что и правильно: тот же
   // ящик, просто более свежие метаданные).
   @Get('digests')
-  async listDigests(@Query('limit') rawLimit: string | undefined, @CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async listDigests(@Query('limit') rawLimit: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     const limit = Number(rawLimit);
     const digests = await this.query.listDigests(mailbox.id, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 90) : 30);
     return { source: this.digestSource(mailbox), digests };
@@ -122,8 +123,8 @@ export class MailController {
   // для выбора папки-архива, когда \Archive не нашлась автоматически
   // (ARCHIVE_FOLDER_MISSING у пункта плана).
   @Get('folders')
-  async listFolders(@CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async listFolders(@CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     const session = await this.sessions.openSession(mailbox.id);
     try {
       return await session.listAllFolders();
@@ -137,8 +138,8 @@ export class MailController {
   // список (store.upsertFolder), чтобы анализ плана (listFolders из БД)
   // увидел её без ожидания следующего синка.
   @Post('folders')
-  async createFolder(@Body() dto: CreateMailFolderDto, @CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async createFolder(@Body() dto: CreateMailFolderDto, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     const session = await this.sessions.openSession(mailbox.id);
     try {
       const folder = await session.createFolder(dto.parentPath ?? null, dto.name);
@@ -150,8 +151,8 @@ export class MailController {
   }
 
   @Get('digests/:id')
-  async getDigest(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
+  async getDigest(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
     const digest = await this.query.getDigest(mailbox.id, id);
     return { source: this.digestSource(mailbox), ...digest };
   }
@@ -160,8 +161,8 @@ export class MailController {
     return `${PROVIDER_LABELS[mailbox.provider as keyof typeof PROVIDER_LABELS] ?? mailbox.provider}, ${mailbox.emailAddress}`;
   }
 
-  private async requireMailbox(user: AuthenticatedUser) {
-    const mailbox = await this.store.getMailboxStatusByEmployee(user.id);
+  private async requireMailbox(owner: DataOwner) {
+    const mailbox = await this.store.getMailboxStatusByEmployee(owner.id);
     if (!mailbox) throw new NotFoundException('Почта не подключена');
     return mailbox;
   }

@@ -1,10 +1,9 @@
 import { BadRequestException, Body, Controller, Get, Headers, Logger, NotFoundException, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { RolesGuard } from '../../auth/roles.guard';
 import { Roles } from '../../auth/roles.decorator';
-import { CurrentUser } from '../../auth/current-user.decorator';
-import type { AuthenticatedUser } from '../../auth/jwt.strategy';
+import { CurrentDataOwner, DataOwnerGuard, type DataOwner } from '../../auth/data-owner';
+import { MANAGER_ROLES } from '../../auth/roles';
 import { IdempotencyService } from '../../common/idempotency.service';
 import { MailStore } from '../mail-store';
 import { ApproveMailActionGroupDto } from './dto/approve-mail-action-group.dto';
@@ -17,10 +16,11 @@ import { MailActionPlanService } from './mail-action-plan.service';
 
 // Почтовый ИИ-агент v2.0 (05.10.2026) — раздел 18 ТЗ, маршруты согласования
 // Этапа 1 (список/создание плана, пункты, согласие по группе, исполнение).
-// OWNER-only и привязка к собственному ящику — тот же принцип, что
-// MailController.requireMailbox (личная интеграция руководителя).
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.OWNER)
+// Руководитель/администратор и привязка к ящику владельца данных — тот же
+// принцип, что MailController.requireMailbox (личная интеграция; X-Act-As:
+// leader — администратор согласует действия в ящике руководителя).
+@UseGuards(JwtAuthGuard, RolesGuard, DataOwnerGuard)
+@Roles(...MANAGER_ROLES)
 @Controller('mail')
 export class MailActionController {
   private readonly logger = new Logger(MailActionController.name);
@@ -39,8 +39,8 @@ export class MailActionController {
     return key;
   }
 
-  private async requireMailbox(user: AuthenticatedUser) {
-    const mailbox = await this.store.getMailboxStatusByEmployee(user.id);
+  private async requireMailbox(owner: DataOwner) {
+    const mailbox = await this.store.getMailboxStatusByEmployee(owner.id);
     if (!mailbox) throw new NotFoundException('Почта не подключена');
     return mailbox;
   }
@@ -48,12 +48,12 @@ export class MailActionController {
   @Post('action-plans')
   async createPlan(
     @Body() dto: CreateMailActionPlanDto,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentDataOwner() owner: DataOwner,
     @Headers('idempotency-key') idemKey?: string,
   ) {
     const key = this.requireIdempotencyKey(idemKey);
-    const mailbox = await this.requireMailbox(user);
-    const { body } = await this.idempotency.run(user.id, key, 'mail.action-plans.create', dto, () => this.plans.createPlan(user.id, mailbox.id, dto));
+    const mailbox = await this.requireMailbox(owner);
+    const { body } = await this.idempotency.run(owner.id, key, 'mail.action-plans.create', dto, () => this.plans.createPlan(owner.id, mailbox.id, dto));
     // Анализ — LLM-вызов, не блокирует HTTP-ответ (план создаётся в
     // ANALYZING, клиент опрашивает GET .../:id до READY), тот же приём, что
     // approveGroup → execution.start.
@@ -63,24 +63,24 @@ export class MailActionController {
   }
 
   @Get('action-plans')
-  async listPlans(@CurrentUser() user: AuthenticatedUser) {
-    const mailbox = await this.requireMailbox(user);
-    return this.plans.listPlans(user.id, mailbox.id);
+  async listPlans(@CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner);
+    return this.plans.listPlans(owner.id, mailbox.id);
   }
 
   @Get('action-plans/:id')
-  async getPlan(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.plans.getPlanOrThrow(user.id, id);
+  async getPlan(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.plans.getPlanOrThrow(owner.id, id);
   }
 
   @Get('action-plans/:id/items')
-  async listItems(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.plans.listItemsWithConflicts(user.id, id);
+  async listItems(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.plans.listItemsWithConflicts(owner.id, id);
   }
 
   @Get('action-plans/:id/context')
-  async getPlanContext(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.plans.getPlanContext(user.id, id);
+  async getPlanContext(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.plans.getPlanContext(owner.id, id);
   }
 
   @Patch('action-plans/:id/items/:itemId')
@@ -88,39 +88,39 @@ export class MailActionController {
     @Param('id') id: string,
     @Param('itemId') itemId: string,
     @Body() dto: PatchMailActionItemDto,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentDataOwner() owner: DataOwner,
   ) {
-    return this.plans.patchItem(user.id, id, itemId, dto);
+    return this.plans.patchItem(owner.id, id, itemId, dto);
   }
 
   @Post('action-plans/:id/approve')
   async approve(
     @Param('id') id: string,
     @Body() dto: ApproveMailActionGroupDto,
-    @CurrentUser() user: AuthenticatedUser,
+    @CurrentDataOwner() owner: DataOwner,
     @Headers('idempotency-key') idemKey?: string,
   ) {
     const key = this.requireIdempotencyKey(idemKey);
-    const { body } = await this.idempotency.run(user.id, key, 'mail.action-plans.approve', { id, dto }, () => this.approvals.approveGroup(user.id, id, dto));
+    const { body } = await this.idempotency.run(owner.id, key, 'mail.action-plans.approve', { id, dto }, () => this.approvals.approveGroup(owner.id, id, dto));
     return body;
   }
 
   @Get('action-executions/:id')
-  async getExecution(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.executions.getExecutionOrThrow(user.id, id);
+  async getExecution(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner) {
+    return this.executions.getExecutionOrThrow(owner.id, id);
   }
 
   @Post('action-executions/:id/stop')
-  async stop(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Headers('idempotency-key') idemKey?: string) {
+  async stop(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner, @Headers('idempotency-key') idemKey?: string) {
     const key = this.requireIdempotencyKey(idemKey);
-    const { body } = await this.idempotency.run(user.id, key, 'mail.action-executions.stop', { id }, () => this.executions.stop(user.id, id));
+    const { body } = await this.idempotency.run(owner.id, key, 'mail.action-executions.stop', { id }, () => this.executions.stop(owner.id, id));
     return body;
   }
 
   @Post('action-executions/:id/retry')
-  async retry(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Headers('idempotency-key') idemKey?: string) {
+  async retry(@Param('id') id: string, @CurrentDataOwner() owner: DataOwner, @Headers('idempotency-key') idemKey?: string) {
     const key = this.requireIdempotencyKey(idemKey);
-    const { body } = await this.idempotency.run(user.id, key, 'mail.action-executions.retry', { id }, () => this.executions.retry(user.id, id));
+    const { body } = await this.idempotency.run(owner.id, key, 'mail.action-executions.retry', { id }, () => this.executions.retry(owner.id, id));
     return body;
   }
 }

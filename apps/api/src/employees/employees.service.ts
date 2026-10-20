@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { isManager } from '../auth/roles';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
+import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
 import { SetCompetencyDto } from './dto/set-competency.dto';
 import { normalizeAliasText } from './employee-resolver.service';
 
@@ -18,7 +20,6 @@ const EMPLOYEE_SELECT = {
   telegramId: true,
   status: true,
   role: true,
-  isProfileAdmin: true,
   positionId: true,
   position: { select: { id: true, title: true } },
   directionId: true,
@@ -34,9 +35,9 @@ export class EmployeesService {
   // может любой участник, не только руководитель — значит, любому нужен
   // список коллег, чтобы выбрать исполнителя. Полный каталог (email,
   // телеграм, статус, роль…) по-прежнему не публичный: подчинённый
-  // получает только имена, руководитель — весь профиль.
+  // получает только имена, руководитель/администратор — весь профиль.
   findAll(viewer: AuthenticatedUser) {
-    if (viewer.role === Role.OWNER) {
+    if (isManager(viewer.role)) {
       return this.prisma.employee.findMany({
         select: EMPLOYEE_SELECT,
         orderBy: { fullName: 'asc' },
@@ -67,7 +68,8 @@ export class EmployeesService {
     return employee;
   }
 
-  async create(dto: CreateEmployeeDto) {
+  async create(dto: CreateEmployeeDto, actor: AuthenticatedUser) {
+    this.assertCanAssignRole(dto.role, actor);
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
     return this.prisma.employee.create({
       data: {
@@ -77,7 +79,6 @@ export class EmployeesService {
         positionId: dto.positionId,
         directionId: dto.directionId,
         role: dto.role,
-        isProfileAdmin: dto.isProfileAdmin ?? false,
       },
       select: EMPLOYEE_SELECT,
     });
@@ -90,8 +91,18 @@ export class EmployeesService {
   // сотрудников, календарь, /meetings и т.д.). Проверяем инвариант "хотя бы
   // один активный OWNER остаётся" только когда роль реально меняется С
   // OWNER на что-то другое — не блокирует ничего остального.
-  async update(id: string, dto: UpdateEmployeeDto) {
+  async update(id: string, dto: UpdateEmployeeDto, actor: AuthenticatedUser) {
     const current = await this.ensureExists(id);
+    // Учётку руководителя (логин, статус, роль) администратор не меняет.
+    if (current.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Профиль руководителя может менять только она сама');
+    }
+    if (dto.role !== undefined && dto.role !== current.role) {
+      if (current.role !== Role.EMPLOYEE && actor.role !== Role.OWNER) {
+        throw new ForbiddenException('Менять роль руководителя или администратора может только руководитель');
+      }
+      this.assertCanAssignRole(dto.role, actor);
+    }
     if (dto.role !== undefined && dto.role !== Role.OWNER && current.role === Role.OWNER) {
       const otherOwners = await this.prisma.employee.count({
         where: { role: Role.OWNER, status: 'ACTIVE', id: { not: id } },
@@ -105,6 +116,31 @@ export class EmployeesService {
       data: dto,
       select: EMPLOYEE_SELECT,
     });
+  }
+
+  // Владелец 20.10.2026 — свой профиль правит любой пользователь: ФИО,
+  // должность, направление. Роль/статус/логин — только руководство.
+  async updateMyProfile(id: string, dto: UpdateMyProfileDto) {
+    await this.ensureExists(id);
+    return this.prisma.employee.update({ where: { id }, data: dto, select: EMPLOYEE_SELECT });
+  }
+
+  async changeMyPassword(id: string, currentPassword: string, newPassword: string) {
+    const employee = await this.prisma.employee.findUnique({ where: { id }, select: { passwordHash: true } });
+    if (!employee) throw new NotFoundException('Сотрудник не найден');
+    if (!(await bcrypt.compare(currentPassword, employee.passwordHash))) {
+      throw new BadRequestException('Текущий пароль указан неверно');
+    }
+    await this.prisma.employee.update({ where: { id }, data: { passwordHash: await bcrypt.hash(newPassword, SALT_ROUNDS) } });
+  }
+
+  // Владелец 20.10.2026 — руководитель в системе один; назначать
+  // администраторов может только она, администратор заводит и переводит
+  // только пользователей.
+  private assertCanAssignRole(role: Role | undefined, actor: AuthenticatedUser) {
+    if (role === undefined || role === Role.EMPLOYEE) return;
+    if (role === Role.OWNER) throw new ForbiddenException('Руководитель в системе один — назначить ещё одного нельзя');
+    if (actor.role !== Role.OWNER) throw new ForbiddenException('Назначать администраторов может только руководитель');
   }
 
   async setCompetency(employeeId: string, dto: SetCompetencyDto) {

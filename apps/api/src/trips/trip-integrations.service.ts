@@ -5,6 +5,7 @@ import { EventsService } from '../calendar/events.service';
 import { TasksService } from '../tasks/tasks.service';
 import { TripRightsService } from './trip-rights.service';
 import { ProposeTripTaskDto } from './dto/propose-trip-task.dto';
+import { isManager } from '../auth/roles';
 
 // Приоритет 3 ТЗ, раздел 10 — интеграции отдельные от просмотра/правки
 // самой поездки: calendar.write/tasks.assign — отдельные права, не
@@ -26,8 +27,8 @@ export class TripIntegrationsService {
   // точного времени начала/окончания — отказ, а не выдуманный час (тот же
   // принцип, что весь остальной модуль).
   async addEventToCalendar(user: AuthenticatedUser, tripId: string, eventId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
-    if (user.role !== 'OWNER') {
+    await this.rights.assertPermission(tripId, user, 'view');
+    if (!isManager(user.role)) {
       throw new ForbiddenException('CALENDAR_OWNER_ONLY: личный календарь есть только у руководителя');
     }
     const event = await this.prisma.tripEvent.findUnique({ where: { id: eventId } });
@@ -51,7 +52,7 @@ export class TripIntegrationsService {
   // assigneeId/dueDate здесь обязательны на уровне самого вызова, не
   // опциональны, как в общем TasksService.create.
   async proposeTask(user: AuthenticatedUser, tripId: string, dto: ProposeTripTaskDto) {
-    await this.rights.assertPermission(tripId, user.id, 'edit');
+    await this.rights.assertPermission(tripId, user, 'edit');
     const task = await this.tasks.create({ title: dto.title, assigneeId: dto.assigneeId, dueDate: dto.dueDate, sourceContext: `Создано из поездки (humanCode см. GET /trips/${tripId})` }, user);
     await this.prisma.tripRevision.create({
       data: { tripId, entityType: 'TRIP', entityId: null, summary: `Создана задача «${dto.title}»`, appliedByEmployeeId: user.id },

@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Role, TaskStatus } from '@prisma/client';
+import { TaskStatus } from '@prisma/client';
+import { isManager } from '../auth/roles';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -136,17 +137,14 @@ export class TasksService {
     private readonly bot: TelegramBotService,
   ) {}
 
-  // Раздел 5 ТЗ (скорректировано 28.08.2026): руководитель видит все задачи;
-  // подчинённый — свои по исполнению И те, что сам поставил другим —
-  // иначе поставленная им задача пропадала бы из виду сразу после создания.
-  // parentTaskId: null — подзадачи не попадают в общий список/канбан
+  // Владелец 20.10.2026: все видят все задачи (контроль исполнения
+  // поручений открыт всем). parentTaskId: null — подзадачи не попадают в общий список/канбан
   // независимо от роли, только внутри карточки родителя (владелец 08.09.2026,
   // по образцу Linear/Asana — не захламлять основную доску).
-  async findAll(user: AuthenticatedUser) {
+  async findAll() {
     const tasks = await this.prisma.task.findMany({
       where: {
         parentTaskId: null,
-        ...(user.role === Role.OWNER ? {} : { OR: [{ assigneeId: user.id }, { creatorId: user.id }] }),
       },
       select: TASK_LIST_SELECT,
       // order asc — ручная перестановка внутри колонки (владелец 08.09.2026),
@@ -160,25 +158,26 @@ export class TasksService {
 
   // Полная новая последовательность одной колонки канбана (все задачи
   // этого статуса, в новом порядке) — владелец 08.09.2026: "задачи можно
-  // было переставлять вверх-вниз в столбце". Не меняет статус/исполнителя
-  // и потому не требует более строгой проверки, чем видимость задачи —
-  // сотрудник может переставлять любые задачи, которые ему и так видны.
+  // было переставлять вверх-вниз в столбце". Порядок общий для всех, а
+  // видят задачи теперь все (владелец 20.10.2026) — поэтому пользователь
+  // переставляет только свои (поставленные им или ему), руководство — любые.
   async reorder(taskIds: string[], actor: AuthenticatedUser) {
     const tasks = await this.prisma.task.findMany({ where: { id: { in: taskIds } } });
     if (tasks.length !== taskIds.length) {
       throw new NotFoundException('Одна или несколько задач не найдены');
     }
-    for (const task of tasks) this.assertVisible(task, actor);
+    if (!isManager(actor.role) && tasks.some((t) => t.creatorId !== actor.id && t.assigneeId !== actor.id)) {
+      throw new ForbiddenException('Переставлять можно только свои задачи');
+    }
 
     await this.prisma.$transaction(
       taskIds.map((id, index) => this.prisma.task.update({ where: { id }, data: { order: index } })),
     );
   }
 
-  async findOne(id: string, user: AuthenticatedUser) {
+  async findOne(id: string) {
     const task = await this.prisma.task.findUnique({ where: { id }, select: TASK_DETAIL_SELECT });
     if (!task) throw new NotFoundException('Задача не найдена');
-    this.assertVisible(task, user);
 
     // Раньше здесь писался AuditLog READ на каждое открытие карточки —
     // аудит 10.09.2026, п. 2.13: обычная задача не «чувствительный контент»
@@ -211,7 +210,7 @@ export class TasksService {
     // весь набор source-полей (hardening-раунд Phase O, 22.09.2026, P1) —
     // раньше проверялся только sourceMeetingId, а sourceSegmentId/
     // sourceExecutionId можно было теоретически передать отдельно от него.
-    if ((dto.sourceMeetingId || dto.sourceSegmentId || dto.sourceExecutionId) && creator.role !== Role.OWNER) {
+    if ((dto.sourceMeetingId || dto.sourceSegmentId || dto.sourceExecutionId) && !isManager(creator.role)) {
       throw new ForbiddenException('Задачи из встречи может ставить только руководитель');
     }
 
@@ -239,7 +238,6 @@ export class TasksService {
     // та же граница видимости, что и для самой задачи.
     if (dto.parentTaskId) {
       const parent = await this.getOrThrow(dto.parentTaskId);
-      this.assertVisible(parent, creator);
       if (parent.parentTaskId) {
         throw new BadRequestException('У подзадачи не может быть своих подзадач');
       }
@@ -285,7 +283,7 @@ export class TasksService {
   // ставить и вести задачу может любой участник, не только руководитель).
   async update(id: string, dto: UpdateTaskDto, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
-    if (actor.role !== Role.OWNER && task.creatorId !== actor.id) {
+    if (!isManager(actor.role) && task.creatorId !== actor.id) {
       throw new ForbiddenException('Редактировать задачу может только её постановщик или руководитель');
     }
 
@@ -323,21 +321,20 @@ export class TasksService {
       this.notifyEmployee(dto.assigneeId, `Вам назначена задача: «${dto.title ?? task.title}»`);
     }
 
-    return this.findOne(id, actor);
+    return this.findOne(id);
   }
 
   async updateStatus(id: string, status: TaskStatus, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
-    this.assertVisible(task, actor);
 
     // Видеть задачу теперь может и её постановщик, не только исполнитель —
     // но менять статус по-прежнему может только тот, кто её выполняет
     // (или руководитель). Иначе постановщик мог бы сам отчитаться о
     // выполнении чужой работы.
-    if (actor.role !== Role.OWNER && task.assigneeId !== actor.id) {
+    if (!isManager(actor.role) && task.assigneeId !== actor.id) {
       throw new ForbiddenException('Статус может менять исполнитель задачи или руководитель');
     }
-    if (actor.role !== Role.OWNER && !EMPLOYEE_ALLOWED_STATUSES.includes(status)) {
+    if (!isManager(actor.role) && !EMPLOYEE_ALLOWED_STATUSES.includes(status)) {
       throw new ForbiddenException('Этот статус может установить только руководитель');
     }
 
@@ -358,12 +355,11 @@ export class TasksService {
     if (task.creatorId !== actor.id) this.notifyEmployee(task.creatorId, text);
     void this.notifyWatchers(id, actor.id, text);
 
-    return this.findOne(id, actor);
+    return this.findOne(id);
   }
 
   async addComment(id: string, dto: CreateCommentDto, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
-    this.assertVisible(task, actor);
 
     await this.prisma.taskComment.create({
       data: { taskId: id, authorId: actor.id, body: dto.body },
@@ -374,7 +370,7 @@ export class TasksService {
     if (otherPartyId && otherPartyId !== actor.id) this.notifyEmployee(otherPartyId, text);
     void this.notifyWatchers(id, actor.id, text);
 
-    return this.findOne(id, actor);
+    return this.findOne(id);
   }
 
   // Наблюдатель (владелец 08.09.2026): любой участник может подписаться
@@ -382,9 +378,8 @@ export class TasksService {
   // руководитель — как и остальные значимые назначения в системе.
   async addWatcher(taskId: string, employeeId: string | undefined, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(taskId);
-    this.assertVisible(task, actor);
     const targetId = employeeId ?? actor.id;
-    if (targetId !== actor.id && actor.role !== Role.OWNER) {
+    if (targetId !== actor.id && !isManager(actor.role)) {
       throw new ForbiddenException('Добавить наблюдателем другого человека может только руководитель');
     }
     await this.prisma.taskWatcher.upsert({
@@ -392,17 +387,16 @@ export class TasksService {
       create: { taskId, employeeId: targetId },
       update: {},
     });
-    return this.findOne(taskId, actor);
+    return this.findOne(taskId);
   }
 
   async removeWatcher(taskId: string, employeeId: string, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(taskId);
-    this.assertVisible(task, actor);
-    if (employeeId !== actor.id && actor.role !== Role.OWNER) {
+    if (employeeId !== actor.id && !isManager(actor.role)) {
       throw new ForbiddenException('Убрать другого наблюдателя может только руководитель');
     }
     await this.prisma.taskWatcher.deleteMany({ where: { taskId, employeeId } });
-    return this.findOne(taskId, actor);
+    return this.findOne(taskId);
   }
 
   // Удалить может руководитель или сам постановщик задачи — та же граница,
@@ -411,18 +405,10 @@ export class TasksService {
   // каскадом на уровне схемы (onDelete: Cascade) — отдельно чистить не нужно.
   async remove(id: string, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
-    if (actor.role !== Role.OWNER && task.creatorId !== actor.id) {
+    if (!isManager(actor.role) && task.creatorId !== actor.id) {
       throw new ForbiddenException('Удалить задачу может только её постановщик или руководитель');
     }
     await this.prisma.task.delete({ where: { id } });
-  }
-
-  // Видит задачу: руководитель, исполнитель или тот, кто её поставил
-  // (раздел 5 ТЗ, скорректировано 28.08.2026).
-  private assertVisible(task: { assigneeId: string | null; creatorId: string }, user: AuthenticatedUser) {
-    if (user.role === Role.OWNER) return;
-    if (task.assigneeId === user.id || task.creatorId === user.id) return;
-    throw new ForbiddenException('Нет доступа к этой задаче');
   }
 
   private async getOrThrow(id: string) {

@@ -21,14 +21,13 @@ export class ActiveEmployeeGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const employee = await this.prisma.employee.findUnique({
       where: { id: request.user.id },
-      select: { status: true, role: true, isProfileAdmin: true },
+      select: { status: true, role: true },
     });
     if (!employee || employee.status !== 'ACTIVE') {
       throw new UnauthorizedException('Сотрудник неактивен');
     }
-    // Живые роль/isProfileAdmin — не то, что было в JWT на момент логина.
+    // Живая роль — не то, что было в JWT на момент логина.
     request.user.role = employee.role;
-    request.user.isProfileAdmin = employee.isProfileAdmin;
     return true;
   }
 }

@@ -15,7 +15,6 @@ async function main() {
       email: ownerEmail,
       passwordHash: await bcrypt.hash(ownerPassword, 12),
       role: Role.OWNER,
-      isProfileAdmin: true,
     },
   });
 

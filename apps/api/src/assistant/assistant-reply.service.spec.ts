@@ -13,7 +13,7 @@ import { AssistantReplyService, buildDateContext, stripLeakedContextMarkers } fr
 // останавливается.
 
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.OWNER, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.OWNER, ...overrides };
 }
 
 function textMessage(text: string): any {

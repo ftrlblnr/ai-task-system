@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, Prisma, Role, TaskFromMeetingStatus } from '@prisma/client';
+import { EventStatus, Prisma, TaskFromMeetingStatus } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -14,6 +14,7 @@ import { withLocalOffset } from '../common/timezone';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
 import { buildTasksWorkbookBuffer } from './task-export';
+import { isManager } from '../auth/roles';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -300,7 +301,7 @@ export class AssistantToolsService {
     // Календарь — личный календарь руководителя, весь CalendarController
     // закрыт на Role.OWNER (раздел 5 ТЗ) — сотруднику этот инструмент не
     // предлагается вообще, а не отклоняется после вызова.
-    if (user.role === Role.OWNER) {
+    if (isManager(user.role)) {
       tools.push({
         name: 'get_events',
         description: 'Получить список предстоящих подтверждённых встреч в личном календаре руководителя.',
@@ -443,7 +444,7 @@ export class AssistantToolsService {
     try {
       if (name === 'get_tasks') {
         const filter = (input as { filter?: unknown } | null)?.filter;
-        return await this.getTasks(user, filter === 'overdue' ? 'overdue' : 'all');
+        return await this.getTasks(filter === 'overdue' ? 'overdue' : 'all');
       }
       if (name === 'get_events') return await this.getEvents(user);
       if (name === 'export_tasks_xlsx') {
@@ -528,8 +529,8 @@ export class AssistantToolsService {
     }
   }
 
-  private async getTasks(user: AuthenticatedUser, filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
-    const tasks = await this.tasks.findAll(user);
+  private async getTasks(filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
+    const tasks = await this.tasks.findAll();
     const filtered = filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
     // findAll() вызывается напрямую (в обход HTTP-сериализации), поэтому
     // dueDate — сырой Prisma Date, не строка (тот же приём, что уже был
@@ -545,7 +546,7 @@ export class AssistantToolsService {
   // иначе экспорт был бы бесполезен ровно в том случае, ради которого его
   // и попросили.
   private async exportTasksXlsx(user: AuthenticatedUser, filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
-    const tasks = await this.tasks.findAll(user);
+    const tasks = await this.tasks.findAll();
     const filtered = filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
     const buffer = await buildTasksWorkbookBuffer(filtered);
     const label = filter === 'overdue' ? 'просроченные' : 'все';

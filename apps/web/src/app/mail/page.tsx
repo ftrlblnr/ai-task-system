@@ -13,8 +13,10 @@ import type {
   MailDigestListResponse,
   MailStatus,
 } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
+import { DataOwnerScope, useActingAsLeader } from '@/components/data-owner-scope';
 import { Card, PageHeader } from '@/components/ui/card';
 import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
@@ -196,6 +198,7 @@ function ConnectCard({ onConnected }: { onConnected: () => void }) {
 function StatusBar({ status, onChange }: { status: Extract<MailStatus, { connected: true }>; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const actingAsLeader = useActingAsLeader();
   const syncing = status.syncState === 'SYNCING';
 
   async function syncNow() {
@@ -233,9 +236,11 @@ function StatusBar({ status, onChange }: { status: Extract<MailStatus, { connect
         <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy || syncing || status.syncState === 'PAUSED'}>
           Синхронизировать
         </Button>
-        <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
-          Отключить
-        </Button>
+        {!actingAsLeader && (
+          <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
+            Отключить
+          </Button>
+        )}
       </div>
       {status.lastError && (
         <div style={{ marginTop: 8 }}>
@@ -586,6 +591,7 @@ function MailView() {
   const [status, setStatus] = useState<MailStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<MailTab>('messages');
+  const actingAsLeader = useActingAsLeader();
 
   const load = useCallback(() => {
     api
@@ -609,7 +615,9 @@ function MailView() {
 
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!status) return <p className="ds-field-hint">Загрузка…</p>;
-  if (!status.connected) return <ConnectCard onConnected={load} />;
+  if (!status.connected) {
+    return actingAsLeader ? <Alert tone="info">Почта руководителя не подключена — подключить её может только она сама.</Alert> : <ConnectCard onConnected={load} />;
+  }
 
   return (
     <>
@@ -634,9 +642,11 @@ function MailView() {
 
 export default function MailPage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <PageHeader title="Почта" />
-      <MailView />
+      <DataOwnerScope>
+        <MailView />
+      </DataOwnerScope>
     </Protected>
   );
 }

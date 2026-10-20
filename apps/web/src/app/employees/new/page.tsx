@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import type { CreateEmployeeInput, Direction, EmployeeProfile, Position, Role } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES, ROLE_LABELS } from '@ai-task-system/shared-types';
+import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { generatePassword } from '@/lib/generate-password';
-import { Field, Input, Select, Checkbox } from '@/components/ui/field';
+import { Field, Input, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 
@@ -17,6 +19,7 @@ const NEW_DIRECTION_VALUE = '__new__';
 
 function NewEmployeeForm() {
   const router = useRouter();
+  const { user } = useAuth();
   const [positions, setPositions] = useState<Position[]>([]);
   const [directions, setDirections] = useState<Direction[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +33,6 @@ function NewEmployeeForm() {
   const [directionId, setDirectionId] = useState('');
   const [newDirectionTitle, setNewDirectionTitle] = useState('');
   const [role, setRole] = useState<Role>('EMPLOYEE');
-  const [isProfileAdmin, setIsProfileAdmin] = useState(false);
 
   useEffect(() => {
     api.get<Position[]>('/positions').then(setPositions).catch(() => {});
@@ -63,7 +65,6 @@ function NewEmployeeForm() {
         positionId: finalPositionId,
         directionId: finalDirectionId,
         role,
-        isProfileAdmin,
       };
       const created = await api.post<EmployeeProfile>('/employees', payload);
       router.push(`/employees/${created.id}`);
@@ -128,22 +129,19 @@ function NewEmployeeForm() {
         </Field>
       )}
 
-      <Field label="Роль в системе">
-        <Select
-          value={role}
-          onChange={(e) => setRole(e.target.value as Role)}
-          options={[
-            { value: 'EMPLOYEE', label: 'Подчинённый — видит только свои задачи' },
-            { value: 'OWNER', label: 'Руководитель — видит и подтверждает всё' },
-          ]}
-        />
-      </Field>
-
-      <Checkbox
-        label="Администратор профилей (ведёт компетенции сотрудников)"
-        checked={isProfileAdmin}
-        onChange={(e) => setIsProfileAdmin(e.target.checked)}
-      />
+      {/* Администраторов назначает только руководитель (ролевая модель 20.10.2026). */}
+      {user?.role === 'OWNER' && (
+        <Field label="Роль в системе">
+          <Select
+            value={role}
+            onChange={(e) => setRole(e.target.value as Role)}
+            options={[
+              { value: 'EMPLOYEE', label: ROLE_LABELS.EMPLOYEE },
+              { value: 'ADMIN', label: ROLE_LABELS.ADMIN },
+            ]}
+          />
+        </Field>
+      )}
 
       {error && <Alert tone="danger">{error}</Alert>}
 
@@ -156,7 +154,7 @@ function NewEmployeeForm() {
 
 export default function NewEmployeePage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <Link href="/employees" className="back-link">
         <ArrowLeft size={14} strokeWidth={1.75} />
         Сотрудники

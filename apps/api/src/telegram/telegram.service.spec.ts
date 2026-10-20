@@ -17,7 +17,6 @@ interface EmployeeRow {
   telegramId: string | null;
   status: 'ACTIVE' | 'INACTIVE';
   role: 'OWNER' | 'EMPLOYEE';
-  isProfileAdmin: boolean;
 }
 
 class FakePrisma {
@@ -61,7 +60,7 @@ describe('TelegramService.authenticate', () => {
 
   it('telegramId уже привязан — обычный вход, credentials не нужны', async () => {
     const prisma = new FakePrisma();
-    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: '1', status: 'ACTIVE', role: 'EMPLOYEE', isProfileAdmin: false });
+    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: '1', status: 'ACTIVE', role: 'EMPLOYEE' });
     mockedVerify.mockReturnValue({ user: { id: 1 }, authDate: Date.now() / 1000 });
     const service = buildService(prisma, jest.fn());
 
@@ -79,7 +78,7 @@ describe('TelegramService.authenticate', () => {
 
   it('telegramId не привязан, верные credentials — привязывает telegramId и возвращает сотрудника (владелец 02.10.2026)', async () => {
     const prisma = new FakePrisma();
-    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: null, status: 'ACTIVE', role: 'EMPLOYEE', isProfileAdmin: false });
+    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: null, status: 'ACTIVE', role: 'EMPLOYEE' });
     mockedVerify.mockReturnValue({ user: { id: 555 }, authDate: Date.now() / 1000 });
     const validateCredentials = jest.fn().mockResolvedValue({ id: 'e1' });
     const service = buildService(prisma, validateCredentials);
@@ -93,7 +92,7 @@ describe('TelegramService.authenticate', () => {
 
   it('telegramId не привязан, неверные credentials — UnauthorizedException, ничего не привязывается', async () => {
     const prisma = new FakePrisma();
-    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: null, status: 'ACTIVE', role: 'EMPLOYEE', isProfileAdmin: false });
+    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: null, status: 'ACTIVE', role: 'EMPLOYEE' });
     mockedVerify.mockReturnValue({ user: { id: 555 }, authDate: Date.now() / 1000 });
     const validateCredentials = jest.fn().mockResolvedValue(null);
     const service = buildService(prisma, validateCredentials);
@@ -109,7 +108,7 @@ describe('TelegramService.authenticate', () => {
   // тоже никогда не тестировался отдельно) — проверяем её напрямую.
   it('ensureTelegramFree — ConflictException, если telegramId уже принадлежит другому сотруднику', async () => {
     const prisma = new FakePrisma();
-    prisma.employees.push({ id: 'e2', fullName: 'Пётр', email: 'petr@x.kz', telegramId: '555', status: 'ACTIVE', role: 'EMPLOYEE', isProfileAdmin: false });
+    prisma.employees.push({ id: 'e2', fullName: 'Пётр', email: 'petr@x.kz', telegramId: '555', status: 'ACTIVE', role: 'EMPLOYEE' });
     const service = buildService(prisma, jest.fn()) as any;
 
     await expect(service.ensureTelegramFree('555', 'e1')).rejects.toBeInstanceOf(ConflictException);
@@ -117,7 +116,7 @@ describe('TelegramService.authenticate', () => {
 
   it('привязанный, но INACTIVE сотрудник — UnauthorizedException', async () => {
     const prisma = new FakePrisma();
-    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: '1', status: 'INACTIVE', role: 'EMPLOYEE', isProfileAdmin: false });
+    prisma.employees.push({ id: 'e1', fullName: 'Иван', email: 'ivan@x.kz', telegramId: '1', status: 'INACTIVE', role: 'EMPLOYEE' });
     mockedVerify.mockReturnValue({ user: { id: 1 }, authDate: Date.now() / 1000 });
     const service = buildService(prisma, jest.fn());
 

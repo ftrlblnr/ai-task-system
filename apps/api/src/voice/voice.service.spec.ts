@@ -8,7 +8,7 @@ function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRe
 }
 
 function makeUser(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, isProfileAdmin: false, ...overrides };
+  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
 }
 
 // Ни validateTarget, ни validateEventCreateCompleteness, ни

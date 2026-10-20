@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane } from 'lucide-react';
+import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
@@ -80,9 +81,11 @@ export function Sidebar() {
 
   if (!user) return null;
 
+  // Ролевая модель 20.10.2026: «Стол руководителя» — только руководителю,
+  // остальные разделы руководства (ownerOnly) — и администратору.
   const isOwner = user.role === 'OWNER';
   const generalItems = NAV_ITEMS.filter((item) => !item.ownerOnly);
-  const ownerItems = isOwner ? NAV_ITEMS.filter((item) => item.ownerOnly) : [];
+  const ownerItems = isManagerRole(user.role) ? NAV_ITEMS.filter((item) => item.ownerOnly) : [];
 
   function renderItem(item: (typeof NAV_ITEMS)[number]) {
     const active = pathname === item.href || pathname.startsWith(item.href + '/');
@@ -112,18 +115,20 @@ export function Sidebar() {
         {ownerItems.length > 0 && (
           <>
             <div className="ds-nav-sep" />
-            <div className="ds-nav-group">Руководитель</div>
+            <div className="ds-nav-group">Управление</div>
             {ownerItems.map(renderItem)}
           </>
         )}
       </nav>
 
       <div className="ds-sidebar-foot">
-        <Avatar name={user.fullName} size={30} />
-        <div className="ds-sidebar-user">
-          <b>{user.fullName}</b>
-          <span>{isOwner ? 'Руководитель' : 'Подчинённый'}</span>
-        </div>
+        <Link href="/profile" className="ds-sidebar-profile" title="Мой профиль">
+          <Avatar name={user.fullName} size={30} />
+          <div className="ds-sidebar-user">
+            <b>{user.fullName}</b>
+            <span>{ROLE_LABELS[user.role]}</span>
+          </div>
+        </Link>
         <IconButton icon={LogOut} label="Выйти" size="sm" onClick={logout} />
       </div>
     </aside>

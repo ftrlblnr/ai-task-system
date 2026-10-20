@@ -10,6 +10,7 @@ import { AssistantScreen } from '@/components/assistant-screen';
 import { ReceptionScreen } from '@/components/reception-screen';
 import { TripsScreen } from '@/components/trips-screen';
 import { Alert } from '@/components/ui/alert';
+import { isManagerRole } from '@ai-task-system/shared-types';
 
 export default function Home() {
   const { user, loading, error, isTelegram, needsLink } = useAuth();
@@ -58,7 +59,7 @@ export default function Home() {
   // превращает в черновик задачи, см. VoiceService.enforceEventRbac),
   // контроллер без @Roles(...).
   const screens: SwipeScreen[] = [{ key: 'tasks', label: 'Задачи', content: <TasksScreen /> }];
-  if (user.role === 'OWNER') {
+  if (isManagerRole(user.role)) {
     screens.push({ key: 'calendar', label: 'Календарь', content: <CalendarScreen /> });
   }
   // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем, подать

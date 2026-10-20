@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { MANAGER_ROLES } from '../auth/roles';
 import { TaskProfilesService } from './task-profiles.service';
 import { CreateTaskProfileDto, UpdateTaskProfileDto } from './dto/task-profile.dto';
 
@@ -22,13 +22,13 @@ export class TaskProfilesController {
   }
 
   @Post()
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   create(@Body() dto: CreateTaskProfileDto) {
     return this.taskProfilesService.create(dto);
   }
 
   @Patch(':id')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   update(@Param('id') id: string, @Body() dto: UpdateTaskProfileDto) {
     return this.taskProfilesService.update(id, dto);
   }

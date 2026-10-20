@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Role } from '@prisma/client';
 import { nowInLocalTimezone, withLocalOffset } from '../common/timezone';
 import type { VoiceDraft } from './dto/voice-draft-response.dto';
+import { isManager } from '../auth/roles';
 
 export interface EmployeeOption {
   id: string;
@@ -295,12 +296,12 @@ function buildSystemPrompt(
       : '(список пуст)';
 
   const eventRule =
-    role === Role.OWNER
+    isManager(role)
       ? 'Пользователь — руководитель, ему доступен и календарь, и задачи.'
       : 'Пользователь — не руководитель, у него НЕТ доступа к календарю. Если транскрипт похож на событие/встречу (создание, изменение или удаление), всё равно НИКОГДА не выбирай draft.type = "event_action" для него — создание оформляй как задачу (type = "task_action", action = "create") с clarificationNeeded = true и clarificationReason, объясняющим, что календарь доступен только руководителю; изменение/удаление встречи — просто draft.type = "chat" с тем же объяснением. По той же причине, если он спросит про встречи/календарь ("что у меня завтра", "какие встречи на неделе") — в ответе (type = "chat") честно объясни, что календарь доступен только руководителю, не выдумывая события.';
 
   const calendarSection =
-    role === Role.OWNER
+    isManager(role)
       ? `Предстоящие события в календаре пользователя (для ответа на вопросы по пункту 3, и как закрытый список targetEventId для action='update'/'delete'):\n${formatEventContext(events)}`
       : '(календарь этому пользователю недоступен — см. правило ниже)';
 

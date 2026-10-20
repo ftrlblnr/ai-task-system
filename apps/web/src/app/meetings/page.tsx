@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { ExternalLink, Link2, Link2Off, Plus, RefreshCw } from 'lucide-react';
 import type { MeetingSummary, PlaudStatus } from '@ai-task-system/shared-types';
+import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Card, PageHeader } from '@/components/ui/card';
@@ -194,7 +195,7 @@ function MeetingsList() {
 
 export default function MeetingsPage() {
   return (
-    <Protected requireRole="OWNER">
+    <Protected requireRole={MANAGER_ROLES}>
       <PageHeader
         title="Встречи"
         description="Саммари из Plaud — источник задач (раздел 8 ТЗ). Видит только руководитель: протокол может содержать переговоры и темы шире, чем задачи, которые из него извлечены."

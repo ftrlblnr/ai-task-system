@@ -7,6 +7,7 @@ import { FilesService } from '../files/files.service';
 import { TripRightsService } from './trip-rights.service';
 import { computeTripTimeStatus } from './trip-status';
 import { CreateTripDto } from './dto/create-trip.dto';
+import { isManager } from '../auth/roles';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
@@ -52,7 +53,6 @@ export class TripsService {
   // (даже в другом порядке) не создаёт вторую карточку — см.
   // computeBatchContentHash.
   async createRun(user: AuthenticatedUser, materials: MaterialUpload[]) {
-    await this.rights.assertCanCreateTrips(user.id);
     return this.createRunInternal(user, materials, null);
   }
 
@@ -61,7 +61,7 @@ export class TripsService {
   // самого начала, trip-run-execution.service.ts видит это и идёт по ветке
   // предложений (ProposedChange), а не прямой записи.
   async addMaterialsToTrip(user: AuthenticatedUser, tripId: string, materials: MaterialUpload[]) {
-    await this.rights.assertPermission(tripId, user.id, 'materials.add');
+    await this.rights.assertPermission(tripId, user, 'materials.add');
     return this.createRunInternal(user, materials, tripId);
   }
 
@@ -115,7 +115,13 @@ export class TripsService {
     return this.prisma.agentRun.findMany({ where: { initiatorId: user.id }, orderBy: { createdAt: 'desc' }, take: 20 });
   }
 
+  // Руководитель и администратор видят все поездки (ролевая модель
+  // 20.10.2026), пользователь — только те, где он участник.
   async listTrips(user: AuthenticatedUser) {
+    if (isManager(user.role)) {
+      const trips = await this.prisma.trip.findMany({ orderBy: { createdAt: 'desc' } });
+      return trips.map((trip) => ({ ...trip, timeStatus: computeTripTimeStatus(trip) }));
+    }
     const memberships = await this.prisma.tripMember.findMany({ where: { employeeId: user.id }, select: { tripId: true } });
     const tripIds = memberships.map((m) => m.tripId);
     if (tripIds.length === 0) return [];
@@ -130,7 +136,6 @@ export class TripsService {
   // (отдельная копия, не общий helper — два вызывающих места достаточно
   // разные по контексту транзакции, чтобы делить код не стоило).
   async createManual(user: AuthenticatedUser, dto: CreateTripDto) {
-    await this.rights.assertCanCreateTrips(user.id);
     const year = new Date().getFullYear();
 
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -168,12 +173,12 @@ export class TripsService {
   // AgentRun этой поездки остаётся (tripId становится null, см.
   // onDelete: SetNull) — сам пакет обработки не часть поездки как сущности.
   async deleteTrip(user: AuthenticatedUser, tripId: string): Promise<void> {
-    await this.rights.assertPermission(tripId, user.id, 'archive');
+    await this.rights.assertPermission(tripId, user, 'archive');
     await this.prisma.trip.delete({ where: { id: tripId } });
   }
 
   async getTrip(user: AuthenticatedUser, tripId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
+    const myAccessRole = await this.rights.assertPermission(tripId, user, 'view');
     const trip = await this.prisma.trip.findUniqueOrThrow({
       where: { id: tripId },
       include: {
@@ -187,7 +192,7 @@ export class TripsService {
       },
     });
     const materials = await this.enrichMaterials(trip.materials);
-    return { ...trip, materials, timeStatus: computeTripTimeStatus(trip) };
+    return { ...trip, materials, myAccessRole, timeStatus: computeTripTimeStatus(trip) };
   }
 
   // Живой баг 08.10.2026 — TripMaterial.fileArtifactId простая строка, не
@@ -215,7 +220,7 @@ export class TripsService {
   // (см. FilesService.getStreamForProcessing — личное владение файлом
   // здесь намеренно не проверяется).
   async downloadMaterial(user: AuthenticatedUser, tripId: string, materialId: string) {
-    await this.rights.assertPermission(tripId, user.id, 'view');
+    await this.rights.assertPermission(tripId, user, 'view');
     const material = await this.prisma.tripMaterial.findUnique({ where: { id: materialId } });
     if (!material || material.tripId !== tripId) throw new NotFoundException('Материал не найден');
     return this.files.getStreamForProcessing(material.fileArtifactId);

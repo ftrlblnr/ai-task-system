@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ReceptionEventType, ReceptionRequestStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { isManager } from '../auth/roles';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto } from './dto/edit-reception-request.dto';
@@ -353,7 +354,7 @@ export class ReceptionService {
   async getOne(actor: AuthenticatedUser, id: string) {
     const request = await this.prisma.receptionRequest.findUnique({ where: { id }, select: DETAIL_SELECT });
     if (!request) throw new NotFoundException('Обращение не найдено');
-    if (actor.role !== 'OWNER' && request.authorId !== actor.id) throw new NotFoundException('Обращение не найдено');
+    if (!isManager(actor.role) && request.authorId !== actor.id) throw new NotFoundException('Обращение не найдено');
     return serializeRequest(request);
   }
 
@@ -439,7 +440,7 @@ export class ReceptionService {
   async getEvents(actor: AuthenticatedUser, requestId: string) {
     const request = await this.prisma.receptionRequest.findUnique({ where: { id: requestId }, select: { authorId: true } });
     if (!request) throw new NotFoundException('Обращение не найдено');
-    if (actor.role !== 'OWNER' && request.authorId !== actor.id) throw new NotFoundException('Обращение не найдено');
+    if (!isManager(actor.role) && request.authorId !== actor.id) throw new NotFoundException('Обращение не найдено');
     return this.prisma.receptionEvent.findMany({
       where: { requestId },
       select: { id: true, type: true, fromStatus: true, toStatus: true, createdAt: true, actor: { select: { id: true, fullName: true } } },

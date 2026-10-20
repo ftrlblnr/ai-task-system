@@ -3,7 +3,8 @@ import { TripsService, computeBatchContentHash, type MaterialUpload } from './tr
 import { FakeTripsPrisma } from './test-support/fake-trips-prisma';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
-const USER: AuthenticatedUser = { id: 'owner-1', email: 'owner@x.com', role: 'OWNER', isProfileAdmin: false };
+const USER: AuthenticatedUser = { id: 'owner-1', email: 'owner@x.com', role: 'OWNER' };
+const EMPLOYEE: AuthenticatedUser = { id: 'emp-1', email: 'emp@x.com', role: 'EMPLOYEE' };
 
 function material(content: string, name = 'ticket.pdf', mimeType = 'application/pdf'): MaterialUpload {
   return { buffer: Buffer.from(content), originalName: name, mimeType };
@@ -30,11 +31,8 @@ function fakeFilesService() {
   };
 }
 
-function fakeRights(overrides: { canCreate?: boolean; permission?: 'ALLOW' | 'DENY' } = {}) {
+function fakeRights(overrides: { permission?: 'ALLOW' | 'DENY' } = {}) {
   return {
-    assertCanCreateTrips: jest.fn(() => {
-      if (overrides.canCreate === false) throw new Error('forbidden');
-    }),
     assertPermission: jest.fn(() => {
       if (overrides.permission === 'DENY') throw new NotFoundException('Поездка не найдена');
       return 'ORGANIZER';
@@ -107,12 +105,6 @@ describe('TripsService.createRun', () => {
     expect(second.id).toBe(first.id);
     expect(prisma.agentRuns).toHaveLength(1);
   });
-
-  it('без права trips.create — исключение из rights прокидывается наверх', async () => {
-    const prisma = new FakeTripsPrisma();
-    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights({ canCreate: false }) as never);
-    await expect(service.createRun(USER, [material('AAA')])).rejects.toThrow('forbidden');
-  });
 });
 
 describe('TripsService.addMaterialsToTrip', () => {
@@ -170,24 +162,33 @@ describe('TripsService.getRun', () => {
 });
 
 describe('TripsService.listTrips / getTrip', () => {
-  it('listTrips — только поездки, где есть TripMember для этого сотрудника', async () => {
+  it('listTrips — пользователю только поездки, где есть TripMember для него', async () => {
     const prisma = new FakeTripsPrisma();
     const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
-    await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка A', organizerId: USER.id } });
+    await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка A', organizerId: EMPLOYEE.id } });
     const tripB = await prisma.trip.create({ data: { humanCode: 'TR-2026-002', title: 'Поездка B', organizerId: 'other' } });
-    await prisma.tripMember.create({ data: { tripId: tripB.id, employeeId: USER.id, accessRole: 'VIEWER' } });
+    await prisma.tripMember.create({ data: { tripId: tripB.id, employeeId: EMPLOYEE.id, accessRole: 'VIEWER' } });
 
-    const trips = await service.listTrips(USER);
+    const trips = await service.listTrips(EMPLOYEE);
     expect(trips).toHaveLength(1);
     expect(trips[0].id).toBe(tripB.id);
     expect(trips[0].timeStatus).toBe('NO_CONFIRMED_DATES');
   });
 
-  it('listTrips — пусто, если нет членства ни в одной поездке', async () => {
+  it('listTrips — пользователю пусто, если нет членства ни в одной поездке', async () => {
     const prisma = new FakeTripsPrisma();
     const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
     await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Чужая поездка', organizerId: 'other' } });
-    expect(await service.listTrips(USER)).toEqual([]);
+    expect(await service.listTrips(EMPLOYEE)).toEqual([]);
+  });
+
+  it('listTrips — руководителю и администратору все поездки, без членства', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
+    await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'A', organizerId: 'other' } });
+    await prisma.trip.create({ data: { humanCode: 'TR-2026-002', title: 'B', organizerId: 'other2' } });
+    expect(await service.listTrips(USER)).toHaveLength(2);
+    expect(await service.listTrips({ ...EMPLOYEE, role: 'ADMIN' })).toHaveLength(2);
   });
 
   it('getTrip — без прав (assertPermission бросает) — исключение прокидывается, trip не читается', async () => {
@@ -317,13 +318,6 @@ describe('TripsService.createManual', () => {
     const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights() as never);
     const trip = await service.createManual(USER, { title: 'X', periodStart: '2026-12-01T00:00:00.000Z' });
     expect(trip.periodPrecision).toBe('EXACT');
-  });
-
-  it('без права trips.create — исключение прокидывается, поездка не создаётся', async () => {
-    const prisma = new FakeTripsPrisma();
-    const service = new TripsService(prisma as never, fakeFilesService() as never, fakeRights({ canCreate: false }) as never);
-    await expect(service.createManual(USER, { title: 'X' })).rejects.toThrow('forbidden');
-    expect(prisma.trips).toHaveLength(0);
   });
 
   it('humanCode при конфликте уникальности пробует следующий номер', async () => {

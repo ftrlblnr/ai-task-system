@@ -14,6 +14,7 @@ import { Role, ReceptionRequestStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { MANAGER_ROLES } from '../auth/roles';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { ActiveEmployeeGuard } from './guards/active-employee.guard';
@@ -73,7 +74,7 @@ export class ReceptionController {
   }
 
   @Get('queue')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   getQueue(
     @Query('search') search: string | undefined,
     @Query('authorId') authorId: string | undefined,
@@ -86,7 +87,7 @@ export class ReceptionController {
   }
 
   @Get('history')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   getHistory(
     @Query('authorId') authorId: string | undefined,
     @Query('status') status: string | undefined,
@@ -149,7 +150,7 @@ export class ReceptionController {
   }
 
   @Post('requests/:id/move-to-end')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async moveToEnd(
     @Param('id') id: string,
     @Body() dto: VersionOnlyDto,
@@ -164,7 +165,7 @@ export class ReceptionController {
   }
 
   @Post('requests/:id/call')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async call(
     @Param('id') id: string,
     @Body() dto: VersionOnlyDto,
@@ -177,7 +178,7 @@ export class ReceptionController {
   }
 
   @Post('requests/:id/reject')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async reject(
     @Param('id') id: string,
     @Body() dto: RejectReceptionRequestDto,
@@ -190,7 +191,7 @@ export class ReceptionController {
   }
 
   @Post('requests/:id/complete')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async complete(
     @Param('id') id: string,
     @Body() dto: CompleteReceptionRequestDto,
@@ -205,7 +206,7 @@ export class ReceptionController {
   }
 
   @Post('requests/:id/return-to-queue')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async returnToQueue(
     @Param('id') id: string,
     @Body() dto: VersionOnlyDto,
@@ -220,7 +221,7 @@ export class ReceptionController {
   }
 
   @Post('notifications/:id/retry')
-  @Roles(Role.OWNER)
+  @Roles(...MANAGER_ROLES)
   async retryNotification(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Headers('idempotency-key') idemKey?: string) {
     const key = this.requireIdempotencyKey(idemKey);
     await this.idempotency.run(user.id, key, 'reception.notifications.retry', { id }, async () => {

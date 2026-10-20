@@ -4,8 +4,8 @@ import { TripRightsService } from './trip-rights.service';
 import { FakeTripsPrisma } from './test-support/fake-trips-prisma';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 
-const OWNER: AuthenticatedUser = { id: 'owner-1', email: 'o@x.com', role: 'OWNER', isProfileAdmin: false };
-const EMPLOYEE_MEMBER: AuthenticatedUser = { id: 'emp-1', email: 'e@x.com', role: 'EMPLOYEE', isProfileAdmin: false };
+const OWNER: AuthenticatedUser = { id: 'owner-1', email: 'o@x.com', role: 'OWNER' };
+const EMPLOYEE_MEMBER: AuthenticatedUser = { id: 'emp-1', email: 'e@x.com', role: 'EMPLOYEE' };
 
 async function setupTrip(prisma: FakeTripsPrisma) {
   const trip = await prisma.trip.create({ data: { humanCode: 'TR-2026-001', title: 'Поездка', organizerId: OWNER.id } });
@@ -97,7 +97,7 @@ describe('TripIntegrationsService.proposeTask', () => {
     const service = new TripIntegrationsService(prisma as never, new TripRightsService(prisma as never), fakeEvents() as never, tasks as never);
 
     await expect(
-      service.proposeTask({ id: 'viewer-x', email: 'x@x.com', role: 'EMPLOYEE', isProfileAdmin: false }, trip.id, { title: 'X', assigneeId: 'a', dueDate: '2026-11-20' }),
+      service.proposeTask({ id: 'viewer-x', email: 'x@x.com', role: 'EMPLOYEE' }, trip.id, { title: 'X', assigneeId: 'a', dueDate: '2026-11-20' }),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(tasks.create).not.toHaveBeenCalled();
   });
