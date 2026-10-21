@@ -5,6 +5,7 @@ import { FilesModule } from '../files/files.module';
 import { MailModule } from '../mail/mail.module';
 import { MeetingsModule } from '../meetings/meetings.module';
 import { EmployeesModule } from '../employees/employees.module';
+import { LegalModule } from '../legal/legal.module';
 import { AssistantChatController } from './assistant-chat.controller';
 import { AssistantChatService } from './assistant-chat.service';
 import { AssistantReplyService } from './assistant-reply.service';
@@ -25,7 +26,8 @@ import { AssistantToolsService } from './assistant-tools.service';
   // EmployeeResolverService, тем же приёмом, что voice/updateSpeakers.
   // MailModule (Release 2) — search_emails/get_email читают через
   // MailQueryService/MailStore, экспортированные MailModule для этого же.
-  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule],
+  // LegalModule — инструмент legal_ask (агент-юрист).
+  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule],
   controllers: [AssistantChatController],
   providers: [AssistantChatService, AssistantReplyService, AssistantToolsService],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот

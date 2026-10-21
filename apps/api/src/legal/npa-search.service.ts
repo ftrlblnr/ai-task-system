@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { ArticleLookup, NpaDocumentBrief } from './legal-agent';
 import { normalizeArticleId, quoteInText, queryWords } from './npa-text';
 
 // Поиск по базе НПА для агента-юриста — порт find/get/verify/term из
@@ -109,6 +110,26 @@ export class NpaSearchService {
     const id = normalizeArticleId(rawId);
     const a = await this.prisma.npaArticle.findUnique({ where: { id }, select: { text: true } });
     return { id, exists: !!a, verified: !!a && quoteInText(quote, a.text) };
+  }
+
+  async listDocuments(): Promise<NpaDocumentBrief[]> {
+    return this.prisma.npaDocument.findMany({ select: { code: true, short: true, title: true }, orderBy: { code: 'asc' } });
+  }
+
+  // Пакетная загрузка статей для серверной проверки цитат агента.
+  async lookupArticles(rawIds: string[]): Promise<Map<string, ArticleLookup | null>> {
+    const ids = [...new Set(rawIds.map(normalizeArticleId))];
+    const rows = await this.prisma.npaArticle.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, text: true, title: true, document: { select: { short: true, url: true } } },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    return new Map(
+      ids.map((id) => {
+        const r = byId.get(id);
+        return [id, r ? { text: r.text, title: r.title, short: r.document.short, url: r.document.url } : null];
+      }),
+    );
   }
 
   async term(q: string): Promise<NpaTermHit[]> {

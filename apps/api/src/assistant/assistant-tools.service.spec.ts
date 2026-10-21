@@ -1,6 +1,8 @@
 import { Prisma, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { AssistantToolsService } from './assistant-tools.service';
+import { ConfigService } from '@nestjs/config';
+import { LegalAgentError } from '../legal/legal-agent.service';
+import { AssistantToolsService, toolResultForModel } from './assistant-tools.service';
 
 function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
@@ -865,5 +867,91 @@ describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Ph
     expect(result).toMatchObject({ tool: 'find_employee_by_competency', error: true });
     expect('message' in result && result.message).toContain('INVALID_INPUT');
     expect(prisma.employeeCompetency.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('AssistantToolsService — агент-юрист (legal_ask)', () => {
+  const answer = {
+    conclusion: 'Не меньше 10 лет',
+    reasoning: '',
+    citations: [],
+    notCovered: [],
+    questions: [],
+    model: 'claude-opus-5-5',
+    rounds: 3,
+    durationMs: 1000,
+  };
+  function make(env: Record<string, string>, legal: { ask: jest.Mock }) {
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      audit as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      legal as any,
+      new ConfigService(env),
+    );
+    return { service, audit };
+  }
+
+  it('флаг включён — legal_ask предлагается любой роли; выключен — нет', async () => {
+    const legal = { ask: jest.fn() };
+    const on = make({ LEGAL_AGENT_ENABLED: 'true' }, legal).service;
+    const off = make({}, legal).service;
+    expect((await on.buildTools(user())).map((t) => t.name)).toContain('legal_ask');
+    expect((await off.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+  });
+
+  it('LEGAL_AGENT_ROLES скрывает инструмент от других ролей', async () => {
+    const { service } = make({ LEGAL_AGENT_ENABLED: 'true', LEGAL_AGENT_ROLES: 'OWNER' }, { ask: jest.fn() });
+    expect((await service.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+  });
+
+  it('execute: ответ юриста + markdown из проверенных данных, аудит', async () => {
+    const legal = { ask: jest.fn().mockResolvedValue(answer) };
+    const { service, audit } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(legal.ask).toHaveBeenCalledWith('гарантия?');
+    expect(result).toMatchObject({ tool: 'legal_ask', answer: { conclusion: 'Не меньше 10 лет' } });
+    expect('markdown' in result && result.markdown).toContain('**Вывод.** Не меньше 10 лет');
+    expect(audit.log).toHaveBeenCalledWith('u1', 'LEGAL_ASK', 'LegalQuestion', 'assistant', expect.any(Object));
+  });
+
+  it('execute: флаг выключен — отказ без обращения к агенту', async () => {
+    const legal = { ask: jest.fn() };
+    const { service } = make({}, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(result).toMatchObject({ tool: 'legal_ask', error: true });
+    expect(legal.ask).not.toHaveBeenCalled();
+  });
+
+  it('execute: ожидаемый отказ агента — безопасный код без подробностей', async () => {
+    const legal = { ask: jest.fn().mockRejectedValue(new LegalAgentError('TOO_MANY_ROUNDS', 'секретная деталь')) };
+    const { service } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(result).toEqual({ tool: 'legal_ask', error: true, message: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ' });
+  });
+});
+
+describe('toolResultForModel', () => {
+  it('ответ юриста модели чата не отдаётся — только отметка «показан»', () => {
+    const out = toolResultForModel({
+      tool: 'legal_ask',
+      markdown: '**Вывод.** секрет',
+      answer: { conclusion: 'секрет', reasoning: '', citations: [], notCovered: [], questions: [], model: 'm' },
+    });
+    expect(JSON.stringify(out)).not.toContain('секрет');
+    expect(out).toMatchObject({ shown_to_user: true, norms_cited: 0 });
+  });
+
+  it('ошибка — безопасное сообщение, прочие инструменты — как есть', () => {
+    expect(toolResultForModel({ tool: 'get_tasks', error: true, message: 'TASK_LOOKUP_FAILED' })).toEqual({ error: 'TASK_LOOKUP_FAILED' });
+    const tasks = { tool: 'get_tasks' as const, items: [], totalCount: 0 };
+    expect(toolResultForModel(tasks)).toBe(tasks);
   });
 });

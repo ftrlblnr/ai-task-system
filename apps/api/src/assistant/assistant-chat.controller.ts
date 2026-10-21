@@ -11,6 +11,9 @@ import { SendMessageDto } from './dto/send-message.dto';
 import type { StreamEvent } from './dto/stream-event.dto';
 import { toResponseConversation, toResponseMessage, toResponseMessagePart } from './assistant-response.mapper';
 
+// Пинг SSE-потока ответа — см. streamMessage.
+const SSE_KEEPALIVE_MS = 15_000;
+
 // Без @Roles(...) — как VoiceController/TasksController: чат ассистента
 // доступен любому сотруднику, не только OWNER (владение конкретным
 // Conversation проверяется в сервисе, не ролью).
@@ -93,9 +96,16 @@ export class AssistantChatController {
     const abortController = new AbortController();
     res.on('close', () => abortController.abort());
 
+    // Пока работает долгий инструмент (агент-юрист — 1–2 минуты), в поток
+    // ничего не пишется, а nginx рвёт соединение после 60 с тишины
+    // (proxy_read_timeout). SSE-комментарий клиенты пропускают: кадр без
+    // строки data: (web assistant/page.tsx, miniapp assistant-screen.tsx).
+    const keepAlive = setInterval(() => res.write(': ping\n\n'), SSE_KEEPALIVE_MS);
+
     try {
       await this.chat.streamMessage(user, id, dto, emit, abortController.signal);
     } finally {
+      clearInterval(keepAlive);
       res.end();
     }
   }

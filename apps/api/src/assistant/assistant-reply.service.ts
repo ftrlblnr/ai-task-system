@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { nowInLocalTimezone } from '../common/timezone';
-import { AssistantToolsService, isWriteTool, type ToolExecutionResult } from './assistant-tools.service';
+import { AssistantToolsService, isWriteTool, toolResultForModel, type ToolExecutionResult } from './assistant-tools.service';
 import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
 
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
@@ -68,7 +68,15 @@ mimeType и т.п.) — это внутреннее представление �
 всегда вызывай export_tasks_xlsx заново, даже если похожий файл уже
 формировался раньше в этом же разговоре: у каждой твоей реплики может не
 быть собственного вложения, и утверждать "файл готов" в тексте, реально
-не вызвав инструмент, оставит пользователя без файла для скачивания.`;
+не вызвав инструмент, оставит пользователя без файла для скачивания.
+Юридические вопросы (законы РК, договоры, сроки, гарантии, неустойки,
+ответственность, права сторон) — если доступен инструмент legal_ask,
+всегда передавай вопрос ему и не отвечай по праву от себя. Ответ юриста
+с нормами и цитатами интерфейс покажет пользователю целиком отдельным
+блоком после твоего текста — не пересказывай и не цитируй нормы сам,
+напиши одно короткое предложение (например, что ответ подготовлен по базе
+НПА и требует проверки юристом). Если legal_ask вернул ошибку — честно
+скажи, что ответить по базе НПА не удалось.`;
 
 // Живая проверка (16.09.2026, Phase G) показала, что инструкции в
 // SYSTEM_PROMPT одни не всегда надёжны: модель (особенно быстрый Haiku)
@@ -283,7 +291,7 @@ export class AssistantReplyService {
         return {
           type: 'tool_result',
           tool_use_id: block.id,
-          content: JSON.stringify('error' in result ? { error: result.message } : result),
+          content: JSON.stringify(toolResultForModel(result)),
           is_error: 'error' in result,
         };
       });

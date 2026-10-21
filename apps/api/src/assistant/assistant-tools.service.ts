@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { EventStatus, Prisma, TaskFromMeetingStatus } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
@@ -15,6 +16,9 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
 import { buildTasksWorkbookBuffer } from './task-export';
 import { isManager } from '../auth/roles';
+import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service';
+import { formatLegalAnswer, type LegalAnswer } from '../legal/legal-agent';
+import { legalAllowedForRole } from '../legal/legal-access';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -111,7 +115,8 @@ type KnownToolName =
   | 'create_task_from_meeting'
   | 'find_employee_by_competency'
   | 'search_emails'
-  | 'get_email';
+  | 'get_email'
+  | 'legal_ask';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -124,6 +129,7 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'find_employee_by_competency') return 'find_employee_by_competency';
   if (name === 'search_emails') return 'search_emails';
   if (name === 'get_email') return 'get_email';
+  if (name === 'legal_ask') return 'legal_ask';
   return 'get_tasks';
 }
 
@@ -157,6 +163,7 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   find_employee_by_competency: 'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
   search_emails: 'MAIL_LOOKUP_FAILED: не удалось найти письма',
   get_email: 'MAIL_LOOKUP_FAILED: не удалось получить письмо',
+  legal_ask: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -226,7 +233,28 @@ export type ToolExecutionResult =
   | { tool: 'find_employee_by_competency'; competencyId: string; employees: { id: string; fullName: string }[] }
   | { tool: 'search_emails'; items: MailToolEmailSummary[]; totalCount: number }
   | { tool: 'get_email'; email: MailToolEmailDetail }
+  // Агент-юрист: markdown собран сервером из проверенных цитат и
+  // показывается пользователю отдельной частью (assistant-render.ts).
+  | { tool: 'legal_ask'; answer: LegalAnswer; markdown: string }
   | { tool: KnownToolName; error: true; message: string };
+
+// Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
+// живая проверка 21.10.2026 — Haiku пересказывал вывод своими словами, хотя
+// промпт просил одну фразу, а пересказ норм — ровно то, чего юр-агент
+// избегает. Пользователь видит ответ отдельным блоком (assistant-render.ts),
+// в историю беседы он попадает оттуда же — уточняющие вопросы не теряют
+// контекст.
+export function toolResultForModel(result: ToolExecutionResult): unknown {
+  if ('error' in result) return { error: result.message };
+  if (result.tool === 'legal_ask') {
+    return {
+      shown_to_user: true,
+      norms_cited: result.answer.citations.length,
+      note: 'Ответ юриста с нормами и цитатами интерфейс покажет пользователю отдельным блоком сразу под твоим сообщением. Напиши одно короткое предложение-связку, не пересказывай вывод и нормы.',
+    };
+  }
+  return result;
+}
 
 // Инструменты, которые Assistant Core (assistant-reply.service.ts) может
 // предложить модели. До Phase O — только чтение, ничего не мутирует
@@ -252,7 +280,15 @@ export class AssistantToolsService {
     private readonly employeeResolver: EmployeeResolverService,
     private readonly mailStore: MailStore,
     private readonly mailQuery: MailQueryService,
+    // Агент-юрист — необязательные зависимости: без них (юнит-тесты,
+    // выключенный флаг) юр-инструменты просто не предлагаются.
+    @Optional() private readonly legal?: LegalAgentService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  private legalAvailable(user: AuthenticatedUser): boolean {
+    return !!this.legal && !!this.config && legalAllowedForRole(this.config, user.role);
+  }
 
   // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
   // async ради find_employee_by_competency ниже: её схема должна нести
@@ -430,6 +466,23 @@ export class AssistantToolsService {
       });
     }
 
+    // Агент-юрист (handoff 21.10.2026) — доступен всем ролям, пока
+    // LEGAL_AGENT_ROLES пуст; флаг LEGAL_AGENT_ENABLED выключен — инструмента нет.
+    if (this.legalAvailable(user)) {
+      tools.push({
+        name: 'legal_ask',
+        description:
+          'Вопрос по законодательству Республики Казахстан (гражданское, строительное, земельное, трудовое, налоговое право, долевое участие, госзакупки и др.) — отвечает агент-юрист строго по базе НПА с дословными цитатами статей. Используй для любых юридических вопросов: сроки, гарантии, неустойки, ответственность, формы договоров, права и обязанности сторон. Ответ занимает 1–2 минуты. Передай вопрос пользователя полностью, с деталями ситуации.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: 'Юридический вопрос пользователя с контекстом ситуации' },
+          },
+          required: ['question'],
+        },
+      });
+    }
+
     return tools;
   }
 
@@ -516,6 +569,10 @@ export class AssistantToolsService {
         const emailId = (input as { emailId?: unknown } | null)?.emailId;
         return await this.getEmail(typeof emailId === 'string' ? emailId : '', user);
       }
+      if (name === 'legal_ask') {
+        const question = (input as { question?: unknown } | null)?.question;
+        return await this.legalAsk(typeof question === 'string' ? question : '', user);
+      }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
       const tool = resolveToolName(name);
@@ -526,6 +583,30 @@ export class AssistantToolsService {
       const err2 = err instanceof Error ? err : new Error(String(err));
       this.logger.error(`tool=${name} failed: ${err2.message}`, err2.stack);
       return { tool, error: true, message: TOOL_ERROR_MESSAGES[tool] };
+    }
+  }
+
+  // Видимость перепроверяется и здесь: модель могла вызвать инструмент из
+  // старой истории, хотя флаг уже выключен.
+  private async legalAsk(question: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    if (!this.legal || !this.legalAvailable(user)) {
+      return { tool: 'legal_ask', error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+    }
+    if (question.trim().length < 3) return { tool: 'legal_ask', error: true, message: 'LEGAL_EMPTY_QUESTION: не передан вопрос' };
+    try {
+      const answer = await this.legal.ask(question);
+      void this.audit.log(user.id, 'LEGAL_ASK', 'LegalQuestion', 'assistant', {
+        rounds: answer.rounds,
+        citations: answer.citations.length,
+        unverified: answer.citations.filter((c) => !c.verified).length,
+      });
+      return { tool: 'legal_ask', answer, markdown: formatLegalAnswer(answer) };
+    } catch (err) {
+      if (err instanceof LegalAgentError) {
+        this.logger.warn(`legal_ask: ${err.code} ${err.message}`);
+        return { tool: 'legal_ask', error: true, message: TOOL_ERROR_MESSAGES.legal_ask };
+      }
+      throw err;
     }
   }
 
