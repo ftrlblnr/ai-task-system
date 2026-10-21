@@ -69,7 +69,9 @@ function isExpired(desiredBy: string | null): boolean {
 // Каждое мутирующее действие — свой Idempotency-Key (раздел 12 ТЗ),
 // сгенерированный ОДИН раз и переиспользуемый при повторе того же действия
 // (раздел 8.2 ТЗ — "повтор отправки использует прежний ключ"); сбрасывается
-// на новый только после успеха (следующее действие — уже другое намерение).
+// на новый после успеха и после ответа сервера с 4xx: сервер запоминает
+// ошибку под ключом, а пользователь исправит форму — тело будет другим, и
+// старый ключ дал бы IDEMPOTENCY_CONFLICT (прод 21.10.2026).
 function useIdempotencyKey(): { key: () => string; reset: () => void } {
   const ref = useRef<string | null>(null);
   return {
@@ -162,6 +164,7 @@ function RequestForm({
       idem.reset();
       onSaved();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(err instanceof ApiError ? err.message : 'Не удалось сохранить обращение');
     } finally {
       setBusy(false);
