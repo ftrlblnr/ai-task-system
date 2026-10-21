@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { AuditService } from '../audit/audit.service';
 import { legalAllowedForRole } from './legal-access';
 import { LegalAgentError, LegalAgentService } from './legal-agent.service';
+import { formatLegalAnswer } from './legal-agent';
 import { LegalAskDto } from './dto/legal-ask.dto';
 import { CreateLegalReviewDto } from './dto/create-legal-review.dto';
 import { LegalReviewService, toReviewView } from './legal-review.service';
@@ -29,6 +30,13 @@ export class LegalController {
     if (!legalAllowedForRole(this.config, user.role)) throw new NotFoundException();
   }
 
+  // Для меню web: раздел «Юрист» показывается, только если доступен этой
+  // роли. Единственный маршрут без 404 при выключенном флаге.
+  @Get('status')
+  status(@CurrentUser() user: AuthenticatedUser) {
+    return { enabled: legalAllowedForRole(this.config, user.role) };
+  }
+
   // Синхронно: вопрос по НПА — 4–8 обращений к модели, до пары минут.
   // Разбор договора (дольше) идёт фоновым заданием, не здесь.
   @Post('ask')
@@ -41,7 +49,8 @@ export class LegalController {
         citations: answer.citations.length,
         unverified: answer.citations.filter((c) => !c.verified).length,
       });
-      return answer;
+      // markdown — та же вёрстка, что ответ legal_ask в чате.
+      return { ...answer, markdown: formatLegalAnswer(answer) };
     } catch (err) {
       if (err instanceof LegalAgentError) throw new BadGatewayException({ code: `LEGAL_${err.code}`, message: 'Агент-юрист не смог подготовить ответ, попробуйте переформулировать вопрос' });
       throw err;
