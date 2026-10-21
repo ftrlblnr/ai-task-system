@@ -52,7 +52,7 @@ export class WhisperService {
     const ext = mimetype.split('/')[1]?.split(';')[0] || 'webm';
     const file = await toFile(buffer, originalName || `voice.${ext}`, { type: mimetype });
     const started = Date.now();
-    let result;
+    let result: OpenAI.Audio.Transcriptions.TranscriptionVerbose;
     try {
       result = await this.getClient().audio.transcriptions.create({
         file,
