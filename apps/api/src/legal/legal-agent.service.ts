@@ -7,10 +7,16 @@ import {
   buildLegalSystemPrompt,
   buildLegalTools,
   citationProblemsReport,
+  findingProblemsReport,
   LEGAL_MODEL,
   parseSubmittedAnswer,
+  parseSubmittedReview,
+  sortFindings,
   verifyCitations,
+  verifyFindings,
   type LegalAnswer,
+  type LegalMode,
+  type LegalReview,
   type NpaDocumentBrief,
 } from './legal-agent';
 import { NpaSearchService } from './npa-search.service';
@@ -23,9 +29,12 @@ import { NpaSearchService } from './npa-search.service';
 // Раунды = обращения к модели. Вопрос по НПА: поиск → 2–4 статьи →
 // проверка цитат → ответ, обычно 4–8 раундов; потолок — от зацикливания.
 const ASK_MAX_ROUNDS = 12;
+// Разбор договора: применимые акты, десятки статей, проверка цитат — до 25.
+const REVIEW_MAX_ROUNDS = 25;
 // Размышления Opus входят в max_tokens; запрос стримится (finalMessage),
-// поэтому большой потолок не грозит таймаутом HTTP.
-const MAX_TOKENS = 16000;
+// поэтому большой потолок не грозит таймаутом HTTP. Итог разбора — до ~25
+// находок с цитатами, ему нужен запас.
+const MAX_TOKENS: Record<LegalMode, number> = { ask: 16000, review: 48000 };
 // Длинные статьи (кодексы — до ~50 тыс. символов) режем: цитата нужна из
 // начала нормы почти всегда, а контекст не раздувается на каждом раунде.
 const ARTICLE_TEXT_LIMIT = 30000;
@@ -50,6 +59,14 @@ export interface LegalAskResult extends LegalAnswer {
   rounds: number;
   durationMs: number;
 }
+
+export interface LegalReviewResult extends LegalReview {
+  rounds: number;
+  durationMs: number;
+}
+
+// Итог одного submit_*: принят (done) или вернуть агенту на исправление.
+type SubmitOutcome<T> = { done: T } | { retry: string };
 
 @Injectable()
 export class LegalAgentService {
@@ -82,23 +99,103 @@ export class LegalAgentService {
 
   async ask(question: string): Promise<LegalAskResult> {
     const started = Date.now();
+    const result = await this.run<LegalAnswer>({
+      mode: 'ask',
+      feature: 'legal.ask',
+      maxRounds: ASK_MAX_ROUNDS,
+      submitTool: 'submit_answer',
+      intro: [`Вопрос юриста:\n${question.trim()}`],
+      onSubmit: async (input, canRetry) => {
+        const submitted = parseSubmittedAnswer(input);
+        if (!submitted) return { retry: 'Пустой вывод (conclusion) — заполни ответ.' };
+        const citations = verifyCitations(submitted.citations, await this.npa.lookupArticles(submitted.citations.map((c) => c.norm_id)));
+        const problems = citationProblemsReport(citations);
+        if (problems && canRetry) return { retry: problems };
+        return {
+          done: {
+            conclusion: submitted.conclusion,
+            reasoning: submitted.reasoning,
+            citations,
+            notCovered: submitted.not_covered,
+            questions: submitted.questions,
+            model: LEGAL_MODEL,
+          },
+        };
+      },
+    });
+    const durationMs = Date.now() - started;
+    const unverified = result.value.citations.filter((c) => !c.verified).length;
+    this.logger.log(`legal.ask: раундов ${result.rounds}, норм ${result.value.citations.length}, не подтверждено ${unverified}, ${Math.round(durationMs / 1000)} с`);
+    return { ...result.value, rounds: result.rounds, durationMs };
+  }
+
+  // Разбор договора: текст уже извлечён (contract-text.ts), лежит в первом
+  // сообщении целиком; focus — «на что обратить внимание» от юриста.
+  async review(contractText: string, fileName: string, focus?: string | null): Promise<LegalReviewResult> {
+    const started = Date.now();
+    const intro = [`Договор: файл «${fileName}».`];
+    if (focus?.trim()) intro.push(`Юрист просит обратить особое внимание: ${focus.trim()}`);
+    intro.push(`<contract>\n${contractText}\n</contract>`);
+    const result = await this.run<LegalReview>({
+      mode: 'review',
+      feature: 'legal.review',
+      maxRounds: REVIEW_MAX_ROUNDS,
+      submitTool: 'submit_review',
+      intro,
+      onSubmit: async (input, canRetry) => {
+        const submitted = parseSubmittedReview(input);
+        if (!submitted) return { retry: 'Разбор пуст: нужны summary и массив findings.' };
+        const ids = submitted.findings.map((f) => f.norm_id).filter(Boolean);
+        const findings = verifyFindings(submitted.findings, await this.npa.lookupArticles(ids), contractText);
+        const problems = findingProblemsReport(findings);
+        if (problems && canRetry) return { retry: problems };
+        return {
+          done: {
+            contract: submitted.contract || fileName,
+            gcRole: submitted.gc_role,
+            applicableActs: submitted.applicable_acts,
+            summary: submitted.summary,
+            findings: sortFindings(findings),
+            generalIssues: submitted.general_issues,
+            notChecked: submitted.not_checked,
+            model: LEGAL_MODEL,
+          },
+        };
+      },
+    });
+    const durationMs = Date.now() - started;
+    const unverified = result.value.findings.filter((f) => !f.verified).length;
+    this.logger.log(`legal.review: раундов ${result.rounds}, находок ${result.value.findings.length}, не подтверждено ${unverified}, ${Math.round(durationMs / 1000)} с`);
+    return { ...result.value, rounds: result.rounds, durationMs };
+  }
+
+  // Общий цикл: модель ищет/читает/проверяет, итог сдаёт submitTool;
+  // onSubmit проверяет его на сервере и один раз может вернуть на доработку.
+  private async run<T>(opts: {
+    mode: LegalMode;
+    feature: string;
+    maxRounds: number;
+    submitTool: string;
+    intro: string[];
+    onSubmit: (input: unknown, canRetry: boolean) => Promise<SubmitOutcome<T>>;
+  }): Promise<{ value: T; rounds: number }> {
     const documents = await this.listDocuments();
-    const system = buildLegalSystemPrompt(documents);
-    const tools = buildLegalTools(documents);
+    const system = buildLegalSystemPrompt(documents, opts.mode);
+    const tools = buildLegalTools(documents, opts.mode);
     const messages: Anthropic.MessageParam[] = [
       {
         role: 'user',
         content: [
           { type: 'text', text: `Сегодня ${localDateString(new Date())}.` },
-          { type: 'text', text: `Вопрос юриста:\n${question.trim()}` },
+          ...opts.intro.map((text) => ({ type: 'text' as const, text })),
         ],
       },
     ];
 
     let fixRequested = false;
     let nudged = false;
-    for (let round = 1; round <= ASK_MAX_ROUNDS; round++) {
-      const message = await this.callModel('legal.ask', system, tools, messages, round);
+    for (let round = 1; round <= opts.maxRounds; round++) {
+      const message = await this.callModel(opts.feature, opts.mode, system, tools, messages, round);
       if (message.stop_reason === 'refusal') throw new LegalAgentError('REFUSED', 'Модель отказалась отвечать');
       if (message.stop_reason === 'max_tokens') throw new LegalAgentError('OUTPUT_TOO_LONG', 'Ответ не поместился в лимит токенов');
       // Ответ модели — как есть, вместе с блоками размышлений: Opus 5.5
@@ -108,60 +205,41 @@ export class LegalAgentService {
       const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
       if (toolUses.length === 0) {
         // tool_choice auto не гарантирует вызов: модель могла ответить
-        // текстом. Одна просьба сдать ответ инструментом.
-        if (nudged) throw new LegalAgentError('NO_ANSWER', 'Агент не сдал ответ через submit_answer');
+        // текстом. Одна просьба сдать итог инструментом.
+        if (nudged) throw new LegalAgentError('NO_ANSWER', `Агент не сдал итог через ${opts.submitTool}`);
         nudged = true;
-        messages.push({ role: 'user', content: 'Сдай итог через инструмент submit_answer — текст вне него юрист не увидит.' });
+        messages.push({ role: 'user', content: `Сдай итог через инструмент ${opts.submitTool} — текст вне него юрист не увидит.` });
         continue;
       }
 
-      const results: Anthropic.ToolResultBlockParam[] = [];
-      for (const block of toolUses) {
-        if (block.name !== 'submit_answer') {
-          results.push(await this.runTool(block));
-          continue;
-        }
-        const submitted = parseSubmittedAnswer(block.input);
-        if (!submitted) {
-          results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: 'Пустой вывод (conclusion) — заполни ответ.' });
-          continue;
-        }
-        const citations = verifyCitations(submitted.citations, await this.npa.lookupArticles(submitted.citations.map((c) => c.norm_id)));
-        const problems = citationProblemsReport(citations);
-        if (problems && !fixRequested && round < ASK_MAX_ROUNDS) {
-          fixRequested = true;
-          results.push({ type: 'tool_result', tool_use_id: block.id, is_error: true, content: problems });
-          continue;
-        }
-        const durationMs = Date.now() - started;
-        this.logger.log(
-          `legal.ask: раундов ${round}, норм ${citations.length}, не подтверждено ${citations.filter((c) => !c.verified).length}, ${Math.round(durationMs / 1000)} с`,
-        );
-        return {
-          conclusion: submitted.conclusion,
-          reasoning: submitted.reasoning,
-          citations,
-          notCovered: submitted.not_covered,
-          questions: submitted.questions,
-          model: LEGAL_MODEL,
-          rounds: round,
-          durationMs,
-        };
-      }
+      // Поиск и чтение статей одного хода — параллельно (промпт об этом
+      // просит); порядок tool_result — как у tool_use.
+      const results = await Promise.all(
+        toolUses.map(async (block): Promise<Anthropic.ToolResultBlockParam | { done: T }> => {
+          if (block.name !== opts.submitTool) return this.runTool(block);
+          const outcome = await opts.onSubmit(block.input, !fixRequested && round < opts.maxRounds);
+          if ('done' in outcome) return outcome;
+          return { type: 'tool_result', tool_use_id: block.id, is_error: true, content: outcome.retry };
+        }),
+      );
+      const done = results.find((r): r is { done: T } => 'done' in r);
+      if (done) return { value: done.done, rounds: round };
+      if (toolUses.some((b) => b.name === opts.submitTool)) fixRequested = true;
 
-      const content: Anthropic.MessageParam['content'] = [...results];
+      const content: Anthropic.MessageParam['content'] = results as Anthropic.ToolResultBlockParam[];
       // Предпоследний раунд — предупреждаем, иначе потолок оборвёт работу
-      // без ответа.
-      if (round === ASK_MAX_ROUNDS - 1) {
-        content.push({ type: 'text', text: 'Лимит обращений почти исчерпан: следующим шагом сдай submit_answer с тем, что уже проверено.' });
+      // без итога.
+      if (round === opts.maxRounds - 1) {
+        content.push({ type: 'text', text: `Лимит обращений почти исчерпан: следующим шагом сдай ${opts.submitTool} с тем, что уже проверено.` });
       }
       messages.push({ role: 'user', content });
     }
-    throw new LegalAgentError('TOO_MANY_ROUNDS', `Агент не уложился в ${ASK_MAX_ROUNDS} раундов`);
+    throw new LegalAgentError('TOO_MANY_ROUNDS', `Агент не уложился в ${opts.maxRounds} раундов`);
   }
 
   private async callModel(
     feature: string,
+    mode: LegalMode,
     system: string,
     tools: Anthropic.Tool[],
     messages: Anthropic.MessageParam[],
@@ -172,7 +250,7 @@ export class LegalAgentService {
       const message = await this.getClient()
         .messages.stream({
           model: LEGAL_MODEL,
-          max_tokens: MAX_TOKENS,
+          max_tokens: MAX_TOKENS[mode],
           // Юридический вывод — где ошибка дороже времени: effort high
           // (handoff, раздел 3.2). Размышления на Opus 5.5 не отключаются.
           output_config: { effort: 'high' },

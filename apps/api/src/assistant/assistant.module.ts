@@ -10,6 +10,7 @@ import { AssistantChatController } from './assistant-chat.controller';
 import { AssistantChatService } from './assistant-chat.service';
 import { AssistantReplyService } from './assistant-reply.service';
 import { AssistantToolsService } from './assistant-tools.service';
+import { LegalReviewNotifier } from './legal-review-notifier.service';
 
 @Module({
   // TasksModule/CalendarModule — AssistantToolsService читает через
@@ -29,7 +30,7 @@ import { AssistantToolsService } from './assistant-tools.service';
   // LegalModule — инструмент legal_ask (агент-юрист).
   imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule],
   controllers: [AssistantChatController],
-  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService],
+  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.

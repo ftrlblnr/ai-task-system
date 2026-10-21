@@ -104,3 +104,45 @@ describe('LegalAgentService.ask', () => {
     expect(requests).toHaveLength(0);
   });
 });
+
+describe('LegalAgentService.review', () => {
+  const CONTRACT = 'п. 4.1. Гарантийный срок на выполненные работы составляет 8 (восемь) лет с даты подписания акта.';
+  const submitReview = (asIs: string) =>
+    tool('r', 'submit_review', {
+      contract: '',
+      gc_role: 'заказчик',
+      applicable_acts: 'СК',
+      summary: 'Гарантия ниже минимума.',
+      findings: [
+        {
+          clause: 'п. 4.1',
+          as_is: asIs,
+          proposed: '10 лет',
+          reasoning: 'r',
+          gc_impact: 'g',
+          norm_id: 'K2600000253:ст.122',
+          quote: 'не менее десяти лет',
+          risk: 'высокий',
+          type: 'несоответствие НПА',
+        },
+      ],
+      general_issues: [],
+      not_checked: [],
+    });
+
+  it('договор и фокус — в первом сообщении; «как есть» сверяется с договором', async () => {
+    const { agent, requests } = makeAgent([
+      msg([submitReview('Гарантийный срок на работы составляет пять лет')]),
+      msg([submitReview('Гарантийный срок на выполненные работы составляет 8 (восемь) лет')]),
+    ]);
+    const r = await agent.review(CONTRACT, 'Договор.docx', ' гарантии ');
+    expect(r.rounds).toBe(2);
+    expect(r.contract).toBe('Договор.docx');
+    expect(r.findings[0]).toMatchObject({ verified: true, documentShort: 'Строительный кодекс' });
+    const first = JSON.stringify(requests[0].messages[0].content);
+    expect(first).toContain('<contract>');
+    expect(first).toContain('обратить особое внимание: гарантии');
+    expect(requests[0].tools!.map((t) => (t as Anthropic.Tool).name)).toContain('submit_review');
+    expect(JSON.stringify(requests[1].messages.at(-1)!.content)).toContain('фрагмент «как есть» не найден в договоре');
+  });
+});

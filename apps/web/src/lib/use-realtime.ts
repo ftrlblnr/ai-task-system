@@ -10,7 +10,11 @@ const RETRY_MAX_MS = 30_000;
 // Несколько изменений подряд (перестановка, вызов) — один перезапрос.
 const DEBOUNCE_MS = 300;
 
-export function useRealtime(topic: 'reception', onChange: () => void) {
+// 'assistant' и 'legal' — личные темы: сервер шлёт событие только владельцу
+// (итог разбора договора пришёл в беседу, разбор сменил статус).
+export type RealtimeTopic = 'reception' | 'assistant' | 'legal';
+
+export function useRealtime(topic: RealtimeTopic, onChange: () => void) {
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;

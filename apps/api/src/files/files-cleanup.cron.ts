@@ -40,7 +40,13 @@ export class FilesCleanupCron {
     // указывать на уже не существующий файл — ровно то, что сломало
     // предпросмотр/скачивание материалов в проде.
     const referenced = await this.prisma.tripMaterial.findMany({ select: { fileArtifactId: true }, distinct: ['fileArtifactId'] });
-    const referencedIds = referenced.map((m) => m.fileArtifactId);
+    // Агент-юрист (21.10.2026): договор, загруженный на странице «Юрист», и
+    // отчёт по разбору тоже живут без messageId — та же ловушка, что выше.
+    const legalRuns = await this.prisma.legalReviewRun.findMany({ select: { fileId: true, reportFileId: true } });
+    const referencedIds = [
+      ...referenced.map((m) => m.fileArtifactId),
+      ...legalRuns.flatMap((r) => (r.reportFileId ? [r.fileId, r.reportFileId] : [r.fileId])),
+    ];
     const orphans = await this.prisma.fileArtifact.findMany({
       // Release 2 (Mail.ru Email Intelligence) — вложения почты
       // (FileArtifactSource.INTERNAL) тоже имеют messageId === null (они

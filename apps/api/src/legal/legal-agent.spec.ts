@@ -2,10 +2,19 @@ import {
   buildLegalSystemPrompt,
   buildLegalTools,
   citationProblemsReport,
+  findingProblemsReport,
   formatLegalAnswer,
+  formatReviewSummary,
+  asIsFoundInContract,
   parseSubmittedAnswer,
+  parseSubmittedReview,
+  riskCounts,
+  sortFindings,
   verifyCitations,
+  verifyFindings,
   type ArticleLookup,
+  type LegalReview,
+  type SubmittedFinding,
 } from './legal-agent';
 
 const DOCS = [
@@ -98,5 +107,112 @@ describe('legal-agent: разбор и проверка ответа', () => {
     expect(md).toContain('- Судебная практика');
     expect(md).not.toContain('Уточните');
     expect(md.endsWith('_Проект. Требует проверки юристом._')).toBe(true);
+  });
+
+  describe('разбор договора', () => {
+    const CONTRACT = 'п. 4.1. Гарантийный срок на выполненные работы составляет 8 (восемь) лет с даты подписания акта.\nп. 5.2. Ответственность Субподрядчика ограничивается суммой 1 000 000 тенге.';
+    const finding = (over: Record<string, unknown> = {}): SubmittedFinding => ({
+      clause: 'п. 4.1',
+      as_is: 'Гарантийный срок на выполненные работы составляет 8 (восемь) лет',
+      proposed: 'Гарантийный срок — 10 лет',
+      reasoning: 'Императивный минимум.',
+      gc_impact: 'ГП отвечает перед заказчиком 10 лет.',
+      norm_id: 'K2600000253:ст.122',
+      quote: 'не менее десяти лет',
+      risk: 'высокий',
+      type: 'несоответствие НПА',
+      ...over,
+    }) as SubmittedFinding;
+
+    it('buildLegalTools(review): submit_review вместо submit_answer, схема строгая', () => {
+      const tools = buildLegalTools(DOCS, 'review');
+      const names = tools.map((t) => t.name);
+      expect(names).toContain('submit_review');
+      expect(names).not.toContain('submit_answer');
+      const submit = tools.find((t) => t.name === 'submit_review')!;
+      expect(submit.strict).toBe(true);
+      expect(submit.input_schema.additionalProperties).toBe(false);
+      expect(buildLegalSystemPrompt(DOCS, 'review')).toContain('<contract>');
+    });
+
+    it('parseSubmittedReview: без summary — null; неизвестные риск/тип — по умолчанию', () => {
+      expect(parseSubmittedReview({ findings: [] })).toBeNull();
+      expect(parseSubmittedReview(null)).toBeNull();
+      const r = parseSubmittedReview({
+        contract: ' Договор ',
+        summary: 'Итог',
+        findings: [finding({ risk: 'критический', type: 'прочее' }), 'мусор'],
+        general_issues: ['a', '', 3],
+      })!;
+      expect(r.contract).toBe('Договор');
+      expect(r.findings).toHaveLength(1);
+      expect(r.findings[0].risk).toBe('средний');
+      expect(r.findings[0].type).toBe('коммерческий риск');
+      expect(r.general_issues).toEqual(['a']);
+      expect(r.not_checked).toEqual([]);
+    });
+
+    it('asIsFoundInContract: без учёта пробелов и кавычек, части через «…»', () => {
+      const compactText = CONTRACT.replace(/\s+/g, '').toLowerCase();
+      const c = (s: string) => asIsFoundInContract(s, compactText.replace(/ё/g, 'е'));
+      expect(c('«Гарантийный  срок на выполненные работы составляет 8 (восемь) лет»')).toBe(true);
+      expect(c('Гарантийный срок на выполненные работы … Ответственность Субподрядчика ограничивается')).toBe(true);
+      expect(c('Гарантийный срок на работы составляет пять лет')).toBe(false);
+      // Короткие фрагменты не проверяются — слишком легко совпасть или нет.
+      expect(c('п. 4.1')).toBe(true);
+    });
+
+    it('verifyFindings: статья, цитата, «как есть»; норма необязательна', () => {
+      const out = verifyFindings(
+        [
+          finding(),
+          finding({ quote: 'не менее восьми лет' }),
+          finding({ norm_id: 'K2600000253:ст.999' }),
+          finding({ as_is: 'Гарантийный срок составляет пять лет с даты ввода', norm_id: '', quote: '' }),
+          finding({ norm_id: '', quote: '', type: 'коммерческий риск' }),
+        ],
+        new Map([
+          ['K2600000253:ст.122', ART_122],
+          ['K2600000253:ст.999', null],
+        ]),
+        CONTRACT,
+      );
+      expect(out.map((f) => f.verified)).toEqual([true, false, false, false, true]);
+      expect(out[0].documentShort).toBe('Строительный кодекс');
+      expect(out[1].problems).toEqual(['цитата нормы не найдена в статье']);
+      expect(out[2].problems[0]).toContain('нет в базе');
+      expect(out[3].problems).toEqual(['фрагмент «как есть» не найден в договоре']);
+
+      const report = findingProblemsReport(out);
+      expect(report).toContain('не подтвердила 3 из 5');
+      expect(report).toContain('находка 2 (п. 4.1)');
+      expect(findingProblemsReport([out[0]])).toBeNull();
+    });
+
+    it('sortFindings/riskCounts/formatReviewSummary', () => {
+      const findings = verifyFindings(
+        [finding({ risk: 'низкий', clause: 'п. 7.3' }), finding(), finding({ risk: 'средний', clause: 'п. 5.2', quote: 'нет такой' })],
+        new Map([['K2600000253:ст.122', ART_122]]),
+        CONTRACT,
+      );
+      expect(sortFindings(findings).map((f) => f.risk)).toEqual(['высокий', 'средний', 'низкий']);
+      expect(riskCounts(findings)).toEqual({ высокий: 1, средний: 1, низкий: 1 });
+
+      const review: LegalReview = {
+        contract: 'Договор субподряда',
+        gcRole: 'генподрядчик — заказчик',
+        applicableActs: 'ГК, Строительный кодекс',
+        summary: 'Договор невыгоден ГП.',
+        findings,
+        generalIssues: [],
+        notChecked: [],
+        model: 'm',
+      };
+      const md = formatReviewSummary(review, 'Договор.docx');
+      expect(md).toContain('**Разбор договора «Договор.docx» готов.** Находок: 3 (высокий риск — 1, средний — 1, низкий — 1).');
+      expect(md).toContain('1. **п. 4.1** (высокий)');
+      expect(md).toContain('**Не подтверждено проверкой по базе: 1**');
+      expect(md).toContain('Проект. Требует проверки юристом.');
+    });
   });
 });

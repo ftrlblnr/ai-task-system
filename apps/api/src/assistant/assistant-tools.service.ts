@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { EventStatus, Prisma, TaskFromMeetingStatus } from '@prisma/client';
@@ -19,6 +19,7 @@ import { isManager } from '../auth/roles';
 import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service';
 import { formatLegalAnswer, type LegalAnswer } from '../legal/legal-agent';
 import { legalAllowedForRole } from '../legal/legal-access';
+import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toReviewView } from '../legal/legal-review.service';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -116,7 +117,9 @@ type KnownToolName =
   | 'find_employee_by_competency'
   | 'search_emails'
   | 'get_email'
-  | 'legal_ask';
+  | 'legal_ask'
+  | 'legal_review_contract'
+  | 'legal_review_status';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -130,6 +133,8 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'search_emails') return 'search_emails';
   if (name === 'get_email') return 'get_email';
   if (name === 'legal_ask') return 'legal_ask';
+  if (name === 'legal_review_contract') return 'legal_review_contract';
+  if (name === 'legal_review_status') return 'legal_review_status';
   return 'get_tasks';
 }
 
@@ -139,7 +144,9 @@ function resolveToolName(name: string): KnownToolName {
 // считать write-only индекс для идемпотентности (см. её комментарий) —
 // read-tool'ы (search_meetings/get_meeting/...) не должны сдвигать этот
 // счётчик, иначе ретрай с другим числом read-вызовов даёт другой dedupeKey.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting']);
+// legal_review_contract (агент-юрист) ставит платное фоновое задание —
+// тоже write: его ключ идемпотентности строится из writeToolCallIndex.
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract']);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -164,6 +171,8 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   search_emails: 'MAIL_LOOKUP_FAILED: не удалось найти письма',
   get_email: 'MAIL_LOOKUP_FAILED: не удалось получить письмо',
   legal_ask: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ',
+  legal_review_contract: 'LEGAL_REVIEW_FAILED: не удалось запустить разбор договора',
+  legal_review_status: 'LEGAL_REVIEW_LOOKUP_FAILED: не удалось получить статус разборов',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -236,6 +245,8 @@ export type ToolExecutionResult =
   // Агент-юрист: markdown собран сервером из проверенных цитат и
   // показывается пользователю отдельной частью (assistant-render.ts).
   | { tool: 'legal_ask'; answer: LegalAnswer; markdown: string }
+  | { tool: 'legal_review_contract'; review: LegalReviewView; alreadyStarted: boolean }
+  | { tool: 'legal_review_status'; items: LegalReviewView[] }
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -284,6 +295,7 @@ export class AssistantToolsService {
     // выключенный флаг) юр-инструменты просто не предлагаются.
     @Optional() private readonly legal?: LegalAgentService,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly legalReviews?: LegalReviewService,
   ) {}
 
   private legalAvailable(user: AuthenticatedUser): boolean {
@@ -481,6 +493,26 @@ export class AssistantToolsService {
           required: ['question'],
         },
       });
+      if (this.legalReviews) {
+        tools.push({
+          name: 'legal_review_contract',
+          description:
+            'Запустить разбор договора агентом-юристом в интересах генподрядчика: находки по пунктам, правки, нормы с цитатами и отчёт Word. Используй, когда пользователь прикрепил договор (PDF или DOCX, пометка [attached_file] или ранее [file]) и просит проверить/разобрать/оценить его. Разбор идёт в фоне 5–10 минут; итог с отчётом придёт в эту беседу сам — скажи об этом пользователю. Содержимое файла ты не видишь — его читает агент-юрист.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              fileId: { type: 'string', description: 'id файла договора из пометки [attached_file] или [file]' },
+              focus: { type: 'string', description: 'На что пользователь просит обратить особое внимание (если сказал); иначе пустая строка' },
+            },
+            required: ['fileId'],
+          },
+        });
+        tools.push({
+          name: 'legal_review_status',
+          description: 'Статус последних разборов договоров пользователя (в очереди / идёт / готов / ошибка). Используй, когда спрашивают, готов ли разбор.',
+          input_schema: { type: 'object', properties: {} },
+        });
+      }
     }
 
     return tools;
@@ -573,6 +605,22 @@ export class AssistantToolsService {
         const question = (input as { question?: unknown } | null)?.question;
         return await this.legalAsk(typeof question === 'string' ? question : '', user);
       }
+      if (name === 'legal_review_contract') {
+        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+          // Как у create_task_from_meeting: без идентичности вызова нет
+          // ключа идемпотентности — платное задание не ставим.
+          throw new Error('legal_review_contract: отсутствует conversationId/userMessageId/writeToolCallIndex');
+        }
+        const typedInput = input as { fileId?: unknown; focus?: unknown } | null;
+        return await this.legalReviewContract(
+          typeof typedInput?.fileId === 'string' ? typedInput.fileId : '',
+          typeof typedInput?.focus === 'string' ? typedInput.focus : '',
+          user,
+          conversationId,
+          `chat:${userMessageId}:${writeToolCallIndex}`,
+        );
+      }
+      if (name === 'legal_review_status') return await this.legalReviewStatus(user);
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
       const tool = resolveToolName(name);
@@ -608,6 +656,35 @@ export class AssistantToolsService {
       }
       throw err;
     }
+  }
+
+  private async legalReviewContract(
+    fileId: string,
+    focus: string,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    const tool = 'legal_review_contract' as const;
+    if (!this.legalReviews || !this.legalAvailable(user)) return { tool, error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+    try {
+      const { run, created } = await this.legalReviews.create(user, { fileId, focus, conversationId, dedupeKey });
+      if (created) void this.audit.log(user.id, 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', run.id, { fileId: run.fileId, source: 'assistant' });
+      return { tool, review: toReviewView(run), alreadyStarted: !created };
+    } catch (err) {
+      // Ожидаемые отказы — конкретным кодом, модель объяснит их пользователю.
+      if (err instanceof NotFoundException) return { tool, error: true, message: 'LEGAL_FILE_NOT_FOUND: файл договора не найден — попросите прикрепить его' };
+      if (err instanceof LegalReviewLimitError) return { tool, error: true, message: 'LEGAL_REVIEW_LIMIT: уже идут 3 разбора — нужно дождаться их завершения' };
+      if (err instanceof BadRequestException) return { tool, error: true, message: 'LEGAL_UNSUPPORTED_FILE: для разбора нужен договор в PDF или DOCX' };
+      throw err;
+    }
+  }
+
+  private async legalReviewStatus(user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    if (!this.legalReviews || !this.legalAvailable(user)) {
+      return { tool: 'legal_review_status', error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+    }
+    return { tool: 'legal_review_status', items: await this.legalReviews.list(user, 5) };
   }
 
   private async getTasks(filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {

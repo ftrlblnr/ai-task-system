@@ -1,4 +1,4 @@
-import { BadGatewayException, Body, Controller, NotFoundException, Post, UseGuards } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, Controller, Get, Headers, NotFoundException, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -7,6 +7,9 @@ import { AuditService } from '../audit/audit.service';
 import { legalAllowedForRole } from './legal-access';
 import { LegalAgentError, LegalAgentService } from './legal-agent.service';
 import { LegalAskDto } from './dto/legal-ask.dto';
+import { CreateLegalReviewDto } from './dto/create-legal-review.dto';
+import { LegalReviewService, toReviewView } from './legal-review.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 // Агент-юрист (handoff, раздел 3.2). Выключенный флаг или роль вне
 // LEGAL_AGENT_ROLES — 404, как будто раздела нет (тот же приём, что
@@ -18,6 +21,8 @@ export class LegalController {
     private readonly config: ConfigService,
     private readonly agent: LegalAgentService,
     private readonly audit: AuditService,
+    private readonly reviews: LegalReviewService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   private assertAvailable(user: AuthenticatedUser) {
@@ -41,5 +46,36 @@ export class LegalController {
       if (err instanceof LegalAgentError) throw new BadGatewayException({ code: `LEGAL_${err.code}`, message: 'Агент-юрист не смог подготовить ответ, попробуйте переформулировать вопрос' });
       throw err;
     }
+  }
+
+  // Разбор договора — фоновое задание (legal-review-execution.service.ts),
+  // ответ сразу: QUEUED. Idempotency-Key обязателен: повтор того же запроса
+  // (двойной клик, ретрай после таймаута) вернёт тот же разбор.
+  @Post('reviews')
+  async createReview(
+    @Body() dto: CreateLegalReviewDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Headers('idempotency-key') idemKey?: string,
+  ) {
+    this.assertAvailable(user);
+    if (!idemKey) throw new BadRequestException('Заголовок Idempotency-Key обязателен для этого действия');
+    const { run, created } = await this.reviews.create(user, { fileId: dto.fileId, focus: dto.focus, dedupeKey: `http:${user.id}:${idemKey}` });
+    if (created) {
+      void this.audit.log(user.id, 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', run.id, { fileId: run.fileId, source: 'web' });
+      this.realtime.publish('legal', user.id);
+    }
+    return toReviewView(run);
+  }
+
+  @Get('reviews')
+  async listReviews(@CurrentUser() user: AuthenticatedUser, @Query('limit') limit?: string) {
+    this.assertAvailable(user);
+    return this.reviews.list(user, Number(limit) || 20);
+  }
+
+  @Get('reviews/:id')
+  async getReview(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    this.assertAvailable(user);
+    return this.reviews.get(user, id);
   }
 }

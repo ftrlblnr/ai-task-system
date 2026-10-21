@@ -113,8 +113,9 @@ model Employee {
   mailActionApprovalsMade MailActionApproval[]
   mailWatchesOwned        MailWatch[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  legalReviewRuns LegalReviewRun[]
 }
 
 // Stage 2, Phase I (внешний аудит 21.09.2026, "Employee Resolver") —
@@ -2449,18 +2450,18 @@ model NpaDocument {
 }
 
 model NpaArticle {
-  id          String     @id
+  id          String                   @id
   code        String
   article     String
   title       String
   path        String[]
   text        String
   footnotes   String[]
-  excluded    Boolean    @default(false)
+  excluded    Boolean                  @default(false)
   // [[дата, номер акта], …] — как в выгрузке, только для показа юристу.
-  amendedBy   Json       @default("[]")
-  pendingFrom DateTime[] @db.Date
-  expiresOn   DateTime[] @db.Date
+  amendedBy   Json                     @default("[]")
+  pendingFrom DateTime[]               @db.Date
+  expiresOn   DateTime[]               @db.Date
   links       String[]
   watch       String[]
   // Генерируемая колонка (title + text, словарь russian) заведена SQL-
@@ -2486,4 +2487,47 @@ model NpaGlossaryTerm {
   document NpaDocument @relation(fields: [code], references: [code], onDelete: Cascade)
 
   @@index([articleId])
+}
+
+// Разбор договора агентом-юристом — фоновое задание (идёт 5–10 минут, не в
+// запросе чата). Воркер: legal-review-execution.service.ts (claim FOR
+// UPDATE SKIP LOCKED, как AgentRun поездок). Источник — чат ассистента
+// (conversationId задан: итог дописывается в беседу) или страница «Юрист».
+enum LegalReviewStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model LegalReviewRun {
+  id              String            @id @default(cuid())
+  employeeId      String
+  employee        Employee          @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  conversationId  String?
+  // Договор и отчёт — FileArtifact (строковые ссылки, как TripMaterial;
+  // FilesCleanupCron их не трогает).
+  fileId          String
+  fileName        String
+  focus           String?
+  status          LegalReviewStatus @default(QUEUED)
+  // Ключ идемпотентности: Idempotency-Key страницы или
+  // userMessageId:writeIndex инструмента чата.
+  dedupeKey       String            @unique
+  attempts        Int               @default(0)
+  lockedAt        DateTime?
+  result          Json?
+  reportFileId    String?
+  findingsCount   Int?
+  unverifiedCount Int?
+  error           String?
+  // Итог дописан в беседу (LegalReviewNotifier) — ровно один раз.
+  notifiedAt      DateTime?
+  createdAt       DateTime          @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  @@index([status, lockedAt])
+  @@index([employeeId, createdAt])
+  @@index([finishedAt, notifiedAt])
 }

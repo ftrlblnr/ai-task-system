@@ -84,6 +84,12 @@ export class FilesService {
     return this.persist(user.id, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.GENERATED);
   }
 
+  // То же из фонового воркера (агент-юрист: отчёт по разбору договора) —
+  // там нет AuthenticatedUser, только id владельца задания.
+  async createGeneratedForEmployee(employeeId: string, buffer: Buffer, name: string, mimeType: string): Promise<FileArtifact> {
+    return this.persist(employeeId, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.GENERATED);
+  }
+
   // Release 2 (Mail.ru Email Intelligence) — байты вложения, уже
   // декодированные MailSyncService при синке письма. В отличие от
   // createGenerated, источник — внешний отправитель (не сам сервер), так
