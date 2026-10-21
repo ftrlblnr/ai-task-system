@@ -21,7 +21,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "eval:ai": "node dist/src/ai-eval/run-eval.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
