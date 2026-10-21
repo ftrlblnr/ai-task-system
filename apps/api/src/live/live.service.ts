@@ -9,7 +9,7 @@ import { CreateLiveSessionDto } from './dto/create-live-session.dto';
 import { LiveTranscriptBuffer } from './live-transcript-buffer';
 import { buildSessionInput, LIVE_INPUT_MAX_MESSAGES } from './live-session-input';
 import { toSpokenLiveReply } from './live-spoken-reply';
-import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
 
 // Stage 2, Phase Q (roadmap v13 "Phase O — GPT-Live/WebRTC", 24.09.2026).
 // GPT-Live ведёт живой разговор голосом, а всё, что требует данных/действий,
@@ -60,6 +60,9 @@ interface LiveSession {
   maxDurationTimer: ReturnType<typeof setTimeout> | null;
   startedAt: number;
   closed: boolean;
+  // Готовность sideband: true — открыт, false — не открылся (сессия уже
+  // закрыта). Браузер ждёт её через GET /live/sessions/:id/ready.
+  ready: Promise<boolean>;
 }
 
 @Injectable()
@@ -172,38 +175,44 @@ export class LiveService implements OnModuleDestroy {
       maxDurationTimer: null,
       startedAt: Date.now(),
       closed: false,
+      ready: Promise.resolve(false),
     };
     socket.on('message', (data) => this.onSocketMessage(session, data));
     socket.on('close', () => this.cleanup(session));
     socket.on('error', (err) => this.logger.error(`live sideband error session=${sessionId}: ${err instanceof Error ? err.name : 'unknown'}`));
 
-    // Успешный ответ клиенту — только после того, как sideband реально открыт:
-    // иначе пользователь может начать говорить раньше, чем серверный
-    // слушатель готов, и первый голосовой ход потеряется.
-    try {
-      await this.waitForSidebandOpen(socket);
-    } catch (err) {
-      this.logger.error(`live sideband not ready session=${sessionId}: ${err instanceof Error ? err.message : 'unknown'}`);
-      try {
-        socket.close();
-      } catch {
-        // сокет уже мёртв
-      }
-      this.cleanup(session);
-      await this.hangup(sessionId, apiKey);
-      throw new BadGatewayException('Не удалось запустить живой голос');
-    }
+    // Владелец 21.10.2026: «подключение идёт секунд 7». Раньше ответ клиенту
+    // ждал открытия sideband — теперь sideband открывается параллельно с тем,
+    // как браузер устанавливает WebRTC. Гарантия «первая реплика не
+    // потеряется» сохраняется: браузер включает «живой» режим только после
+    // GET /ready (см. waitReady), то есть когда серверный слушатель готов.
+    session.ready = this.waitForSidebandOpen(socket).then(
+      () => {
+        const tSideband = Date.now();
+        this.aiUsage?.record({
+          feature: 'live.connect',
+          model,
+          latencyMs: tSideband - t0,
+          ok: true,
+          meta: { historyMs: tHistory - t0, createMs: tCreate - tHistory, sidebandMs: tSideband - tCreate },
+        });
+        return true;
+      },
+      async (err: unknown) => {
+        this.logger.error(`live sideband not ready session=${sessionId}: ${err instanceof Error ? err.message : 'unknown'}`);
+        this.aiUsage?.record({ feature: 'live.connect', model, latencyMs: Date.now() - t0, ok: false, error: errorText(err) });
+        try {
+          socket.close();
+        } catch {
+          // сокет уже мёртв
+        }
+        this.cleanup(session);
+        await this.hangup(sessionId, apiKey);
+        return false;
+      },
+    );
 
-    const tSideband = Date.now();
-    this.aiUsage?.record({
-      feature: 'live.connect',
-      model,
-      latencyMs: tSideband - t0,
-      ok: true,
-      meta: { historyMs: tHistory - t0, createMs: tCreate - tHistory, sidebandMs: tSideband - tCreate },
-    });
-
-    // Пока ждали sideband, параллельный create того же сотрудника мог успеть
+    // Пока создавали сессию, параллельный create того же сотрудника мог успеть
     // зарегистрироваться — закрываем его, чтобы не осталось двух живых сессий.
     const concurrent = this.sessionByEmployee.get(user.id);
     if (concurrent && concurrent !== sessionId) this.closeSession(concurrent, 'replaced');
@@ -214,6 +223,14 @@ export class LiveService implements OnModuleDestroy {
     session.maxDurationTimer = setTimeout(() => this.closeSession(sessionId, 'max-duration'), maxMs);
 
     return { sessionId, sdp: answerSdp };
+  }
+
+  // Браузер ждёт готовности серверного слушателя, прежде чем дать говорить.
+  async waitReady(user: AuthenticatedUser, sessionId: string): Promise<{ ready: true }> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.user.id !== user.id) throw new NotFoundException();
+    if (!(await session.ready)) throw new BadGatewayException('Не удалось запустить живой голос');
+    return { ready: true };
   }
 
   // Шаги подключения на стороне браузера (микрофон, ICE, запрос, старт

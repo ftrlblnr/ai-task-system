@@ -25,6 +25,11 @@ export class LiveController {
     return this.live.createSession(user, dto);
   }
 
+  @Get('sessions/:id/ready')
+  ready(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.live.waitReady(user, id);
+  }
+
   @Post('sessions/:id/timing')
   @HttpCode(204)
   timing(@Param('id') id: string, @Body() dto: LiveClientTimingDto, @CurrentUser() user: AuthenticatedUser) {

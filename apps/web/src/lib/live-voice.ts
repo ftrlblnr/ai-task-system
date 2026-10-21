@@ -62,6 +62,11 @@ export class LiveVoiceClient {
   private generation = 0;
   // Замер шагов подключения — отправляется на сервер после session.started.
   private timing: { t0: number; mic: number; ice: number; request: number } | null = null;
+  // «Живой» режим — когда готовы оба: голос OpenAI (session.started) и
+  // серверный слушатель (GET /ready). Сервер открывает слушателя параллельно
+  // с WebRTC, поэтому ждать его отдельно почти не приходится.
+  private sessionStarted = false;
+  private serverReady = false;
 
   constructor(private readonly callbacks: LiveVoiceCallbacks) {}
 
@@ -146,6 +151,20 @@ export class LiveVoiceClient {
         return;
       }
       this.sessionId = created.sessionId;
+      this.sessionStarted = false;
+      this.serverReady = false;
+      void api
+        .get(`/live/sessions/${created.sessionId}/ready`)
+        .then(() => {
+          if (isStale()) return;
+          this.serverReady = true;
+          this.goLiveIfReady();
+        })
+        .catch(() => {
+          if (isStale()) return;
+          this.callbacks.onError('Не удалось запустить живой голос.');
+          void this.stop();
+        });
       await pc.setRemoteDescription({ type: 'answer', sdp: created.sdp });
       if (isStale()) {
         await api.delete(`/live/sessions/${created.sessionId}`).catch(() => undefined);
@@ -175,8 +194,8 @@ export class LiveVoiceClient {
       return;
     }
     if (event.type === 'session.started') {
-      this.setPhase('live');
-      this.reportTiming();
+      this.sessionStarted = true;
+      this.goLiveIfReady();
     } else if (event.type === 'session.closed') {
       void this.stop();
     } else if (event.type === 'session.input_transcript.delta' && typeof event.delta === 'string') {
@@ -184,6 +203,12 @@ export class LiveVoiceClient {
     } else if (event.type === 'session.output_transcript.delta' && typeof event.delta === 'string') {
       this.callbacks.onCaption('assistant', event.delta);
     }
+  }
+
+  private goLiveIfReady() {
+    if (this.phase !== 'connecting' || !this.sessionStarted || !this.serverReady) return;
+    this.setPhase('live');
+    this.reportTiming();
   }
 
   private reportTiming() {

@@ -418,30 +418,32 @@ describe('LiveService — session.input из истории разговора',
   });
 });
 
-describe('LiveService — sideband готов до ответа клиенту', () => {
-  it('createSession не резолвится, пока sideband не открылся', async () => {
+describe('LiveService — sideband открывается параллельно, браузер ждёт /ready', () => {
+  it('createSession отвечает сразу, а waitReady резолвится только после открытия sideband', async () => {
     FakeSocket.startOpen = false;
     const { service } = makeService();
-    let resolved = false;
 
-    const promise = service.createSession(user(), { sdp: 'x' }).then((r) => {
-      resolved = true;
+    await expect(service.createSession(user(), { sdp: 'x' })).resolves.toEqual({ sessionId: 'live_1', sdp: 'ANSWER_SDP' });
+
+    let ready = false;
+    const readyPromise = service.waitReady(user(), 'live_1').then((r) => {
+      ready = true;
       return r;
     });
     await jest.advanceTimersByTimeAsync(1000);
-    expect(resolved).toBe(false);
+    expect(ready).toBe(false);
 
     sockets[0].readyState = 1;
     sockets[0].emit('open');
-    await expect(promise).resolves.toEqual({ sessionId: 'live_1', sdp: 'ANSWER_SDP' });
+    await expect(readyPromise).resolves.toEqual({ ready: true });
   });
 
-  it('sideband не открылся за таймаут — hangup через REST, состояние очищено, контролируемая ошибка', async () => {
+  it('sideband не открылся за таймаут — waitReady отказывает, hangup через REST, состояние очищено', async () => {
     FakeSocket.startOpen = false;
     const { service } = makeService();
 
-    const promise = service.createSession(user(), { sdp: 'x' });
-    const assertion = expect(promise).rejects.toThrow('Не удалось запустить живой голос');
+    await service.createSession(user(), { sdp: 'x' });
+    const assertion = expect(service.waitReady(user(), 'live_1')).rejects.toThrow('Не удалось запустить живой голос');
     await jest.advanceTimersByTimeAsync(SIDEBAND_OPEN_TIMEOUT_MS + 100);
     await assertion;
 
@@ -459,13 +461,19 @@ describe('LiveService — sideband готов до ответа клиенту',
     FakeSocket.startOpen = false;
     const { service } = makeService();
 
-    const promise = service.createSession(user(), { sdp: 'x' });
-    const assertion = expect(promise).rejects.toThrow('Не удалось запустить живой голос');
-    await jest.advanceTimersByTimeAsync(10);
+    await service.createSession(user(), { sdp: 'x' });
+    const assertion = expect(service.waitReady(user(), 'live_1')).rejects.toThrow('Не удалось запустить живой голос');
     sockets[0].emit('error', new Error('ECONNREFUSED'));
     await assertion;
 
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/live_1/hangup'))).toBe(true);
+  });
+
+  it('waitReady чужой сессии — 404', async () => {
+    const { service } = makeService();
+    await service.createSession(user(), { sdp: 'x' });
+
+    await expect(service.waitReady(user('emp2'), 'live_1')).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('успешный путь: sideband уже открыт — ответ без ожидания', async () => {
