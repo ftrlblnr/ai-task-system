@@ -100,6 +100,7 @@ export function TripsScreen({ active = true }: { active?: boolean }) {
             load();
             setOpenTripId(run.tripId);
           } else {
+            idem.reset();
             setCreateError(run.errorSummary ?? 'Не удалось обработать материалы');
           }
         }
@@ -122,6 +123,7 @@ export function TripsScreen({ active = true }: { active?: boolean }) {
       const run = await api.postForm<AgentRunDetail>('/trips/runs', formData, { 'Idempotency-Key': idem.key() });
       if (RUN_TERMINAL.has(run.status)) {
         setSubmitting(false);
+        idem.reset();
         if (run.status !== 'FAILED' && run.tripId) {
           setCreating(false);
           setFiles([]);
@@ -134,6 +136,7 @@ export function TripsScreen({ active = true }: { active?: boolean }) {
         pollRun(run.id);
       }
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setCreateError(err instanceof ApiError ? err.message : 'Не удалось создать пакет материалов');
       setSubmitting(false);
     }
