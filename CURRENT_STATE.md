@@ -208,6 +208,28 @@ fullName}` — этого достаточно, чтобы выбрать исп
 
 ## Anthropic / OpenAI интеграции
 
+> **Актуально на 21.10.2026 (этап производительности ИИ)** — нижеследующий
+> исторический текст про `whisper-1`/Haiku 4.5 устарел:
+> - STT: `gpt-transcribe` (`whisper.service.ts`, `languages:['ru']`,
+>   `keywords` из `CompanyVocabularyService`, длительность из `usage.seconds`);
+>   на тишине/шуме возвращает пусто, без галлюцинаций whisper-1.
+> - Быстрые вызовы (ассистент, приёмная, поездки, почта, голосовые черновики,
+>   подстановка спикеров) — `claude-haiku-5-5`; извлечение задач из встреч —
+>   `claude-opus-5` (effort low, max_tokens 16000, ошибка вместо пустого
+>   результата при обрезке). Эскалация голоса — `claude-opus-5`.
+> - Ассистент: prompt caching (system + top-level `cache_control`), дата —
+>   в последнем user-сообщении, чтобы не ломать кэш; read-only тулы
+>   выполняются параллельно, при наличии пишущих — последовательно.
+> - Метрики: каждая модельная операция пишется в `AiCall` (`ai-usage/`,
+>   хранение 90 дней): латентность, TTFT, токены, кэш, аудио-секунды, ошибки.
+>   Live: `live.connect` (сервер) и `live.client` (тайминги браузера).
+> - Live-голос: sideband открывается параллельно с ответом SDP, браузер
+>   ждёт `GET /live/sessions/:id/ready`.
+> - Проверочный набор: `npm run eval:ai` (`src/ai-eval/run-eval.ts`, 19
+>   случаев, ходит в реальные API, не в CI).
+> - Realtime: `GET /realtime/stream?topic=reception` (SSE), приёмная
+>   обновляется мгновенно, опрос — раз в 60 с как страховка.
+
 - **OpenAI** (`apps/api/src/voice/whisper.service.ts`) — только STT,
   модель `whisper-1`, `response_format: 'verbose_json'` (нужен для
   `audioDurationMs`, см. ниже), язык фиксирован `ru`.
