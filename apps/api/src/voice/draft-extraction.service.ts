@@ -385,7 +385,7 @@ function toAnthropicMessages(history: VoiceHistoryItem[], transcript: string, li
 // сама Haiku возвращает LOW confidence или clarificationNeeded — то есть
 // когда транскрипт действительно неоднозначен и стоит заплатить лишней
 // секундой-двумя за более сильный разбор, а не платить ей всегда.
-const FAST_MODEL = 'claude-haiku-4-5-20251001';
+const FAST_MODEL = 'claude-haiku-5-5';
 const STRONG_MODEL = 'claude-opus-5';
 
 // Один forced tool-use вызов — не агентный луп, не Tool Runner: нужен ровно
@@ -476,17 +476,10 @@ export class DraftExtractionService {
     let raw = await this.callModel(FAST_MODEL, messages, tool, system);
     const fastMs = Date.now() - fastStart;
     const escalate = raw.confidence === 'LOW' || raw.clarificationNeeded;
-    let strongMs = 0;
-
-    if (escalate) {
-      const strongStart = Date.now();
-      raw = await this.callModel(STRONG_MODEL, messages, tool, system);
-      strongMs = Date.now() - strongStart;
-    }
-
     // Причина эскалации — не отдельное поле модели, а то же условие,
     // которое уже решает, эскалировать ли (см. escalate выше); здесь просто
-    // разложено на составляющие для лога, ничего не решает заново.
+    // разложено на составляющие для лога, ничего не решает заново. Считается
+    // по ответу быстрой модели — до того, как raw заменит ответ сильной.
     const escalationReason: ExtractionOutcome['escalationReason'] = !escalate
       ? null
       : raw.confidence === 'LOW' && raw.clarificationNeeded
@@ -494,6 +487,13 @@ export class DraftExtractionService {
         : raw.confidence === 'LOW'
           ? 'LOW_CONFIDENCE'
           : 'CLARIFICATION_NEEDED';
+    let strongMs = 0;
+
+    if (escalate) {
+      const strongStart = Date.now();
+      raw = await this.callModel(STRONG_MODEL, messages, tool, system);
+      strongMs = Date.now() - strongStart;
+    }
 
     this.logger.log(
       `draft-extraction reqId=${requestId ?? 'n/a'} fastModel=${FAST_MODEL} fastMs=${fastMs} escalated=${escalate}` +

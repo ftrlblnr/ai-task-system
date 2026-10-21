@@ -8,7 +8,7 @@ import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 // Один forced tool-use вызов на материал (не агентный луп) — тот же приём,
 // что mail/mail-analysis.service.ts. Haiku достаточно: задача — структурное
 // извлечение заведомо присутствующих в документе фактов, не рассуждение.
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = 'claude-haiku-5-5';
 
 export type TripMaterialExtractionOutcome =
   | { status: 'EXTRACTED'; draft: TripExtractionDraft; fileName: string }

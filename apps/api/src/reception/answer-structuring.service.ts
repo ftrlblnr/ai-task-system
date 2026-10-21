@@ -9,7 +9,7 @@ import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 // поручений — нумерованным списком. Аудио не хранится и не пересылается.
 // Haiku: задача — редактура, не рассуждение (тот же выбор, что
 // trips/trip-extraction.service.ts).
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = 'claude-haiku-5-5';
 
 // Прод 21.10.2026: на мусорном транскрипте модель отвечала комментарием
 // («надиктованный ответ не полный…») или сочиняла ответ по теме вопроса.

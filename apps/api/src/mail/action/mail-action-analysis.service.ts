@@ -17,7 +17,7 @@ import { AiUsageService, trackedCreate } from '../../ai-usage/ai-usage.service';
 // Haiku — та же модель, что mail-analysis.service.ts (классификация писем);
 // задача того же порядка сложности (один structured-output вызов по
 // готовому контексту, не агентный луп).
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = 'claude-haiku-5-5';
 
 @Injectable()
 export class MailActionAnalysisService {

@@ -17,7 +17,7 @@ import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 // (классификация одного письма) заметно проще, чем извлечение задач из
 // саммари встречи (meeting-task-extraction.service.ts, Opus) — каскад на
 // Opus здесь не нужен.
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = 'claude-haiku-5-5';
 
 // Потолок на прогон — тот же принцип самоограничения, что MAX_MESSAGES_PER_RUN
 // в MailSyncService: большой бэклог после первого подключения ящика догоняется

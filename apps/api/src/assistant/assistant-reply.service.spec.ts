@@ -209,18 +209,39 @@ describe('buildDateContext (Stage 2, Phase O)', () => {
 // здесь — эта проверка вызывает НАСТОЯЩИЙ streamOnce с подменённым
 // client'ом (минуя ленивую getClient(), которой в тестах не нужен реальный
 // ANTHROPIC_API_KEY).
-describe('AssistantReplyService.streamOnce — system-промпт (Stage 2, Phase O)', () => {
-  it('передаёт в Anthropic system, объединяющий SYSTEM_PROMPT и buildDateContext()', async () => {
-    const service = new AssistantReplyService({} as any, { buildTools: jest.fn() } as any) as any;
-    const streamSpy = jest.fn().mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [] }) });
+describe('AssistantReplyService.streamOnce — system-промпт и кэш (21.10.2026)', () => {
+  function makeStreamingService() {
+    const service = new AssistantReplyService({} as any, { buildTools: jest.fn().mockResolvedValue([]) } as any) as any;
+    const streamSpy = jest
+      .fn()
+      .mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], usage: {} }) });
     service.client = { messages: { stream: streamSpy } };
+    return { service, streamSpy };
+  }
+
+  it('system — неизменный SYSTEM_PROMPT с меткой кэша, без текущей даты', async () => {
+    const { service, streamSpy } = makeStreamingService();
 
     await service.streamOnce([], [], undefined, undefined);
 
     const [payload] = streamSpy.mock.calls[0];
-    expect(payload.system).toContain('ассистент корпоративной системы задач');
-    expect(payload.system).toContain('create_task_from_meeting');
-    expect(payload.system).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(payload.system).toHaveLength(1);
+    expect(payload.system[0].text).toContain('ассистент корпоративной системы задач');
+    expect(payload.system[0].text).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(payload.system[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(payload.cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it('текущая дата уходит в последнее сообщение пользователя', async () => {
+    const { service, streamSpy } = makeStreamingService();
+
+    await service.reply('что завтра?', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1');
+
+    const [payload] = streamSpy.mock.calls[0];
+    const last = payload.messages[payload.messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(last.content[0].text).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(last.content[1].text).toBe('что завтра?');
   });
 });
 

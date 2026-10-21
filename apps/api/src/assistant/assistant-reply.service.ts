@@ -32,7 +32,11 @@ import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
 // потолок предотвращает патологическое зацикливание модели.
 const MAX_TOOL_ROUNDS = 3;
 
-const REPLY_MODEL = 'claude-haiku-4-5-20251001';
+// Haiku 5.5 (21.10.2026): тот же выбор инструментов на реальных запросах,
+// постоянная часть запроса — ~4,2K токенов против ~16,7K у Haiku 4.5
+// (другой токенизатор), цена токена в 10 раз ниже. effort 'low' — чат:
+// модель думает только там, где это нужно.
+const REPLY_MODEL = 'claude-haiku-5-5';
 
 const SYSTEM_PROMPT = `Ты — ассистент корпоративной системы задач «Адъютант».
 У тебя есть инструменты для получения РЕАЛЬНЫХ задач и (если доступно)
@@ -199,9 +203,17 @@ export class AssistantReplyService {
     onEvent?: ReplyStreamListener,
     signal?: AbortSignal,
   ): Promise<AssistantReplyResult> {
+    // Дата — в последнем сообщении, а не в system: system и tools не меняются
+    // от запроса к запросу и кэшируются (см. streamOnce).
     let messages: Anthropic.MessageParam[] = [
       ...history.map((h) => ({ role: h.role, content: h.text })),
-      { role: 'user' as const, content: text },
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: buildDateContext() },
+          { type: 'text' as const, text },
+        ],
+      },
     ];
     const tools = await this.tools.buildTools(user);
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
@@ -285,8 +297,14 @@ export class AssistantReplyService {
     const stream = this.getClient().messages.stream(
       {
         model: REPLY_MODEL,
-        max_tokens: 1024,
-        system: `${SYSTEM_PROMPT}\n\n${buildDateContext()}`,
+        // Размышления модели тоже входят в max_tokens.
+        max_tokens: 4096,
+        output_config: { effort: 'low' },
+        // Кэш: метка на system покрывает tools + system (общие для всех
+        // запросов), верхнеуровневая — весь префикс, который повторяется в
+        // следующих раундах с инструментами.
+        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        cache_control: { type: 'ephemeral' },
         tools,
         tool_choice: { type: 'auto' },
         messages,
