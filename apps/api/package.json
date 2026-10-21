@@ -22,7 +22,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "ts-node prisma/seed.ts",
-    "eval:ai": "node dist/src/ai-eval/run-eval.js"
+    "eval:ai": "node dist/src/ai-eval/run-eval.js",
+    "legal:import": "node dist/src/legal/npa-import.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

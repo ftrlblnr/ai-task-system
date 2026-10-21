@@ -2429,3 +2429,61 @@ model AiCall {
   @@index([feature, createdAt])
   @@index([createdAt])
 }
+
+// Агент-юрист (ТЗ handoff 21.10.2026): база НПА РК из выгрузки «Әділет»,
+// импортируется командой `npm run legal:import` из legal-data/. Статья —
+// единица цитирования, её id стабилен между редакциями: `КОД:ст.N`.
+model NpaDocument {
+  code              String    @id
+  short             String
+  title             String
+  requisites        String
+  url               String
+  lastAmendmentDate DateTime? @db.Date
+  lastAmendmentAct  String?
+  sourceDate        DateTime? @db.Date
+  updatedAt         DateTime  @updatedAt
+
+  articles NpaArticle[]
+  terms    NpaGlossaryTerm[]
+}
+
+model NpaArticle {
+  id          String     @id
+  code        String
+  article     String
+  title       String
+  path        String[]
+  text        String
+  footnotes   String[]
+  excluded    Boolean    @default(false)
+  // [[дата, номер акта], …] — как в выгрузке, только для показа юристу.
+  amendedBy   Json       @default("[]")
+  pendingFrom DateTime[] @db.Date
+  expiresOn   DateTime[] @db.Date
+  links       String[]
+  watch       String[]
+  // Генерируемая колонка (title + text, словарь russian) заведена SQL-
+  // миграцией: Prisma не умеет описать GENERATED ALWAYS, поэтому `migrate
+  // diff` показывает ложный «DROP DEFAULT» — его не применять.
+  search      Unsupported("tsvector")?
+
+  document NpaDocument       @relation(fields: [code], references: [code], onDelete: Cascade)
+  terms    NpaGlossaryTerm[]
+
+  @@index([code])
+  @@index([search], type: Gin)
+}
+
+model NpaGlossaryTerm {
+  id         String @id @default(cuid())
+  articleId  String
+  code       String
+  term       String
+  definition String
+
+  article  NpaArticle  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  document NpaDocument @relation(fields: [code], references: [code], onDelete: Cascade)
+
+  @@index([articleId])
+}
