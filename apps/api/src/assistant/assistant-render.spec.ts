@@ -203,3 +203,27 @@ describe('buildAssistantParts (Stage 2 Phase C — бэкенд-рендерер
     expect(parts[0].data).toEqual({ label: 'Не удалось проверить задачи' });
   });
 });
+
+describe('buildAssistantParts — агент-юрист', () => {
+  it('legal_ask: ответ юриста отдельным markdown-блоком после текста модели', () => {
+    const result: AssistantReplyResult = {
+      text: 'Ответ подготовлен по базе НПА.',
+      toolCalls: [
+        {
+          name: 'legal_ask',
+          result: {
+            tool: 'legal_ask',
+            markdown: '**Вывод.** 10 лет',
+            answer: { conclusion: '10 лет', reasoning: '', citations: [], notCovered: [], questions: [], model: 'm' },
+          },
+          durationMs: 1000,
+        },
+      ],
+    };
+    expect(buildAssistantParts(result)).toEqual([
+      { type: MessagePartType.TOOL_ACTIVITY, order: 0, data: { label: 'Проверил по базе НПА: норм 0' } },
+      { type: MessagePartType.MARKDOWN, order: 1, data: { content: 'Ответ подготовлен по базе НПА.' } },
+      { type: MessagePartType.MARKDOWN, order: 2, data: { content: '**Вывод.** 10 лет' } },
+    ]);
+  });
+});

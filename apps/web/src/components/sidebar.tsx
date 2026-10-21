@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale } from 'lucide-react';
 import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
+import { api } from '@/lib/api';
 import { AgentMark, IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
 
@@ -29,6 +30,27 @@ const DASHBOARD_ITEM = { href: '/', label: 'Стол руководителя', 
 // стоит над меню на месте бывшей командной строки «Спросить или найти»,
 // отдельно от остальных пунктов.
 const ASSISTANT_ITEM = { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false };
+
+// Агент-юрист (этап 4 handoff) — пункт виден, только если бэкенд включил
+// раздел для роли пользователя (GET /legal/status: LEGAL_AGENT_ENABLED +
+// LEGAL_AGENT_ROLES), остальные /legal/* для них отвечают 404.
+const LEGAL_ITEM = { href: '/legal', label: 'Юрист', icon: Scale, ownerOnly: false };
+
+function useLegalEnabled(userId: string | undefined): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    api
+      .get<{ enabled: boolean }>('/legal/status')
+      .then((s) => !cancelled && setEnabled(s.enabled))
+      .catch(() => !cancelled && setEnabled(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+  return enabled;
+}
 
 const NAV_ITEMS = [
   { href: '/tasks', label: 'Задачи', icon: KanbanSquare, ownerOnly: false },
@@ -78,6 +100,7 @@ export function Sidebar() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
   useGlobalAssistantShortcut();
+  const legalEnabled = useLegalEnabled(user?.id);
 
   if (!user) return null;
 
@@ -112,6 +135,7 @@ export function Sidebar() {
       <nav>
         {isOwner && renderItem(DASHBOARD_ITEM)}
         {generalItems.map(renderItem)}
+        {legalEnabled && renderItem(LEGAL_ITEM)}
         {ownerItems.length > 0 && (
           <>
             <div className="ds-nav-sep" />

@@ -1168,6 +1168,34 @@ select {
 .assistant-markdown p:last-child {
   margin-bottom: 0;
 }
+/* Ответ агента-юриста: нормы списком, дословные цитаты — blockquote,
+   ID статей — code (те же правила, что в miniapp globals.css). */
+.assistant-markdown ul,
+.assistant-markdown ol,
+.assistant-markdown blockquote {
+  margin: 0 0 8px;
+}
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-left: 20px;
+}
+.assistant-markdown ul {
+  list-style: disc;
+}
+.assistant-markdown ol {
+  list-style: decimal;
+}
+.assistant-markdown blockquote {
+  border-left: 3px solid var(--border-strong, var(--border));
+  padding-left: 10px;
+  color: var(--ink-soft);
+}
+.assistant-markdown code {
+  font-size: 0.85em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
 .assistant-markdown-table-wrap {
   overflow-x: auto;
 }

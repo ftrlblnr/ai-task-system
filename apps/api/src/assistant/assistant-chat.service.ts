@@ -516,6 +516,33 @@ export class AssistantChatService {
     return { result: promise, claimed: true };
   }
 
+  // Сообщение ассистента не в ответ на реплику пользователя — итог фоновой
+  // работы (агент-юрист: разбор договора готов). claim выполняется в той же
+  // транзакции: вызывающий отмечает доставку там же, поэтому сообщение
+  // появляется ровно один раз, даже если процесс упадёт посередине.
+  // Беседа удалена — false, сообщение не создаётся.
+  async appendBackgroundMessage(
+    conversationId: string,
+    parts: MessagePartInput[],
+    fileIds: string[],
+    claim: (tx: Prisma.TransactionClient) => Promise<boolean>,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await claim(tx))) return false;
+      const conversation = await tx.conversation.findUnique({ where: { id: conversationId }, select: { id: true } });
+      if (!conversation) return false;
+      const created = await tx.message.create({
+        data: { conversationId, role: MessageRole.ASSISTANT, status: MessageStatus.COMPLETED, parts: { create: parts } },
+      });
+      if (fileIds.length > 0) {
+        await tx.fileArtifact.updateMany({ where: { id: { in: fileIds } }, data: { conversationId, messageId: created.id } });
+      }
+      // Беседа поднимается в списке, как от обычного ответа.
+      await tx.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      return true;
+    });
+  }
+
   async sendMessage(
     user: AuthenticatedUser,
     conversationId: string,

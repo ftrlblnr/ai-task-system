@@ -35,6 +35,9 @@ COPY --from=build /repo/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /repo/apps/api/dist ./apps/api/dist
 COPY --from=build /repo/apps/api/prisma ./apps/api/prisma
 COPY --from=build /repo/apps/api/package.json ./apps/api/package.json
+# Данные базы НПА для `npm run legal:import` (агент-юрист) — читаются
+# командой вручную, не при старте.
+COPY --from=build /repo/apps/api/legal-data ./apps/api/legal-data
 
 EXPOSE 3001
 # prisma migrate deploy — безопасно применяет только неприменённые миграции,

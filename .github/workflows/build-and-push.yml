@@ -15,6 +15,10 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/build-and-push.yml"
+  # PR в main (ветки фич, напр. feature/legal-agent) — только gate: lint и
+  # тесты видны в PR до слияния, образы :latest при этом не собираются.
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 env:
@@ -63,6 +67,7 @@ jobs:
 
   build:
     needs: gate
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

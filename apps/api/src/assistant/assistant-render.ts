@@ -43,6 +43,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'find_employee_by_competency') return { label: 'Не удалось найти сотрудников по компетенции' };
     // Release 2 (Mail.ru Email Intelligence).
     if (result.tool === 'search_emails' || result.tool === 'get_email') return { label: 'Не удалось проверить почту' };
+    if (result.tool === 'legal_ask') return { label: 'Агент-юрист не смог подготовить ответ' };
+    if (result.tool === 'legal_review_contract') return { label: 'Не удалось запустить разбор договора' };
+    if (result.tool === 'legal_review_status') return { label: 'Не удалось проверить разборы договоров' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -59,6 +62,11 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
   // Release 2 (Mail.ru Email Intelligence).
   if (result.tool === 'search_emails') return { label: `Проверил почту: найдено ${result.totalCount}` };
   if (result.tool === 'get_email') return { label: 'Открыл письмо' };
+  if (result.tool === 'legal_ask') return { label: `Проверил по базе НПА: норм ${result.answer.citations.length}` };
+  if (result.tool === 'legal_review_contract') {
+    return { label: `${result.alreadyStarted ? 'Разбор уже запущен' : 'Запустил разбор договора'}: «${result.review.fileName}»` };
+  }
+  if (result.tool === 'legal_review_status') return { label: `Проверил разборы договоров: ${result.items.length}` };
   // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
   return { label: `Поставил задачу «${result.task.title}»` };
 }
@@ -100,6 +108,11 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
       // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
       // происхождение задачи прямо под карточкой.
       parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(call.result.task) });
+    } else if (call.result.tool === 'legal_ask') {
+      // Ответ агента-юриста — отдельным блоком, собранным сервером из
+      // проверенных цитат: модель чата его не пересказывает (иначе цитаты
+      // норм прошли бы через перефразирование и перестали быть дословными).
+      parts.push({ type: MessagePartType.MARKDOWN, order: order++, data: { content: call.result.markdown } });
     }
     // Stage 2, Phase K — инструменты встреч намеренно не строят
     // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,

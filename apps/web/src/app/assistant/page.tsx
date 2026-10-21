@@ -16,6 +16,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
+import { useRealtime } from '@/lib/use-realtime';
 import { Protected } from '@/components/protected';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
 import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
@@ -233,6 +234,27 @@ function AssistantView() {
       })
       .catch(() => undefined);
   }
+
+  // Фоновые сообщения (итог разбора договора агентом-юристом) — сигнал
+  // сервера по личной теме. Во время отправки ленту не трогаем, иначе
+  // перезапрос затёр бы ещё не сохранённый ответ; подтягиваем после.
+  const sendingRef = useRef(false);
+  sendingRef.current = sending;
+  const missedRefreshRef = useRef(false);
+  useRealtime('assistant', () => {
+    if (sendingRef.current) {
+      missedRefreshRef.current = true;
+      return;
+    }
+    refreshMessagesSilently();
+    refreshConversationTitles();
+  });
+  useEffect(() => {
+    if (sending || !missedRefreshRef.current) return;
+    missedRefreshRef.current = false;
+    refreshMessagesSilently();
+    refreshConversationTitles();
+  }, [sending]);
 
   useEffect(() => {
     if (livePhase !== 'live') return;

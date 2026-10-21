@@ -1912,6 +1912,58 @@ contact/сам Trip) пишет `TripRevision` (вкладка «История�
 живого API; оба фронтенда проверены через `next build`+`tsc --noEmit`
 без ошибок.
 
+## Агент-юрист (handoff legal-agent, 21.10.2026)
+
+Код — `apps/api/src/legal/`, страница — `apps/web/src/app/legal/`. Модель —
+`claude-opus-5-5` (`LEGAL_MODEL`), effort high, prompt caching. Включается
+флагом `LEGAL_AGENT_ENABLED=true`; `LEGAL_AGENT_ROLES` — список ролей через
+запятую (пусто — все). Выключено/роль не та — все `/legal/*` отвечают 404,
+кроме `GET /legal/status` (`{enabled}` — для пункта меню), инструменты чата
+не предлагаются.
+
+- **База НПА** — `NpaDocument` / `NpaArticle` / `NpaGlossaryTerm`; 22 акта,
+  ~6150 статей, выгрузка «Әділет» в `apps/api/legal-data/npa-data.jsonl.gz`.
+  Полнотекстовый поиск — колонка `search` (tsvector GENERATED, russian,
+  заголовок вес A, текст B) + GIN; `websearch_to_tsquery`, при пустом
+  результате — OR-запрос. **`prisma migrate diff` всегда показывает ложный
+  `DROP DEFAULT` на `search` — в миграции не переносить.** Импорт/обновление
+  (идемпотентно, одной транзакцией, ~10 с):
+  `docker exec -w /repo/apps/api docker-api-1 npm run legal:import`.
+  Обновление базы — раз в месяц: новый `npa-data.jsonl.gz` из
+  legal-agent/tools → коммит → деплой → та же команда.
+- **Вопрос по НПА** — `LegalAgentService.ask`: цикл инструментов
+  (search_npa / get_article / verify_quote / term) до `submit_answer`,
+  ≤12 раундов. Сервер сам сверяет каждую цитату с текстом статьи
+  (`verifyCitations`); не прошедшие — одна просьба исправить, затем
+  пометка «НЕ ПОДТВЕРЖДЕНО». Opus 5.5: принудительный `tool_choice` даёт
+  400 — `auto` + напоминание сдать ответ. `POST /legal/ask` (синхронно,
+  30–60 с; на nginx `proxy_read_timeout 300s` для этого пути) и инструмент
+  чата `legal_ask` — модель чата получает только отметку «показано»
+  (`toolResultForModel`), ответ пользователь видит markdown-частью без
+  пересказа.
+- **Разбор договора** — фоновое задание `LegalReviewRun`
+  (`legal-review-execution.service.ts`: @Cron 10 с, claim
+  `FOR UPDATE SKIP LOCKED`, один разбор на процесс, блокировка 30 мин,
+  2 попытки; ошибки агента/файла — сразу FAILED). Текст: PDF (pdfjs) /
+  DOCX (mammoth), 200–400 000 символов, сканы не поддерживаются. Агент
+  сдаёт `submit_review`, сервер проверяет цитаты норм и наличие фрагмента
+  «как есть» в договоре. Отчёт Word (`legal-report.ts`, библиотека docx) —
+  `FileArtifact` сотрудника. ≤3 активных разбора на человека.
+  Ориентир: договор 2,6 тыс. символов — 10 раундов, ~3 мин, ~$0.66.
+- **Откуда запускается**: `POST /legal/reviews` (Idempotency-Key) со
+  страницы «Юрист»; из чата — инструмент `legal_review_contract` (ключ
+  `chat:<userMessageId>:<writeToolCallIndex>`). Итог разбора из чата
+  `LegalReviewNotifier` (AssistantModule) кладёт сообщением в ту же беседу:
+  сводка + файл отчёта; `notifiedAt` ставится в одной транзакции с
+  сообщением (`appendBackgroundMessage`), так что доставка ровно одна и
+  переживает рестарт.
+- **Realtime**: личные темы `assistant` / `legal` (канал `topic:userId`) —
+  веб-чат подтягивает фоновое сообщение, страница «Юрист» — статус.
+- `FilesCleanupCron` не удаляет файлы, на которые ссылается
+  `LegalReviewRun` (договор и отчёт).
+- Стоимость — в `AiCall` (feature `legal.ask` / `legal.review`).
+- Miniapp агента-юриста пока не показывает.
+
 ## Известные ограничения (не в рамках этого этапа)
 
 - Контекст голосового агента ограничен последними ≤40 задачами/событиями и

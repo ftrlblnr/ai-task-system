@@ -1,6 +1,10 @@
 import { Prisma, Role } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { AssistantToolsService } from './assistant-tools.service';
+import { ConfigService } from '@nestjs/config';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { LegalAgentError } from '../legal/legal-agent.service';
+import { LegalReviewLimitError } from '../legal/legal-review.service';
+import { AssistantToolsService, toolResultForModel } from './assistant-tools.service';
 
 function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
@@ -865,5 +869,173 @@ describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Ph
     expect(result).toMatchObject({ tool: 'find_employee_by_competency', error: true });
     expect('message' in result && result.message).toContain('INVALID_INPUT');
     expect(prisma.employeeCompetency.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('AssistantToolsService — агент-юрист (legal_ask)', () => {
+  const answer = {
+    conclusion: 'Не меньше 10 лет',
+    reasoning: '',
+    citations: [],
+    notCovered: [],
+    questions: [],
+    model: 'claude-opus-5-5',
+    rounds: 3,
+    durationMs: 1000,
+  };
+  function make(env: Record<string, string>, legal: { ask: jest.Mock }) {
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      audit as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      legal as any,
+      new ConfigService(env),
+    );
+    return { service, audit };
+  }
+
+  it('флаг включён — legal_ask предлагается любой роли; выключен — нет', async () => {
+    const legal = { ask: jest.fn() };
+    const on = make({ LEGAL_AGENT_ENABLED: 'true' }, legal).service;
+    const off = make({}, legal).service;
+    expect((await on.buildTools(user())).map((t) => t.name)).toContain('legal_ask');
+    expect((await off.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+  });
+
+  it('LEGAL_AGENT_ROLES скрывает инструмент от других ролей', async () => {
+    const { service } = make({ LEGAL_AGENT_ENABLED: 'true', LEGAL_AGENT_ROLES: 'OWNER' }, { ask: jest.fn() });
+    expect((await service.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+  });
+
+  it('execute: ответ юриста + markdown из проверенных данных, аудит', async () => {
+    const legal = { ask: jest.fn().mockResolvedValue(answer) };
+    const { service, audit } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(legal.ask).toHaveBeenCalledWith('гарантия?');
+    expect(result).toMatchObject({ tool: 'legal_ask', answer: { conclusion: 'Не меньше 10 лет' } });
+    expect('markdown' in result && result.markdown).toContain('**Вывод.** Не меньше 10 лет');
+    expect(audit.log).toHaveBeenCalledWith('u1', 'LEGAL_ASK', 'LegalQuestion', 'assistant', expect.any(Object));
+  });
+
+  it('execute: флаг выключен — отказ без обращения к агенту', async () => {
+    const legal = { ask: jest.fn() };
+    const { service } = make({}, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(result).toMatchObject({ tool: 'legal_ask', error: true });
+    expect(legal.ask).not.toHaveBeenCalled();
+  });
+
+  it('execute: ожидаемый отказ агента — безопасный код без подробностей', async () => {
+    const legal = { ask: jest.fn().mockRejectedValue(new LegalAgentError('TOO_MANY_ROUNDS', 'секретная деталь')) };
+    const { service } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
+    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    expect(result).toEqual({ tool: 'legal_ask', error: true, message: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ' });
+  });
+});
+
+describe('AssistantToolsService — разбор договора (legal_review_contract)', () => {
+  const run = {
+    id: 'r1',
+    employeeId: 'u1',
+    status: 'QUEUED',
+    fileId: 'f1',
+    fileName: 'Договор.docx',
+    focus: null,
+    conversationId: 'c1',
+    reportFileId: null,
+    findingsCount: null,
+    unverifiedCount: null,
+    error: null,
+    createdAt: new Date('2026-10-21T10:00:00Z'),
+    startedAt: null,
+    finishedAt: null,
+  };
+  function make(env: Record<string, string>, reviews: { create?: jest.Mock; list?: jest.Mock }) {
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      audit as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { ask: jest.fn() } as any,
+      new ConfigService(env),
+      reviews as any,
+    );
+    return { service, audit };
+  }
+  const ON = { LEGAL_AGENT_ENABLED: 'true' };
+
+  it('ставит разбор с ключом из идентичности вызова, аудит только для нового', async () => {
+    const create = jest.fn().mockResolvedValue({ run, created: true });
+    const { service, audit } = make(ON, { create });
+    const result = await service.execute('legal_review_contract', { fileId: 'f1', focus: 'гарантии' }, user(), 'c1', 'm1', 0);
+    expect(create).toHaveBeenCalledWith(user(), { fileId: 'f1', focus: 'гарантии', conversationId: 'c1', dedupeKey: 'chat:m1:0' });
+    expect(result).toMatchObject({ tool: 'legal_review_contract', alreadyStarted: false, review: { id: 'r1', createdAt: '2026-10-21T10:00:00.000Z' } });
+    expect(audit.log).toHaveBeenCalledWith('u1', 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', 'r1', { fileId: 'f1', source: 'assistant' });
+
+    create.mockResolvedValue({ run, created: false });
+    audit.log.mockClear();
+    expect(await service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0)).toMatchObject({ alreadyStarted: true });
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('без идентичности вызова или с выключенным флагом — не ставит', async () => {
+    const create = jest.fn();
+    expect(await make(ON, { create }).service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user())).toMatchObject({ error: true });
+    expect(await make({}, { create }).service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0)).toMatchObject({
+      error: true,
+      message: expect.stringContaining('LEGAL_UNAVAILABLE'),
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('ожидаемые отказы — конкретным кодом', async () => {
+    const cases: [Error, string][] = [
+      [new NotFoundException(), 'LEGAL_FILE_NOT_FOUND'],
+      [new LegalReviewLimitError(), 'LEGAL_REVIEW_LIMIT'],
+      [new BadRequestException(), 'LEGAL_UNSUPPORTED_FILE'],
+    ];
+    for (const [err, code] of cases) {
+      const { service } = make(ON, { create: jest.fn().mockRejectedValue(err) });
+      const result = await service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0);
+      expect(result).toMatchObject({ error: true, message: expect.stringContaining(code) });
+    }
+  });
+
+  it('legal_review_status — последние 5 своих', async () => {
+    const list = jest.fn().mockResolvedValue([]);
+    const { service } = make(ON, { list });
+    expect(await service.execute('legal_review_status', {}, user())).toEqual({ tool: 'legal_review_status', items: [] });
+    expect(list).toHaveBeenCalledWith(user(), 5);
+  });
+});
+
+describe('toolResultForModel', () => {
+  it('ответ юриста модели чата не отдаётся — только отметка «показан»', () => {
+    const out = toolResultForModel({
+      tool: 'legal_ask',
+      markdown: '**Вывод.** секрет',
+      answer: { conclusion: 'секрет', reasoning: '', citations: [], notCovered: [], questions: [], model: 'm' },
+    });
+    expect(JSON.stringify(out)).not.toContain('секрет');
+    expect(out).toMatchObject({ shown_to_user: true, norms_cited: 0 });
+  });
+
+  it('ошибка — безопасное сообщение, прочие инструменты — как есть', () => {
+    expect(toolResultForModel({ tool: 'get_tasks', error: true, message: 'TASK_LOOKUP_FAILED' })).toEqual({ error: 'TASK_LOOKUP_FAILED' });
+    const tasks = { tool: 'get_tasks' as const, items: [], totalCount: 0 };
+    expect(toolResultForModel(tasks)).toBe(tasks);
   });
 });

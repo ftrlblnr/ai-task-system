@@ -27,7 +27,7 @@ function loadPdfjs(): Promise<PdfjsModule> {
   return pdfjsPromise;
 }
 
-async function extractPdfText(buffer: Buffer): Promise<string | null> {
+export async function extractPdfText(buffer: Buffer): Promise<string | null> {
   const pdfjs = await loadPdfjs();
   const doc = await pdfjs.getDocument({
     data: new Uint8Array(buffer),

@@ -17,7 +17,7 @@ describe('RealtimeController.stream', () => {
     const controller = new RealtimeController(realtime);
     const res = fakeResponse();
 
-    controller.stream('reception', res as any);
+    controller.stream('reception', { id: 'u1' } as any, res as any);
     realtime.publish('reception');
 
     expect(res.write).toHaveBeenCalledWith('event: change\ndata: {"topic":"reception"}\n\n');
@@ -32,7 +32,21 @@ describe('RealtimeController.stream', () => {
     const controller = new RealtimeController(new RealtimeService());
     const res = fakeResponse();
 
-    expect(() => controller.stream('mail', res as any)).toThrow(BadRequestException);
+    expect(() => controller.stream('mail', { id: 'u1' } as any, res as any)).toThrow(BadRequestException);
     expect(res.flushHeaders).not.toHaveBeenCalled();
+  });
+
+  it('личная тема: событие получает только владелец', () => {
+    const realtime = new RealtimeService();
+    const controller = new RealtimeController(realtime);
+    const mine = fakeResponse();
+    const other = fakeResponse();
+    controller.stream('legal', { id: 'u1' } as any, mine as any);
+    controller.stream('legal', { id: 'u2' } as any, other as any);
+
+    realtime.publish('legal', 'u1');
+
+    expect(mine.write).toHaveBeenCalledWith('event: change\ndata: {"topic":"legal"}\n\n');
+    expect(other.write).not.toHaveBeenCalledWith(expect.stringContaining('event: change'));
   });
 });
