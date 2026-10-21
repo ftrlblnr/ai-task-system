@@ -12,8 +12,10 @@ const MODEL = 'claude-haiku-4-5-20251001';
 
 // Прод 21.10.2026: на мусорном транскрипте модель отвечала комментарием
 // («надиктованный ответ не полный…») или сочиняла ответ по теме вопроса.
-// Поэтому — forced tool с явным вариантом «ответа нет» и запрет добавлять
-// что-либо, чего руководитель не сказал.
+// Поэтому — forced tool (текст только в поле, без комментариев) и запрет
+// добавлять что-либо, чего руководитель не сказал. Отбрасывать запись модель
+// не может: на «Проверка, это тестовый ответ» она решала, что ответа нет, и
+// руководитель видел «не расслышал». Тишину отсекает isWhisperArtifact.
 const SYSTEM_PROMPT = `Ты редактор, а не автор. Руководитель надиктовал ответ сотруднику голосом, текст получен распознаванием речи и может содержать ошибки распознавания, слова-паразиты, повторы и оговорки.
 
 Приведи текст в порядок:
@@ -31,7 +33,7 @@ const SYSTEM_PROMPT = `Ты редактор, а не автор. Руковод
 
 Вопрос сотрудника дан только для того, чтобы правильно написать термины и имена — не для того, чтобы дописать ответ.
 
-Если в надиктованном тексте нет осмысленного ответа (пусто, обрывок, шум, фразы вроде «Продолжение следует», «Субтитры…», не относящиеся к делу), вызови инструмент с has_answer = false.`;
+Если текст не похож на деловой ответ (проверка микрофона, обрывок фразы) — всё равно верни его как есть, только с исправленной пунктуацией: решение, отправлять ли его, принимает руководитель.`;
 
 const TOOL: Anthropic.Tool = {
   name: 'submit_answer',
@@ -39,10 +41,9 @@ const TOOL: Anthropic.Tool = {
   input_schema: {
     type: 'object',
     properties: {
-      has_answer: { type: 'boolean', description: 'false — в надиктованном нет осмысленного ответа' },
-      text: { type: 'string', description: 'Отредактированный ответ; пустая строка, если has_answer = false' },
+      text: { type: 'string', description: 'Отредактированный ответ' },
     },
-    required: ['has_answer', 'text'],
+    required: ['text'],
   },
 };
 
@@ -62,8 +63,6 @@ function tidyShort(raw: string): string {
   return /[.!?…]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
-export type StructuringResult = { kind: 'answer'; text: string } | { kind: 'no_answer' };
-
 @Injectable()
 export class AnswerStructuringService {
   private readonly logger = new Logger(AnswerStructuringService.name);
@@ -80,8 +79,8 @@ export class AnswerStructuringService {
 
   // Сбой модели — сырой текст: руководитель всё равно видит и правит его
   // перед отправкой.
-  async structure(raw: string, question?: { title: string; description: string }): Promise<StructuringResult> {
-    if (raw.trim().split(/\s+/).length <= SHORT_ANSWER_WORDS) return { kind: 'answer', text: tidyShort(raw) };
+  async structure(raw: string, question?: { title: string; description: string }): Promise<string> {
+    if (raw.trim().split(/\s+/).length <= SHORT_ANSWER_WORDS) return tidyShort(raw);
     const context = question ? `Вопрос сотрудника (только для терминов): «${question.title}»\n${question.description}\n\n` : '';
     try {
       const response = await this.getClient().messages.create({
@@ -94,18 +93,16 @@ export class AnswerStructuringService {
       });
       const block = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
       if (!block) throw new Error('no tool_use block in response');
-      const input = block.input as { has_answer?: boolean; text?: string };
-      const text = (input.text ?? '').trim();
-      if (input.has_answer === false) return { kind: 'no_answer' };
-      if (!text) return { kind: 'answer', text: raw };
+      const text = ((block.input as { text?: string }).text ?? '').trim();
+      if (!text) return raw;
       if (looksInvented(raw, text)) {
         this.logger.warn(`answer structuring discarded: output ${text.length} chars vs raw ${raw.length}`);
-        return { kind: 'answer', text: raw };
+        return raw;
       }
-      return { kind: 'answer', text };
+      return text;
     } catch (err) {
       this.logger.warn(`answer structuring failed: ${err instanceof Error ? err.message : 'unknown'}`);
-      return { kind: 'answer', text: raw };
+      return raw;
     }
   }
 }

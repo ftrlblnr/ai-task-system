@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Logger,
   Delete,
   Get,
   Headers,
@@ -59,6 +60,8 @@ function parsePaging(rawLimit?: string, rawOffset?: string): { limit: number; of
 @UseGuards(JwtAuthGuard, ActiveEmployeeGuard, RolesGuard)
 @Controller('reception')
 export class ReceptionController {
+  private readonly logger = new Logger(ReceptionController.name);
+
   constructor(
     private readonly reception: ReceptionService,
     private readonly idempotency: IdempotencyService,
@@ -133,10 +136,12 @@ export class ReceptionController {
       throw new BadGatewayException('Не удалось распознать запись — попробуйте ещё раз или напишите текстом');
     }
     // Пустой text — клиент просит повторить запись (речь не расслышана).
-    if (isWhisperArtifact(raw)) return { text: '' };
+    if (isWhisperArtifact(raw)) {
+      this.logger.log(`transcribe: whisper artifact dropped (${raw.length} chars)`);
+      return { text: '' };
+    }
     const question = requestId ? await this.reception.getOne(user, requestId).catch(() => null) : null;
-    const result = await this.structuring.structure(raw, question ?? undefined);
-    return { text: result.kind === 'answer' ? result.text : '' };
+    return { text: await this.structuring.structure(raw, question ?? undefined) };
   }
 
   @Get('templates')
