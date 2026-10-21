@@ -60,6 +60,8 @@ export class LiveVoiceClient {
   // «поздние» продолжения устаревшего start() — после getUserMedia/ICE/POST —
   // видят, что уже неактуальны, и ничего не делают с текущим состоянием.
   private generation = 0;
+  // Замер шагов подключения — отправляется на сервер после session.started.
+  private timing: { t0: number; mic: number; ice: number; request: number } | null = null;
 
   constructor(private readonly callbacks: LiveVoiceCallbacks) {}
 
@@ -73,6 +75,7 @@ export class LiveVoiceClient {
     const gen = ++this.generation;
     const isStale = () => gen !== this.generation;
     this.setPhase('connecting');
+    const t0 = performance.now();
 
     let stream: MediaStream;
     try {
@@ -89,6 +92,7 @@ export class LiveVoiceClient {
       return;
     }
     this.stream = stream;
+    const tMic = performance.now();
 
     let createdSessionId: string | null = null;
     try {
@@ -125,6 +129,7 @@ export class LiveVoiceClient {
       await waitForIceGathering(pc);
       if (isStale()) return;
 
+      const tIce = performance.now();
       const sdp = pc.localDescription?.sdp;
       if (!sdp) throw new Error('no-local-sdp');
       const created = await api.post<CreateLiveSessionResponse>('/live/sessions', {
@@ -132,6 +137,7 @@ export class LiveVoiceClient {
         ...(conversationId ? { conversationId } : {}),
       });
       createdSessionId = created.sessionId;
+      this.timing = { t0, mic: tMic - t0, ice: tIce - tMic, request: performance.now() - tIce };
 
       if (isStale()) {
         // Stop нажат, пока POST был в полёте: серверная сессия уже создана —
@@ -170,6 +176,7 @@ export class LiveVoiceClient {
     }
     if (event.type === 'session.started') {
       this.setPhase('live');
+      this.reportTiming();
     } else if (event.type === 'session.closed') {
       void this.stop();
     } else if (event.type === 'session.input_transcript.delta' && typeof event.delta === 'string') {
@@ -177,6 +184,21 @@ export class LiveVoiceClient {
     } else if (event.type === 'session.output_transcript.delta' && typeof event.delta === 'string') {
       this.callbacks.onCaption('assistant', event.delta);
     }
+  }
+
+  private reportTiming() {
+    const t = this.timing;
+    this.timing = null;
+    if (!t || !this.sessionId) return;
+    const totalMs = performance.now() - t.t0;
+    const body = {
+      micMs: Math.round(t.mic),
+      iceMs: Math.round(t.ice),
+      requestMs: Math.round(t.request),
+      startMs: Math.round(totalMs - t.mic - t.ice - t.request),
+      totalMs: Math.round(totalMs),
+    };
+    void api.post(`/live/sessions/${this.sessionId}/timing`, body).catch(() => undefined);
   }
 
   async stop(): Promise<void> {

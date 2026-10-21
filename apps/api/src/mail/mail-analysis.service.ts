@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import {
@@ -10,6 +10,7 @@ import {
   type EmailAnalysisInput,
 } from './mail-analysis';
 import { MailStore, type MessageForAnalysis } from './mail-store';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 // Один forced tool-use вызов на письмо (не агентный луп) — Haiku, та же
 // модель, что уже в проде через voice/draft-extraction.service.ts. Задача
@@ -34,6 +35,7 @@ export class MailAnalysisService {
   constructor(
     private readonly config: ConfigService,
     private readonly store: MailStore,
+    @Optional() private readonly aiUsage?: AiUsageService,
   ) {}
 
   // Ленивая инициализация — отсутствие ANTHROPIC_API_KEY не должно ронять
@@ -82,7 +84,7 @@ export class MailAnalysisService {
   private async analyzeOne(message: MessageForAnalysis): Promise<boolean> {
     const input = this.toAnalysisInput(message);
     try {
-      const response = await this.getClient().messages.create({
+      const response = await trackedCreate(this.aiUsage, 'mail.analysis', this.getClient(), {
         model: MODEL,
         max_tokens: 1024,
         system: buildAnalysisSystemPrompt(),

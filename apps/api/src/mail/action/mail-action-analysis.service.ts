@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -12,6 +12,7 @@ import {
   MAX_ANALYSIS_MESSAGES,
 } from './mail-action-analysis';
 import { MailActionPlanService } from './mail-action-plan.service';
+import { AiUsageService, trackedCreate } from '../../ai-usage/ai-usage.service';
 
 // Haiku — та же модель, что mail-analysis.service.ts (классификация писем);
 // задача того же порядка сложности (один structured-output вызов по
@@ -28,6 +29,7 @@ export class MailActionAnalysisService {
     private readonly prisma: PrismaService,
     private readonly store: MailStore,
     private readonly plans: MailActionPlanService,
+    @Optional() private readonly aiUsage?: AiUsageService,
   ) {}
 
   private getClient(): Anthropic {
@@ -58,7 +60,7 @@ export class MailActionAnalysisService {
     }
 
     try {
-      const response = await this.getClient().messages.create({
+      const response = await trackedCreate(this.aiUsage, 'mail.action-analysis', this.getClient(), {
         model: MODEL,
         max_tokens: 4096,
         system: buildMailActionSystemPrompt(),

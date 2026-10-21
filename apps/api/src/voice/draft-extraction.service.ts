@@ -1,10 +1,11 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { Role } from '@prisma/client';
 import { nowInLocalTimezone, withLocalOffset } from '../common/timezone';
 import type { VoiceDraft } from './dto/voice-draft-response.dto';
 import { isManager } from '../auth/roles';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 export interface EmployeeOption {
   id: string;
@@ -394,7 +395,7 @@ export class DraftExtractionService {
   private readonly logger = new Logger(DraftExtractionService.name);
   private client: Anthropic | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, @Optional() private readonly aiUsage?: AiUsageService) {}
 
   // Ленивая инициализация — см. тот же комментарий в WhisperService: Nest
   // создаёт провайдеры при старте, getOrThrow() в конструкторе уронил бы
@@ -413,7 +414,7 @@ export class DraftExtractionService {
     tool: Anthropic.Tool,
     system: string,
   ): Promise<ExtractionResult> {
-    const response = await this.getClient().messages.create({
+    const response = await trackedCreate(this.aiUsage, 'voice.draft-extraction', this.getClient(), {
       model,
       // 1024 хватало на один draft; с переходом на drafts: VoiceDraft[]
       // (до MAX_DRAFTS_PER_NOTE=5, каждый — до 12 полей, включая массивы

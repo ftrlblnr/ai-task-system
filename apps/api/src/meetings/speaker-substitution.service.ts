@@ -1,6 +1,7 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 // Наивная regex-замена "Speaker N" -> имя ломает русские падежи ("по
 // мнению Speaker 2" -> "по мнению Иван" вместо "Ивана") — владелец
@@ -14,7 +15,7 @@ const MODEL = 'claude-opus-5';
 export class SpeakerSubstitutionService {
   private client: Anthropic | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, @Optional() private readonly aiUsage?: AiUsageService) {}
 
   private getClient(): Anthropic {
     if (!this.client) {
@@ -37,7 +38,7 @@ ${mapping}
 
 Вызови инструмент substitute ровно один раз с результатом.`;
 
-    const response = await this.getClient().messages.create({
+    const response = await trackedCreate(this.aiUsage, 'meetings.speaker-substitution', this.getClient(), {
       model: MODEL,
       max_tokens: 8192,
       system,

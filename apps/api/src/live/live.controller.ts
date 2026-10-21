@@ -4,6 +4,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateLiveSessionDto } from './dto/create-live-session.dto';
+import { LiveClientTimingDto } from './dto/live-client-timing.dto';
 import { LiveService } from './live.service';
 
 // Без @Roles(...) — как AssistantChatController: живой голос доступен любому
@@ -22,6 +23,12 @@ export class LiveController {
   @Post('sessions')
   create(@Body() dto: CreateLiveSessionDto, @CurrentUser() user: AuthenticatedUser) {
     return this.live.createSession(user, dto);
+  }
+
+  @Post('sessions/:id/timing')
+  @HttpCode(204)
+  timing(@Param('id') id: string, @Body() dto: LiveClientTimingDto, @CurrentUser() user: AuthenticatedUser) {
+    this.live.recordClientTiming(user, id, { ...dto });
   }
 
   @Delete('sessions/:id')

@@ -1,7 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import type { ConfidenceLevel } from '@prisma/client';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 export interface EmployeeOption {
   id: string;
@@ -109,7 +110,7 @@ const MODEL = 'claude-opus-5';
 export class MeetingTaskExtractionService {
   private client: Anthropic | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, @Optional() private readonly aiUsage?: AiUsageService) {}
 
   private getClient(): Anthropic {
     if (!this.client) {
@@ -127,7 +128,7 @@ export class MeetingTaskExtractionService {
     const tool = buildExtractionTool(employees.map((e) => e.id));
     const system = buildSystemPrompt(meetingTitle, meetingDate, employees);
 
-    const response = await this.getClient().messages.create({
+    const response = await trackedCreate(this.aiUsage, 'meetings.task-extraction', this.getClient(), {
       model: MODEL,
       max_tokens: 4096,
       output_config: { effort: 'low' },

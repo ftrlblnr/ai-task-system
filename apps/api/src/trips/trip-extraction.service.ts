@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { FilesService } from '../files/files.service';
 import { buildExtractionSystemPrompt, buildExtractionTool, buildMaterialContentBlock, isExtractableMimeType, type TripExtractionDraft } from './trip-extraction';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 // Один forced tool-use вызов на материал (не агентный луп) — тот же приём,
 // что mail/mail-analysis.service.ts. Haiku достаточно: задача — структурное
@@ -29,6 +30,7 @@ export class TripExtractionService {
   constructor(
     private readonly config: ConfigService,
     private readonly files: FilesService,
+    @Optional() private readonly aiUsage?: AiUsageService,
   ) {}
 
   private getClient(): Anthropic {
@@ -50,7 +52,7 @@ export class TripExtractionService {
     }
 
     try {
-      const response = await this.getClient().messages.create({
+      const response = await trackedCreate(this.aiUsage, 'trips.extraction', this.getClient(), {
         model: MODEL,
         max_tokens: 4096,
         system: buildExtractionSystemPrompt(),

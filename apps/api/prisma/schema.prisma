@@ -2407,3 +2407,25 @@ model TripRevision {
 
   @@index([tripId, appliedAt])
 }
+
+// Журнал вызовов ИИ (ai-usage/ai-usage.service.ts): время, токены, кэш —
+// основа для решений о моделях и промптах. Хранится 90 дней.
+model AiCall {
+  id               String   @id @default(cuid())
+  feature          String
+  model            String
+  latencyMs        Int
+  firstTokenMs     Int?
+  inputTokens      Int?
+  outputTokens     Int?
+  cacheReadTokens  Int?
+  cacheWriteTokens Int?
+  audioMs          Int?
+  ok               Boolean
+  error            String?
+  meta             Json?
+  createdAt        DateTime @default(now())
+
+  @@index([feature, createdAt])
+  @@index([createdAt])
+}

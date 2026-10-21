@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, Logger, NotFoundException, OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, NotFoundException, OnModuleDestroy, ServiceUnavailableException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import WebSocket from 'ws';
@@ -9,6 +9,7 @@ import { CreateLiveSessionDto } from './dto/create-live-session.dto';
 import { LiveTranscriptBuffer } from './live-transcript-buffer';
 import { buildSessionInput, LIVE_INPUT_MAX_MESSAGES } from './live-session-input';
 import { toSpokenLiveReply } from './live-spoken-reply';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
 
 // Stage 2, Phase Q (roadmap v13 "Phase O — GPT-Live/WebRTC", 24.09.2026).
 // GPT-Live ведёт живой разговор голосом, а всё, что требует данных/действий,
@@ -71,6 +72,7 @@ export class LiveService implements OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly assistantChat: AssistantChatService,
     private readonly voice: VoiceService,
+    @Optional() private readonly aiUsage?: AiUsageService,
   ) {}
 
   isEnabled(): boolean {
@@ -101,6 +103,9 @@ export class LiveService implements OnModuleDestroy {
     // session.input — недавняя переписка этого разговора (только текст), чтобы
     // «Живой голос» продолжал диалог, а не начинал с нуля. Сбой чтения истории
     // не должен блокировать живой голос — тогда стартуем без неё.
+    // Замер шагов подключения (журнал AiCall, feature live.connect): владелец
+    // 21.10.2026 — «подключение идёт секунд 7».
+    const t0 = Date.now();
     let sessionInput: ReturnType<typeof buildSessionInput> = [];
     try {
       sessionInput = buildSessionInput(await this.assistantChat.getRecentMessages(user, conversationId, LIVE_INPUT_MAX_MESSAGES));
@@ -108,12 +113,14 @@ export class LiveService implements OnModuleDestroy {
       this.logger.error(`live session.input history failed: ${err instanceof Error ? err.name : 'unknown'}`);
     }
 
+    const tHistory = Date.now();
+    const model = this.config.get<string>('LIVE_MODEL') || DEFAULT_MODEL;
     const response = await fetch(LIVE_API_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session: {
-          model: this.config.get<string>('LIVE_MODEL') || DEFAULT_MODEL,
+          model,
           instructions: LIVE_INSTRUCTIONS,
           ...(sessionInput.length > 0 ? { input: sessionInput } : {}),
           audio: { output: { voice: 'marin' } },
@@ -150,6 +157,7 @@ export class LiveService implements OnModuleDestroy {
       throw new BadGatewayException('Не удалось запустить живой голос');
     }
 
+    const tCreate = Date.now();
     const socket = new WebSocket(LIVE_ATTACH_URL(sessionId), { headers: { Authorization: `Bearer ${apiKey}` } });
     const session: LiveSession = {
       id: sessionId,
@@ -186,6 +194,15 @@ export class LiveService implements OnModuleDestroy {
       throw new BadGatewayException('Не удалось запустить живой голос');
     }
 
+    const tSideband = Date.now();
+    this.aiUsage?.record({
+      feature: 'live.connect',
+      model,
+      latencyMs: tSideband - t0,
+      ok: true,
+      meta: { historyMs: tHistory - t0, createMs: tCreate - tHistory, sidebandMs: tSideband - tCreate },
+    });
+
     // Пока ждали sideband, параллельный create того же сотрудника мог успеть
     // зарегистрироваться — закрываем его, чтобы не осталось двух живых сессий.
     const concurrent = this.sessionByEmployee.get(user.id);
@@ -197,6 +214,14 @@ export class LiveService implements OnModuleDestroy {
     session.maxDurationTimer = setTimeout(() => this.closeSession(sessionId, 'max-duration'), maxMs);
 
     return { sessionId, sdp: answerSdp };
+  }
+
+  // Шаги подключения на стороне браузера (микрофон, ICE, запрос, старт
+  // сессии) — сервер их не видит, браузер присылает их после session.started.
+  recordClientTiming(user: AuthenticatedUser, sessionId: string, timing: Record<string, number>): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.user.id !== user.id) return;
+    this.aiUsage?.record({ feature: 'live.client', model: this.config.get<string>('LIVE_MODEL') || DEFAULT_MODEL, latencyMs: timing.totalMs ?? 0, ok: true, meta: timing });
   }
 
   private waitForSidebandOpen(socket: WebSocket): Promise<void> {

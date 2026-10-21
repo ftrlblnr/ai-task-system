@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { nowInLocalTimezone } from '../common/timezone';
 import { AssistantToolsService, isWriteTool, type ToolExecutionResult } from './assistant-tools.service';
+import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
 
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
 // вызов. Phase C: один раунд tool use (LLM решает вызвать get_tasks/
@@ -142,6 +143,7 @@ export class AssistantReplyService {
   constructor(
     private readonly config: ConfigService,
     private readonly tools: AssistantToolsService,
+    @Optional() private readonly aiUsage?: AiUsageService,
   ) {}
 
   // Ленивая инициализация — тот же приём, что WhisperService/
@@ -291,10 +293,22 @@ export class AssistantReplyService {
       },
       { signal },
     );
-    if (onEvent) {
-      stream.on('text', (delta) => onEvent({ type: 'text-delta', delta }));
+    // Журнал: время до первого текста — то, что пользователь ощущает как
+    // «ассистент задумался».
+    const started = Date.now();
+    let firstTokenMs: number | null = null;
+    stream.on('text', (delta) => {
+      if (firstTokenMs === null) firstTokenMs = Date.now() - started;
+      onEvent?.({ type: 'text-delta', delta });
+    });
+    try {
+      const message = await stream.finalMessage();
+      this.aiUsage?.record({ feature: 'assistant.reply', model: REPLY_MODEL, latencyMs: Date.now() - started, firstTokenMs, ok: true, usage: message.usage });
+      return message;
+    } catch (err) {
+      this.aiUsage?.record({ feature: 'assistant.reply', model: REPLY_MODEL, latencyMs: Date.now() - started, ok: false, error: errorText(err) });
+      throw err;
     }
-    return stream.finalMessage();
   }
 
   // Phase F.2 (аудит 17.09.2026, P2.12) — раньше брался только первый

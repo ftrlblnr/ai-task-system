@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI, { toFile } from 'openai';
+import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
 
 // Результат transcribe() (владелец 15.09.2026, observability-этап
 // голосового пайплайна) — text остаётся обязательным полем, durationMs
@@ -19,7 +20,10 @@ export interface TranscriptionResult {
 export class WhisperService {
   private client: OpenAI | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    @Optional() private readonly aiUsage?: AiUsageService,
+  ) {}
 
   // Ленивая инициализация, а не в конструкторе: Nest создаёт провайдеры при
   // старте приложения, поэтому getOrThrow() в конструкторе уронил бы весь
@@ -47,16 +51,25 @@ export class WhisperService {
   async transcribe(buffer: Buffer, mimetype: string, originalName: string, prompt?: string): Promise<TranscriptionResult> {
     const ext = mimetype.split('/')[1]?.split(';')[0] || 'webm';
     const file = await toFile(buffer, originalName || `voice.${ext}`, { type: mimetype });
-    const result = await this.getClient().audio.transcriptions.create({
-      file,
-      model: 'whisper-1',
-      language: 'ru',
-      response_format: 'verbose_json',
-      ...(prompt ? { prompt } : {}),
-    });
+    const started = Date.now();
+    let result;
+    try {
+      result = await this.getClient().audio.transcriptions.create({
+        file,
+        model: 'whisper-1',
+        language: 'ru',
+        response_format: 'verbose_json',
+        ...(prompt ? { prompt } : {}),
+      });
+    } catch (err) {
+      this.aiUsage?.record({ feature: 'stt', model: 'whisper-1', latencyMs: Date.now() - started, ok: false, error: errorText(err) });
+      throw err;
+    }
+    const audioMs = typeof result.duration === 'number' ? Math.round(result.duration * 1000) : null;
+    this.aiUsage?.record({ feature: 'stt', model: 'whisper-1', latencyMs: Date.now() - started, ok: true, audioMs });
     return {
       text: result.text,
-      durationMs: typeof result.duration === 'number' ? Math.round(result.duration * 1000) : null,
+      durationMs: audioMs,
     };
   }
 }

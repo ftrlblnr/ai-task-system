@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
+import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 // Голосовой ответ руководителя (владелец 20.10.2026: «только
 // структурированный текст») — сырой текст Whisper приводится к аккуратному
@@ -68,7 +69,7 @@ export class AnswerStructuringService {
   private readonly logger = new Logger(AnswerStructuringService.name);
   private client: Anthropic | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService, @Optional() private readonly aiUsage?: AiUsageService) {}
 
   private getClient(): Anthropic {
     if (!this.client) {
@@ -83,7 +84,7 @@ export class AnswerStructuringService {
     if (raw.trim().split(/\s+/).length <= SHORT_ANSWER_WORDS) return tidyShort(raw);
     const context = question ? `Вопрос сотрудника (только для терминов): «${question.title}»\n${question.description}\n\n` : '';
     try {
-      const response = await this.getClient().messages.create({
+      const response = await trackedCreate(this.aiUsage, 'reception.answer-structuring', this.getClient(), {
         model: MODEL,
         max_tokens: 2048,
         system: SYSTEM_PROMPT,
