@@ -100,6 +100,7 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             // run.status==='FAILED', либо (редкий случай) терминальный статус без
             // tripId — например, поездка этого прогона была удалена отдельно.
             // В обоих случаях диалог не должен молча висеть на "Обрабатываем…".
+            idem.reset();
             setError(run.errorSummary ?? 'Не удалось обработать материалы');
             setSubmitting(false);
           }
@@ -127,6 +128,7 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         if (run.status !== 'FAILED' && run.tripId) {
           onCreated(run.tripId);
         } else {
+          idem.reset();
           setError(run.errorSummary ?? 'Не удалось обработать материалы');
           setSubmitting(false);
         }
@@ -134,6 +136,7 @@ function CreateTripDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         pollRun(run.id);
       }
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(err instanceof ApiError ? err.message : 'Не удалось создать пакет материалов');
       setSubmitting(false);
     }

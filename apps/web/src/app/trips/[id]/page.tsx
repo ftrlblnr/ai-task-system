@@ -300,6 +300,7 @@ function AddMaterialsDialog({ tripId, onClose, onDone }: { tripId: string; onClo
         if (RUN_TERMINAL.has(run.status)) {
           if (pollRef.current) clearInterval(pollRef.current);
           if (run.status === 'FAILED') {
+            idem.reset();
             setError(run.errorSummary ?? 'Не удалось обработать материалы');
             setSubmitting(false);
           } else {
@@ -325,6 +326,7 @@ function AddMaterialsDialog({ tripId, onClose, onDone }: { tripId: string; onClo
       const run = await api.postForm<AgentRunDetail>(`/trips/${tripId}/materials`, formData, { 'Idempotency-Key': idem.key() });
       if (RUN_TERMINAL.has(run.status)) {
         if (run.status === 'FAILED') {
+          idem.reset();
           setError(run.errorSummary ?? 'Не удалось обработать материалы');
           setSubmitting(false);
         } else {
@@ -334,6 +336,7 @@ function AddMaterialsDialog({ tripId, onClose, onDone }: { tripId: string; onClo
         pollRun(run.id);
       }
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(err instanceof ApiError ? err.message : 'Не удалось добавить материалы');
       setSubmitting(false);
     }

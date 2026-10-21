@@ -143,6 +143,7 @@ function SlotPlanForm({ slot, onPlanned, onCancel }: { slot: { start: string; en
       idem.reset();
       onPlanned(plan.id);
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(errorMessage(err, 'Не удалось составить план'));
     } finally {
       setBusy(false);
@@ -395,6 +396,7 @@ function ExecutionRow({ execution, actions, onChanged }: { execution: CalendarPl
       idem.reset();
       onChanged();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(errorMessage(err, 'Не удалось выполнить'));
     } finally {
       setBusy(false);
@@ -483,6 +485,7 @@ function PlanView({ planId, onBack }: { planId: string; onBack: () => void }) {
       await api.post(`/calendar/plans/${plan.id}/approve`, { planVersion: plan.version, actionIds: pending.map((a) => a.id) }, { 'Idempotency-Key': idem.key() });
       idem.reset();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setApproveError(errorMessage(err, 'Не удалось согласовать'));
     } finally {
       setApproving(false);

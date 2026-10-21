@@ -273,6 +273,7 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
       setOpen(false);
       onCreated();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(err instanceof ApiError ? err.message : 'Не удалось создать событие');
     } finally {
       setSubmitting(false);

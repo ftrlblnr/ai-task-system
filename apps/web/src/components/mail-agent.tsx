@@ -129,6 +129,7 @@ function NewPlanForm({ onCreated }: { onCreated: (plan: MailActionPlan) => void 
       setRequestText('');
       onCreated(plan);
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(errorMessage(err, 'Не удалось отправить поручение'));
     } finally {
       setBusy(false);
@@ -345,6 +346,7 @@ function GroupCard({
       idem.reset();
       onChanged();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(errorMessage(err, 'Не удалось согласовать'));
       onChanged();
     } finally {
@@ -421,6 +423,7 @@ function ExecutionRow({
       idem.reset();
       onChanged();
     } catch (err) {
+      if (err instanceof ApiError && err.status < 500) idem.reset();
       setError(errorMessage(err, 'Не удалось выполнить'));
     } finally {
       setBusy(false);
