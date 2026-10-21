@@ -16,6 +16,17 @@ export interface TranscriptionResult {
 // language: 'ru' зафиксирован сознательно, не авто-детект — весь проект
 // русскоязычный (UI, ТЗ, комментарии), фиксированный язык даёт Whisper
 // точнее и быстрее распознать речь, чем auto-detect.
+const STT_MODEL = 'gpt-transcribe';
+
+// keywords: одна строка на термин, без переводов строк и угловых скобок.
+function toKeywords(vocabulary: string | undefined): string[] {
+  if (!vocabulary) return [];
+  return vocabulary
+    .split(',')
+    .map((t) => t.replace(/[<>\r\n]/g, ' ').trim())
+    .filter(Boolean);
+}
+
 @Injectable()
 export class WhisperService {
   private client: OpenAI | null = null;
@@ -37,39 +48,36 @@ export class WhisperService {
     return this.client;
   }
 
-  // response_format: 'verbose_json' вместо дефолтного 'json' — единственная
-  // причина: доступ к result.duration (секунды исходного аудио) для метрики
-  // audioDurationMs (observability-этап, владелец 15.09.2026, раздел 2 ТЗ
-  // этапа). Whisper-модель и язык распознавания не меняются.
+  // gpt-transcribe вместо whisper-1 (21.10.2026): на тишине и шуме он
+  // возвращает пустую строку, а whisper-1 — «субтитровые» галлюцинации
+  // («Редактор субтитров…», «С вами был…»), из-за которых ломался голосовой
+  // ответ в приёмной; в среднем ~1,1 с против ~1,8 с на тех же записях.
   //
-  // prompt (Stage 2, Phase I, внешний аудит 21.09.2026, "Company/STT
-  // vocabulary") — необязательная строка-подсказка словаря (имена
-  // сотрудников/алиасы/термины компании, см. CompanyVocabularyService) —
-  // Whisper API документирует её как способ склонить распознавание в
-  // сторону перечисленных слов. Не меняет язык/модель, чисто аддитивная
-  // подсказка — при пустой строке API ведёт себя как раньше.
-  async transcribe(buffer: Buffer, mimetype: string, originalName: string, prompt?: string): Promise<TranscriptionResult> {
+  // vocabulary (Stage 2, Phase I, "Company/STT vocabulary") — строка
+  // CompanyVocabularyService через запятую; gpt-transcribe принимает такой
+  // словарь отдельным полем keywords (имена сотрудников, термины компании) —
+  // на замере исправил «Мьюлайн» → «Ньюлайн», «веншахтам» → «вентшахтам».
+  // Длительность аудио — из usage.seconds (метрика audioDurationMs).
+  async transcribe(buffer: Buffer, mimetype: string, originalName: string, vocabulary?: string): Promise<TranscriptionResult> {
     const ext = mimetype.split('/')[1]?.split(';')[0] || 'webm';
     const file = await toFile(buffer, originalName || `voice.${ext}`, { type: mimetype });
+    const keywords = toKeywords(vocabulary);
     const started = Date.now();
-    let result: OpenAI.Audio.Transcriptions.TranscriptionVerbose;
+    let result: OpenAI.Audio.Transcriptions.Transcription;
     try {
       result = await this.getClient().audio.transcriptions.create({
         file,
-        model: 'whisper-1',
-        language: 'ru',
-        response_format: 'verbose_json',
-        ...(prompt ? { prompt } : {}),
+        model: STT_MODEL,
+        languages: ['ru'],
+        response_format: 'json',
+        ...(keywords.length > 0 ? { keywords } : {}),
       });
     } catch (err) {
-      this.aiUsage?.record({ feature: 'stt', model: 'whisper-1', latencyMs: Date.now() - started, ok: false, error: errorText(err) });
+      this.aiUsage?.record({ feature: 'stt', model: STT_MODEL, latencyMs: Date.now() - started, ok: false, error: errorText(err) });
       throw err;
     }
-    const audioMs = typeof result.duration === 'number' ? Math.round(result.duration * 1000) : null;
-    this.aiUsage?.record({ feature: 'stt', model: 'whisper-1', latencyMs: Date.now() - started, ok: true, audioMs });
-    return {
-      text: result.text,
-      durationMs: audioMs,
-    };
+    const audioMs = result.usage?.type === 'duration' ? Math.round(result.usage.seconds * 1000) : null;
+    this.aiUsage?.record({ feature: 'stt', model: STT_MODEL, latencyMs: Date.now() - started, ok: true, audioMs });
+    return { text: result.text, durationMs: audioMs };
   }
 }

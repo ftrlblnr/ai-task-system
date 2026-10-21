@@ -27,13 +27,24 @@ export class CompanyVocabularyService {
   // короткий фиксированный список (компания, партнёры, IT/BIM/стройка), не
   // то, что часто меняется и нуждается в UI управления, в отличие от
   // сотрудников/алиасов.
-  private static readonly STATIC_TERMS = ['GLB', 'Plaud', 'IDAT', 'Revit', 'BIM'];
+  private static readonly STATIC_TERMS = [
+    'GLB',
+    'Plaud',
+    'IDAT',
+    'Revit',
+    'BIM',
+    // Объект и стройтермины, на которых ошибалось распознавание (21.10.2026).
+    'Ньюлайн',
+    'вентшахта',
+    'конструктив',
+    'ППР',
+    'генсоглашение',
+  ];
 
-  // Whisper API документирует лимит prompt ~224 токена. Кириллица кодируется
-  // в токены менее эффективно, чем латиница (обычно дороже по токенам на
-  // символ) — 400 символов кириллического текста уже приближается к этому
-  // пределу с запасом, не впритык.
-  private static readonly MAX_LENGTH = 400;
+  // Раньше — лимит prompt Whisper (~224 токена, 400 символов). С
+  // gpt-transcribe словарь уходит списком keywords; потолок оставлен, чтобы
+  // список не рос без границ с числом сотрудников.
+  private static readonly MAX_LENGTH = 1000;
 
   constructor(private readonly prisma: PrismaService) {}
 

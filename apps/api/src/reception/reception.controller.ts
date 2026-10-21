@@ -26,6 +26,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { ActiveEmployeeGuard } from './guards/active-employee.guard';
 import { ReceptionService } from './reception.service';
 import { IdempotencyService } from '../common/idempotency.service';
+import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
 import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto, VersionOnlyDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';
@@ -67,6 +68,7 @@ export class ReceptionController {
     private readonly idempotency: IdempotencyService,
     private readonly whisper: WhisperService,
     private readonly structuring: AnswerStructuringService,
+    private readonly vocabulary: CompanyVocabularyService,
   ) {}
 
   private requireIdempotencyKey(key: string | undefined): string {
@@ -131,7 +133,8 @@ export class ReceptionController {
     if (!audio) throw new BadRequestException('Нужна аудиозапись (webm, ogg, mp4, mp3, wav)');
     let raw: string;
     try {
-      raw = (await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname)).text.trim();
+      const vocabulary = await this.vocabulary.getPrompt().catch(() => '');
+      raw = (await this.whisper.transcribe(audio.buffer, audio.mimetype, audio.originalname, vocabulary)).text.trim();
     } catch {
       throw new BadGatewayException('Не удалось распознать запись — попробуйте ещё раз или напишите текстом');
     }

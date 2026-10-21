@@ -40,14 +40,14 @@ describe('CompanyVocabularyService.getPrompt', () => {
     expect(prisma.employee.findMany).toHaveBeenCalledTimes(1);
   });
 
-  it('не превышает ограничение длины (Whisper prompt лимит) — обрезает список терминов, не текст', async () => {
-    const manyEmployees = Array.from({ length: 100 }, (_, i) => ({ fullName: `Сотрудник Номер ${i} Длинная Фамилия` }));
+  it('не превышает ограничение длины — обрезает список терминов, не текст', async () => {
+    const manyEmployees = Array.from({ length: 300 }, (_, i) => ({ fullName: `Сотрудник Номер ${i} Длинная Фамилия` }));
     const prisma = makePrisma(manyEmployees);
     const service = new CompanyVocabularyService(prisma as any);
 
     const prompt = await service.getPrompt();
 
-    expect(prompt.length).toBeLessThanOrEqual(400);
+    expect(prompt.length).toBeLessThanOrEqual(1000);
     // Обрезка по границе термина — не обрывает слово посередине.
     expect(prompt.endsWith(',')).toBe(false);
   });

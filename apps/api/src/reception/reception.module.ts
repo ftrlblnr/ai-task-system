@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TelegramModule } from '../telegram/telegram.module';
+import { EmployeesModule } from '../employees/employees.module';
 import { ReceptionController } from './reception.controller';
 import { AnswerStructuringService } from './answer-structuring.service';
 import { ReceptionService } from './reception.service';
@@ -9,7 +10,7 @@ import { ReceptionNotificationsCron } from './reception-notifications.cron';
 import { WhisperService } from '../voice/whisper.service';
 
 @Module({
-  imports: [TelegramModule],
+  imports: [TelegramModule, EmployeesModule],
   controllers: [ReceptionController],
   // WhisperService — голосовой ответ руководителя (только ConfigService в
   // зависимостях, весь VoiceModule не нужен).
