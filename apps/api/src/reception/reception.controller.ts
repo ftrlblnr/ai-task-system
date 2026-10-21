@@ -32,6 +32,7 @@ import { CompleteReceptionRequestDto } from './dto/complete.dto';
 import { AnswerReceptionRequestDto, DelegateReceptionRequestDto } from './dto/answer.dto';
 import { WhisperService } from '../voice/whisper.service';
 import { AnswerStructuringService } from './answer-structuring.service';
+import { isWhisperArtifact } from './whisper-artifacts';
 import { ReorderReceptionRequestDto } from './dto/reorder.dto';
 import { CreateAnswerTemplateDto } from './dto/template.dto';
 
@@ -131,9 +132,11 @@ export class ReceptionController {
     } catch {
       throw new BadGatewayException('Не удалось распознать запись — попробуйте ещё раз или напишите текстом');
     }
-    if (!raw) return { text: '' };
+    // Пустой text — клиент просит повторить запись (речь не расслышана).
+    if (isWhisperArtifact(raw)) return { text: '' };
     const question = requestId ? await this.reception.getOne(user, requestId).catch(() => null) : null;
-    return { text: await this.structuring.structure(raw, question ?? undefined) };
+    const result = await this.structuring.structure(raw, question ?? undefined);
+    return { text: result.kind === 'answer' ? result.text : '' };
   }
 
   @Get('templates')

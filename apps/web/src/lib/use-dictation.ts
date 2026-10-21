@@ -94,7 +94,7 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
       const { text } = await api.postForm<{ text: string }>(endpoint, formData);
       if (cancelledRef.current) return;
       if (text) onTextRef.current(text);
-      else setError('Не удалось разобрать речь — попробуйте ещё раз.');
+      else setError('Не расслышал ответ — запись пустая или слишком тихая. Проверьте, что выбран нужный микрофон, и скажите ещё раз.');
     } catch (err) {
       if (!cancelledRef.current) setError(err instanceof ApiError ? err.message : 'Не удалось распознать запись.');
     } finally {
