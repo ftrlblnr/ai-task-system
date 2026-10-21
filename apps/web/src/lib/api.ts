@@ -132,6 +132,28 @@ async function requestStream(path: string, body: unknown, signal?: AbortSignal):
   return res;
 }
 
+// Поток событий (GET, text/event-stream) — use-realtime.ts. Тот же
+// auth/401-паттерн, что requestStream() выше.
+async function openEventStream(path: string, signal: AbortSignal): Promise<Response> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { Accept: 'text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    signal,
+  });
+
+  if (!res.ok) {
+    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    throw new ApiError(`Ошибка запроса (${res.status})`, res.status);
+  }
+
+  return res;
+}
+
 // Скачивание сгенерированных/приложенных файлов (Phase M) — отдаёт Blob,
 // вызывающий код (assistant-message-part.tsx) сам делает временный
 // <a download> с URL.createObjectURL, тот же приём, что в apps/miniapp.
@@ -163,6 +185,7 @@ export const api = {
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
   postForm: <T>(path: string, formData: FormData, headers?: HeadersInit) => requestForm<T>(path, formData, headers),
   postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
+  openEventStream: (path: string, signal: AbortSignal) => openEventStream(path, signal),
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),

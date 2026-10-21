@@ -27,6 +27,7 @@ import { ActiveEmployeeGuard } from './guards/active-employee.guard';
 import { ReceptionService } from './reception.service';
 import { IdempotencyService } from '../common/idempotency.service';
 import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
+import { ReceptionChangedInterceptor } from './reception-changed.interceptor';
 import { CreateReceptionRequestDto } from './dto/create-reception-request.dto';
 import { EditReceptionRequestDto, VersionOnlyDto } from './dto/edit-reception-request.dto';
 import { RejectReceptionRequestDto } from './dto/reject.dto';
@@ -59,6 +60,7 @@ function parsePaging(rawLimit?: string, rawOffset?: string): { limit: number; of
 // ниже уже видит актуальное значение. @Roles(OWNER) на конкретных методах
 // (не на классе) — POST /requests доступен любому активному сотруднику.
 @UseGuards(JwtAuthGuard, ActiveEmployeeGuard, RolesGuard)
+@UseInterceptors(ReceptionChangedInterceptor)
 @Controller('reception')
 export class ReceptionController {
   private readonly logger = new Logger(ReceptionController.name);

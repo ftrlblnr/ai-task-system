@@ -12,6 +12,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
+import { useRealtime } from '@/lib/use-realtime';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
 import { ReceptionBoard } from '@/components/reception-board';
@@ -23,11 +24,11 @@ import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 
-// ТЗ «Приёмная руководителя» v1.0 (02.10.2026). Polling 5с, пока экран
-// открыт/виден (раздел 10.3 ТЗ) — применяется к очереди OWNER и к активным
-// обращениям сотрудника (там нужна свежесть "вас вызывают"), НЕ к истории
-// (статична, листается по клику).
-const POLL_MS = 5_000;
+// ТЗ «Приёмная руководителя» v1.0 (02.10.2026). Свежесть "вас вызывают" —
+// мгновенный сигнал сервера (useRealtime, 21.10.2026); опрос раз в минуту
+// остался подстраховкой, пока экран открыт/виден. Применяется к активным
+// обращениям сотрудника, НЕ к истории (статична, листается по клику).
+const POLL_MS = 60_000;
 
 const REQUEST_TYPE_LABELS: Record<ReceptionRequestType, string> = {
   DECISION: 'Решение',
@@ -253,7 +254,11 @@ function MineView() {
   }, [scope]);
 
   useEffect(load, [load]);
-  useVisiblePolling(load, scope === 'active' && !formOpen);
+  const live = scope === 'active' && !formOpen;
+  useVisiblePolling(load, live);
+  useRealtime('reception', () => {
+    if (live) load();
+  });
 
   async function withdraw(item: ReceptionRequestItem) {
     if (!window.confirm('Убрать вопрос из очереди?')) return;

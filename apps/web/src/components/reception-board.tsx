@@ -19,6 +19,7 @@ import type {
 import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { useDictation } from '@/lib/use-dictation';
+import { useRealtime } from '@/lib/use-realtime';
 import { Alert, Badge, Button, Dialog, IconButton, Input, SearchInput, Select, Textarea, cx } from '@/components/ui';
 import { Avatar } from '@/components/avatar';
 
@@ -30,7 +31,9 @@ import { Avatar } from '@/components/avatar';
 // а не HTML5 DnD: работает и пальцем (за ручку), карточка летит за курсором
 // и «впитывается» облаком.
 
-const POLL_MS = 5_000;
+// Изменения приходят мгновенно (useRealtime); опрос — подстраховка на случай
+// обрыва потока.
+const POLL_MS = 60_000;
 const DRAG_THRESHOLD_PX = 5;
 const GHOST_MAX_WIDTH = 320;
 
@@ -705,6 +708,21 @@ export function ReceptionBoard() {
   }, []);
 
   const paused = Boolean(opened || dragItem || cloudList);
+  // Пока руководитель перетаскивает карточку или держит открытым диалог,
+  // список не перестраивается под ним — изменение применится после.
+  const pausedRef = useRef(paused);
+  const staleRef = useRef(false);
+  useEffect(() => {
+    pausedRef.current = paused;
+    if (!paused && staleRef.current) {
+      staleRef.current = false;
+      void load();
+    }
+  }, [paused, load]);
+  useRealtime('reception', () => {
+    if (pausedRef.current) staleRef.current = true;
+    else void load();
+  });
   useEffect(() => {
     if (paused) return;
     const timer = setInterval(() => {

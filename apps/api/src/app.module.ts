@@ -25,6 +25,7 @@ import { ReceptionModule } from './reception/reception.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { TripsModule } from './trips/trips.module';
 import { AiUsageModule } from './ai-usage/ai-usage.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { AiUsageModule } from './ai-usage/ai-usage.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     AiUsageModule,
+    RealtimeModule,
     CryptoModule,
     AuditModule,
     AuthModule,
