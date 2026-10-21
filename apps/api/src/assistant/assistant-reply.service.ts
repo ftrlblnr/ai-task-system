@@ -254,28 +254,39 @@ export class AssistantReplyService {
         return { text: this.extractText(response.content), toolCalls };
       }
 
-      const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
-      for (const block of toolUseBlocks) {
+      // Индексы write-вызовов раздаются в порядке блоков ДО выполнения —
+      // dedupeKey не зависит от того, какой вызов закончится раньше.
+      const calls = toolUseBlocks.map((block) => ({
+        block,
+        writeIndex: isWriteTool(block.name) ? writeToolCallIndex++ : undefined,
+      }));
+      const runCall = async ({ block, writeIndex }: (typeof calls)[number]) => {
         onEvent?.({ type: 'tool-started', name: block.name });
         const toolStart = Date.now();
-        const result = await this.tools.execute(
-          block.name,
-          block.input,
-          user,
-          conversationId,
-          userMessageId,
-          isWriteTool(block.name) ? writeToolCallIndex++ : undefined,
-        );
+        const result = await this.tools.execute(block.name, block.input, user, conversationId, userMessageId, writeIndex);
         const durationMs = Date.now() - toolStart;
-        toolCalls.push({ name: block.name, result, durationMs });
         onEvent?.({ type: 'tool-completed', name: block.name, result });
-        toolResultBlocks.push({
+        return { block, result, durationMs };
+      };
+      // Только чтение — параллельно (21.10.2026: «задачи и календарь» шли по
+      // очереди). Есть запись — по очереди, как раньше: порядок побочных
+      // эффектов остаётся предсказуемым.
+      const executed = calls.some((c) => c.writeIndex !== undefined)
+        ? await calls.reduce<Promise<Awaited<ReturnType<typeof runCall>>[]>>(
+            async (acc, call) => [...(await acc), await runCall(call)],
+            Promise.resolve([]),
+          )
+        : await Promise.all(calls.map(runCall));
+
+      const toolResultBlocks: Anthropic.ToolResultBlockParam[] = executed.map(({ block, result, durationMs }) => {
+        toolCalls.push({ name: block.name, result, durationMs });
+        return {
           type: 'tool_result',
           tool_use_id: block.id,
           content: JSON.stringify('error' in result ? { error: result.message } : result),
           is_error: 'error' in result,
-        });
-      }
+        };
+      });
 
       messages = [...messages, { role: 'assistant', content: response.content }, { role: 'user', content: toolResultBlocks }];
 

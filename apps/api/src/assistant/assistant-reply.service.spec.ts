@@ -258,3 +258,50 @@ describe('stripLeakedContextMarkers — блок [live_context] (Stage 2, Phase 
     expect(stripLeakedContextMarkers('Смотри [1] и [2].')).toBe('Смотри [1] и [2].');
   });
 });
+
+describe('AssistantReplyService — несколько инструментов в одном раунде (21.10.2026)', () => {
+  function twoTools(first: string, second: string): any {
+    return {
+      content: [
+        { type: 'tool_use', id: 'call-1', name: first, input: {} },
+        { type: 'tool_use', id: 'call-2', name: second, input: {} },
+      ],
+    };
+  }
+
+  it('только чтение — инструменты стартуют одновременно, результаты в порядке блоков', async () => {
+    const { service, tools } = makeService([twoTools('get_tasks', 'get_events'), textMessage('Готово')]);
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    tools.execute.mockImplementation(async (name: string) => {
+      started.push(name);
+      if (started.length === 2) release();
+      await gate;
+      return { tool: name };
+    });
+
+    const result = await service.reply('задачи и календарь', [], user(), 'c1', 'm1');
+
+    expect(started).toEqual(['get_tasks', 'get_events']);
+    expect(result.toolCalls.map((c: { name: string }) => c.name)).toEqual(['get_tasks', 'get_events']);
+  });
+
+  it('есть запись — по очереди, индексы write-вызовов по порядку блоков', async () => {
+    const { service, tools } = makeService([twoTools('create_task_from_meeting', 'create_task_from_meeting'), textMessage('Готово')]);
+    let running = 0;
+    let maxRunning = 0;
+    tools.execute.mockImplementation(async () => {
+      running++;
+      maxRunning = Math.max(maxRunning, running);
+      await Promise.resolve();
+      running--;
+      return { tool: 'create_task_from_meeting' };
+    });
+
+    await service.reply('две задачи', [], user(), 'c1', 'm1');
+
+    expect(maxRunning).toBe(1);
+    expect(tools.execute.mock.calls.map((c: unknown[]) => c[5])).toEqual([0, 1]);
+  });
+});
