@@ -9,7 +9,9 @@ import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 // (который не решает задачу — нужно ещё понять, какой падеж нужен по
 // контексту предложения) прогоняем через Claude: он и понимает контекст, и
 // склоняет корректно.
-const MODEL = 'claude-opus-5';
+// Haiku 5.5 (21.10.2026): на реальной встрече текст совпал с Opus 5
+// построчно, 5 с вместо 14 с — задача механическая (замена и склонение).
+const MODEL = 'claude-haiku-5-5';
 
 @Injectable()
 export class SpeakerSubstitutionService {
@@ -40,7 +42,8 @@ ${mapping}
 
     const response = await trackedCreate(this.aiUsage, 'meetings.speaker-substitution', this.getClient(), {
       model: MODEL,
-      max_tokens: 8192,
+      // Ответ — весь текст саммари: саммари на 20K символов ≈ 8K токенов.
+      max_tokens: 16000,
       system,
       tools: [
         {
@@ -59,8 +62,11 @@ ${mapping}
       messages: [{ role: 'user', content: rawSummary }],
     });
 
+    if (response.stop_reason === 'max_tokens') {
+      throw new InternalServerErrorException('Саммари слишком длинное: текст не поместился в ответ модели');
+    }
     const block = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-    if (!block) {
+    if (!block || typeof (block.input as { result?: unknown }).result !== 'string') {
       throw new InternalServerErrorException('Claude не вернул обработанный текст саммари');
     }
 

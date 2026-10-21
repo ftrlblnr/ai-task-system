@@ -130,7 +130,9 @@ export class MeetingTaskExtractionService {
 
     const response = await trackedCreate(this.aiUsage, 'meetings.task-extraction', this.getClient(), {
       model: MODEL,
-      max_tokens: 4096,
+      // 4096 не хватало: на совещании с ~50 поручениями ответ обрывался и
+      // задачи не извлекались вовсе (прод 21.10.2026).
+      max_tokens: 16000,
       output_config: { effort: 'low' },
       system,
       tools: [tool],
@@ -138,11 +140,15 @@ export class MeetingTaskExtractionService {
       messages: [{ role: 'user', content: summary }],
     });
 
+    if (response.stop_reason === 'max_tokens') {
+      throw new InternalServerErrorException('Встреча слишком длинная: список задач не поместился в ответ модели');
+    }
     const block = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-    if (!block) {
+    const tasks = (block?.input as { tasks?: MeetingTaskDraft[] } | undefined)?.tasks;
+    if (!Array.isArray(tasks)) {
       throw new InternalServerErrorException('Claude не вернул структурированный список задач');
     }
 
-    return (block.input as { tasks: MeetingTaskDraft[] }).tasks;
+    return tasks;
   }
 }
