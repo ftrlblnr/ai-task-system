@@ -39,6 +39,7 @@ import { LegalReviewNotifier } from './legal-review-notifier.service';
   // тем же tool loop, что и текстовый чат (иначе голос не видел бы
   // Meeting/Plaud данные вообще — DraftExtractionService's контекст
   // ограничен tasks/events), не дублируя сам tool loop.
-  exports: [AssistantChatService, AssistantReplyService],
+  // AssistantToolsService — MCP-сервер (McpModule) отдаёт те же инструменты Claude.
+  exports: [AssistantChatService, AssistantReplyService, AssistantToolsService],
 })
 export class AssistantModule {}

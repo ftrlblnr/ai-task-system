@@ -1964,6 +1964,40 @@ contact/сам Trip) пишет `TripRevision` (вкладка «История�
 - Стоимость — в `AiCall` (feature `legal.ask` / `legal.review`).
 - Miniapp агента-юриста пока не показывает.
 
+## Подключение Claude по MCP (владелец 22.10.2026)
+
+Код — `apps/api/src/mcp/`, страница согласия — `apps/web/src/app/connect/`.
+Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет Адъютант как
+свой коннектор по адресу `https://api-adyutant.glb-engineering.kz/mcp`.
+
+- **Транспорт** — Streamable HTTP без сессий: на каждый POST новый `Server`
+  из `@modelcontextprotocol/sdk` (1.32.1, низкоуровневый API, JSON-схемы
+  инструментов без zod). GET/DELETE → 405.
+- **Инструменты** — те же, что у ассистента (`AssistantToolsService.buildTools`
+  / `execute`), с теми же правами по роли, но только чтение: явный список
+  `MCP_TOOL_TITLES` в `mcp-tools.ts`. Не отдаются: `create_task_from_meeting`
+  и `legal_review_contract` (идемпотентность и ответ привязаны к беседе
+  ассистента), `export_tasks_xlsx` (файл, который Claude не скачает).
+  Каждый вызов — `AuditLog` `MCP_TOOL_CALL`.
+- **OAuth 2.1** — свой сервер авторизации в API: `/.well-known/oauth-
+  protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`,
+  `POST /oauth/register` (DCR), `GET /oauth/authorize` → редирект на веб
+  `/connect` (вход обычным логином, кнопка «Разрешить»), `POST /oauth/token`
+  (authorization_code + PKCE S256, refresh_token с ротацией). Клиент по
+  умолчанию у Claude — CIMD (`client_id` = `https://claude.ai/oauth/mcp-
+  oauth-client-metadata`): документ скачивается и кэшируется в `OAuthClient`
+  на сутки, доверяем только доменам claude.ai/claude.com. Адреса возврата —
+  только `https://claude.ai|claude.com/api/mcp/auth_callback` и loopback.
+- **Токены** — случайные строки, в БД только sha256 (`OAuthGrant`); access
+  1 ч, refresh 30 дней. Роль и статус сотрудника читаются из БД на каждый
+  запрос. Отключение — «Мой профиль» → «Подключённые приложения».
+- **Настройки** (`apps/api/.env.production`): `MCP_ENABLED=true`,
+  `MCP_PUBLIC_URL=https://api-adyutant.glb-engineering.kz`, `MCP_ROLES`
+  (роли через запятую, пусто — все). Выключено — `/mcp`, `/oauth/*`,
+  `.well-known` отвечают 404. nginx: `location = /mcp` с
+  `proxy_read_timeout 300s` (юрист отвечает до 1–2 минут; лимит Claude на
+  вызов — 240 с).
+
 ## Известные ограничения (не в рамках этого этапа)
 
 - Контекст голосового агента ограничен последними ≤40 задачами/событиями и

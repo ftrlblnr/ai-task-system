@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { Direction, EmployeeDetail, Position } from '@ai-task-system/shared-types';
 import { ROLE_LABELS } from '@ai-task-system/shared-types';
-import { api, ApiError } from '@/lib/api';
+import { api, apiUrl, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
@@ -156,6 +156,83 @@ function PasswordForm() {
   );
 }
 
+interface Connection {
+  id: string;
+  clientName: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Подключение Claude по MCP (владелец 22.10.2026): адрес для «Добавить
+// коннектор» и список выданных доступов с отключением. Блок виден только
+// ролям, которым подключение разрешено (MCP_ROLES).
+function ConnectionsCard() {
+  const [state, setState] = useState<{ allowed: boolean; items: Connection[] } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const url = apiUrl('/mcp');
+
+  function load() {
+    api
+      .get<{ enabled: boolean; allowed: boolean; items: Connection[] }>('/oauth/connections')
+      .then((res) => setState({ allowed: res.enabled && res.allowed, items: res.items }))
+      .catch(() => setState(null));
+  }
+  useEffect(load, []);
+
+  async function revoke(id: string) {
+    await api.delete(`/oauth/connections/${id}`).catch(() => undefined);
+    load();
+  }
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  if (!state?.allowed) return null;
+  return (
+    <Card title="Подключённые приложения" style={{ maxWidth: 520, marginTop: 20 }}>
+      <p className="ds-field-hint" style={{ marginTop: 0 }}>
+        Claude может работать с Адъютантом от вашего имени: в Claude откройте «Настройки» → «Коннекторы» → «Добавить свой коннектор» и вставьте адрес:
+      </p>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <code style={{ overflowWrap: 'anywhere' }}>{url}</code>
+        <Button size="sm" variant="secondary" onClick={copy}>
+          {copied ? 'Скопировано' : 'Копировать'}
+        </Button>
+      </div>
+      {state.items.length === 0 ? (
+        <p className="ds-field-hint">Подключений нет.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {state.items.map((c) => (
+            <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+              <div>
+                <strong>{c.clientName}</strong>
+                <p className="ds-field-hint" style={{ margin: 0 }}>
+                  подключено {formatDate(c.createdAt)}
+                  {c.lastUsedAt ? ` · последний доступ ${formatDate(c.lastUsedAt)}` : ''}
+                </p>
+              </div>
+              <Button size="sm" variant="danger" onClick={() => revoke(c.id)}>
+                Отключить
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function ProfileView() {
   const [me, setMe] = useState<EmployeeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,6 +261,7 @@ function ProfileView() {
       </div>
       <ProfileForm me={me} onSaved={setMe} />
       <PasswordForm />
+      <ConnectionsCard />
     </>
   );
 }

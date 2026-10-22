@@ -23,6 +23,28 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// Куда вернуться после входа — страница, отправившая на /login (сейчас
+// только /connect: подключение Claude). Только относительный путь.
+const AFTER_LOGIN_KEY = 'afterLogin';
+
+export function rememberAfterLogin(path: string) {
+  try {
+    sessionStorage.setItem(AFTER_LOGIN_KEY, path);
+  } catch {
+    // приватный режим — после входа просто откроются задачи
+  }
+}
+
+function takeAfterLogin(): string | null {
+  try {
+    const path = sessionStorage.getItem(AFTER_LOGIN_KEY);
+    sessionStorage.removeItem(AFTER_LOGIN_KEY);
+    return path && path.startsWith('/') && !path.startsWith('//') ? path : null;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('accessToken', res.accessToken);
     localStorage.setItem('user', JSON.stringify(res.user));
     setUser(res.user);
-    router.push('/tasks');
+    router.push(takeAfterLogin() ?? '/tasks');
   }
 
   function updateUser(patch: Partial<CurrentUser>) {
