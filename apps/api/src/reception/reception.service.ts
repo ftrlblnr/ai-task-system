@@ -62,6 +62,7 @@ const DETAIL_SELECT = {
   rejectionReason: true,
   resolution: true,
   task: { select: { id: true, title: true, dueDate: true, assignee: { select: { id: true, fullName: true } } } },
+  attachments: { select: { fileId: true, name: true, mimeType: true, size: true }, orderBy: { createdAt: 'asc' } },
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ReceptionRequestSelect;
@@ -76,6 +77,29 @@ interface TransitionSpec {
   toStatus: ReceptionRequestStatus;
   eventType: ReceptionEventType;
   data?: Record<string, unknown>;
+}
+
+// Привязка файлов автора к обращению. Только свои файлы, ещё не
+// отправленные в чат и не приложенные к другому обращению; уже приложенные
+// к ЭТОМУ — остаются как есть. Убранные из списка отвязываются (файл станет
+// «сиротой» и уйдёт по FilesCleanupCron). Возвращает имена для журнала.
+async function syncAttachments(tx: Prisma.TransactionClient, requestId: string, authorId: string, fileIds: string[]): Promise<string[]> {
+  const wanted = [...new Set(fileIds)];
+  await tx.receptionAttachment.deleteMany({ where: { requestId, fileId: { notIn: wanted } } });
+  if (wanted.length === 0) return [];
+  const files = await tx.fileArtifact.findMany({
+    where: { id: { in: wanted }, employeeId: authorId, messageId: null },
+    select: { id: true, name: true, mimeType: true, size: true, receptionAttachment: { select: { requestId: true } } },
+  });
+  const usable = files.filter((f) => !f.receptionAttachment || f.receptionAttachment.requestId === requestId);
+  if (usable.length !== wanted.length) throw new BadRequestException('FILE_NOT_FOUND: файл не найден — загрузите его заново');
+  const fresh = usable.filter((f) => !f.receptionAttachment);
+  if (fresh.length > 0) {
+    await tx.receptionAttachment.createMany({
+      data: fresh.map((f) => ({ requestId, fileId: f.id, name: f.name, mimeType: f.mimeType, size: f.size })),
+    });
+  }
+  return wanted.map((id) => usable.find((f) => f.id === id)!.name);
 }
 
 @Injectable()
@@ -110,7 +134,7 @@ export class ReceptionService {
 
     const request = await this.prisma.$transaction(async (tx) => {
       const queueOrder = await this.nextQueueOrder(tx);
-      const created = await tx.receptionRequest.create({
+      const { id } = await tx.receptionRequest.create({
         data: {
           queueId: QUEUE_ID,
           authorId: author.id,
@@ -122,8 +146,10 @@ export class ReceptionService {
           urgencyReason: normalizeOptionalText(dto.urgencyReason),
           queueOrder,
         },
-        select: DETAIL_SELECT,
+        select: { id: true },
       });
+      if (dto.fileIds?.length) await syncAttachments(tx, id, author.id, dto.fileIds);
+      const created = await tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT });
       await tx.receptionEvent.create({
         data: { requestId: created.id, actorId: author.id, type: 'CREATED', toStatus: 'WAITING', requestVersion: created.version },
       });
@@ -154,6 +180,7 @@ export class ReceptionService {
         data: { ...data, version: { increment: 1 } },
       });
       if (result.count === 0) throw await this.classifyTransitionFailure(tx, id, actor.id, dto.version, 'WAITING');
+      if (dto.fileIds !== undefined) data.attachments = await syncAttachments(tx, id, actor.id, dto.fileIds);
 
       const updated = await tx.receptionRequest.findUniqueOrThrow({ where: { id }, select: DETAIL_SELECT });
       await tx.receptionEvent.create({
@@ -543,6 +570,14 @@ export class ReceptionService {
     if (!request) throw new NotFoundException('Обращение не найдено');
     if (!isManager(actor.role) && request.authorId !== actor.id) throw new NotFoundException('Обращение не найдено');
     return serializeRequest(request);
+  }
+
+  // Скачивание вложения — те же права, что на само обращение (автор или
+  // руководство); чужой/несуществующий — 404.
+  async assertAttachmentAccess(actor: AuthenticatedUser, requestId: string, fileId: string): Promise<void> {
+    await this.getOne(actor, requestId);
+    const attachment = await this.prisma.receptionAttachment.findFirst({ where: { requestId, fileId }, select: { id: true } });
+    if (!attachment) throw new NotFoundException('Файл не найден');
   }
 
   async getMine(actor: AuthenticatedUser, scope: 'active' | 'history', limit: number, offset: number) {

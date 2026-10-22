@@ -229,7 +229,10 @@ describe('FilesService.createGenerated (Stage 2, Phase G — файлы, сфо�
 describe('FilesService.deleteUnattached (Stage 2 Phase F.1, аудит находка #10 — orphan uploads)', () => {
   it('удаляет непривязанный файл владельца — с диска и из БД', async () => {
     const file = { id: 'f1', employeeId: 'u1', messageId: null, storageKey: 'key-1' };
-    const prisma = { fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() } };
+    const prisma = {
+      fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() },
+      receptionAttachment: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
     const storage = { delete: jest.fn() };
     const service = new FilesService(prisma as any, storage as any, registryFor(storage) as any);
 
@@ -248,6 +251,19 @@ describe('FilesService.deleteUnattached (Stage 2 Phase F.1, аудит нахо�
     await expect(service.deleteUnattached(user(), 'f1')).rejects.toThrow(BadRequestException);
     expect(storage.delete).not.toHaveBeenCalled();
     expect(prisma.fileArtifact.delete).not.toHaveBeenCalled();
+  });
+
+  it('файл, приложенный к обращению в приёмную, не удаляется', async () => {
+    const file = { id: 'f1', employeeId: 'u1', messageId: null, storageKey: 'key-1' };
+    const prisma = {
+      fileArtifact: { findUnique: jest.fn().mockResolvedValue(file), delete: jest.fn() },
+      receptionAttachment: { findUnique: jest.fn().mockResolvedValue({ id: 'a1' }) },
+    };
+    const storage = { delete: jest.fn() };
+    const service = new FilesService(prisma as any, storage as any, registryFor(storage) as any);
+
+    await expect(service.deleteUnattached(user(), 'f1')).rejects.toThrow(BadRequestException);
+    expect(storage.delete).not.toHaveBeenCalled();
   });
 
   it('чужой файл — NotFoundException, ничего не удаляется', async () => {

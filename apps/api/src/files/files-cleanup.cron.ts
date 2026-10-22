@@ -43,8 +43,11 @@ export class FilesCleanupCron {
     // Агент-юрист (21.10.2026): договор, загруженный на странице «Юрист», и
     // отчёт по разбору тоже живут без messageId — та же ловушка, что выше.
     const legalRuns = await this.prisma.legalReviewRun.findMany({ select: { fileId: true, reportFileId: true } });
+    // Приёмная (22.10.2026): файлы к обращению — тоже без messageId.
+    const receptionFiles = await this.prisma.receptionAttachment.findMany({ select: { fileId: true } });
     const referencedIds = [
       ...referenced.map((m) => m.fileArtifactId),
+      ...receptionFiles.map((a) => a.fileId),
       ...legalRuns.flatMap((r) => (r.reportFileId ? [r.fileId, r.reportFileId] : [r.fileId])),
     ];
     const orphans = await this.prisma.fileArtifact.findMany({

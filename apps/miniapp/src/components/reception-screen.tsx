@@ -6,6 +6,7 @@ import type { ReceptionListResponse, ReceptionRequestItem, ReceptionRequestStatu
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
 import { ReceptionFormOverlay } from './reception-form-overlay';
+import { ReceptionAttachmentList } from './reception-attachments';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -123,6 +124,11 @@ export function ReceptionScreen({ active = true }: { active?: boolean }) {
             подано {formatDate(item.createdAt)}
             {item.desiredBy && <> · нужен ответ до {formatDate(item.desiredBy)}</>}
           </div>
+          {item.attachments.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <ReceptionAttachmentList requestId={item.id} attachments={item.attachments} />
+            </div>
+          )}
           {item.status === 'REJECTED' && item.rejectionReason && <div className="ds-field-hint">Причина: {item.rejectionReason}</div>}
           {item.status === 'COMPLETED' && item.resolution && <div className="ds-field-hint">Результат: {item.resolution}</div>}
           {item.status === 'ANSWERED' && item.resolution && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</div>}

@@ -18,7 +18,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const orphan2 = { id: 'f2', storageKey: 'key-2', storageProvider: 'local', messageId: null, createdAt: new Date('2020-01-01') };
     const prisma = {
       tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
-      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) },
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: {
         findMany: jest.fn().mockResolvedValue([orphan1, orphan2]),
         delete: jest.fn(),
@@ -41,7 +41,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
   it('запрос к БД фильтрует по messageId:null, возрасту и исключает вложения почты (source=INTERNAL) — сам крон не решает, что orphan, а что нет', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const prisma = { tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
-      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
     const storage = { delete: jest.fn() };
     const cron = new FilesCleanupCron(prisma as any, registryFor(storage) as any);
 
@@ -63,7 +63,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const prisma = {
       tripMaterial: { findMany: jest.fn().mockResolvedValue([{ fileArtifactId: 'trip-file-1' }, { fileArtifactId: 'trip-file-2' }]) },
-      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) },
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: { findMany, delete: jest.fn() },
     };
     const storage = { delete: jest.fn() };
@@ -87,6 +87,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const prisma = {
       tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
       legalReviewRun: { findMany: jest.fn().mockResolvedValue([{ fileId: 'contract-1', reportFileId: 'report-1' }, { fileId: 'contract-2', reportFileId: null }]) },
+      receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: { findMany, delete: jest.fn() },
     };
     const cron = new FilesCleanupCron(prisma as any, registryFor({ delete: jest.fn() }) as any);
@@ -101,7 +102,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
   it('нет материалов поездок вообще — запрос к FileArtifact не получает лишний id:notIn (пустой список исключений не добавляется как бессмысленное условие)', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const prisma = { tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
-      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) }, fileArtifact: { findMany, delete: jest.fn() } };
     const storage = { delete: jest.fn() };
     const cron = new FilesCleanupCron(prisma as any, registryFor(storage) as any);
 
@@ -124,7 +125,7 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     const orphan2 = { id: 'f2', storageKey: 'key-2', messageId: null, createdAt: new Date('2020-01-01') };
     const prisma = {
       tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
-      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) },
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) }, receptionAttachment: { findMany: jest.fn().mockResolvedValue([]) },
       fileArtifact: {
         findMany: jest.fn().mockResolvedValue([orphan1, orphan2]),
         delete: jest.fn(),
@@ -143,5 +144,20 @@ describe('FilesCleanupCron.cleanupOrphanUploads', () => {
     expect(prisma.fileArtifact.delete).not.toHaveBeenCalledWith({ where: { id: 'f1' } });
     // f2 — успешно, обработан несмотря на то, что f1 перед ним упал.
     expect(prisma.fileArtifact.delete).toHaveBeenCalledWith({ where: { id: 'f2' } });
+  });
+
+  it('исключает файлы, приложенные к обращениям приёмной', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      tripMaterial: { findMany: jest.fn().mockResolvedValue([]) },
+      legalReviewRun: { findMany: jest.fn().mockResolvedValue([]) },
+      receptionAttachment: { findMany: jest.fn().mockResolvedValue([{ fileId: 'rec-1' }]) },
+      fileArtifact: { findMany, delete: jest.fn() },
+    };
+    const cron = new FilesCleanupCron(prisma as any, registryFor({ delete: jest.fn() }) as any);
+
+    await cron.cleanupOrphanUploads();
+
+    expect(findMany).toHaveBeenCalledWith({ where: expect.objectContaining({ id: { notIn: ['rec-1'] } }) });
   });
 });

@@ -107,9 +107,34 @@ class FakePrisma {
     },
   };
 
+  files: { id: string; employeeId: string; messageId: string | null; name: string; mimeType: string; size: number }[] = [];
+  attachments: { requestId: string; fileId: string; name: string; mimeType: string; size: number }[] = [];
+
+  fileArtifact = {
+    findMany: async ({ where }: { where: { id: { in: string[] }; employeeId: string; messageId: null } }) =>
+      this.files
+        .filter((f) => where.id.in.includes(f.id) && f.employeeId === where.employeeId && f.messageId === null)
+        .map((f) => {
+          const a = this.attachments.find((x) => x.fileId === f.id);
+          return { ...f, receptionAttachment: a ? { requestId: a.requestId } : null };
+        }),
+  };
+
+  receptionAttachment = {
+    deleteMany: async ({ where }: { where: { requestId: string; fileId: { notIn: string[] } } }) => {
+      this.attachments = this.attachments.filter((a) => a.requestId !== where.requestId || where.fileId.notIn.includes(a.fileId));
+    },
+    createMany: async ({ data }: { data: FakePrisma['attachments'] }) => {
+      this.attachments.push(...data);
+    },
+    findFirst: async ({ where }: { where: { requestId: string; fileId: string } }) =>
+      this.attachments.find((a) => a.requestId === where.requestId && a.fileId === where.fileId) ?? null,
+  };
+
   private withAuthor(r: FakeRequest) {
     const author = this.employees.get(r.authorId)!;
-    return { ...r, author: { id: author.id, fullName: author.fullName, status: author.status } };
+    const attachments = this.attachments.filter((a) => a.requestId === r.id).map(({ fileId, name, mimeType, size }) => ({ fileId, name, mimeType, size }));
+    return { ...r, author: { id: author.id, fullName: author.fullName, status: author.status }, attachments };
   }
 
   receptionRequest = {
@@ -278,6 +303,51 @@ describe('ReceptionService.create', () => {
     await expect(service.create(user('e1'), { ...baseDto(), desiredBy: new Date(Date.now() - 1000).toISOString() })).rejects.toBeInstanceOf(
       ConflictException,
     );
+  });
+});
+
+describe('ReceptionService — вложения автора', () => {
+  function withFiles() {
+    const prisma = new FakePrisma();
+    const file = (id: string, employeeId = 'e1', messageId: string | null = null) => ({ id, employeeId, messageId, name: `${id}.pdf`, mimeType: 'application/pdf', size: 10 });
+    prisma.files.push(file('f1'), file('f2'), file('f3'), file('other', 'e2'), file('sent', 'e1', 'm1'));
+    return { prisma, service: new ReceptionService(prisma as any) };
+  }
+
+  it('при подаче — свои файлы привязываются и видны в обращении', async () => {
+    const { service } = withFiles();
+    const created = await service.create(user('e1'), { ...baseDto(), fileIds: ['f1', 'f2'] });
+    expect(created.attachments.map((a: { fileId: string }) => a.fileId)).toEqual(['f1', 'f2']);
+  });
+
+  it('чужой, отправленный в чат или уже приложенный к другому обращению файл — отказ', async () => {
+    const { service } = withFiles();
+    for (const fileIds of [['other'], ['sent'], ['missing']]) {
+      await expect(service.create(user('e1'), { ...baseDto(), fileIds })).rejects.toBeInstanceOf(BadRequestException);
+    }
+    await service.create(user('e1'), { ...baseDto(), fileIds: ['f1'] });
+    await expect(service.create(user('e1'), { ...baseDto(), fileIds: ['f1'] })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('правка заменяет список: убранные отвязываются, новые добавляются, в журнале — имена', async () => {
+    const { prisma, service } = withFiles();
+    const created = await service.create(user('e1'), { ...baseDto(), fileIds: ['f1', 'f2'] });
+    const edited = await service.edit(user('e1'), created.id, { fileIds: ['f2', 'f3'], version: created.version });
+    expect(edited.attachments.map((a: { fileId: string }) => a.fileId).sort()).toEqual(['f2', 'f3']);
+    expect(prisma.events.at(-1)).toMatchObject({ type: 'EDITED', metadata: { attachments: ['f2.pdf', 'f3.pdf'] } });
+
+    // Без fileIds вложения не трогаются.
+    const again = await service.edit(user('e1'), created.id, { title: 'Другая тема вопроса', version: edited.version });
+    expect(again.attachments).toHaveLength(2);
+  });
+
+  it('скачать вложение может автор и руководство, но не другой сотрудник', async () => {
+    const { service } = withFiles();
+    const created = await service.create(user('e1'), { ...baseDto(), fileIds: ['f1'] });
+    await expect(service.assertAttachmentAccess(user('e1'), created.id, 'f1')).resolves.toBeUndefined();
+    await expect(service.assertAttachmentAccess(user('owner', 'OWNER'), created.id, 'f1')).resolves.toBeUndefined();
+    await expect(service.assertAttachmentAccess(user('e2'), created.id, 'f1')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.assertAttachmentAccess(user('e1'), created.id, 'f2')).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 

@@ -283,6 +283,8 @@ model FileArtifact {
   createdAt DateTime  @default(now())
   expiresAt DateTime?
 
+  receptionAttachment ReceptionAttachment?
+
   @@index([employeeId, createdAt])
 }
 
@@ -1782,6 +1784,7 @@ model ReceptionRequest {
 
   events        ReceptionEvent[]
   notifications ReceptionNotification[]
+  attachments   ReceptionAttachment[]
 
   @@index([queueId, status, queueOrder, id])
   @@index([authorId, status, createdAt])
@@ -1790,6 +1793,25 @@ model ReceptionRequest {
 
 // Шаблоны быстрых ответов руководителя (владелец 20.10.2026) — общие для
 // OWNER и ADMIN, который отвечает от её имени.
+// Файлы, приложенные автором к обращению (владелец 22.10.2026). Файл
+// загружается обычным POST /files/upload и привязывается при подаче или
+// правке; один файл — к одному обращению. name/mimeType/size — копия из
+// FileArtifact, чтобы списки обращений не тянули join.
+model ReceptionAttachment {
+  id        String           @id @default(cuid())
+  requestId String
+  request   ReceptionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  fileId    String           @unique
+  file      FileArtifact     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  name      String
+  mimeType  String
+  size      Int
+
+  createdAt DateTime @default(now())
+
+  @@index([requestId, createdAt])
+}
+
 model ReceptionAnswerTemplate {
   id        String @id @default(cuid())
   text      String

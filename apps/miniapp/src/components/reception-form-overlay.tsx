@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react';
 import type {
   CreateReceptionRequestInput,
   EditReceptionRequestInput,
+  ReceptionAttachmentItem,
   ReceptionRequestItem,
   ReceptionRequestType,
 } from '@ai-task-system/shared-types';
@@ -14,6 +15,7 @@ import { haptic } from '@/lib/telegram';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
+import { ReceptionAttachmentPicker } from './reception-attachments';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026), раздел 8 — подача/
 // редактирование. Порт apps/web/src/app/reception/page.tsx:RequestForm в
@@ -41,6 +43,7 @@ export function ReceptionFormOverlay({
   const [expectedMinutes, setExpectedMinutes] = useState(editing?.expectedMinutes ? String(editing.expectedMinutes) : '');
   const [desiredBy, setDesiredBy] = useState(editing?.desiredBy ? editing.desiredBy.slice(0, 16) : '');
   const [urgencyReason, setUrgencyReason] = useState(editing?.urgencyReason ?? '');
+  const [attachments, setAttachments] = useState<ReceptionAttachmentItem[]>(() => editing?.attachments ?? []);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -60,6 +63,7 @@ export function ReceptionFormOverlay({
         expectedMinutes: expectedMinutes ? Number(expectedMinutes) : undefined,
         desiredBy: desiredBy ? new Date(desiredBy).toISOString() : undefined,
         urgencyReason: desiredBy ? urgencyReason.trim() : undefined,
+        fileIds: attachments.map((a) => a.fileId),
       };
       const headers = { 'Idempotency-Key': crypto.randomUUID() };
       if (editing) {
@@ -121,6 +125,15 @@ export function ReceptionFormOverlay({
                 <Input value={urgencyReason} onChange={(e) => setUrgencyReason(e.target.value)} minLength={5} maxLength={500} required />
               </Field>
             )}
+
+            <Field label="Файлы (необязательно)">
+              <ReceptionAttachmentPicker
+                value={attachments}
+                onChange={setAttachments}
+                disabled={submitting}
+                initialFileIds={(editing?.attachments ?? []).map((a) => a.fileId)}
+              />
+            </Field>
 
             {error && <Alert tone="danger">{error}</Alert>}
 

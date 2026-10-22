@@ -5,6 +5,7 @@ import type {
   CreateReceptionRequestInput,
   EditReceptionRequestInput,
   EmployeeSummary,
+  ReceptionAttachmentItem,
   ReceptionListResponse,
   ReceptionRequestItem,
   ReceptionRequestStatus,
@@ -16,6 +17,7 @@ import { useRealtime } from '@/lib/use-realtime';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
 import { ReceptionBoard } from '@/components/reception-board';
+import { ReceptionAttachmentList, ReceptionAttachmentPicker } from '@/components/reception-attachments';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -134,6 +136,7 @@ function RequestForm({
   onSaved: () => void;
 }) {
   const [value, setValue] = useState<RequestFormValue>(() => (editing ? fromRequest(editing) : emptyFormValue()));
+  const [attachments, setAttachments] = useState<ReceptionAttachmentItem[]>(() => editing?.attachments ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idem = useIdempotencyKey();
@@ -154,6 +157,7 @@ function RequestForm({
         expectedMinutes: value.expectedMinutes ? Number(value.expectedMinutes) : undefined,
         desiredBy: value.desiredBy ? new Date(value.desiredBy).toISOString() : undefined,
         urgencyReason: value.desiredBy ? value.urgencyReason.trim() : undefined,
+        fileIds: attachments.map((a) => a.fileId),
       };
       const headers = { 'Idempotency-Key': idem.key() };
       if (editing) {
@@ -216,6 +220,14 @@ function RequestForm({
           />
         </Field>
       )}
+      <Field label="Файлы (необязательно)">
+        <ReceptionAttachmentPicker
+          value={attachments}
+          onChange={setAttachments}
+          disabled={busy}
+          initialFileIds={(editing?.attachments ?? []).map((a) => a.fileId)}
+        />
+      </Field>
       {error && <Alert tone="danger">{error}</Alert>}
       <div style={{ display: 'flex', gap: 8 }}>
         <Button type="submit" variant="primary" disabled={busy} loading={busy}>
@@ -319,6 +331,11 @@ function MineView() {
                   {REQUEST_TYPE_LABELS[item.requestType]} · подано {formatDateTime(item.createdAt)}
                   {item.desiredBy && <> · нужен ответ до {formatDateTime(item.desiredBy)}</>}
                 </p>
+                {item.attachments.length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    <ReceptionAttachmentList requestId={item.id} attachments={item.attachments} />
+                  </div>
+                )}
                 {item.status === 'REJECTED' && item.rejectionReason && <p className="ds-field-hint">Причина: {item.rejectionReason}</p>}
                 {item.status === 'COMPLETED' && item.resolution && <p className="ds-field-hint">Результат: {item.resolution}</p>}
                 {item.status === 'ANSWERED' && item.resolution && <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</p>}

@@ -850,8 +850,17 @@ export interface ReceptionRequestItem {
   resolution: string | null;
   // «Ответить и поставить задачу» — задача, поставленная вместе с ответом.
   task: { id: string; title: string; dueDate: string | null; assignee: { id: string; fullName: string } | null } | null;
+  // Файлы автора; скачивание — GET /reception/requests/:id/attachments/:fileId.
+  attachments: ReceptionAttachmentItem[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ReceptionAttachmentItem {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
 }
 
 export type ReceptionNotificationStatus = 'PENDING' | 'SENT' | 'FAILED' | 'SKIPPED' | 'SUPERSEDED';
@@ -886,6 +895,8 @@ export interface CreateReceptionRequestInput {
   expectedMinutes?: number;
   desiredBy?: string;
   urgencyReason?: string;
+  // id из POST /files/upload (до 5). При правке — полный новый список.
+  fileIds?: string[];
 }
 
 export interface EditReceptionRequestInput extends Partial<CreateReceptionRequestInput> {

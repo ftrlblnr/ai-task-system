@@ -214,6 +214,10 @@ export class FilesService {
     if (file.messageId) {
       throw new BadRequestException('Нельзя удалить файл, уже прикреплённый к отправленному сообщению');
     }
+    // Приложен к обращению в приёмную — убирается правкой обращения.
+    if (await this.prisma.receptionAttachment.findUnique({ where: { fileId: file.id }, select: { id: true } })) {
+      throw new BadRequestException('Файл приложен к обращению в приёмную — уберите его в самом обращении');
+    }
     await this.registry.resolve(file.storageProvider).delete(file.storageKey);
     await this.prisma.fileArtifact.delete({ where: { id: file.id } });
   }

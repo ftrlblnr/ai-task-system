@@ -1,7 +1,8 @@
-import { IsEnum, IsIn, IsISO8601, IsOptional, IsString, Length, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsISO8601, IsOptional, IsString, Length, ValidateIf } from 'class-validator';
 import { ReceptionRequestType } from '@prisma/client';
 
 const EXPECTED_MINUTES_OPTIONS = [5, 10, 15, 30];
+export const MAX_RECEPTION_ATTACHMENTS = 5;
 
 export class CreateReceptionRequestDto {
   @IsString()
@@ -30,4 +31,12 @@ export class CreateReceptionRequestDto {
   @IsString()
   @Length(5, 500)
   urgencyReason?: string;
+
+  // Файлы к обращению (владелец 22.10.2026): id из POST /files/upload.
+  // При правке — полный новый список (убранные файлы отвязываются).
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_RECEPTION_ATTACHMENTS)
+  @IsString({ each: true })
+  fileIds?: string[];
 }

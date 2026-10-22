@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { ArrowDownToLine, CheckCheck, DoorOpen, GripVertical, Handshake, ListPlus, Mic, Pencil, Plus, RefreshCw, Square, X, type LucideIcon } from 'lucide-react';
+import { ArrowDownToLine, CheckCheck, DoorOpen, GripVertical, Handshake, ListPlus, Mic, Paperclip, Pencil, Plus, RefreshCw, Square, X, type LucideIcon } from 'lucide-react';
 import type {
   AnswerReceptionRequestInput,
   CompleteReceptionRequestInput,
@@ -22,6 +22,7 @@ import { useDictation } from '@/lib/use-dictation';
 import { useRealtime } from '@/lib/use-realtime';
 import { Alert, Badge, Button, Dialog, IconButton, Input, SearchInput, Select, Textarea, cx } from '@/components/ui';
 import { Avatar } from '@/components/avatar';
+import { ReceptionAttachmentList } from '@/components/reception-attachments';
 
 // Приёмная руководителя (владелец 20.10.2026): по центру — весь список
 // вопросов, по бокам — «облака». Карточку бросают в облако: слева
@@ -225,6 +226,8 @@ function RequestDialog({
     <Dialog title={item.title} description={`${item.author.fullName} · ${meta}`} onClose={onClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{item.description}</p>
+
+        <ReceptionAttachmentList requestId={item.id} attachments={item.attachments} />
 
         {item.desiredBy && (
           <Alert tone={isExpired(item) ? 'warn' : 'info'}>
@@ -479,6 +482,11 @@ function QueueCard({
           <Badge>{REQUEST_TYPE_LABELS[item.requestType]}</Badge>
           {item.expectedMinutes && <Badge>~{item.expectedMinutes} мин</Badge>}
           {item.desiredBy && <Badge tone={expired ? 'danger' : 'warn'}>{expired ? 'срок истёк' : `до ${formatDateTime(item.desiredBy)}`}</Badge>}
+          {item.attachments.length > 0 && (
+            <Badge>
+              <Paperclip size={12} strokeWidth={2} aria-label="Файлы" /> {item.attachments.length}
+            </Badge>
+          )}
           {item.author.status === 'INACTIVE' && <Badge>неактивен</Badge>}
         </div>
       </div>

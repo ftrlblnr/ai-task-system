@@ -11,6 +11,7 @@ import {
   Post,
   Patch,
   Query,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -38,6 +39,8 @@ import { AnswerStructuringService } from './answer-structuring.service';
 import { isWhisperArtifact } from './whisper-artifacts';
 import { ReorderReceptionRequestDto } from './dto/reorder.dto';
 import { CreateAnswerTemplateDto } from './dto/template.dto';
+import { FilesService } from '../files/files.service';
+import { contentDisposition } from '../common/http/content-disposition';
 
 // Тот же набор форматов, что у голосового ввода (VoiceController).
 const AUDIO_MIME_TYPES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/x-m4a'];
@@ -71,6 +74,7 @@ export class ReceptionController {
     private readonly whisper: WhisperService,
     private readonly structuring: AnswerStructuringService,
     private readonly vocabulary: CompanyVocabularyService,
+    private readonly files: FilesService,
   ) {}
 
   private requireIdempotencyKey(key: string | undefined): string {
@@ -197,6 +201,15 @@ export class ReceptionController {
   @Get('requests/:id')
   getOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.reception.getOne(user, id);
+  }
+
+  // Файл, приложенный автором: права — как на обращение (автор или
+  // руководство), а не личное владение файлом, как у /files/:id/download.
+  @Get('requests/:id/attachments/:fileId')
+  async downloadAttachment(@Param('id') id: string, @Param('fileId') fileId: string, @CurrentUser() user: AuthenticatedUser): Promise<StreamableFile> {
+    await this.reception.assertAttachmentAccess(user, id, fileId);
+    const { stream, file } = await this.files.getStreamForProcessing(fileId);
+    return new StreamableFile(stream, { type: file.mimeType, disposition: contentDisposition(file.name) });
   }
 
   @Get('requests/:id/events')
