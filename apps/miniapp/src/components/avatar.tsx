@@ -1,3 +1,9 @@
+'use client';
+
+import { useState } from 'react';
+import { apiUrl } from '@/lib/api';
+import { useAvatars } from '@/lib/avatars';
+
 // Дизайн-система «Адъютант» (владелец 04.10.2026, шаг 4) — порт на классы
 // .ds-avatar-t0..t5 из ds.css (project/components/Avatar/README.md: тон
 // стабилен для имени) вместо инлайновой палитры. Проп-контракт (`name`,
@@ -17,7 +23,25 @@ function initials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+// id — сотрудник: если он загрузил фото (владелец 22.10.2026), показываем
+// его вместо инициалов; не загрузилось — снова инициалы.
+export function Avatar({ name, size = 28, id }: { name: string; size?: number; id?: string }) {
+  const { urls } = useAvatars();
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const photo = id ? urls[id] : undefined;
+  if (photo && photo !== failedUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- маленькая картинка с API, next/image тут не нужен
+      <img
+        src={apiUrl(photo)}
+        alt={name}
+        title={name}
+        className="ds-avatar"
+        style={{ width: size, height: size, objectFit: 'cover', padding: 0 }}
+        onError={() => setFailedUrl(photo)}
+      />
+    );
+  }
   return (
     <span
       className={`ds-avatar ds-avatar-t${hash(name) % 6}`}

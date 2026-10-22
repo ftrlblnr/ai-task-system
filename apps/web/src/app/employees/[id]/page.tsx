@@ -431,7 +431,7 @@ function EmployeeDetailView({ id }: { id: string }) {
         Сотрудники
       </Link>
       <div className="profile-head">
-        <Avatar name={employee.fullName} size={52} />
+        <Avatar id={employee.id} name={employee.fullName} size={52} />
         <div>
           <h1>{employee.fullName}</h1>
           <div className="task-meta">

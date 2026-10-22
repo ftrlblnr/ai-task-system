@@ -77,7 +77,7 @@ export function TaskCard({
             {task.subtaskDoneCount}/{task.subtaskCount}
           </span>
         )}
-        {task.assignee && <Avatar name={task.assignee.fullName} size={22} />}
+        {task.assignee && <Avatar id={task.assignee.id} name={task.assignee.fullName} size={22} />}
       </div>
     </article>
   );

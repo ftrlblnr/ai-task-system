@@ -63,7 +63,7 @@ export function ReceptionPreview({
                 href={`/reception?focus=${item.id}`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textDecoration: 'none', color: 'inherit' }}
               >
-                <Avatar name={item.author.fullName} size={30} />
+                <Avatar id={item.author.id} name={item.author.fullName} size={30} />
                 <div style={{ minWidth: 0 }}>
                   <p style={{ margin: 0, fontWeight: 600, fontSize: 14 }}>{item.author.fullName}</p>
                   <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>{item.title}</p>

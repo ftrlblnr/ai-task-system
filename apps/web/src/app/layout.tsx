@@ -4,6 +4,7 @@ import "@ai-task-system/design-tokens/tokens.css";
 import "@ai-task-system/design-tokens/ds.css";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
+import { AvatarsProvider } from "@/lib/avatars";
 import { Sidebar } from "@/components/sidebar";
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, внедрение по
@@ -31,10 +32,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="ru" className={`${sans.variable} ${mono.variable}`}>
       <body>
         <AuthProvider>
-          <div className="app-shell">
-            <Sidebar />
-            <main className="app-main">{children}</main>
-          </div>
+          <AvatarsProvider>
+            <div className="app-shell">
+              <Sidebar />
+              <main className="app-main">{children}</main>
+            </div>
+          </AvatarsProvider>
         </AuthProvider>
       </body>
     </html>

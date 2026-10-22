@@ -147,7 +147,7 @@ export function Sidebar() {
 
       <div className="ds-sidebar-foot">
         <Link href="/profile" className="ds-sidebar-profile" title="Мой профиль">
-          <Avatar name={user.fullName} size={30} />
+          <Avatar id={user.id} name={user.fullName} size={30} />
           <div className="ds-sidebar-user">
             <b>{user.fullName}</b>
             <span>{ROLE_LABELS[user.role]}</span>

@@ -114,7 +114,7 @@ function EmployeesList() {
             <tr key={e.id}>
               <td>
                 <Link href={`/employees/${e.id}`} className="ds-table-person">
-                  <Avatar name={e.fullName} size={28} />
+                  <Avatar id={e.id} name={e.fullName} size={28} />
                   {e.fullName}
                 </Link>
               </td>

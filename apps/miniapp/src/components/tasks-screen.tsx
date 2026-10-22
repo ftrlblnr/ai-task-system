@@ -8,6 +8,9 @@ import { EmptyState, SearchInput } from '@/components/ui';
 import { TaskCard } from './task-card';
 import { TaskDetailOverlay } from './task-detail-overlay';
 import { TaskCreateOverlay } from './task-create-overlay';
+import { ProfileOverlay } from './profile-overlay';
+import { Avatar } from './avatar';
+import { useAuth } from '@/lib/auth-context';
 import { STATUS_LABELS, TASK_SECTIONS, STATUS_DOT_COLOR } from '@/lib/labels';
 
 export function TasksScreen({ active = true }: { active?: boolean }) {
@@ -15,6 +18,8 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const { user } = useAuth();
   // Поиск (аудит 10.09.2026, п. 4.2) — раньше найти задачу можно было
   // только скроллом, при сотне задач это ломается быстрее всего остального.
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,23 +60,31 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0 4px' }}>
         <h1>Задачи</h1>
-        <button
-          onClick={() => setCreating(true)}
-          aria-label="Новая задача"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 34,
-            height: 34,
-            borderRadius: '50%',
-            background: 'var(--accent)',
-            color: 'var(--accent-contrast)',
-          }}
-        >
-          <Plus size={18} strokeWidth={2.5} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {user && (
+            <button onClick={() => setProfileOpen(true)} aria-label="Профиль" style={{ display: 'flex', borderRadius: '50%' }}>
+              <Avatar id={user.id} name={user.fullName} size={34} />
+            </button>
+          )}
+          <button
+            onClick={() => setCreating(true)}
+            aria-label="Новая задача"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 34,
+              height: 34,
+              borderRadius: '50%',
+              background: 'var(--accent)',
+              color: 'var(--accent-contrast)',
+            }}
+          >
+            <Plus size={18} strokeWidth={2.5} />
+          </button>
+        </div>
       </div>
+      {profileOpen && <ProfileOverlay onClose={() => setProfileOpen(false)} />}
 
       {tasks && tasks.length > 0 && (
         <div style={{ marginBottom: 10 }}>

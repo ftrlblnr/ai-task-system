@@ -7,6 +7,7 @@ import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
+import { AvatarEditor } from '@/components/avatar-editor';
 import { Card, PageHeader } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
@@ -172,12 +173,13 @@ function ProfileView() {
   return (
     <>
       <div className="profile-head">
-        <Avatar name={me.fullName} size={52} />
+        <Avatar id={me.id} name={me.fullName} size={64} />
         <div>
           <h1>{me.fullName}</h1>
           <p className="ds-field-hint">
             {ROLE_LABELS[me.role]} · {me.email}
           </p>
+          <AvatarEditor employeeId={me.id} name={me.fullName} showAvatar={false} />
         </div>
       </div>
       <ProfileForm me={me} onSaved={setMe} />

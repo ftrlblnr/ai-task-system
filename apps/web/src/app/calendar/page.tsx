@@ -430,7 +430,7 @@ function EventsAgenda() {
                           <div className="watchers-avatars">
                             {ev.participants.map((p) => (
                               <span key={p.id} className="watcher-chip" title={p.fullName}>
-                                <Avatar name={p.fullName} size={18} />
+                                <Avatar id={p.id} name={p.fullName} size={18} />
                                 <button
                                   type="button"
                                   className="watcher-remove"

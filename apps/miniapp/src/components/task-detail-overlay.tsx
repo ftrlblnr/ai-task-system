@@ -305,7 +305,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
                 <div className="watchers-avatars">
                   {task.watchers.map((w) => (
                     <span key={w.id} className="watcher-chip" title={w.fullName}>
-                      <Avatar name={w.fullName} size={18} />
+                      <Avatar id={w.id} name={w.fullName} size={18} />
                       {isManager && (
                         <button
                           type="button"
@@ -364,7 +364,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
               {task.comments.length === 0 && <p className="ds-field-hint">Пока нет комментариев.</p>}
               {task.comments.map((c) => (
                 <div key={c.id} className="comment-item">
-                  <Avatar name={c.author.fullName} size={26} />
+                  <Avatar id={c.author.id} name={c.author.fullName} size={26} />
                   <div>
                     <div style={{ fontSize: '0.82rem', fontWeight: 600 }}>{c.author.fullName}</div>
                     <p style={{ margin: '2px 0 0' }}>{c.body}</p>
@@ -386,7 +386,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
                   <div key={s.id} className="subtask-row" onClick={() => openSubtask(s.id)}>
                     <span className="status-dot-inline" style={{ background: STATUS_DOT_COLOR[s.status] }} />
                     <span className="subtask-title">{s.title}</span>
-                    {s.assignee && <Avatar name={s.assignee.fullName} size={18} />}
+                    {s.assignee && <Avatar id={s.assignee.id} name={s.assignee.fullName} size={18} />}
                   </div>
                 ))}
                 <form className="subtask-add-form" onSubmit={addSubtask} style={{ flexWrap: 'wrap', display: 'flex', gap: 6 }}>

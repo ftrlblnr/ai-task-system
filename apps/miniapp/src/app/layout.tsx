@@ -6,6 +6,7 @@ import "@ai-task-system/design-tokens/tokens.css";
 import "@ai-task-system/design-tokens/ds.css";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
+import { AvatarsProvider } from "@/lib/avatars";
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, внедрение по
 // project/implementation.md, шаг 1) — Plus Jakarta Sans не содержал
@@ -47,7 +48,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
       </head>
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <AvatarsProvider>{children}</AvatarsProvider>
+        </AuthProvider>
       </body>
     </html>
   );

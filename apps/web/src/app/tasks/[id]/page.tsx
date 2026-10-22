@@ -380,7 +380,7 @@ function TaskDetailView({ id }: { id: string }) {
         <ul className="comment-list">
           {task.comments.map((c) => (
             <li key={c.id} className="comment-item">
-              <Avatar name={c.author.fullName} size={28} />
+              <Avatar id={c.author.id} name={c.author.fullName} size={28} />
               <div className="comment-body">
                 <div className="comment-head">
                   <span className="comment-author">{c.author.fullName}</span>
@@ -410,7 +410,7 @@ function TaskDetailView({ id }: { id: string }) {
                   <span className="status-dot-inline" style={{ background: STATUS_DOT_COLOR[s.status] }} />
                   {s.title}
                 </span>
-                {s.assignee && <Avatar name={s.assignee.fullName} size={20} />}
+                {s.assignee && <Avatar id={s.assignee.id} name={s.assignee.fullName} size={20} />}
               </li>
             ))}
           </ul>

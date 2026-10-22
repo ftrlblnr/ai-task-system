@@ -52,11 +52,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 // парсит тело. headers — агент поездок (ТЗ 08.10.2026): POST /trips/runs и
 // /trips/:id/materials требуют Idempotency-Key тем же способом, что
 // api.post (тот же приём, что в apps/web/src/lib/api.ts).
-async function requestForm<T>(path: string, formData: FormData, headers?: HeadersInit): Promise<T> {
+async function requestForm<T>(path: string, formData: FormData, headers?: HeadersInit, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
-    method: 'POST',
+    method,
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     body: formData,
   });
@@ -119,6 +119,11 @@ async function downloadBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+// Абсолютный адрес ресурса API для <img src> (аватары: /avatars/<key>).
+export function apiUrl(path: string): string {
+  return `${API_URL}${path}`;
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   // headers — раздел 12 ТЗ «Приёмная»: мутирующие запросы требуют
@@ -128,6 +133,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined, headers }),
   postForm: <T>(path: string, formData: FormData, headers?: HeadersInit) => requestForm<T>(path, formData, headers),
+  putForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData, undefined, 'PUT'),
   postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>

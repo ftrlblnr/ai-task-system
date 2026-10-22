@@ -473,7 +473,7 @@ function QueueCard({
       <div className="rcp-card-pos">{called ? <DoorOpen size={16} strokeWidth={1.75} /> : position}</div>
       <div className="rcp-card-body">
         <div className="rcp-card-who">
-          <Avatar name={item.author.fullName} size={22} />
+          <Avatar id={item.author.id} name={item.author.fullName} size={22} />
           <span className="rcp-card-name">{item.author.fullName}</span>
           <span className="rcp-card-wait">{called ? `на приёме с ${formatTime(item.lastCalledAt)}` : waitingFor(item.createdAt, now)}</span>
         </div>
@@ -571,7 +571,7 @@ function Cloud({
           {people.length > 0 && (
             <span className="rcp-cloud-people">
               {people.slice(0, 4).map((p) => (
-                <Avatar key={p.id} name={p.author.fullName} size={22} />
+                <Avatar key={p.id} id={p.author.id} name={p.author.fullName} size={22} />
               ))}
             </span>
           )}
@@ -609,7 +609,7 @@ function CloudListDialog({
             <li key={item.id}>
               <button type="button" onClick={() => onPick(item)}>
                 <span className="rcp-card-who">
-                  <Avatar name={item.author.fullName} size={22} />
+                  <Avatar id={item.author.id} name={item.author.fullName} size={22} />
                   <span className="rcp-card-name">{item.author.fullName}</span>
                   <span className="rcp-card-wait">
                     {item.status === 'COMPLETED' ? 'обсудили · ' : ''}
@@ -1210,7 +1210,7 @@ export function ReceptionBoard() {
           <div className="rcp-card is-ghost">
             <div className="rcp-card-body">
               <div className="rcp-card-who">
-                <Avatar name={dragItem.author.fullName} size={22} />
+                <Avatar id={dragItem.author.id} name={dragItem.author.fullName} size={22} />
                 <span className="rcp-card-name">{dragItem.author.fullName}</span>
               </div>
               <h3 className="rcp-card-title">{dragItem.title}</h3>
