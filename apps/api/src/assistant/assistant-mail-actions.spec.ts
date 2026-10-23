@@ -1,6 +1,6 @@
 import { Role } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
-import { buildMailPlanCandidates, parseMailToolActions, resolveArchiveTarget, summarizeCandidates } from './assistant-mail-actions';
+import { buildMailPlanCandidates, parseMailToolActions, summarizeCandidates } from './assistant-mail-actions';
 import { describePlanState } from './assistant-mail-state';
 import { AssistantToolsService, toolResultForModel } from './assistant-tools.service';
 import { buildAssistantParts } from './assistant-render';
@@ -52,24 +52,9 @@ describe('parseMailToolActions / buildMailPlanCandidates', () => {
 });
 
 describe('архив в ящике без папки \\Archive (инцидент 23.10.2026)', () => {
-  it('resolveArchiveTarget: роль есть → исполнитель найдёт сам; есть «Archive»/«Архив» по имени → она; нет → создать', () => {
-    expect(resolveArchiveTarget(folders('INBOX', 'Архив-роль'))).toBeNull();
-    expect(resolveArchiveTarget(folders('INBOX', 'INBOX.Archive'))).toEqual({ path: 'INBOX.Archive', create: false });
-    expect(resolveArchiveTarget(folders('INBOX', 'Архив'))).toEqual({ path: 'Архив', create: false });
-    expect(resolveArchiveTarget(folders('INBOX', 'Sent', 'Trash'))).toEqual({ path: 'Archive', create: true });
-  });
-
-  it('нет папки — в плане сначала «Создать папку Archive», архивы зависят от неё (одна папка на ящик)', () => {
-    const actions = parseMailToolActions([
-      { emailId: 'e1', type: 'ARCHIVE', folderPath: null, reason: '' },
-      { emailId: 'e2', type: 'ARCHIVE', folderPath: null, reason: '' },
-    ]);
-    const draft = buildMailPlanCandidates(actions, [msg('e1'), msg('e2')], new Map([['mb1', folders('INBOX', 'Sent', 'Trash')]]));
-    const list = draft.byMailbox.get('mb1')!;
-    expect(list.map((c) => c.type)).toEqual(['CREATE_FOLDER', 'ARCHIVE', 'ARCHIVE']);
-    expect(list[0]).toMatchObject({ stableObjectIds: [], parameters: { parentPath: null, name: 'Archive' } });
-    expect(list[1]).toMatchObject({ parameters: { folderPath: 'Archive' }, dependsOnLocalIds: [list[0].localId] });
-    expect(list[2].dependsOnLocalIds).toEqual([list[0].localId]);
+  it('ARCHIVE — одна строка без папки и без шага «создать папку»: архив находит/создаёт исполнитель', () => {
+    const draft = buildMailPlanCandidates(parseMailToolActions([{ emailId: 'e1', type: 'ARCHIVE', folderPath: null, reason: '' }]), [msg('e1')], new Map([['mb1', folders('INBOX', 'Sent', 'Trash')]]));
+    expect(draft.byMailbox.get('mb1')!.map((c) => [c.type, c.parameters])).toEqual([['ARCHIVE', {}]]);
   });
 
   it('describePlanState — живой статус карточки для модели', () => {

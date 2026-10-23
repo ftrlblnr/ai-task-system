@@ -58,11 +58,21 @@ describe('Stage 1 executors (ТЗ разд. 3/9/14/15)', () => {
       expect(session.moveCalls).toEqual([{ toFolderPath: 'Archive' }]);
     });
 
-    it('\\Archive не найдена и параметр folderPath не задан — FAILED ARCHIVE_FOLDER_MISSING', async () => {
+    it('нет \\Archive, но есть папка «Архив» по имени — переносит в неё', async () => {
       const session = new FakeSession();
+      session.folders = [{ path: 'INBOX', role: 'INBOX', specialUse: null }, { path: 'Архив', role: 'OTHER', specialUse: null }];
       const result = await registry.get('ARCHIVE')!.execute(item({ id: 'i1' }), ctx(session));
-      expect(result).toEqual({ outcome: 'FAILED', errorCode: 'ARCHIVE_FOLDER_MISSING' });
-      expect(session.moveCalls).toHaveLength(0);
+      expect(result.outcome).toBe('SUCCEEDED');
+      expect(session.moveCalls).toEqual([{ toFolderPath: 'Архив' }]);
+    });
+
+    it('архива нет совсем (корпоративный сервер, 23.10.2026) — создаёт «Archive» и переносит', async () => {
+      const session = new FakeSession();
+      const create = jest.spyOn(session, 'createFolder');
+      const result = await registry.get('ARCHIVE')!.execute(item({ id: 'i1' }), ctx(session));
+      expect(result.outcome).toBe('SUCCEEDED');
+      expect(create).toHaveBeenCalledWith(null, 'Archive');
+      expect(session.moveCalls).toEqual([{ toFolderPath: 'Archive' }]);
     });
 
     it('раздел 17 ТЗ: folderPath в параметрах переопределяет автопоиск \\Archive', async () => {
