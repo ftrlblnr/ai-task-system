@@ -193,7 +193,8 @@ export function apiUrl(path: string): string {
 }
 
 export const api = {
-  get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
+  // headers — карточки почты в чате: ящик письма (X-Mailbox-Id) из самой карточки, не выбранный на /mail.
+  get: <T>(path: string, signal?: AbortSignal, headers?: HeadersInit) => request<T>(path, { signal, headers }),
   // headers — раздел 12 ТЗ «Приёмная»: мутирующие запросы требуют
   // Idempotency-Key, обычный заголовок, не часть тела — остальные вызовы
   // api.post/api.patch не передают 3-й аргумент, ничего не меняется.
@@ -206,5 +207,5 @@ export const api = {
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  delete: <T>(path: string, headers?: HeadersInit) => request<T>(path, { method: 'DELETE', headers }),
 };

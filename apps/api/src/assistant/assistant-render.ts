@@ -46,6 +46,8 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'legal_ask') return { label: 'Агент-юрист не смог подготовить ответ' };
     if (result.tool === 'legal_review_contract') return { label: 'Не удалось запустить разбор договора' };
     if (result.tool === 'legal_review_status') return { label: 'Не удалось проверить разборы договоров' };
+    if (result.tool === 'propose_mail_actions') return { label: 'Не удалось подготовить действия с письмами' };
+    if (result.tool === 'draft_mail_reply') return { label: 'Не удалось подготовить письмо' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -67,7 +69,12 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     return { label: `${result.alreadyStarted ? 'Разбор уже запущен' : 'Запустил разбор договора'}: «${result.review.fileName}»` };
   }
   if (result.tool === 'legal_review_status') return { label: `Проверил разборы договоров: ${result.items.length}` };
-  // Stage 2, Phase O — create_task_from_meeting, единственный write-tool.
+  if (result.tool === 'propose_mail_actions') {
+    const count = result.plans.reduce((n, p) => n + p.itemCount, 0);
+    return { label: `Подготовил действия с письмами: ${count} — ждут подтверждения` };
+  }
+  if (result.tool === 'draft_mail_reply') return { label: 'Подготовил письмо — ждёт отправки' };
+  // Stage 2, Phase O — create_task_from_meeting.
   return { label: `Поставил задачу «${result.task.title}»` };
 }
 
@@ -108,6 +115,13 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
       // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
       // происхождение задачи прямо под карточкой.
       parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(call.result.task) });
+    } else if (call.result.tool === 'propose_mail_actions') {
+      // Почта, этап 3 — карточка с кнопкой «Подтвердить»: без неё ничего не исполняется.
+      for (const plan of call.result.plans) {
+        parts.push({ type: MessagePartType.MAIL_PLAN_CARD, order: order++, data: toJson(plan) });
+      }
+    } else if (call.result.tool === 'draft_mail_reply') {
+      parts.push({ type: MessagePartType.MAIL_DRAFT_CARD, order: order++, data: toJson(call.result.draft) });
     } else if (call.result.tool === 'legal_ask') {
       // Ответ агента-юриста — отдельным блоком, собранным сервером из
       // проверенных цитат: модель чата его не пересказывает (иначе цитаты

@@ -125,7 +125,8 @@ export function apiUrl(path: string): string {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  // headers — карточки почты в чате: ящик письма (X-Mailbox-Id) из самой карточки.
+  get: <T>(path: string, headers?: HeadersInit) => request<T>(path, { headers }),
   // headers — раздел 12 ТЗ «Приёмная»: мутирующие запросы требуют
   // Idempotency-Key, обычный заголовок, не часть тела — остальные вызовы
   // api.post/api.patch не передают 3-й аргумент, ничего не меняется (тот
@@ -138,5 +139,5 @@ export const api = {
   downloadBlob: (path: string) => downloadBlob(path),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  delete: <T>(path: string, headers?: HeadersInit) => request<T>(path, { method: 'DELETE', headers }),
 };

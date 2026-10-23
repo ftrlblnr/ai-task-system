@@ -111,7 +111,13 @@ export class FakeMailActionPrisma {
       this.plans.push(row);
       return row;
     },
-    findUnique: async ({ where }: { where: { id: string } }) => this.plans.find((p) => p.id === where.id) ?? null,
+    findUnique: async ({ where }: { where: { id?: string; sourceKey?: string } }) =>
+      this.plans.find((p) => (where.id ? p.id === where.id : (p as { sourceKey?: string }).sourceKey === where.sourceKey)) ?? null,
+    findUniqueOrThrow: async ({ where }: { where: { id?: string; sourceKey?: string } }) => {
+      const row = this.plans.find((p) => (where.id ? p.id === where.id : (p as { sourceKey?: string }).sourceKey === where.sourceKey));
+      if (!row) throw new Error('not found');
+      return row;
+    },
     findMany: async ({ where }: { where: { ownerId: string; mailboxId: string } }) =>
       this.plans.filter((p) => p.ownerId === where.ownerId && p.mailboxId === where.mailboxId),
     update: async ({ where, data }: { where: { id: string }; data: Partial<FakePlan> }) => {

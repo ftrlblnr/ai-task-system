@@ -2064,6 +2064,26 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   черновики сверху в папке «Черновики». Открытое письмо помечается прочитанным.
 - Черновики живут в системе, в папку «Черновики» на сервере не пишутся.
 
+## Почта: ассистент готовит действия и ответы (владелец 23.10.2026, этап 3)
+
+- Инструменты чата (только руководство, write-инструменты с ключом
+  `chat:<userMessageId>:<n>`): `propose_mail_actions` (архив/папка/корзина/прочитано/
+  флажок по id писем из `search_emails`) и `draft_mail_reply` (reply/reply_all/forward
+  с текстом). Сами ничего не выполняют — результат для модели `executed:false`/`sent:false`.
+- План — обычный `MailActionPlan` (READY, `scope.source='assistant'`), создаётся
+  `MailActionPlanService.createReadyPlan`, по одному на ящик; проверка id писем и
+  папок — `assistant/assistant-mail-actions.ts` (MOVE только в существующую папку,
+  одно перемещение на письмо). Выполняется тем же approve/исполнителями, что «Разбор».
+- Ответ — обычный `MailDraft` (`MailComposeService.create(..., {body, to, sourceKey})`),
+  отправка — тот же `POST /mail/drafts/:id/send` по кнопке.
+- `sourceKey @unique` у `MailActionPlan` и `MailDraft` — повтор хода не создаёт дублей.
+- Части сообщения `MAIL_PLAN_CARD`/`MAIL_DRAFT_CARD`; карточки
+  (`components/assistant-mail-cards.tsx` в web и miniapp) читают живое состояние:
+  «Подтвердить · N», «В корзину · M» (с подтверждением), «Не нужно»; письмо —
+  «Отправить», «Изменить», «Удалить». В истории для модели — `[shown_mail_plan]`/
+  `[shown_mail_draft]` со статусом «ждёт пользователя».
+- Журнал: `AI_MAIL_PLAN_PROPOSED`, `AI_MAIL_DRAFT_PREPARED`.
+
 ## Поездки: .docx и уточнение уже записанного без дублей (владелец 23.10.2026)
 
 - Материалы .docx читаются: mammoth → HTML → текст, строка таблицы — одна строка «ячейка | ячейка» (`buildDocxContentBlock`, `docxHtmlToText` в `trips/trip-extraction.ts`). В промпте — правило «около полуночи после вечернего пункта = следующий день».

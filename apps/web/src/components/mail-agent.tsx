@@ -12,9 +12,9 @@ import type {
   MailActionPlanExecution,
   MailActionPlanItems,
   MailActionPlanStatus,
-  MailActionType,
   MailFolder,
 } from '@ai-task-system/shared-types';
+import { MAIL_ACTION_TYPE_LABELS } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { Card } from '@/components/ui/card';
@@ -54,26 +54,7 @@ const ITEM_STATUS: Record<MailActionItemStatus, [BadgeTone, string]> = {
   COMPENSATED: ['neutral', 'Отменено'],
 };
 
-const ACTION_LABELS: Record<MailActionType, string> = {
-  ARCHIVE: 'В архив',
-  MOVE: 'Переместить',
-  CREATE_FOLDER: 'Создать папку',
-  SET_READ: 'Отметить прочитанным',
-  SET_UNREAD: 'Отметить непрочитанным',
-  FLAG: 'Поставить флажок',
-  UNFLAG: 'Снять флажок',
-  TRASH: 'В корзину',
-  CREATE_TASK: 'Создать задачу',
-  SAVE_ATTACHMENT: 'Сохранить вложение',
-  DRAFT_REPLY: 'Черновик ответа',
-  SEND_REPLY: 'Отправить ответ',
-  FORWARD: 'Переслать',
-  PROPOSE_MEETING: 'Предложить встречу',
-  CREATE_EVENT: 'Создать событие',
-  WATCH_REPLY: 'Следить за ответом',
-  WATCH_COMMITMENT: 'Следить за обещанием',
-  DRAFT_REMINDER: 'Черновик напоминания',
-};
+const ACTION_LABELS = MAIL_ACTION_TYPE_LABELS;
 
 const GROUPS: { type: MailActionGroupType; title: string; approveLabel: string }[] = [
   { type: 'MAILBOX_ORDER', title: 'Порядок в почте', approveLabel: 'Навести порядок' },
@@ -89,7 +70,7 @@ const ERROR_LABELS: Record<string, string> = {
   MISSING_FOLDER_NAME: 'Не указано имя папки.',
   LOCATOR_CHANGED: 'Письмо переместили или изменили после анализа.',
   NOT_IMPLEMENTED: 'Это действие агент пока не умеет выполнять.',
-  EXECUTOR_ERROR: 'Mail.ru вернул ошибку.',
+  EXECUTOR_ERROR: 'Почтовый сервер вернул ошибку.',
 };
 
 const EDITABLE: ReadonlySet<MailActionItemStatus> = new Set(['DRAFT', 'NEEDS_REVIEW', 'APPROVED', 'FAILED', 'UNKNOWN', 'SKIPPED_CHANGED', 'BLOCKED_DEPENDENCY']);

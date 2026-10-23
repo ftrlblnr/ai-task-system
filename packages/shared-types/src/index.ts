@@ -513,7 +513,7 @@ export interface VoiceUndoResponse {
 // границе HTTP (apps/api/src/assistant/assistant-response.mapper.ts) —
 // AssistantChatService работает с Prisma-представлением, эти типы видит
 // только клиент.
-export type MessagePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
+export type MessagePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error' | 'mail_plan_card' | 'mail_draft_card';
 
 export interface MarkdownPartData {
   content: string;
@@ -572,11 +572,30 @@ export interface FilePartData {
   size: number;
 }
 
+// Почта, этап 3 (23.10.2026) — ассистент предложил действия с письмами /
+// подготовил письмо. Исполнение и отправка — только кнопкой в карточке;
+// состояние карточка читает живьём по planId/draftId.
+export interface MailPlanCardData {
+  planId: string;
+  mailboxId: string;
+  mailboxAddress: string;
+  actions: { type: string; count: number }[];
+  itemCount: number;
+}
+
+export interface MailDraftCardData {
+  draftId: string;
+  mailboxId: string;
+  mode: 'REPLY' | 'REPLY_ALL' | 'FORWARD';
+  subject: string;
+  to: string[];
+}
+
 export interface MessagePart {
   id: string;
   type: MessagePartType;
   order: number;
-  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData;
+  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData | MailPlanCardData | MailDraftCardData;
 }
 
 export type AssistantMessageRole = 'user' | 'assistant';
@@ -1361,6 +1380,28 @@ export type MailActionType =
   | 'WATCH_REPLY'
   | 'WATCH_COMMITMENT'
   | 'DRAFT_REMINDER';
+
+// Подписи действий — вкладка «Разбор» на /mail и карточки ассистента в чате.
+export const MAIL_ACTION_TYPE_LABELS: Record<MailActionType, string> = {
+  ARCHIVE: 'В архив',
+  MOVE: 'Переместить',
+  CREATE_FOLDER: 'Создать папку',
+  SET_READ: 'Отметить прочитанным',
+  SET_UNREAD: 'Отметить непрочитанным',
+  FLAG: 'Поставить флажок',
+  UNFLAG: 'Снять флажок',
+  TRASH: 'В корзину',
+  CREATE_TASK: 'Создать задачу',
+  SAVE_ATTACHMENT: 'Сохранить вложение',
+  DRAFT_REPLY: 'Черновик ответа',
+  SEND_REPLY: 'Отправить ответ',
+  FORWARD: 'Переслать',
+  PROPOSE_MEETING: 'Предложить встречу',
+  CREATE_EVENT: 'Создать событие',
+  WATCH_REPLY: 'Следить за ответом',
+  WATCH_COMMITMENT: 'Следить за обещанием',
+  DRAFT_REMINDER: 'Черновик напоминания',
+};
 export type MailActionGroupType = 'MAILBOX_ORDER' | 'WORK_OBJECTS' | 'EXTERNAL_SEND' | 'TRASH';
 export type MailActionPlanStatus = 'ANALYZING' | 'READY' | 'EXECUTING' | 'DONE' | 'CANCELLED';
 export type MailActionItemStatus =

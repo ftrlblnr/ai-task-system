@@ -12,10 +12,13 @@ import type {
   EventCardData,
   ToolActivityData,
   FilePartData,
+  MailPlanCardData,
+  MailDraftCardData,
   TaskStatus,
 } from '@ai-task-system/shared-types';
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
+import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
 import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
 import { TaskDetailOverlay } from './task-detail-overlay';
 
@@ -38,6 +41,10 @@ export function MessagePartRenderer({ part, fresh, streaming }: { part: MessageP
       return <ErrorPartView data={part.data as ErrorPartData} />;
     case 'file':
       return <FilePartView data={part.data as FilePartData} />;
+    case 'mail_plan_card':
+      return <MailPlanCard data={part.data as MailPlanCardData} />;
+    case 'mail_draft_card':
+      return <MailDraftCard data={part.data as MailDraftCardData} />;
     default:
       // Задел на будущий тип части, который этот интерфейс ещё не знает —
       // тихий fallback вместо падения, остальные части сообщения по-прежнему видны.

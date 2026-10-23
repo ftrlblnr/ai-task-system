@@ -138,7 +138,17 @@ export class MailComposeService {
 
   // Новый черновик; для ответа/пересылки — с готовыми получателями, темой и
   // (при пересылке) вложениями исходного письма.
-  async create(mailbox: MailboxRecord, mode: MailDraftMode, sourceMessageId?: string): Promise<DraftView> {
+  // init — черновик от ассистента (этап 3 почты): готовый текст, адресаты
+  // пересылки и ключ вызова инструмента (повтор возвращает тот же черновик).
+  async create(mailbox: MailboxRecord, mode: MailDraftMode, sourceMessageId?: string, init?: { body?: string; to?: string[]; sourceKey?: string }): Promise<DraftView> {
+    if (init?.sourceKey) {
+      const existing = await this.prisma.mailDraft.findUnique({ where: { sourceKey: init.sourceKey } });
+      if (existing) {
+        if (existing.mailboxId !== mailbox.id) throw new ConflictException('SOURCE_KEY_MISMATCH: ключ черновика занят');
+        return this.toView(existing, true);
+      }
+    }
+    if (init?.body !== undefined && init.body.length > MAX_BODY_CHARS) throw new BadRequestException('Слишком длинный текст письма');
     let data: Partial<MailDraft> = {};
     if (mode !== 'NEW') {
       if (!sourceMessageId) throw new BadRequestException('Не указано исходное письмо');
@@ -158,12 +168,13 @@ export class MailComposeService {
         mailboxId: mailbox.id,
         mode,
         sourceMessageId: mode === 'NEW' ? null : (sourceMessageId ?? null),
-        toAddresses: data.toAddresses ?? [],
+        toAddresses: normalizeAddressList(init?.to, 'Кому') ?? data.toAddresses ?? [],
         ccAddresses: data.ccAddresses ?? [],
         bccAddresses: [],
         subject: data.subject ?? '',
-        body: '',
+        body: init?.body ?? '',
         forwardAttachmentIds: data.forwardAttachmentIds ?? [],
+        sourceKey: init?.sourceKey ?? null,
       },
     });
     return this.toView(draft, true);

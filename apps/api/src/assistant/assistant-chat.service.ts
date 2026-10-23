@@ -7,7 +7,7 @@ import { FilesService } from '../files/files.service';
 import { AssistantReplyService, type ReplyHistoryItem, type AssistantReplyResult } from './assistant-reply.service';
 import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
-import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
+import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
 // же порядок величины, что VOICE_HISTORY_LIMIT в voice.service.ts, здесь не
@@ -77,6 +77,16 @@ export function serializeMessageForModelContext(parts: MessagePart[]): string {
         case MessagePartType.FILE: {
           const d = p.data as unknown as FilePartData;
           return `[file]\nid=${d.fileId}\nname=${d.name}\nmimeType=${d.mimeType}`;
+        }
+        // Почта, этап 3: что было предложено/подготовлено — но не исполнено,
+        // пока пользователь не нажал кнопку в карточке.
+        case MessagePartType.MAIL_PLAN_CARD: {
+          const d = p.data as unknown as MailPlanCardData;
+          return `[shown_mail_plan]\nid=${d.planId}\nactions=${d.actions.map((a) => `${a.type}:${a.count}`).join(',')}\nstatus=awaiting_user_confirmation`;
+        }
+        case MessagePartType.MAIL_DRAFT_CARD: {
+          const d = p.data as unknown as MailDraftCardData;
+          return `[shown_mail_draft]\nid=${d.draftId}\nsubject=${d.subject}\nto=${d.to.join(',')}\nstatus=awaiting_user_send`;
         }
         default:
           return null;

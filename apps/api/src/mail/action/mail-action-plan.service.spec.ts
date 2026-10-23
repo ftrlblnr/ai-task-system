@@ -24,6 +24,18 @@ describe('MailActionPlanService (ТЗ разд. 4/6/14)', () => {
     expect(plan.ownerId).toBe('owner');
   });
 
+  // Этап 3 почты — план от ассистента сразу READY, повтор того же ответа не дублирует.
+  it('createReadyPlan: сразу READY с пунктами; тот же ключ — тот же план', async () => {
+    const candidate = { localId: 'c1', type: 'ARCHIVE' as const, stableObjectIds: ['msg-1'], sourceLocators: { folderPath: 'INBOX', uidValidity: '1', uid: 5 }, reason: 'рассылка', parameters: {} };
+    const plan = await service.createReadyPlan('owner', 'mbx-1', 'Убери рассылки', [candidate], 'chat:m1:0:mbx-1');
+    expect(plan.status).toBe('READY');
+    const again = await service.createReadyPlan('owner', 'mbx-1', 'Убери рассылки', [candidate], 'chat:m1:0:mbx-1');
+    expect(again.id).toBe(plan.id);
+    expect(prisma.plans).toHaveLength(1);
+    expect(prisma.items).toHaveLength(1);
+    await expect(service.createReadyPlan('other', 'mbx-1', 'x', [candidate], 'chat:m1:0:mbx-1')).rejects.toBeInstanceOf(ConflictException);
+  });
+
   it('attachAnalysisResult создаёт пункты и переводит план в READY', async () => {
     const plan = await service.createPlan('owner', 'mbx-1', {
       requestText: 'архивируй старое',

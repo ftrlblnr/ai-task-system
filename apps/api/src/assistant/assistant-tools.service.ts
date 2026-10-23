@@ -13,7 +13,10 @@ import { AuditService } from '../audit/audit.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import { withLocalOffset } from '../common/timezone';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import type { TaskCardData, EventCardData, FilePartData } from './dto/message-part-data.dto';
+import type { TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
+import { MailActionPlanService } from '../mail/action/mail-action-plan.service';
+import { MailComposeService, type DraftView } from '../mail/mail-compose.service';
+import { buildMailPlanCandidates, MAIL_TOOL_ACTION_TYPES, MAX_MAIL_TOOL_ACTIONS, parseMailToolActions, summarizeCandidates } from './assistant-mail-actions';
 import { buildTasksWorkbookBuffer } from './task-export';
 import { isManager } from '../auth/roles';
 import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service';
@@ -119,7 +122,9 @@ type KnownToolName =
   | 'get_email'
   | 'legal_ask'
   | 'legal_review_contract'
-  | 'legal_review_status';
+  | 'legal_review_status'
+  | 'propose_mail_actions'
+  | 'draft_mail_reply';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -135,6 +140,8 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'legal_ask') return 'legal_ask';
   if (name === 'legal_review_contract') return 'legal_review_contract';
   if (name === 'legal_review_status') return 'legal_review_status';
+  if (name === 'propose_mail_actions') return 'propose_mail_actions';
+  if (name === 'draft_mail_reply') return 'draft_mail_reply';
   return 'get_tasks';
 }
 
@@ -146,7 +153,10 @@ function resolveToolName(name: string): KnownToolName {
 // счётчик, иначе ретрай с другим числом read-вызовов даёт другой dedupeKey.
 // legal_review_contract (агент-юрист) ставит платное фоновое задание —
 // тоже write: его ключ идемпотентности строится из writeToolCallIndex.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract']);
+// Почта, этап 3: propose_mail_actions/draft_mail_reply сами ничего не
+// исполняют (план и черновик ждут кнопки), но создают записи — их ключ
+// тоже строится из writeToolCallIndex.
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply']);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -173,6 +183,8 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   legal_ask: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ',
   legal_review_contract: 'LEGAL_REVIEW_FAILED: не удалось запустить разбор договора',
   legal_review_status: 'LEGAL_REVIEW_LOOKUP_FAILED: не удалось получить статус разборов',
+  propose_mail_actions: 'MAIL_PLAN_FAILED: не удалось подготовить действия с письмами',
+  draft_mail_reply: 'MAIL_DRAFT_FAILED: не удалось подготовить письмо',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -247,6 +259,8 @@ export type ToolExecutionResult =
   | { tool: 'legal_ask'; answer: LegalAnswer; markdown: string }
   | { tool: 'legal_review_contract'; review: LegalReviewView; alreadyStarted: boolean }
   | { tool: 'legal_review_status'; items: LegalReviewView[] }
+  | { tool: 'propose_mail_actions'; plans: MailPlanCardData[]; unknownEmailIds: string[] }
+  | { tool: 'draft_mail_reply'; draft: MailDraftCardData }
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -262,6 +276,20 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
       shown_to_user: true,
       norms_cited: result.answer.citations.length,
       note: 'Ответ юриста с нормами и цитатами интерфейс покажет пользователю отдельным блоком сразу под твоим сообщением. Напиши одно короткое предложение-связку, не пересказывай вывод и нормы.',
+    };
+  }
+  if (result.tool === 'propose_mail_actions') {
+    return {
+      ...result,
+      executed: false,
+      note: 'Ничего ещё не выполнено. Пользователь видит карточку со списком действий и кнопкой «Подтвердить» — выполнится только после неё. Коротко скажи, что подготовил, и попроси подтвердить; не пиши, что письма уже перемещены.',
+    };
+  }
+  if (result.tool === 'draft_mail_reply') {
+    return {
+      ...result,
+      sent: false,
+      note: 'Письмо НЕ отправлено. Пользователь видит карточку с текстом письма и кнопкой «Отправить» — уйдёт только после неё. Не повторяй текст письма целиком, коротко скажи, что черновик готов к проверке.',
     };
   }
   return result;
@@ -296,6 +324,9 @@ export class AssistantToolsService {
     @Optional() private readonly legal?: LegalAgentService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly legalReviews?: LegalReviewService,
+    // Почта, этап 3 — без них (юнит-тесты) пишущие почтовые инструменты не предлагаются.
+    @Optional() private readonly mailPlans?: MailActionPlanService,
+    @Optional() private readonly mailCompose?: MailComposeService,
   ) {}
 
   private legalAvailable(user: AuthenticatedUser): boolean {
@@ -476,6 +507,51 @@ export class AssistantToolsService {
           required: ['emailId'],
         },
       });
+      if (this.mailPlans) {
+        tools.push({
+          name: 'propose_mail_actions',
+          description:
+            'Предложить действия с конкретными письмами: в архив, переместить в папку, в корзину, отметить прочитанным/непрочитанным, поставить/снять флажок. Вызывай, когда пользователь просит навести порядок или что-то сделать с письмами. Ничего не выполняется сразу: пользователь увидит карточку и подтвердит её кнопкой. emailId — только из результатов search_emails/get_email, не выдумывай. MOVE — folderPath обязателен и должен быть существующей папкой ящика (если папка не найдена, инструмент вернёт список папок). Для остальных действий folderPath — null.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              request: { type: 'string', description: 'Просьба пользователя одной фразой — заголовок плана' },
+              actions: {
+                type: 'array',
+                maxItems: MAX_MAIL_TOOL_ACTIONS,
+                items: {
+                  type: 'object',
+                  properties: {
+                    emailId: { type: 'string' },
+                    type: { type: 'string', enum: [...MAIL_TOOL_ACTION_TYPES] },
+                    folderPath: { type: ['string', 'null'] },
+                    reason: { type: 'string', description: 'Коротко, почему именно это письмо' },
+                  },
+                  required: ['emailId', 'type', 'folderPath', 'reason'],
+                },
+              },
+            },
+            required: ['request', 'actions'],
+          },
+        });
+      }
+      if (this.mailCompose) {
+        tools.push({
+          name: 'draft_mail_reply',
+          description:
+            'Подготовить ответ или пересылку конкретного письма. Письмо НЕ отправляется: пользователь увидит карточку с текстом и сам нажмёт «Отправить» или поправит. Вызывай, когда просят ответить, написать ответ, переслать. emailId — из search_emails/get_email. mode: reply — ответить отправителю, reply_all — ответить всем, forward — переслать (тогда to обязателен: адреса получателей). body — только твой текст письма, без цитаты исходного (цитату и тему «Re:/Fwd:» сервер добавит сам), без подписи-заглушки вроде «[Ваше имя]». Пиши от лица пользователя, вежливо и по делу, в стиле деловой переписки.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              emailId: { type: 'string' },
+              mode: { type: 'string', enum: ['reply', 'reply_all', 'forward'] },
+              body: { type: 'string' },
+              to: { type: 'array', items: { type: 'string' }, description: 'Только для forward — адреса получателей' },
+            },
+            required: ['emailId', 'mode', 'body'],
+          },
+        });
+      }
     }
 
     // Агент-юрист (handoff 21.10.2026) — доступен всем ролям, пока
@@ -600,6 +676,14 @@ export class AssistantToolsService {
       if (name === 'get_email') {
         const emailId = (input as { emailId?: unknown } | null)?.emailId;
         return await this.getEmail(typeof emailId === 'string' ? emailId : '', user);
+      }
+      if (name === 'propose_mail_actions' || name === 'draft_mail_reply') {
+        if (!userMessageId || writeToolCallIndex === undefined) {
+          // Как у create_task_from_meeting: без идентичности вызова нет ключа идемпотентности.
+          throw new Error(`${name}: отсутствует userMessageId/writeToolCallIndex`);
+        }
+        const key = `chat:${userMessageId}:${writeToolCallIndex}`;
+        return name === 'propose_mail_actions' ? await this.proposeMailActions(input, user, key) : await this.draftMailReply(input, user, key);
       }
       if (name === 'legal_ask') {
         const question = (input as { question?: unknown } | null)?.question;
@@ -1154,5 +1238,76 @@ export class AssistantToolsService {
         actionSummary: message.analysis?.actionSummary ?? null,
       },
     };
+  }
+
+  // Почта, этап 3 — план действий на каждый затронутый ящик; исполнение
+  // только после «Подтвердить» в карточке (тот же движок согласования, что
+  // вкладка «Разбор» на /mail).
+  private async proposeMailActions(input: unknown, user: AuthenticatedUser, key: string): Promise<ToolExecutionResult> {
+    const mailboxIds = await this.requireMailboxId(user);
+    if (!Array.isArray(mailboxIds)) return { tool: 'propose_mail_actions', ...mailboxIds };
+    const typed = input as { request?: unknown; actions?: unknown } | null;
+    const actions = parseMailToolActions(typed?.actions);
+    if (actions.length === 0) return { tool: 'propose_mail_actions', error: true, message: 'INVALID_INPUT: нет ни одного корректного действия' };
+
+    const messages = await this.prisma.emailMessage.findMany({
+      where: { id: { in: [...new Set(actions.map((a) => a.emailId))] }, mailboxId: { in: mailboxIds } },
+      select: { id: true, mailboxId: true, uid: true, folder: { select: { path: true, uidValidity: true } } },
+    });
+    const foldersByMailbox = new Map<string, ReadonlySet<string>>();
+    for (const mailboxId of new Set(messages.map((m) => m.mailboxId))) {
+      foldersByMailbox.set(mailboxId, new Set((await this.mailStore.listFolders(mailboxId)).map((f) => f.path)));
+    }
+    const draft = buildMailPlanCandidates(actions, messages, foldersByMailbox);
+    if (draft.missingFolders.length > 0) {
+      const available = [...new Set([...foldersByMailbox.values()].flatMap((f) => [...f]))].join(', ');
+      return {
+        tool: 'propose_mail_actions',
+        error: true,
+        message: `FOLDER_NOT_FOUND: нет папки ${[...new Set(draft.missingFolders)].map((f) => `«${f}»`).join(', ')}. Папки ящика: ${available || '(нет)'}. Выбери существующую или спроси пользователя.`,
+      };
+    }
+    if (draft.byMailbox.size === 0) return { tool: 'propose_mail_actions', error: true, message: 'EMAIL_NOT_FOUND: письма не найдены в почте пользователя — найди их через search_emails' };
+
+    const request = typeof typed?.request === 'string' && typed.request.trim() ? typed.request.trim() : 'Действия с письмами';
+    const plans: MailPlanCardData[] = [];
+    for (const [mailboxId, candidates] of draft.byMailbox) {
+      const mailbox = await this.mailStore.findOwnedMailbox(user.id, mailboxId);
+      if (!mailbox) continue;
+      const plan = await this.mailPlans!.createReadyPlan(user.id, mailboxId, request, candidates, `${key}:${mailboxId}`);
+      plans.push({ planId: plan.id, mailboxId, mailboxAddress: mailbox.emailAddress, actions: summarizeCandidates(candidates), itemCount: candidates.length });
+    }
+    await this.audit.log(user.id, 'AI_MAIL_PLAN_PROPOSED', 'MailActionPlan', plans.map((p) => p.planId).join(','), { itemCount: plans.reduce((n, p) => n + p.itemCount, 0) });
+    return { tool: 'propose_mail_actions', plans, unknownEmailIds: draft.unknownEmailIds };
+  }
+
+  // Почта, этап 3 — черновик ответа/пересылки; уходит только по кнопке
+  // «Отправить» в карточке (POST /mail/drafts/:id/send, аудит MAIL_SENT там).
+  private async draftMailReply(input: unknown, user: AuthenticatedUser, key: string): Promise<ToolExecutionResult> {
+    const mailboxIds = await this.requireMailboxId(user);
+    if (!Array.isArray(mailboxIds)) return { tool: 'draft_mail_reply', ...mailboxIds };
+    const typed = input as { emailId?: unknown; mode?: unknown; body?: unknown; to?: unknown } | null;
+    const modes = { reply: 'REPLY', reply_all: 'REPLY_ALL', forward: 'FORWARD' } as const;
+    const mode = typeof typed?.mode === 'string' && typed.mode in modes ? modes[typed.mode as keyof typeof modes] : null;
+    const body = typeof typed?.body === 'string' ? typed.body.trim() : '';
+    const to = Array.isArray(typed?.to) ? typed.to.filter((a): a is string => typeof a === 'string') : [];
+    if (typeof typed?.emailId !== 'string' || !mode || !body) return { tool: 'draft_mail_reply', error: true, message: 'INVALID_INPUT: нужны emailId, mode и body' };
+    if (mode === 'FORWARD' && to.length === 0) return { tool: 'draft_mail_reply', error: true, message: 'MISSING_RECIPIENTS: для пересылки укажи адреса в to — спроси пользователя, кому переслать' };
+
+    const message = await this.prisma.emailMessage.findFirst({ where: { id: typed.emailId, mailboxId: { in: mailboxIds } }, select: { mailboxId: true } });
+    if (!message) return { tool: 'draft_mail_reply', error: true, message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя' };
+    const owned = await this.mailStore.findOwnedMailbox(user.id, message.mailboxId);
+    const mailbox = owned ? await this.mailStore.getMailbox(owned.id) : null;
+    if (!mailbox) return { tool: 'draft_mail_reply', error: true, message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя' };
+
+    let draft: DraftView;
+    try {
+      draft = await this.mailCompose!.create(mailbox, mode, typed.emailId, { body, to: mode === 'FORWARD' ? to : undefined, sourceKey: key });
+    } catch (err) {
+      if (err instanceof BadRequestException) return { tool: 'draft_mail_reply', error: true, message: `INVALID_INPUT: ${err.message}` };
+      throw err;
+    }
+    await this.audit.log(user.id, 'AI_MAIL_DRAFT_PREPARED', 'MailDraft', draft.id, { mode });
+    return { tool: 'draft_mail_reply', draft: { draftId: draft.id, mailboxId: mailbox.id, mode, subject: draft.subject, to: draft.to } };
   }
 }

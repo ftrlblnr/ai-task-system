@@ -55,3 +55,22 @@ export interface FilePartData {
   mimeType: string;
   size: number;
 }
+
+// Почта, этап 3 (23.10.2026) — карточки предложений ассистента. Состояние
+// (пункты, статусы, текст письма) карточка читает живьём по id — здесь только
+// то, что нужно для заголовка и для контекста модели в истории.
+export interface MailPlanCardData {
+  planId: string;
+  mailboxId: string;
+  mailboxAddress: string;
+  actions: { type: string; count: number }[];
+  itemCount: number;
+}
+
+export interface MailDraftCardData {
+  draftId: string;
+  mailboxId: string;
+  mode: 'REPLY' | 'REPLY_ALL' | 'FORWARD';
+  subject: string;
+  to: string[];
+}

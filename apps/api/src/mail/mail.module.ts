@@ -54,7 +54,7 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
     MailActionExecutorRegistry,
     MailActionSessionFactory,
   ],
-  exports: [MailStore, MailQueryService, MailActionExecutorRegistry],
+  exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService],
 })
 export class MailModule implements OnModuleInit {
   constructor(private readonly executors: MailActionExecutorRegistry) {}

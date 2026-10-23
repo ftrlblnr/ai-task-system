@@ -114,6 +114,31 @@ export class MailActionPlanService {
     });
   }
 
+  // Этап 3 почты (23.10.2026) — план от ассистента в чате: пункты уже
+  // выбраны моделью по конкретным письмам, анализ не нужен — план сразу
+  // READY и ждёт «Подтвердить» в карточке. sourceKey — ключ вызова
+  // инструмента: повтор того же ответа возвращает уже созданный план.
+  async createReadyPlan(ownerId: string, mailboxId: string, requestText: string, candidates: MailActionCandidate[], sourceKey: string) {
+    let plan = await this.prisma.mailActionPlan.findUnique({ where: { sourceKey } });
+    if (plan && (plan.ownerId !== ownerId || plan.mailboxId !== mailboxId)) throw new ConflictException('SOURCE_KEY_MISMATCH: ключ плана занят');
+    if (!plan) {
+      try {
+        plan = await this.prisma.mailActionPlan.create({
+          data: { ownerId, mailboxId, requestText: requestText.slice(0, 2000), sourceKey, scope: { folderPaths: null, since: null, until: null, source: 'assistant' }, snapshotAt: new Date() },
+        });
+      } catch (err) {
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
+        plan = await this.prisma.mailActionPlan.findUniqueOrThrow({ where: { sourceKey } });
+      }
+    }
+    // Сбой между созданием плана и пунктов оставил бы его ANALYZING навсегда — повтор доводит до READY.
+    if (plan.status === 'ANALYZING') {
+      await this.attachAnalysisResult(plan.id, candidates, { source: 'assistant', proposedCount: candidates.length });
+      plan = await this.prisma.mailActionPlan.findUniqueOrThrow({ where: { id: plan.id } });
+    }
+    return plan;
+  }
+
   // Раздел 6 ТЗ — анализатор (#123) зовёт это ОДИН раз на план, когда
   // закончил разбор requestText против содержимого ящика: создаёт пункты
   // статусом NEEDS_REVIEW (уже можно согласовывать) и переводит план

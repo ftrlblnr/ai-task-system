@@ -1,5 +1,5 @@
 import { Conversation, Message, MessagePart, MessagePartType, MessageRole, MessageStatus } from '@prisma/client';
-import type { MarkdownPartData, ErrorPartData, TaskCardData, EventCardData, ToolActivityData, FilePartData } from './dto/message-part-data.dto';
+import type { MarkdownPartData, ErrorPartData, TaskCardData, EventCardData, ToolActivityData, FilePartData, MailPlanCardData, MailDraftCardData } from './dto/message-part-data.dto';
 
 // Публичный HTTP-контракт (packages/shared-types) объявляет role/status/
 // type строчными строками ('user'/'completed'/'markdown'), а Prisma-enum'ы
@@ -19,20 +19,24 @@ const STATUS_MAP: Record<MessageStatus, 'pending' | 'streaming' | 'completed' | 
   [MessageStatus.FAILED]: 'failed',
 };
 
-const PART_TYPE_MAP: Record<MessagePartType, 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error'> = {
+type ResponsePartType = 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error' | 'mail_plan_card' | 'mail_draft_card';
+
+const PART_TYPE_MAP: Record<MessagePartType, ResponsePartType> = {
   [MessagePartType.MARKDOWN]: 'markdown',
   [MessagePartType.TASK_CARD]: 'task_card',
   [MessagePartType.EVENT_CARD]: 'event_card',
   [MessagePartType.FILE]: 'file',
   [MessagePartType.TOOL_ACTIVITY]: 'tool_activity',
   [MessagePartType.ERROR]: 'error',
+  [MessagePartType.MAIL_PLAN_CARD]: 'mail_plan_card',
+  [MessagePartType.MAIL_DRAFT_CARD]: 'mail_draft_card',
 };
 
 export interface ResponseMessagePart {
   id: string;
-  type: 'markdown' | 'task_card' | 'event_card' | 'file' | 'tool_activity' | 'error';
+  type: ResponsePartType;
   order: number;
-  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData;
+  data: MarkdownPartData | ErrorPartData | TaskCardData | EventCardData | ToolActivityData | FilePartData | MailPlanCardData | MailDraftCardData;
 }
 
 export interface ResponseMessage {

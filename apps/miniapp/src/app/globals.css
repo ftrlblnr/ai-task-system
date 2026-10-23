@@ -1030,3 +1030,20 @@ select {
 .trip-change-row dt { color: var(--ink-3); }
 .trip-change-row dd { margin: 0; overflow-wrap: anywhere; }
 .trip-change-before { color: var(--ink-3); text-decoration: line-through; }
+
+/* Почта, этап 3: карточки ассистента в чате (предложенные действия, письмо к отправке) */
+.mail-card { display: flex; flex-direction: column; gap: 8px; }
+.mail-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mail-card-head strong { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.mail-card-sub { margin: 0; }
+.mail-card-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.mail-card-items li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mail-card-items li.is-off { opacity: 0.5; text-decoration: line-through; }
+.mail-card-action { color: var(--ink-2); white-space: nowrap; }
+.mail-card-subject { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.mail-card-fields { display: grid; gap: 2px; margin: 0; font-size: 13px; }
+.mail-card-fields div { display: grid; grid-template-columns: 72px 1fr; gap: 8px; }
+.mail-card-fields dt { color: var(--ink-3); }
+.mail-card-fields dd { margin: 0; overflow-wrap: anywhere; }
+.mail-card-body { white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.mail-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }

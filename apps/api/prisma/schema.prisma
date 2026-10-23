@@ -240,6 +240,10 @@ enum MessagePartType {
   FILE
   TOOL_ACTIVITY
   ERROR
+  // Почта, этап 3 (23.10.2026): ассистент предлагает действия с письмами /
+  // готовит письмо — исполнение только по кнопке пользователя в карточке.
+  MAIL_PLAN_CARD
+  MAIL_DRAFT_CARD
 }
 
 // data — Json, не отдельные колонки на каждый тип: тот же приём, что
@@ -1492,6 +1496,9 @@ model MailActionPlan {
   mailboxId   String
   mailbox     Mailbox  @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
   requestText String
+  // План от ассистента в чате (этап 3 почты): `chat:<userMessageId>:<n>:<mailboxId>` —
+  // повтор того же ответа не создаёт второй план.
+  sourceKey   String?  @unique
 
   // Охват (раздел 4 ТЗ): ящик/папки/период/критерий/разрешённые типы —
   // одним Json, не отдельными колонками, состав охвата описан ТЗ подробно и
@@ -1647,6 +1654,8 @@ model MailDraft {
   mailboxId            String
   mailbox              Mailbox        @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
   mode                 MailDraftMode  @default(NEW)
+  // Черновик от ассистента в чате (этап 3 почты) — ключ вызова инструмента.
+  sourceKey            String?        @unique
   // Письмо, на которое отвечаем / которое пересылаем (EmailMessage.id).
   sourceMessageId      String?
   // Оптимистическая блокировка автосохранения.

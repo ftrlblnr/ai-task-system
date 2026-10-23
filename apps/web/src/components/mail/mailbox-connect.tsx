@@ -11,7 +11,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control';
 
 // Подключение ящика (владелец 23.10.2026): Mail.ru — пресет серверов и
 // пароль приложения; «Другой сервер» — корпоративная почта с теми же
-// настройками IMAP/SMTP, что в Outlook. Пароль уходит один раз и нигде не
+// настройками IMAP/SMTP, что в любой почтовой программе. Пароль уходит один раз и нигде не
 // отображается.
 
 type Security = 'ssl' | 'starttls';
@@ -100,8 +100,8 @@ export function MailboxConnectCard({ onConnected, onCancel }: { onConnected: (ma
         </ol>
       ) : (
         <p className="ds-field-hint" style={{ margin: 0 }}>
-          Те же настройки, что в Outlook: «Файл» → «Настройка учётных записей» → ящик → «Изменить» → «Дополнительные параметры». Пароль хранится
-          только в зашифрованном виде.
+          Адреса серверов и порты выдаёт администратор вашей почты — те же, что вводят в любой почтовой программе. Пароль хранится только в
+          зашифрованном виде.
         </p>
       )}
       <form onSubmit={connect} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 16 }}>
