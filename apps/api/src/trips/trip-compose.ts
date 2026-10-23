@@ -1,4 +1,5 @@
 import type { TripExtractedContact, TripExtractedFactEntry, TripExtractedLeg, TripExtractedStay, TripExtractionDraft, TripExtractedEvent } from './trip-extraction';
+import { TIMEZONE_OFFSET_STRING } from '../common/timezone';
 
 // Агент поездок (ТЗ 08.10.2026, раздел 4/5) — чистая сборка карточки поездки
 // из извлечённых по каждому материалу фактов. Раздел 4: "статус времени
@@ -77,9 +78,15 @@ export interface ComposedTrip {
   issues: string[];
 }
 
+// Время без пояса («2026-10-24T09:00:00») раньше читалось сервером как UTC —
+// пункт программы съезжал на 5–8 часов (владелец 23.10.2026: поездка
+// Казахстан + Пекин). Теперь такое время — по Казахстану; пояс места модель
+// указывает сама (промпт извлечения), ручной ввод — выбором пояса.
+const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
 export function parseDateOrNull(value: string | null): Date | null {
   if (!value) return null;
-  const d = new Date(value);
+  const d = new Date(NAIVE_DATETIME.test(value) ? `${value}${TIMEZONE_OFFSET_STRING}` : value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 

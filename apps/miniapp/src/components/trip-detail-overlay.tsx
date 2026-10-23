@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Clock, MapPin, Phone } from 'lucide-react';
 import type { ProposedChangeItem, TripDetail, TripRevisionItem } from '@ai-task-system/shared-types';
+import { buildTripTimeline, formatDayKey, formatZoneTime, zoneDayKey, zoneShortName } from '@ai-task-system/shared-types';
+import { TripProgram, type TripProgramEntry } from './trip-program';
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
 import { OverlayPortal } from './overlay-portal';
@@ -25,36 +27,30 @@ function fmtDateTime(value: string | null): string {
 }
 
 interface NextThing {
-  kind: 'leg' | 'event' | 'stay';
   title: string;
-  at: string;
+  at: number;
+  offset: number;
   location: string | null;
   contact: string | null;
 }
 
-// Раздел 11 ТЗ — режим "В дороге": следующее событие, локальное время,
-// адрес, контакт. Без тикетов/статуса рейса в реальном времени (раздел 5
-// ТЗ — "информация по билету, не живой статус рейса").
+// Раздел 11 ТЗ — режим "В дороге": следующее событие, локальное время
+// (по месту — владелец 23.10.2026), адрес, контакт. Без тикетов/статуса рейса
+// в реальном времени (раздел 5 ТЗ — "информация по билету, не живой статус рейса").
 function computeNextThing(trip: TripDetail): NextThing | null {
   const now = Date.now();
-  const candidates: NextThing[] = [];
-  for (const leg of trip.legs) {
-    if (leg.departAt && new Date(leg.departAt).getTime() > now) {
-      candidates.push({ kind: 'leg', title: `${LEG_MODE_LABELS[leg.mode]}: ${leg.fromLocation ?? '?'} → ${leg.toLocation ?? '?'}`, at: leg.departAt, location: leg.fromLocation, contact: leg.carrier });
-    }
+  const next = buildTripTimeline(trip).find((e) => e.start !== null && e.start > now);
+  if (!next || next.start === null) return null;
+  if (next.kind === 'leg') {
+    const leg = next.item as TripDetail['legs'][number];
+    return { title: `${LEG_MODE_LABELS[leg.mode]}: ${leg.fromLocation ?? '?'} → ${leg.toLocation ?? '?'}`, at: next.start, offset: next.offset, location: leg.fromLocation, contact: leg.carrier };
   }
-  for (const event of trip.events) {
-    if (event.startAt && new Date(event.startAt).getTime() > now) {
-      candidates.push({ kind: 'event', title: event.title, at: event.startAt, location: event.location, contact: null });
-    }
+  if (next.kind === 'stay') {
+    const stay = next.item as TripDetail['stays'][number];
+    return { title: stay.name ?? 'Проживание', at: next.start, offset: next.offset, location: stay.address, contact: null };
   }
-  for (const stay of trip.stays) {
-    if (stay.checkInAt && new Date(stay.checkInAt).getTime() > now) {
-      candidates.push({ kind: 'stay', title: stay.name ?? 'Проживание', at: stay.checkInAt, location: stay.address, contact: null });
-    }
-  }
-  candidates.sort((a, b) => a.at.localeCompare(b.at));
-  return candidates[0] ?? null;
+  const event = next.item as TripDetail['events'][number];
+  return { title: event.title, at: next.start, offset: next.offset, location: event.location, contact: null };
 }
 
 export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: string; onClose: () => void; onChanged: () => void }) {
@@ -97,54 +93,62 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
   const pendingChanges = (changes ?? []).filter((c) => c.status === 'PENDING');
   const nextThing = trip ? computeNextThing(trip) : null;
 
-  // Живой баг 08.10.2026 — программа в Mini App рендерилась тремя
-  // отдельными списками (все перелёты, потом все события, потом все
-  // проживания), не по хронологии. Тот же приём, что в web
-  // (apps/web/src/app/trips/[id]/page.tsx): один объединённый список,
-  // отсортированный по sortKey (ISO-строка или '9999' для неизвестного
-  // времени — такие уезжают в конец, не выдумываем им место).
-  const programItems = trip
-    ? [
-        ...trip.legs.map((leg) => ({
-          sortKey: leg.departAt ?? '9999',
-          node: (
-            <div key={`leg-${leg.id}`} className="task-card" style={{ display: 'block' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                <span>
-                  {LEG_MODE_LABELS[leg.mode]}: {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
-                </span>
-                <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
-              </div>
-              <div className="ds-field-hint">{leg.departAt ? fmtDateTime(leg.departAt) : 'Время не подтверждено'}</div>
-            </div>
-          ),
-        })),
-        ...trip.events.map((event) => ({
-          sortKey: event.startAt ?? event.dateOnly ?? '9999',
-          node: (
-            <div key={`event-${event.id}`} className="task-card" style={{ display: 'block' }}>
-              <div>{event.title}</div>
-              <div className="ds-field-hint">
-                {event.startAt ? fmtDateTime(event.startAt) : event.dateOnly ? `${event.dateOnly.slice(0, 10)} · время не подтверждено` : 'Дата не подтверждена'}
-                {event.location ? ` · ${event.location}` : ''}
-              </div>
-            </div>
-          ),
-        })),
-        ...trip.stays.map((stay) => ({
-          sortKey: stay.checkInAt ?? '9999',
-          node: (
-            <div key={`stay-${stay.id}`} className="task-card" style={{ display: 'block' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                <span>{stay.name ?? stay.address ?? 'Проживание'}</span>
-                <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
-              </div>
-              <div className="ds-field-hint">{stay.address ?? 'Адрес не указан'}</div>
-            </div>
-          ),
-        })),
-      ].sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-    : [];
+  function entryTitle(e: TripProgramEntry): string {
+    if (e.kind === 'leg') {
+      const leg = e.item as TripDetail['legs'][number];
+      return `${LEG_MODE_LABELS[leg.mode]} ${leg.fromLocation ?? '?'} → ${leg.toLocation ?? '?'}`;
+    }
+    if (e.kind === 'stay') return (e.item as TripDetail['stays'][number]).name ?? 'Проживание';
+    return (e.item as TripDetail['events'][number]).title;
+  }
+
+  // Один хронологический список по дням, время — по месту (общий компонент, см. trip-program.tsx).
+  function renderEntry(e: TripProgramEntry, when: string) {
+    if (e.kind === 'leg') {
+      const leg = e.item as TripDetail['legs'][number];
+      return (
+        <div className="task-card" style={{ display: 'block' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span>
+              {LEG_MODE_LABELS[leg.mode]}: {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
+            </span>
+            <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
+          </div>
+          <div className="ds-field-hint">
+            {leg.departAt ? when : 'Время не подтверждено'}
+            {leg.carrier ? ` · ${leg.carrier}` : ''}
+          </div>
+        </div>
+      );
+    }
+    if (e.kind === 'stay') {
+      const stay = e.item as TripDetail['stays'][number];
+      return (
+        <div className="task-card" style={{ display: 'block' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+            <span>{stay.name ?? stay.address ?? 'Проживание'}</span>
+            <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
+          </div>
+          <div className="ds-field-hint">
+            {stay.checkInAt ? `${when} · ` : ''}
+            {stay.address ?? 'Адрес не указан'}
+          </div>
+        </div>
+      );
+    }
+    const event = e.item as TripDetail['events'][number];
+    return (
+      <div className="task-card" style={{ display: 'block' }}>
+        <div>{event.title}</div>
+        <div className="ds-field-hint">
+          {when}
+          {event.location ? ` · ${event.location}` : ''}
+        </div>
+        {event.notes && <div className="ds-field-hint">{event.notes}</div>}
+      </div>
+    );
+  }
+  const hasProgram = trip ? trip.legs.length + trip.events.length + trip.stays.length > 0 : false;
 
   return (
     <OverlayPortal>
@@ -182,7 +186,10 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
                     <Card title="Ближайшее" tone="agent">
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Clock size={14} strokeWidth={1.75} />
-                        <strong>{fmtDateTime(nextThing.at)}</strong>
+                        <strong>
+                          {formatDayKey(zoneDayKey(nextThing.at, nextThing.offset))}, {formatZoneTime(nextThing.at, nextThing.offset)}
+                        </strong>
+                        <span className="ds-field-hint">{zoneShortName(nextThing.offset)}</span>
                       </div>
                       <p style={{ margin: '6px 0 0' }}>{nextThing.title}</p>
                       {nextThing.location && (
@@ -214,7 +221,7 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
 
               {tab === 'program' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {programItems.length === 0 ? <EmptyState title="Программа пока пуста" /> : programItems.map((i) => i.node)}
+                  {hasProgram ? <TripProgram trip={trip} entryTitle={entryTitle} renderEntry={renderEntry} /> : <EmptyState title="Программа пока пуста" />}
                 </div>
               )}
 

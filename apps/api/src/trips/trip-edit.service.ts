@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { extractUtcOffsetMinutes, parseDateOrNull } from './trip-compose';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { TripRightsService } from './trip-rights.service';
 import { UpdateTripDto } from './dto/update-trip.dto';
@@ -16,7 +17,14 @@ import { UpdateExtractedFactDto } from './dto/update-extracted-fact.dto';
 
 function toDateOrUndefined(value: string | null | undefined): Date | null | undefined {
   if (value === undefined) return undefined;
-  return value === null ? null : new Date(value);
+  return parseDateOrNull(value);
+}
+
+// Пояс из самой строки времени («…+08:00»), если отдельно не передан.
+function offsetFor(explicit: number | null | undefined, value: string | null | undefined): number | null | undefined {
+  if (explicit !== undefined) return explicit;
+  if (value === undefined) return undefined;
+  return extractUtcOffsetMinutes(value);
 }
 
 // Приоритет 2 ТЗ — ручные правки отдельно от предложений
@@ -52,7 +60,15 @@ export class TripEditService {
   async createLeg(user: AuthenticatedUser, tripId: string, dto: CreateTripLegDto) {
     await this.rights.assertPermission(tripId, user, 'edit');
     const created = await this.prisma.tripLeg.create({
-      data: { ...dto, tripId, departAt: toDateOrUndefined(dto.departAt) ?? null, arriveAt: toDateOrUndefined(dto.arriveAt) ?? null, sourceMaterialId: null },
+      data: {
+        ...dto,
+        tripId,
+        departAt: toDateOrUndefined(dto.departAt) ?? null,
+        departTimeZoneOffsetMinutes: offsetFor(dto.departTimeZoneOffsetMinutes, dto.departAt) ?? null,
+        arriveAt: toDateOrUndefined(dto.arriveAt) ?? null,
+        arriveTimeZoneOffsetMinutes: offsetFor(dto.arriveTimeZoneOffsetMinutes, dto.arriveAt) ?? null,
+        sourceMaterialId: null,
+      },
     });
     await this.recordRevision(user.id, tripId, 'TRIP_LEG', created.id, 'Перелёт/переезд добавлен вручную');
     return created;
@@ -63,7 +79,13 @@ export class TripEditService {
     await this.assertBelongsToTrip('tripLeg', legId, tripId);
     const updated = await this.prisma.tripLeg.update({
       where: { id: legId },
-      data: { ...dto, departAt: toDateOrUndefined(dto.departAt), arriveAt: toDateOrUndefined(dto.arriveAt) },
+      data: {
+        ...dto,
+        departAt: toDateOrUndefined(dto.departAt),
+        departTimeZoneOffsetMinutes: offsetFor(dto.departTimeZoneOffsetMinutes, dto.departAt),
+        arriveAt: toDateOrUndefined(dto.arriveAt),
+        arriveTimeZoneOffsetMinutes: offsetFor(dto.arriveTimeZoneOffsetMinutes, dto.arriveAt),
+      },
     });
     await this.recordRevision(user.id, tripId, 'TRIP_LEG', legId, 'Перелёт/переезд отредактирован вручную');
     return updated;
@@ -79,7 +101,7 @@ export class TripEditService {
   async createEvent(user: AuthenticatedUser, tripId: string, dto: CreateTripEventDto) {
     await this.rights.assertPermission(tripId, user, 'edit');
     const created = await this.prisma.tripEvent.create({
-      data: { ...dto, tripId, startAt: toDateOrUndefined(dto.startAt) ?? null, dateOnly: toDateOrUndefined(dto.dateOnly) ?? null, endAt: toDateOrUndefined(dto.endAt) ?? null, sourceMaterialId: null },
+      data: { ...dto, tripId, startAt: toDateOrUndefined(dto.startAt) ?? null, startTimeZoneOffsetMinutes: offsetFor(dto.startTimeZoneOffsetMinutes, dto.startAt) ?? null, dateOnly: toDateOrUndefined(dto.dateOnly) ?? null, endAt: toDateOrUndefined(dto.endAt) ?? null, sourceMaterialId: null },
     });
     await this.recordRevision(user.id, tripId, 'TRIP_EVENT', created.id, 'Событие программы добавлено вручную');
     return created;
@@ -90,7 +112,7 @@ export class TripEditService {
     await this.assertBelongsToTrip('tripEvent', eventId, tripId);
     const updated = await this.prisma.tripEvent.update({
       where: { id: eventId },
-      data: { ...dto, startAt: toDateOrUndefined(dto.startAt), dateOnly: toDateOrUndefined(dto.dateOnly), endAt: toDateOrUndefined(dto.endAt) },
+      data: { ...dto, startAt: toDateOrUndefined(dto.startAt), startTimeZoneOffsetMinutes: offsetFor(dto.startTimeZoneOffsetMinutes, dto.startAt), dateOnly: toDateOrUndefined(dto.dateOnly), endAt: toDateOrUndefined(dto.endAt) },
     });
     await this.recordRevision(user.id, tripId, 'TRIP_EVENT', eventId, 'Событие программы отредактировано вручную');
     return updated;

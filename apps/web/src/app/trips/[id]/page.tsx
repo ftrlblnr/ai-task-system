@@ -35,6 +35,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select } from '@/components/ui/field';
 import { FileChip } from '@/components/ui/file-chip';
+import { TripProgram, type TripProgramEntry } from '@/components/trips/trip-program';
 
 type Tab = 'overview' | 'program' | 'changes' | 'people' | 'history';
 
@@ -47,9 +48,6 @@ const RUN_TERMINAL = new Set(['READY', 'READY_WITH_ISSUES', 'FAILED']);
 
 function fmtDateTime(value: string | null): string {
   return value ? new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-}
-function fmtDate(value: string | null): string {
-  return value ? new Date(value).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
 }
 
 function useIdempotencyKey(): { key: () => string; reset: () => void } {
@@ -91,7 +89,7 @@ function DeleteButton({ onConfirm, confirmText }: { onConfirm: () => void; confi
   );
 }
 
-function LegRow({ leg, canEdit, onDeleted }: { leg: TripLegItem; canEdit: boolean; onDeleted: () => void }) {
+function LegRow({ leg, when, canEdit, onDeleted }: { leg: TripLegItem; when: string; canEdit: boolean; onDeleted: () => void }) {
   const [error, setError] = useState<string | null>(null);
   async function remove() {
     try {
@@ -113,8 +111,7 @@ function LegRow({ leg, canEdit, onDeleted }: { leg: TripLegItem; canEdit: boolea
             </span>
           </div>
           <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
-            {leg.departAt ? fmtDateTime(leg.departAt) : 'Время вылета/отправления не подтверждено'}
-            {leg.arriveAt ? ` → ${fmtDateTime(leg.arriveAt)}` : ''}
+            {leg.departAt ? when : 'Время вылета/отправления не подтверждено'}
             {leg.carrier ? ` · ${leg.carrier}` : ''}
             {leg.referenceCode ? ` · ${leg.referenceCode}` : ''}
           </p>
@@ -129,7 +126,7 @@ function LegRow({ leg, canEdit, onDeleted }: { leg: TripLegItem; canEdit: boolea
   );
 }
 
-function StayRow({ stay, canEdit, onDeleted }: { stay: TripStayItem; canEdit: boolean; onDeleted: () => void }) {
+function StayRow({ stay, when, canEdit, onDeleted }: { stay: TripStayItem; when: string; canEdit: boolean; onDeleted: () => void }) {
   const [error, setError] = useState<string | null>(null);
   async function remove() {
     try {
@@ -148,9 +145,8 @@ function StayRow({ stay, canEdit, onDeleted }: { stay: TripStayItem; canEdit: bo
             <strong>{stay.name ?? 'Проживание'}</strong>
           </div>
           <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
+            {stay.checkInAt ? `${when} · ` : ''}
             {stay.address ?? 'Адрес не указан'}
-            {stay.checkInAt ? ` · заезд ${fmtDateTime(stay.checkInAt)}` : ''}
-            {stay.checkOutAt ? ` · выезд ${fmtDateTime(stay.checkOutAt)}` : ''}
           </p>
           {error && <Alert tone="danger">{error}</Alert>}
         </div>
@@ -165,12 +161,14 @@ function StayRow({ stay, canEdit, onDeleted }: { stay: TripStayItem; canEdit: bo
 
 function EventRow({
   event,
+  when,
   canWriteCalendar,
   canEdit,
   onAddedToCalendar,
   onDeleted,
 }: {
   event: TripEventItem;
+  when: string;
   canWriteCalendar: boolean;
   canEdit: boolean;
   onAddedToCalendar: () => void;
@@ -210,7 +208,7 @@ function EventRow({
             <strong>{event.title}</strong>
           </div>
           <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
-            {event.startAt ? fmtDateTime(event.startAt) : event.dateOnly ? `${fmtDate(event.dateOnly)} · время не подтверждено` : 'Дата не подтверждена'}
+            {when}
             {event.location ? ` · ${event.location}` : ''}
           </p>
           {event.notes && <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>{event.notes}</p>}
@@ -501,11 +499,37 @@ function ProposeTaskDialog({ tripId, onClose, onDone }: { tripId: string; onClos
 // без каждого опционального поля формы (например, часовых поясов отдельно
 // от самой даты) — то, что не покрыто формой, всегда доступно через PATCH
 // позже; это не ограничение API, только сознательно упрощённая форма.
+// Ручной ввод времени — по поясу места (владелец 23.10.2026: Казахстан и
+// Пекин), не по поясу компьютера: «09:00 в Пекине» и будет 09:00 по Пекину.
+const ZONE_OPTIONS = [
+  { value: '300', label: 'Казахстан (UTC+5)' },
+  { value: '480', label: 'Китай (UTC+8)' },
+  { value: '180', label: 'Москва (UTC+3)' },
+];
+
+function withZone(local: string, offset: string): string | undefined {
+  if (!local) return undefined;
+  const minutes = Number(offset);
+  const sign = minutes < 0 ? '-' : '+';
+  const abs = Math.abs(minutes);
+  return `${local.length === 16 ? `${local}:00` : local}${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
+function ZoneField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={label}>
+      <Select value={value} onChange={(e) => onChange(e.target.value)} options={ZONE_OPTIONS} />
+    </Field>
+  );
+}
+
 function CreateLegDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
   const [fromLocation, setFromLocation] = useState('');
   const [toLocation, setToLocation] = useState('');
   const [departAt, setDepartAt] = useState('');
   const [arriveAt, setArriveAt] = useState('');
+  const [departZone, setDepartZone] = useState('300');
+  const [arriveZone, setArriveZone] = useState('300');
   const [carrier, setCarrier] = useState('');
   const [bookingStatus, setBookingStatus] = useState<CreateTripLegInput['bookingStatus']>('UNCONFIRMED');
   const [error, setError] = useState<string | null>(null);
@@ -519,8 +543,8 @@ function CreateLegDialog({ tripId, onClose, onDone }: { tripId: string; onClose:
         mode: 'FLIGHT',
         fromLocation: fromLocation || undefined,
         toLocation: toLocation || undefined,
-        departAt: departAt || undefined,
-        arriveAt: arriveAt || undefined,
+        departAt: withZone(departAt, departZone),
+        arriveAt: withZone(arriveAt, arriveZone),
         carrier: carrier || undefined,
         bookingStatus,
       };
@@ -558,9 +582,11 @@ function CreateLegDialog({ tripId, onClose, onDone }: { tripId: string; onClose:
       <Field label="Вылет/отправление (если известно)">
         <Input type="datetime-local" value={departAt} onChange={(e) => setDepartAt(e.target.value)} />
       </Field>
+      {departAt && <ZoneField label="Время вылета указано по" value={departZone} onChange={setDepartZone} />}
       <Field label="Прилёт/прибытие (если известно)">
         <Input type="datetime-local" value={arriveAt} onChange={(e) => setArriveAt(e.target.value)} />
       </Field>
+      {arriveAt && <ZoneField label="Время прилёта указано по" value={arriveZone} onChange={setArriveZone} />}
       <Field label="Перевозчик/номер рейса">
         <Input value={carrier} onChange={(e) => setCarrier(e.target.value)} />
       </Field>
@@ -582,6 +608,7 @@ function CreateLegDialog({ tripId, onClose, onDone }: { tripId: string; onClose:
 function CreateEventDialog({ tripId, onClose, onDone }: { tripId: string; onClose: () => void; onDone: () => void }) {
   const [title, setTitle] = useState('');
   const [startAt, setStartAt] = useState('');
+  const [zone, setZone] = useState('300');
   const [location, setLocation] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -594,7 +621,7 @@ function CreateEventDialog({ tripId, onClose, onDone }: { tripId: string; onClos
     setBusy(true);
     setError(null);
     try {
-      const payload: CreateTripEventInput = { title: title.trim(), startAt: startAt || undefined, location: location || undefined };
+      const payload: CreateTripEventInput = { title: title.trim(), startAt: withZone(startAt, zone), location: location || undefined };
       await api.post(`/trips/${tripId}/events`, payload);
       onDone();
     } catch (err) {
@@ -626,6 +653,7 @@ function CreateEventDialog({ tripId, onClose, onDone }: { tripId: string; onClos
       <Field label="Дата и время (если известно)">
         <Input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} />
       </Field>
+      {startAt && <ZoneField label="Время указано по" value={zone} onChange={setZone} />}
       <Field label="Место">
         <Input value={location} onChange={(e) => setLocation(e.target.value)} />
       </Field>
@@ -905,14 +933,20 @@ function TripDetailView({ tripId }: { tripId: string }) {
   const canWriteCalendar = isManagerRole(user?.role);
   const pendingChanges = (changes ?? []).filter((c) => c.status === 'PENDING');
 
-  const programItems = [
-    ...trip.legs.map((leg) => ({ sortKey: leg.departAt ?? '9999', node: <LegRow key={`leg-${leg.id}`} leg={leg} canEdit={canEdit} onDeleted={loadTrip} /> })),
-    ...trip.events.map((event) => ({
-      sortKey: event.startAt ?? event.dateOnly ?? '9999',
-      node: <EventRow key={`event-${event.id}`} event={event} canWriteCalendar={canWriteCalendar} canEdit={canEdit} onAddedToCalendar={loadRevisions} onDeleted={loadTrip} />,
-    })),
-    ...trip.stays.map((stay) => ({ sortKey: stay.checkInAt ?? '9999', node: <StayRow key={`stay-${stay.id}`} stay={stay} canEdit={canEdit} onDeleted={loadTrip} /> })),
-  ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  const hasProgram = trip.legs.length + trip.events.length + trip.stays.length > 0;
+  function entryTitle(e: TripProgramEntry): string {
+    if (e.kind === 'leg') {
+      const leg = e.item as TripLegItem;
+      return `${LEG_MODE_LABELS[leg.mode]} ${leg.fromLocation ?? '?'} → ${leg.toLocation ?? '?'}`;
+    }
+    if (e.kind === 'stay') return (e.item as TripStayItem).name ?? 'Проживание';
+    return (e.item as TripEventItem).title;
+  }
+  function renderEntry(e: TripProgramEntry, when: string) {
+    if (e.kind === 'leg') return <LegRow leg={e.item as TripLegItem} when={when} canEdit={canEdit} onDeleted={loadTrip} />;
+    if (e.kind === 'stay') return <StayRow stay={e.item as TripStayItem} when={when} canEdit={canEdit} onDeleted={loadTrip} />;
+    return <EventRow event={e.item as TripEventItem} when={when} canWriteCalendar={canWriteCalendar} canEdit={canEdit} onAddedToCalendar={loadRevisions} onDeleted={loadTrip} />;
+  }
 
   async function toggleCancelled() {
     setCancelling(true);
@@ -1065,7 +1099,7 @@ function TripDetailView({ tripId }: { tripId: string }) {
               </Button>
             </div>
           )}
-          {programItems.length === 0 ? <EmptyState title="Программа пока пуста" /> : programItems.map((i) => i.node)}
+          {hasProgram ? <TripProgram trip={trip} entryTitle={entryTitle} renderEntry={renderEntry} /> : <EmptyState title="Программа пока пуста" />}
         </div>
       )}
 

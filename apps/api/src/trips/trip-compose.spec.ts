@@ -1,4 +1,4 @@
-import { composeTripFromMaterials, extractUtcOffsetMinutes, isDateOnly, type MaterialDraft } from './trip-compose';
+import { composeTripFromMaterials, extractUtcOffsetMinutes, isDateOnly, parseDateOrNull, type MaterialDraft } from './trip-compose';
 import type { TripExtractedLeg, TripExtractionDraft } from './trip-extraction';
 
 function draft(overrides: Partial<TripExtractionDraft> = {}): TripExtractionDraft {
@@ -19,6 +19,20 @@ function draft(overrides: Partial<TripExtractionDraft> = {}): TripExtractionDraf
 function material(materialId: string, fileLabel: string, d: TripExtractionDraft): MaterialDraft {
   return { materialId, fileLabel, draft: d };
 }
+
+describe('parseDateOrNull', () => {
+  it('время без пояса — по Казахстану, не UTC (иначе пункт съезжает на 5 часов)', () => {
+    expect(parseDateOrNull('2026-10-24T09:00:00')?.toISOString()).toBe('2026-10-24T04:00:00.000Z');
+    expect(parseDateOrNull('2026-10-24T09:00')?.toISOString()).toBe('2026-10-24T04:00:00.000Z');
+  });
+
+  it('с поясом — как указано; только дата и мусор — как раньше', () => {
+    expect(parseDateOrNull('2026-10-24T09:00:00+08:00')?.toISOString()).toBe('2026-10-24T01:00:00.000Z');
+    expect(parseDateOrNull('2026-10-24T09:00:00Z')?.toISOString()).toBe('2026-10-24T09:00:00.000Z');
+    expect(parseDateOrNull('2026-10-24')?.toISOString()).toBe('2026-10-24T00:00:00.000Z');
+    expect(parseDateOrNull('не дата')).toBeNull();
+  });
+});
 
 describe('extractUtcOffsetMinutes', () => {
   it('null на null/пустую строку', () => {

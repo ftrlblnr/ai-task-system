@@ -1884,3 +1884,18 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
   .mail-compose-row > span { grid-column: 1 / -1; }
 }
 .mail-filters { margin-bottom: 12px; max-width: 100%; overflow-x: auto; }
+
+/* Программа поездки (23.10.2026): дни, «Вы сейчас здесь», «Далее» */
+.trip-program { display: flex; flex-direction: column; gap: 16px; }
+.trip-day { display: flex; flex-direction: column; gap: 8px; scroll-margin-top: 80px; }
+.trip-day-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0; font-size: 15px; }
+.trip-day-today { font-size: 12px; font-weight: 600; color: var(--agent); }
+.trip-entry { display: flex; flex-direction: column; gap: 4px; border-radius: var(--radius-md); scroll-margin: 96px; }
+.trip-entry.is-now { outline: 2px solid var(--agent); outline-offset: 2px; }
+.trip-now-badge, .trip-next-badge { align-self: flex-start; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-pill); }
+.trip-now-badge { background: var(--agent); color: var(--on-agent); }
+.trip-next-badge { background: var(--agent-soft); color: var(--agent); }
+.trip-now-line { display: flex; align-items: center; gap: 8px; color: var(--agent); font-size: 13px; font-weight: 600; margin: 4px 0; }
+.trip-now-line::before, .trip-now-line::after { content: ''; flex: 1; height: 2px; background: var(--agent); border-radius: 2px; }
+.trip-now-summary { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 12px 14px; border-radius: var(--radius-lg); border: 1px solid var(--agent-line); background: var(--agent-soft); }
+.trip-now-clock { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--agent); }
