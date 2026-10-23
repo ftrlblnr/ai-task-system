@@ -1080,6 +1080,58 @@ describe('VoiceService.parse — durable exactly-once (Stage 2, Phase H.3, P0)',
     expect(assistantReplySpy.reply).toHaveBeenCalledWith('Привет', [], user, 'c1', 'exec-1');
   });
 
+  it('голосом «перенеси письмо в архив» — карточка плана из tool loop попадает в ленту (инцидент 23.10.2026)', async () => {
+    const { whisperSpy, extractSpy } = baseParseMocks();
+    extractSpy.mockResolvedValue({
+      drafts: [{ type: 'chat', reply: 'черновой текст' }],
+      confidence: 'HIGH',
+      clarificationNeeded: false,
+      clarificationReason: 'null',
+      timing: { fastMs: 10, strongMs: 0 },
+      escalatedToStrongModel: false,
+    });
+    const plan = { planId: 'p1', mailboxId: 'mb1', mailboxAddress: 'boss@corp.kz', actions: [{ type: 'ARCHIVE', count: 1 }], itemCount: 1 };
+    const assistantReplySpy = {
+      reply: jest.fn().mockResolvedValue({
+        text: 'Подготовил перенос в архив — подтвердите в карточке.',
+        toolCalls: [
+          { name: 'search_emails', result: { tool: 'search_emails', items: [] }, durationMs: 1 },
+          { name: 'propose_mail_actions', result: { tool: 'propose_mail_actions', plans: [plan], unknownEmailIds: [] }, durationMs: 1 },
+        ],
+      }),
+    };
+    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: 'c1' }) };
+    const messageCreate = jest.fn().mockResolvedValue({ id: 'm1', conversationId: 'c1', role: MessageRole.USER, status: 'COMPLETED', clientRequestId: 'req-1', createdAt: new Date(), updatedAt: new Date(), parts: [] });
+    const prisma = {
+      voiceExecution: { create: jest.fn().mockResolvedValue({ id: 'exec-1', status: VoiceExecutionStatus.RECEIVED }), update: jest.fn().mockResolvedValue({ id: 'exec-1' }) },
+      meeting: { findUnique: jest.fn() },
+      employee: { findMany: jest.fn().mockResolvedValue([]) },
+      message: { findUnique: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([]), create: messageCreate },
+      conversation: { update: jest.fn() },
+    };
+    const service = new VoiceService(
+      { transcribe: whisperSpy } as any,
+      { extract: extractSpy } as any,
+      prisma as any,
+      { log: jest.fn() } as any,
+      { findAll: jest.fn().mockResolvedValue([]) } as any,
+      {} as any,
+      assistantChat as any,
+      {} as any,
+      { getPrompt: jest.fn().mockResolvedValue('') } as any,
+      assistantReplySpy as any,
+    );
+    const audio = { buffer: Buffer.from('audio'), mimetype: 'audio/webm', originalname: 'voice.webm' } as any;
+
+    await service.parse(audio, makeUser(), undefined, 'req-1');
+
+    const assistantCall = messageCreate.mock.calls.map((c) => c[0]).find((a) => a.data.role === MessageRole.ASSISTANT);
+    const parts = assistantCall.data.parts.create as { type: string; order: number; data: unknown }[];
+    expect(parts.map((p) => p.type)).toEqual(['MARKDOWN', 'MAIL_PLAN_CARD']);
+    expect(parts.map((p) => p.order)).toEqual([0, 1]);
+    expect(parts[1].data).toEqual(plan);
+  });
+
   it('цикл исполнения черновиков падает непредвиденно — NEEDS_RECONCILIATION, не FAILED (FAILED разрешил бы повторную мутацию)', async () => {
     const { whisperSpy, extractSpy } = baseParseMocks();
     extractSpy.mockResolvedValue({

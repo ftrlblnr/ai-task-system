@@ -176,6 +176,14 @@ describe('buildVoiceAssistantParts (Stage 2, Phase H)', () => {
     expect(parts[1].data).toEqual({ content: 'Не до конца понял срок — уточните, пожалуйста.' });
   });
 
+  it('карточки действий ассистента — в самом конце, не сдвигая части results[i]', () => {
+    const card = { type: MessagePartType.MAIL_PLAN_CARD, order: 0, data: { planId: 'p1' } };
+    const execResults: ExecutedVoiceAction[] = [{ result: { type: 'chat', reply: 'Ок.' }, entity: null, cards: [card] }];
+    const parts = buildVoiceAssistantParts(execResults, 'Уточните папку.');
+    expect(parts.map((p) => p.type)).toEqual([MessagePartType.MARKDOWN, MessagePartType.MARKDOWN, MessagePartType.MAIL_PLAN_CARD]);
+    expect(parts.map((p) => p.order)).toEqual([0, 1, 2]);
+  });
+
   it('пустой clarificationReason (null) не добавляет лишнюю часть', () => {
     const execResults: ExecutedVoiceAction[] = [{ result: { type: 'chat', reply: 'Ок.' }, entity: null }];
     const parts = buildVoiceAssistantParts(execResults, null);

@@ -25,6 +25,7 @@ import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
 import { buildVoiceAssistantParts, resolveClarificationReason } from './voice-render';
+import { voiceActionCardParts, type MessagePartInput } from '../assistant/assistant-render';
 import { isPromptEcho } from './stt-echo';
 import type {
   EventRevertPayload,
@@ -67,6 +68,9 @@ export interface EventCardEntity {
 export interface ExecutedVoiceAction {
   result: VoiceActionResult;
   entity: TaskCardEntity | EventCardEntity | null;
+  // Карточки действий ассистента (план по почте, черновик письма…) — в ленту
+  // после всех частей, чтобы не сдвинуть зип parts[i] ↔ results[i].
+  cards?: MessagePartInput[];
 }
 
 // HttpException'ы (ForbiddenException/NotFoundException/BadRequestException
@@ -706,7 +710,7 @@ export class VoiceService {
           // командой, только для модели; в ленту сохраняется чистый транскрипт.
           const replyText = serializeCurrentUserTurn(transcript, [], input.kind === 'text' ? input.liveContext : undefined);
           const replyResult = await this.assistantReply.reply(replyText, history, user, conversation.id, executionId);
-          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(replyResult.text) }, entity: null });
+          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(replyResult.text) }, entity: null, cards: voiceActionCardParts(replyResult) });
         } else if (draft.type === 'task_action') {
           execResults.push(await this.executeTaskAction(draft, user));
         } else {

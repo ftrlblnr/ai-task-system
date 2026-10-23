@@ -94,46 +94,63 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
   parts.push({ type: MessagePartType.MARKDOWN, order: order++, data: { content: result.text } });
 
   for (const call of result.toolCalls) {
-    if ('error' in call.result) continue;
-    if (call.result.tool === 'get_tasks') {
-      for (const item of call.result.items) {
-        parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(item) });
-      }
-    } else if (call.result.tool === 'get_events') {
-      for (const item of call.result.items) {
-        parts.push({ type: MessagePartType.EVENT_CARD, order: order++, data: toJson(item) });
-      }
-    } else if (call.result.tool === 'export_tasks_xlsx') {
-      // export_tasks_xlsx — один сгенерированный файл, не список карточек
-      // (Stage 2, Phase G). Тот же FILE-тип части, что и пользовательские
-      // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
-      // и скачать без каких-либо изменений.
-      parts.push({ type: MessagePartType.FILE, order: order++, data: toJson(call.result.file) });
-    } else if (call.result.tool === 'create_task_from_meeting') {
-      // Stage 2, Phase O — та же карточка, что у get_tasks (TaskCardData),
-      // но с заполненным source (Task.sourceMeetingId/sourceSegmentId/
-      // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
-      // происхождение задачи прямо под карточкой.
-      parts.push({ type: MessagePartType.TASK_CARD, order: order++, data: toJson(call.result.task) });
-    } else if (call.result.tool === 'propose_mail_actions') {
-      // Почта, этап 3 — карточка с кнопкой «Подтвердить»: без неё ничего не исполняется.
-      for (const plan of call.result.plans) {
-        parts.push({ type: MessagePartType.MAIL_PLAN_CARD, order: order++, data: toJson(plan) });
-      }
-    } else if (call.result.tool === 'draft_mail_reply') {
-      parts.push({ type: MessagePartType.MAIL_DRAFT_CARD, order: order++, data: toJson(call.result.draft) });
-    } else if (call.result.tool === 'legal_ask') {
-      // Ответ агента-юриста — отдельным блоком, собранным сервером из
-      // проверенных цитат: модель чата его не пересказывает (иначе цитаты
-      // норм прошли бы через перефразирование и перестали быть дословными).
-      parts.push({ type: MessagePartType.MARKDOWN, order: order++, data: { content: call.result.markdown } });
-    }
-    // Stage 2, Phase K — инструменты встреч намеренно не строят
-    // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,
-    // владелец явно ограничил Phase K сервером/инструментами, см. финальный
-    // отчёт) — ответ модели текстом (MARKDOWN выше) достаточен, tool-result
-    // JSON модель уже видела и пересказала своими словами.
+    for (const part of toolCardParts(call.result)) parts.push({ ...part, order: order++ });
   }
 
   return parts;
+}
+
+// Карточки одного инструмента (order проставляет вызывающий).
+function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
+  const parts: MessagePartInput[] = [];
+  if ('error' in result) return parts;
+  if (result.tool === 'get_tasks') {
+    for (const item of result.items) {
+      parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(item) });
+    }
+  } else if (result.tool === 'get_events') {
+    for (const item of result.items) {
+      parts.push({ type: MessagePartType.EVENT_CARD, order: 0, data: toJson(item) });
+    }
+  } else if (result.tool === 'export_tasks_xlsx') {
+    // export_tasks_xlsx — один сгенерированный файл, не список карточек
+    // (Stage 2, Phase G). Тот же FILE-тип части, что и пользовательские
+    // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
+    // и скачать без каких-либо изменений.
+    parts.push({ type: MessagePartType.FILE, order: 0, data: toJson(result.file) });
+  } else if (result.tool === 'create_task_from_meeting') {
+    // Stage 2, Phase O — та же карточка, что у get_tasks (TaskCardData),
+    // но с заполненным source (Task.sourceMeetingId/sourceSegmentId/
+    // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
+    // происхождение задачи прямо под карточкой.
+    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
+  } else if (result.tool === 'propose_mail_actions') {
+    // Почта, этап 3 — карточка с кнопкой «Подтвердить»: без неё ничего не исполняется.
+    for (const plan of result.plans) {
+      parts.push({ type: MessagePartType.MAIL_PLAN_CARD, order: 0, data: toJson(plan) });
+    }
+  } else if (result.tool === 'draft_mail_reply') {
+    parts.push({ type: MessagePartType.MAIL_DRAFT_CARD, order: 0, data: toJson(result.draft) });
+  } else if (result.tool === 'legal_ask') {
+    // Ответ агента-юриста — отдельным блоком, собранным сервером из
+    // проверенных цитат: модель чата его не пересказывает (иначе цитаты
+    // норм прошли бы через перефразирование и перестали быть дословными).
+    parts.push({ type: MessagePartType.MARKDOWN, order: 0, data: { content: result.markdown } });
+  }
+  // Stage 2, Phase K — инструменты встреч намеренно не строят
+  // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,
+  // владелец явно ограничил Phase K сервером/инструментами, см. финальный
+  // отчёт) — ответ модели текстом (MARKDOWN выше) достаточен, tool-result
+  // JSON модель уже видела и пересказала своими словами.
+  return parts;
+}
+
+// Голосовой путь (push-to-talk и Live) берёт у ассистента текст, но карточки
+// действий терять нельзя: без карточки плана/письма нечем подтвердить
+// (инцидент 23.10.2026 — «перенеси в архив» голосом, план создан, кнопки нет).
+// Списки get_tasks/get_events и ответ юриста голос по-прежнему пересказывает.
+const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>(['propose_mail_actions', 'draft_mail_reply', 'create_task_from_meeting', 'export_tasks_xlsx']);
+
+export function voiceActionCardParts(result: AssistantReplyResult): MessagePartInput[] {
+  return result.toolCalls.filter((call) => VOICE_CARD_TOOLS.has(call.result.tool)).flatMap((call) => toolCardParts(call.result));
 }

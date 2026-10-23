@@ -86,6 +86,9 @@ export function buildVoiceAssistantParts(execResults: ExecutedVoiceAction[], cla
   if (clarificationReason) {
     parts.push({ type: MessagePartType.MARKDOWN, order: order++, data: toJson({ content: clarificationReason }) });
   }
+  for (const { cards } of execResults) {
+    for (const card of cards ?? []) parts.push({ ...card, order: order++ });
+  }
 
   return parts;
 }
