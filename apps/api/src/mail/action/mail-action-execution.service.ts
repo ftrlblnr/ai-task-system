@@ -201,7 +201,52 @@ export class MailActionExecutionService {
       where: { id: item.id },
       data: { status: result.outcome, version: { increment: 1 } },
     });
+    if (result.outcome === 'SUCCEEDED') await this.updateLocalCopy(item, result, ctx.mailboxId);
     return result.outcome;
+  }
+
+  // Сервер уже изменён — та же правка сразу в синкнутой копии, как у кнопок
+  // клиента (mail-message-actions.service.ts), а не через следующий синк:
+  // иначе письмо минуту «висит» во Входящих, а синк заводит его в папке
+  // назначения новой строкой (владелец 23.10.2026). Best effort — при сбое
+  // всё поправит синк.
+  private async updateLocalCopy(item: MailActionItem, result: MailActionExecutorResult, mailboxId: string): Promise<void> {
+    const messageId = item.stableObjectIds[0];
+    if (!messageId) return;
+    try {
+      switch (item.type) {
+        case 'SET_READ':
+        case 'SET_UNREAD':
+          await this.prisma.emailMessage.update({ where: { id: messageId }, data: { isRead: item.type === 'SET_READ' } });
+          return;
+        case 'FLAG':
+        case 'UNFLAG':
+          await this.prisma.emailMessage.update({ where: { id: messageId }, data: { isFlagged: item.type === 'FLAG' } });
+          return;
+        case 'ARCHIVE':
+        case 'MOVE':
+        case 'TRASH': {
+          const dest = result.destinationLocator as { folderPath?: string; uid?: number | null; uidValidity?: string | null } | undefined;
+          const folder = dest?.folderPath
+            ? await this.prisma.emailFolder.findUnique({ where: { mailboxId_path: { mailboxId, path: dest.folderPath } }, select: { id: true, uidValidity: true } })
+            : null;
+          if (folder && typeof dest?.uid === 'number' && folder.uidValidity !== null && folder.uidValidity === dest.uidValidity) {
+            const moved = await this.prisma.emailMessage
+              .update({ where: { id: messageId }, data: { folderId: folder.id, uid: dest.uid, providerMissing: false, deletedAt: null } })
+              .then(() => true)
+              .catch(() => false); // синк уже завёл письмо в папке назначения (unique folderId+uid)
+            if (moved) return;
+          }
+          // Папка новая или без UIDPLUS — из исходной папки письмо уходит сразу, синк догрузит его в новой.
+          await this.prisma.emailMessage.update({ where: { id: messageId }, data: { providerMissing: true, deletedAt: new Date() } });
+          return;
+        }
+        default:
+          return;
+      }
+    } catch (err) {
+      this.logger.warn(`mail action local update skipped item=${item.id}: ${err instanceof Error ? err.name : 'unknown'}`);
+    }
   }
 
   async stop(ownerId: string, executionId: string) {

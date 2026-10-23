@@ -62,6 +62,26 @@ describe('MailActionExecutionService (ТЗ разд. 14-16)', () => {
     expect(prisma.attempts[0].outcome).toBe('SUCCEEDED');
   });
 
+  it('после успешного переноса письмо сразу переезжает в синкнутой копии (без ожидания синка)', async () => {
+    registry.register('ARCHIVE', { execute: jest.fn().mockResolvedValue({ outcome: 'SUCCEEDED', destinationLocator: { folderPath: 'Archive', uid: 5, uidValidity: '77' } }) });
+    const emailMessage = { update: jest.fn().mockResolvedValue({}) };
+    const emailFolder = { findUnique: jest.fn().mockResolvedValue({ id: 'f-archive', uidValidity: '77' }) };
+    Object.assign(prisma, { emailMessage, emailFolder });
+    const { exec } = await approvedSingleItem('ARCHIVE');
+    await execution.start(exec.id);
+    expect(emailFolder.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { mailboxId_path: { mailboxId: 'mbx-1', path: 'Archive' } } }));
+    expect(emailMessage.update).toHaveBeenCalledWith({ where: { id: 'msg-1' }, data: { folderId: 'f-archive', uid: 5, providerMissing: false, deletedAt: null } });
+  });
+
+  it('папка назначения только что создана (её ещё нет в копии) — письмо сразу скрывается из исходной', async () => {
+    registry.register('ARCHIVE', { execute: jest.fn().mockResolvedValue({ outcome: 'SUCCEEDED', destinationLocator: { folderPath: 'Archive', uid: 1, uidValidity: '9' } }) });
+    const emailMessage = { update: jest.fn().mockResolvedValue({}) };
+    Object.assign(prisma, { emailMessage, emailFolder: { findUnique: jest.fn().mockResolvedValue(null) } });
+    const { exec } = await approvedSingleItem('ARCHIVE');
+    await execution.start(exec.id);
+    expect(emailMessage.update).toHaveBeenCalledWith({ where: { id: 'msg-1' }, data: { providerMissing: true, deletedAt: expect.any(Date) } });
+  });
+
   it('не удалось открыть сессию ящика — все пункты FAILED, исполнение DONE', async () => {
     registry.register('ARCHIVE', fakeExecutor('SUCCEEDED'));
     fakeSessions.openSession.mockRejectedValueOnce(new Error('IMAP_DISABLED'));
