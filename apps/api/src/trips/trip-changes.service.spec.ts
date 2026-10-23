@@ -31,6 +31,41 @@ describe('TripChangesService', () => {
     expect(prisma.tripRevisions[0].changeId).toBe(change.id);
   });
 
+  it('approve уточнения (entityId) обновляет тот же TripLeg, нового не создаёт', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripChangesService(prisma as never, new TripRightsService(prisma as never));
+    const trip = await setupTrip(prisma);
+    const leg = await prisma.tripLeg.create({
+      data: { tripId: trip.id, mode: 'FLIGHT', fromLocation: 'Астана', toLocation: 'Пекин', departAt: new Date('2026-10-24T09:00:00Z'), departTimeZoneOffsetMinutes: 300, arriveAt: null, arriveTimeZoneOffsetMinutes: null, carrier: null, referenceCode: null, bookingStatus: 'UNCONFIRMED', sourceMaterialId: null },
+    });
+    const change = await prisma.proposedChange.create({
+      data: {
+        tripId: trip.id,
+        entityType: 'TRIP_LEG',
+        entityId: leg.id,
+        previousValue: { departAt: '2026-10-24T09:00:00.000Z', referenceCode: null, bookingStatus: 'UNCONFIRMED' },
+        proposedValue: { departAt: '2026-10-24T14:35:00+05:00', departTimeZoneOffsetMinutes: 300, referenceCode: 'KC897', bookingStatus: 'BOOKED' },
+      },
+    });
+
+    await service.approve(ORGANIZER, trip.id, change.id);
+
+    expect(prisma.tripLegs).toHaveLength(1);
+    expect(prisma.tripLegs[0]).toMatchObject({ fromLocation: 'Астана', referenceCode: 'KC897', bookingStatus: 'BOOKED' });
+    expect(prisma.tripLegs[0].departAt?.toISOString()).toBe('2026-10-24T09:35:00.000Z');
+    expect(prisma.tripRevisions[0].summary).toBe('Уточнён перелёт/переезд Астана → Пекин');
+  });
+
+  it('уточнение удалённой записи — ConflictException, предложение остаётся PENDING', async () => {
+    const prisma = new FakeTripsPrisma();
+    const service = new TripChangesService(prisma as never, new TripRightsService(prisma as never));
+    const trip = await setupTrip(prisma);
+    const change = await prisma.proposedChange.create({ data: { tripId: trip.id, entityType: 'TRIP_LEG', entityId: 'gone', proposedValue: { referenceCode: 'KC897' } } });
+
+    await expect(service.approve(ORGANIZER, trip.id, change.id)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.proposedChanges[0].status).toBe('PENDING');
+  });
+
   it('approve полевого изменения TRIP (period) обновляет Trip', async () => {
     const prisma = new FakeTripsPrisma();
     const service = new TripChangesService(prisma as never, new TripRightsService(prisma as never));

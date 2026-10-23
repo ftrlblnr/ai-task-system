@@ -1023,3 +1023,10 @@ select {
 .trip-now-line::before, .trip-now-line::after { content: ''; flex: 1; height: 2px; background: var(--agent); border-radius: 2px; }
 .trip-now-summary { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 12px 14px; border-radius: var(--radius-lg); border: 1px solid var(--agent-line); background: var(--agent-soft); }
 .trip-now-clock { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--agent); }
+
+/* Предложения изменений поездки: «было → станет» */
+.trip-change-rows { display: grid; gap: 4px; margin: 8px 0 0; font-size: 13px; }
+.trip-change-row { display: grid; grid-template-columns: minmax(96px, max-content) 1fr; gap: 8px; }
+.trip-change-row dt { color: var(--ink-3); }
+.trip-change-row dd { margin: 0; overflow-wrap: anywhere; }
+.trip-change-before { color: var(--ink-3); text-decoration: line-through; }

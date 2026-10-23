@@ -158,9 +158,12 @@ export class TripRunExecutionService {
   // создании. Поиск дублирующей поездки здесь не нужен — трип уже известен.
   private async processUpdateToExistingTrip(runId: string, tripId: string, composed: ComposedTrip, materialIds: string[], anyUnreadable: boolean): Promise<void> {
     await this.prisma.agentRun.update({ where: { id: runId }, data: { status: 'COMPOSING' } });
-    const existingTrip = await this.prisma.trip.findUniqueOrThrow({ where: { id: tripId } });
+    const existingTrip = await this.prisma.trip.findUniqueOrThrow({
+      where: { id: tripId },
+      include: { legs: true, events: true, stays: true, contacts: true },
+    });
 
-    const entityChanges = buildEntityChanges(composed);
+    const entityChanges = buildEntityChanges(composed, existingTrip);
     const fieldChanges = buildTripFieldChanges(existingTrip, composed);
 
     await this.prisma.$transaction(async (tx) => {
@@ -171,10 +174,11 @@ export class TripRunExecutionService {
             agentRunId: runId,
             materialId: change.materialId,
             entityType: change.entityType,
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- ложное срабатывание:
-            // без `as object` tsc реально отказывает (ComposedLeg|... не проходит в InputJsonValue без индексной
-            // сигнатуры), просто сам линтер не видит эту ошибку в своей упрощённой проверке типов.
-            proposedValue: change.proposedValue as object,
+            entityId: change.entityId,
+            previousValue: change.previousValue as Prisma.InputJsonObject | undefined,
+            reason: change.reason,
+            consequences: change.consequences,
+            proposedValue: change.proposedValue as Prisma.InputJsonObject,
           },
         });
       }

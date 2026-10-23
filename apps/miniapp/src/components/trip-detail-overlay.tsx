@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Clock, MapPin, Phone } from 'lucide-react';
 import type { ProposedChangeItem, TripDetail, TripRevisionItem } from '@ai-task-system/shared-types';
-import { buildTripTimeline, formatDayKey, formatZoneTime, zoneDayKey, zoneShortName } from '@ai-task-system/shared-types';
+import { buildTripTimeline, describeProposedChange, formatDayKey, formatZoneTime, zoneDayKey, zoneShortName } from '@ai-task-system/shared-types';
 import { TripProgram, type TripProgramEntry } from './trip-program';
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
@@ -51,6 +51,31 @@ function computeNextThing(trip: TripDetail): NextThing | null {
   }
   const event = next.item as TripDetail['events'][number];
   return { title: event.title, at: next.start, offset: next.offset, location: event.location, contact: null };
+}
+
+function ChangeSummary({ change }: { change: ProposedChangeItem }) {
+  const view = describeProposedChange(change);
+  return (
+    <>
+      <strong>{view.title}</strong>
+      {change.entityType === 'TRIP' && change.reason && <div>{change.reason}</div>}
+      {change.consequences && <div className="ds-field-hint">{change.consequences}</div>}
+      {view.rows.length > 0 && (
+        <dl className="trip-change-rows">
+          {view.rows.map((row) => (
+            <div key={row.label} className="trip-change-row">
+              <dt>{row.label}</dt>
+              <dd>
+                {view.isUpdate && <span className="trip-change-before">{row.before ?? '—'}</span>}
+                {view.isUpdate && <span aria-hidden> → </span>}
+                <span>{row.after}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </>
+  );
 }
 
 export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: string; onClose: () => void; onChanged: () => void }) {
@@ -232,7 +257,7 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
                   ) : (
                     changes.map((c) => (
                       <div key={c.id} className="task-card" style={{ display: 'block' }}>
-                        {c.reason && <div>{c.reason}</div>}
+                        <ChangeSummary change={c} />
                         {c.status === 'PENDING' ? (
                           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                             <Button variant="secondary" size="sm" onClick={() => resolveChange(c.id, 'reject')} disabled={busyChangeId === c.id}>

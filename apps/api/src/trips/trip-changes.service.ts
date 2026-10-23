@@ -66,7 +66,8 @@ export class TripChangesService {
 
   private async applyChange(actorId: string, change: ProposedChange): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const summary = change.entityType === 'TRIP' ? await this.applyTripFieldChange(tx, change) : await this.applyNewEntity(tx, change);
+      const summary =
+        change.entityType === 'TRIP' ? await this.applyTripFieldChange(tx, change) : change.entityId ? await this.applyEntityUpdate(tx, change, change.entityId) : await this.applyNewEntity(tx, change);
 
       await tx.proposedChange.update({ where: { id: change.id }, data: { status: 'APPLIED', resolvedAt: new Date(), resolvedByEmployeeId: actorId } });
       await tx.tripRevision.create({
@@ -89,6 +90,48 @@ export class TripChangesService {
       return 'Заполнено описание цели поездки';
     }
     throw new Error(`ProposedChange с неизвестным fieldKey=${change.fieldKey}`);
+  }
+
+  // Уточнение уже записанной сущности (билет к перелёту из программы):
+  // proposedValue — только изменившиеся поля.
+  private async applyEntityUpdate(tx: Prisma.TransactionClient, change: ProposedChange, entityId: string): Promise<string> {
+    const v = change.proposedValue as Record<string, unknown>;
+    const pick = (keys: string[], dates: string[] = []) => {
+      const data: Record<string, unknown> = {};
+      for (const key of keys) if (key in v) data[key] = v[key];
+      for (const key of dates) if (key in v) data[key] = parseDateOrNull(v[key] as string | null);
+      return data;
+    };
+    const gone = () => new ConflictException('ENTITY_GONE: запись, которую уточняет предложение, уже удалена — отклоните предложение');
+    const where = { id: entityId };
+    switch (change.entityType) {
+      case 'TRIP_LEG': {
+        const leg = await tx.tripLeg.findUnique({ where });
+        if (leg?.tripId !== change.tripId) throw gone();
+        await tx.tripLeg.update({ where, data: pick(['departTimeZoneOffsetMinutes', 'arriveTimeZoneOffsetMinutes', 'fromLocation', 'toLocation', 'carrier', 'referenceCode', 'bookingStatus'], ['departAt', 'arriveAt']) });
+        return `Уточнён перелёт/переезд ${leg.fromLocation ?? '?'} → ${leg.toLocation ?? '?'}`;
+      }
+      case 'TRIP_EVENT': {
+        const event = await tx.tripEvent.findUnique({ where });
+        if (event?.tripId !== change.tripId) throw gone();
+        await tx.tripEvent.update({ where, data: pick(['startTimeZoneOffsetMinutes', 'location', 'notes'], ['startAt', 'endAt']) });
+        return `Уточнено событие программы «${event.title}»`;
+      }
+      case 'TRIP_STAY': {
+        const stay = await tx.tripStay.findUnique({ where });
+        if (stay?.tripId !== change.tripId) throw gone();
+        await tx.tripStay.update({ where, data: pick(['name', 'address', 'bookingStatus'], ['checkInAt', 'checkOutAt']) });
+        return `Уточнено проживание${stay.name ? ` «${stay.name}»` : ''}`;
+      }
+      case 'TRIP_CONTACT': {
+        const contact = await tx.tripContact.findUnique({ where });
+        if (contact?.tripId !== change.tripId) throw gone();
+        await tx.tripContact.update({ where, data: pick(['organization', 'email', 'phone']) });
+        return `Дополнен контакт ${contact.name}`;
+      }
+      default:
+        throw new Error(`ProposedChange с неизвестным entityType=${change.entityType}`);
+    }
   }
 
   private async applyNewEntity(tx: Prisma.TransactionClient, change: ProposedChange): Promise<string> {

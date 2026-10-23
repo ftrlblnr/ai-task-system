@@ -199,6 +199,25 @@ describe('TripRunExecutionService.process — обновление СУЩЕСТ�
     expect(updated.tripId).toBe(trip.id);
   });
 
+  it('билет к уже записанному перелёту — уточнение той же записи (entityId), не второй перелёт', async () => {
+    const prisma = new FakeTripsPrisma();
+    const trip = await setupExistingTrip(prisma);
+    const leg = await prisma.tripLeg.create({
+      data: { tripId: trip.id, mode: 'FLIGHT', fromLocation: 'Алматы', toLocation: 'Стамбул', departAt: new Date('2026-12-01T06:00:00+05:00'), departTimeZoneOffsetMinutes: 300, arriveAt: null, arriveTimeZoneOffsetMinutes: null, carrier: null, referenceCode: null, bookingStatus: 'UNCONFIRMED', sourceMaterialId: null },
+    });
+    const extraction = { extractOne: jest.fn().mockResolvedValue(extractedOutcome()) };
+    const service = new TripRunExecutionService(prisma as never, extraction as never);
+    const run = await setupRun(prisma, 'owner-1', trip.id);
+
+    await service.process({ id: run.id, initiatorId: 'owner-1', tripId: trip.id });
+
+    const legChanges = prisma.proposedChanges.filter((c) => c.entityType === 'TRIP_LEG');
+    expect(legChanges).toHaveLength(1);
+    expect(legChanges[0]).toMatchObject({ entityId: leg.id, status: 'PENDING' });
+    expect(legChanges[0].proposedValue).toMatchObject({ bookingStatus: 'BOOKED', arriveAt: '2026-12-01T09:00:00+03:00' });
+    expect(legChanges[0].reason).toContain('Уточнение');
+  });
+
   it('расширение периода — предлагается полевое изменение TRIP(period)', async () => {
     const prisma = new FakeTripsPrisma();
     const trip = await setupExistingTrip(prisma);

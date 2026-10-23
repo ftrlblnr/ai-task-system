@@ -1576,3 +1576,4 @@ export interface MailMessageActionResult {
   failed: { id: string; error: string }[];
 }
 export * from './trip-timeline';
+export * from './trip-changes';

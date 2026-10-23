@@ -21,7 +21,7 @@ import type {
   TripStayItem,
   TripRevisionItem,
 } from '@ai-task-system/shared-types';
-import { isManagerRole } from '@ai-task-system/shared-types';
+import { describeProposedChange, isManagerRole, type ProposedChangeView } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
@@ -227,6 +227,24 @@ function EventRow({
   );
 }
 
+function ChangeRows({ view }: { view: ProposedChangeView }) {
+  if (view.rows.length === 0) return null;
+  return (
+    <dl className="trip-change-rows">
+      {view.rows.map((row) => (
+        <div key={row.label} className="trip-change-row">
+          <dt>{row.label}</dt>
+          <dd>
+            {view.isUpdate && <span className="trip-change-before">{row.before ?? '—'}</span>}
+            {view.isUpdate && <span aria-hidden> → </span>}
+            <span>{row.after}</span>
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function ChangeRow({ change, canApprove, onResolved }: { change: ProposedChangeItem; canApprove: boolean; onResolved: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -244,18 +262,16 @@ function ChangeRow({ change, canApprove, onResolved }: { change: ProposedChangeI
     }
   }
 
-  const describeEntity: Record<string, string> = { TRIP: 'Поездка', TRIP_LEG: 'Перелёт/переезд', TRIP_EVENT: 'Событие программы', TRIP_STAY: 'Проживание', TRIP_CONTACT: 'Контакт' };
+  const view = describeProposedChange(change);
 
   return (
     <Card tone="sunken">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <Badge tone="info">{describeEntity[change.entityType]}</Badge>
-          {change.reason && <p style={{ margin: '8px 0 0' }}>{change.reason}</p>}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+          <strong>{view.title}</strong>
+          {change.entityType === 'TRIP' && change.reason && <p style={{ margin: '4px 0 0' }}>{change.reason}</p>}
           {change.consequences && <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>{change.consequences}</p>}
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8, background: 'var(--ds-sunken, #f5f5f5)', padding: 8, borderRadius: 6 }}>
-            {JSON.stringify(change.proposedValue, null, 2)}
-          </pre>
+          <ChangeRows view={view} />
           {error && <Alert tone="danger">{error}</Alert>}
         </div>
         {canApprove && change.status === 'PENDING' && (
