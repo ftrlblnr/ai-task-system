@@ -57,8 +57,8 @@ export function ReceptionScreen({ active = true }: { active?: boolean }) {
       .catch(() => setError('Не удалось загрузить обращения'));
   }
 
-  // active — тот же приём, что TasksScreen: экран смонтирован всегда
-  // (SwipeShell), данные грузим при каждом возвращении на вкладку.
+  // active — тот же приём, что TasksScreen: экран остаётся смонтированным
+  // (AppShell), данные грузим при каждом возвращении на вкладку.
   useEffect(() => {
     if (active) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load пересоздаётся каждый рендер, перезапуск только по active/scope

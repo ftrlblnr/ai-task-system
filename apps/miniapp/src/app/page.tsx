@@ -3,7 +3,9 @@
 import { useAuth } from '@/lib/auth-context';
 import { LoginScreen } from '@/components/login-screen';
 import { LinkScreen } from '@/components/link-screen';
-import { SwipeShell, type SwipeScreen } from '@/components/swipe-shell';
+import { CalendarDays, DoorOpen, ListChecks, Mic, Plane, Sun } from 'lucide-react';
+import { AppShell, type AppSection, type SectionKey } from '@/components/app-shell';
+import { TodayScreen } from '@/components/today-screen';
 import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { AssistantScreen } from '@/components/assistant-screen';
@@ -47,31 +49,36 @@ export default function Home() {
     return <LoginScreen />;
   }
 
-  // Календарь — личный календарь руководителя (раздел 5 ТЗ, RBAC на
-  // бэкенде тоже OWNER-only) — подчинённому просто не показываем вкладку,
-  // а не показываем и получаем 403.
+  // Разделы и нижняя панель — редизайн M1 (владелец 23.10.2026,
+  // задание MINIAPP_REDESIGN.md §4.1).
   //
-  // Ассистент (Stage 2, Phase D, владелец 15.09.2026; Phase H, владелец
-  // 18.09.2026 — голос объединён в этот же экран, отдельной вкладки
-  // «Голос» больше нет, микрофон теперь в composer'е AssistantScreen).
-  // Доступен всем — голос и раньше был доступен всем (раздел 5 ТЗ,
-  // скорректировано 28.08.2026, черновик-событие для не-OWNER бэкенд сам
-  // превращает в черновик задачи, см. VoiceService.enforceEventRbac),
-  // контроллер без @Roles(...).
-  const screens: SwipeScreen[] = [{ key: 'tasks', label: 'Задачи', content: <TasksScreen /> }];
-  if (isManagerRole(user.role)) {
-    screens.push({ key: 'calendar', label: 'Календарь', content: <CalendarScreen /> });
-  }
-  // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем, подать
-  // вопрос может и OWNER (раздел 4 ТЗ: "Да" для обеих ролей), очередь
-  // руководителя — только Web App (раздел 13 ТЗ не описывает её для
-  // Mini App).
-  screens.push({ key: 'reception', label: 'Приёмная', content: <ReceptionScreen /> });
-  // Агент поездок (ТЗ 08.10.2026) — доступен всем: создатель и путешествующий
-  // руководитель могут быть разными людьми (раздел 9 ТЗ), видимость конкретных
-  // поездок решает backend через TripMember, не вкладка.
-  screens.push({ key: 'trips', label: 'Поездки', content: <TripsScreen /> });
-  screens.push({ key: 'assistant', label: 'Ассистент', content: <AssistantScreen /> });
+  // Календарь — личный календарь руководителя (раздел 5 ТЗ, RBAC на
+  // бэкенде тоже OWNER-only) — подчинённому раздел не показываем, а не
+  // показываем и получаем 403.
+  //
+  // Ассистент (Stage 2, Phase D; Phase H — голос объединён в этот же экран)
+  // доступен всем: черновик-событие для не-OWNER бэкенд сам превращает в
+  // черновик задачи (VoiceService.enforceEventRbac).
+  //
+  // Приёмная (ТЗ v1.0, 02.10.2026) — подать вопрос может любой, включая
+  // OWNER; очередь руководителя пока только в Web App.
+  //
+  // Поездки (ТЗ 08.10.2026) доступны всем: создатель и путешествующий
+  // руководитель могут быть разными людьми, видимость решает backend через
+  // TripMember. У руководителя пятое место панели занято Календарём, поэтому
+  // Поездки открываются строкой «Разделы» на «Сегодня».
+  const manager = isManagerRole(user.role);
+  const sections: AppSection[] = [
+    { key: 'today', label: 'Сегодня', icon: Sun, render: () => <TodayScreen /> },
+    { key: 'tasks', label: 'Задачи', icon: ListChecks, render: (active) => <TasksScreen active={active} /> },
+    { key: 'assistant', label: 'Ассистент', icon: Mic, fill: true, render: (active) => <AssistantScreen active={active} /> },
+    ...(manager ? [{ key: 'calendar', label: 'Календарь', icon: CalendarDays, render: (active: boolean) => <CalendarScreen active={active} /> } as AppSection] : []),
+    { key: 'reception', label: 'Приёмная', icon: DoorOpen, render: (active) => <ReceptionScreen active={active} /> },
+    { key: 'trips', label: 'Поездки', icon: Plane, render: (active) => <TripsScreen active={active} /> },
+  ];
+  const nav: SectionKey[] = manager
+    ? ['today', 'tasks', 'assistant', 'calendar', 'reception']
+    : ['today', 'tasks', 'assistant', 'reception', 'trips'];
 
-  return <SwipeShell screens={screens} />;
+  return <AppShell sections={sections} nav={nav} />;
 }

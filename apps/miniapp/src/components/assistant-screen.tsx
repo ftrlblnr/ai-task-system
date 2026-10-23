@@ -489,8 +489,8 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить переписку'));
   }
 
-  // active приходит от SwipeShell (тот же приём, что tasks-screen.tsx) —
-  // экран смонтирован всегда (см. swipe-shell.tsx), но историю грузим при
+  // active приходит от AppShell (тот же приём, что tasks-screen.tsx) —
+  // экран остаётся смонтированным (см. app-shell.tsx), но историю грузим при
   // каждом возвращении на вкладку, не один раз за сессию: это же покрывает
   // "второе устройство"/восстановление после долгого отсутствия (спека
   // Stage 2 §27) без отдельного механизма.
@@ -516,10 +516,9 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   }, []);
 
   useEffect(() => {
-    // chat.scrollTo(), не scrollIntoView() — SwipeShell держит все экраны
-    // смонтированными одновременно (см. комментарий в swipe-shell.tsx про
-    // баг 08.09.2026: scrollIntoView() внутри неактивного экрана ломало
-    // позиционирование свайп-трека через паразитный scrollLeft предка).
+    // chat.scrollTo(), не scrollIntoView() — scrollIntoView() прокручивает и
+    // всех предков (баг 08.09.2026 со свайп-треком); в AppShell это сдвинуло
+    // бы .app-screen вместе с лентой.
     // isNearBottomRef — не дёргаем вниз, если пользователь специально
     // пролистал историю вверх во время долгого стрима (та же находка
     // аудита, что и кнопка ↓ ниже).

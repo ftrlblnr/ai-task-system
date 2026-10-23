@@ -4,13 +4,10 @@ import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import type { TaskListItem } from '@ai-task-system/shared-types';
 import { api } from '@/lib/api';
-import { EmptyState, SearchInput } from '@/components/ui';
+import { EmptyState, ScreenHeader, SearchInput } from '@/components/ui';
 import { TaskCard } from './task-card';
 import { TaskDetailOverlay } from './task-detail-overlay';
 import { TaskCreateOverlay } from './task-create-overlay';
-import { ProfileOverlay } from './profile-overlay';
-import { Avatar } from './avatar';
-import { useAuth } from '@/lib/auth-context';
 import { STATUS_LABELS, TASK_SECTIONS, STATUS_DOT_COLOR } from '@/lib/labels';
 
 export function TasksScreen({ active = true }: { active?: boolean }) {
@@ -18,8 +15,6 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const { user } = useAuth();
   // Поиск (аудит 10.09.2026, п. 4.2) — раньше найти задачу можно было
   // только скроллом, при сотне задач это ломается быстрее всего остального.
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,8 +26,8 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
       .catch(() => setError('Не удалось загрузить задачи'));
   }
 
-  // active приходит от SwipeShell (владелец 10.09.2026) — экран смонтирован
-  // всегда (см. swipe-shell.tsx), но данные грузим при каждом возвращении
+  // active приходит от AppShell (владелец 10.09.2026) — экран остаётся
+  // смонтированным (см. app-shell.tsx), но данные грузим при каждом возвращении
   // на вкладку, а не один раз за сессию: иначе задача, созданная/изменённая
   // голосом на соседней вкладке, не появится здесь без перезапуска Mini App.
   useEffect(() => {
@@ -58,33 +53,14 @@ export function TasksScreen({ active = true }: { active?: boolean }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '10px 0 4px' }}>
-        <h1>Задачи</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {user && (
-            <button onClick={() => setProfileOpen(true)} aria-label="Профиль" style={{ display: 'flex', borderRadius: '50%' }}>
-              <Avatar id={user.id} name={user.fullName} size={34} />
-            </button>
-          )}
-          <button
-            onClick={() => setCreating(true)}
-            aria-label="Новая задача"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 34,
-              height: 34,
-              borderRadius: '50%',
-              background: 'var(--accent)',
-              color: 'var(--accent-contrast)',
-            }}
-          >
-            <Plus size={18} strokeWidth={2.5} />
+      <ScreenHeader
+        title="Задачи"
+        action={
+          <button type="button" className="screen-header-add" onClick={() => setCreating(true)} aria-label="Новая задача">
+            <Plus size={22} strokeWidth={2.25} />
           </button>
-        </div>
-      </div>
-      {profileOpen && <ProfileOverlay onClose={() => setProfileOpen(false)} />}
+        }
+      />
 
       {tasks && tasks.length > 0 && (
         <div style={{ marginBottom: 10 }}>

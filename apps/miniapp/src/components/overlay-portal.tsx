@@ -3,14 +3,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-// position: fixed внутри оверлеев ломается, если рендерить их как обычных
-// детей внутри SwipeShell: .swipe-track двигается через CSS transform, а
-// ЛЮБОЙ transform на предке (даже translateX(0), т.е. единичная матрица) —
-// по спецификации CSS создаёт новый containing block для потомков с
-// position: fixed. В итоге оверлей позиционировался не от viewport, а от
-// .swipe-track, из-за чего сдвигался на сотни пикселей за пределы экрана —
-// найдено 01.09.2026 через getBoundingClientRect() (overlay.left ≈ -830px).
-// Портал в document.body — стандартный обход этой проблемы.
+// Оверлеи — порталом в document.body: так position: fixed считается от
+// viewport, а не от ближайшего предка с transform/скроллом, и оверлей
+// гарантированно ложится поверх нижней панели. (История: при свайп-
+// оболочке трек с transform сдвигал оверлеи на сотни пикселей, 01.09.2026.)
 export function OverlayPortal({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
   // Стандартный SSR-safe идиом "мы точно на клиенте, после гидратации" —

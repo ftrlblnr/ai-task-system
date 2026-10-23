@@ -17,6 +17,12 @@ interface TelegramWebApp {
     notificationOccurred: (type: 'error' | 'success' | 'warning') => void;
   };
   onEvent: (event: string, cb: () => void) => void;
+  // Bot API 6.9+; в старых клиентах поля нет — всегда через проверку.
+  CloudStorage?: {
+    getItem: (key: string, cb: (err: string | null, value?: string) => void) => void;
+    setItem: (key: string, value: string, cb?: (err: string | null, ok?: boolean) => void) => void;
+  };
+  isVersionAtLeast?: (version: string) => boolean;
 }
 
 declare global {
@@ -42,6 +48,9 @@ export function getInitData(): string {
 // следует prefers-color-scheme сам, а Mini App выставляет атрибут явно по
 // Telegram.WebApp.colorScheme (своя тема, не системная тема устройства).
 function syncTheme(app: TelegramWebApp) {
+  // Вне Telegram скрипт SDK всё равно создаёт WebApp с colorScheme 'light' —
+  // тогда тему не навязываем, работает prefers-color-scheme системы.
+  if (!app.initData) return;
   document.documentElement.dataset.theme = app.colorScheme;
 }
 
@@ -51,12 +60,60 @@ export function initTelegramChrome() {
   app.ready();
   app.expand();
   syncTheme(app);
-  app.onEvent('themeChanged', () => syncTheme(app));
+  applyChromeColor(app);
+  app.onEvent('themeChanged', () => {
+    syncTheme(app);
+    applyChromeColor(app);
+  });
+}
+
+// Редизайн M1 (владелец 23.10.2026): шапка и фон Telegram = --bg текущей
+// темы, чтобы шапка сливалась с экраном (раньше — secondary_bg_color
+// Telegram, заметно другого оттенка). Цвет hex принимают клиенты с Bot API
+// 6.1+; старые — молча игнорируют.
+function applyChromeColor(app: TelegramWebApp) {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (!/^#[0-9a-f]{6}$/i.test(bg)) return;
   try {
-    app.setHeaderColor('secondary_bg_color');
-    app.setBackgroundColor('secondary_bg_color');
+    app.setHeaderColor(bg);
+    app.setBackgroundColor(bg);
   } catch {
-    // themeParams может быть неполным в старых клиентах Telegram — не критично
+    // старый клиент Telegram — не критично
+  }
+}
+
+// Небольшие настройки (последний открытый раздел): CloudStorage Telegram —
+// общая для всех устройств пользователя, вне Telegram и в старых клиентах —
+// localStorage. Ошибки хранилища не мешают работе.
+export function loadPref(key: string): Promise<string | null> {
+  const cloud = getTelegramWebApp()?.CloudStorage;
+  const local = () => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  };
+  if (!cloud) return Promise.resolve(local());
+  return new Promise((resolve) => {
+    try {
+      cloud.getItem(key, (err, value) => resolve(err || !value ? local() : value));
+    } catch {
+      resolve(local());
+    }
+  });
+}
+
+export function savePref(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // приватный режим и т.п.
+  }
+  try {
+    getTelegramWebApp()?.CloudStorage?.setItem(key, value);
+  } catch {
+    // старый клиент Telegram
   }
 }
 
