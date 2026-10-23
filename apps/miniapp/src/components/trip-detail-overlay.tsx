@@ -62,7 +62,8 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
   const [changes, setChanges] = useState<ProposedChangeItem[] | null>(null);
   const [revisions, setRevisions] = useState<TripRevisionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('now');
+  // Первая вкладка — «Программа» (владелец 23.10.2026).
+  const [tab, setTab] = useState<Tab>('program');
   const [busyChangeId, setBusyChangeId] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -165,8 +166,8 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
               <div style={{ margin: '0 0 12px' }}>
                 <SegmentedControl
                   options={[
-                    { value: 'now', label: 'Сейчас' },
                     { value: 'program', label: 'Программа' },
+                    { value: 'now', label: 'Сейчас' },
                     { value: 'changes', label: `Изменения${pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}` },
                     { value: 'history', label: 'История' },
                   ]}

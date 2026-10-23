@@ -857,7 +857,8 @@ function TripDetailView({ tripId }: { tripId: string }) {
   const [changes, setChanges] = useState<ProposedChangeItem[] | null>(null);
   const [revisions, setRevisions] = useState<TripRevisionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('overview');
+  // Первая вкладка — «Программа» (владелец 23.10.2026).
+  const [tab, setTab] = useState<Tab>('program');
   const [showAddMaterials, setShowAddMaterials] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showProposeTask, setShowProposeTask] = useState(false);
@@ -967,8 +968,8 @@ function TripDetailView({ tripId }: { tripId: string }) {
       <div style={{ margin: '16px 0' }}>
         <SegmentedControl
           options={[
-            { value: 'overview', label: 'Обзор' },
             { value: 'program', label: 'Программа' },
+            { value: 'overview', label: 'Обзор' },
             { value: 'changes', label: `Изменения${pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}` },
             { value: 'people', label: 'Люди' },
             { value: 'history', label: 'История' },
