@@ -3,16 +3,17 @@ import { MailConnectError } from './email-provider';
 // imapflow целиком замокан — реальный Mail.ru в тестах не участвует.
 const connectMock = jest.fn();
 const logoutMock = jest.fn().mockResolvedValue(undefined);
+const listMock = jest.fn().mockResolvedValue([]);
 jest.mock('imapflow', () => ({
-  ImapFlow: jest.fn().mockImplementation(() => ({ connect: connectMock, logout: logoutMock })),
+  ImapFlow: jest.fn().mockImplementation(() => ({ connect: connectMock, logout: logoutMock, list: listMock })),
 }));
 
 import { ImapFlow } from 'imapflow';
-import { MailRuImapProvider, normalizeParsedMail, MAX_TEXT_CHARS } from './mailru-imap.provider';
+import { ImapMailProvider, normalizeParsedMail, MAX_TEXT_CHARS } from './imap.provider';
 
-const creds = { emailAddress: 'boss@mail.ru', appPassword: 'app-secret-pass' };
+const creds = { emailAddress: 'boss@mail.ru', appPassword: 'app-secret-pass', login: 'boss@mail.ru', imap: { host: 'imap.mail.ru', port: 993, secure: true } };
 
-describe('MailRuImapProvider.openSession — подключение', () => {
+describe('ImapMailProvider.openSession — подключение', () => {
   beforeEach(() => {
     connectMock.mockReset();
     (ImapFlow as unknown as jest.Mock).mockClear();
@@ -21,7 +22,7 @@ describe('MailRuImapProvider.openSession — подключение', () => {
   it('успешное подключение: imap.mail.ru:993 TLS, логгер выключен (пароль не попадает в лог)', async () => {
     connectMock.mockResolvedValue(undefined);
 
-    const session = await new MailRuImapProvider().openSession(creds);
+    const session = await new ImapMailProvider().openSession(creds);
 
     expect(session).toBeDefined();
     const options = (ImapFlow as unknown as jest.Mock).mock.calls[0][0];
@@ -32,27 +33,27 @@ describe('MailRuImapProvider.openSession — подключение', () => {
   it('неверный пароль приложения → INVALID_CREDENTIALS', async () => {
     connectMock.mockRejectedValue(Object.assign(new Error('Command failed'), { authenticationFailed: true, responseText: 'Invalid credentials' }));
 
-    await expect(new MailRuImapProvider().openSession(creds)).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
+    await expect(new ImapMailProvider().openSession(creds)).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
   });
 
   it('IMAP выключен в настройках ящика → IMAP_DISABLED', async () => {
     connectMock.mockRejectedValue(Object.assign(new Error('Command failed'), { authenticationFailed: true, responseText: 'IMAP access is disabled' }));
 
-    await expect(new MailRuImapProvider().openSession(creds)).rejects.toMatchObject({ code: 'IMAP_DISABLED' });
+    await expect(new ImapMailProvider().openSession(creds)).rejects.toMatchObject({ code: 'IMAP_DISABLED' });
   });
 
   it('сеть/таймаут → TIMEOUT; прочее → UNKNOWN', async () => {
     connectMock.mockRejectedValueOnce(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }));
-    await expect(new MailRuImapProvider().openSession(creds)).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await expect(new ImapMailProvider().openSession(creds)).rejects.toMatchObject({ code: 'TIMEOUT' });
 
     connectMock.mockRejectedValueOnce(new Error('что-то странное'));
-    await expect(new MailRuImapProvider().openSession(creds)).rejects.toMatchObject({ code: 'UNKNOWN' });
+    await expect(new ImapMailProvider().openSession(creds)).rejects.toMatchObject({ code: 'UNKNOWN' });
   });
 
   it('ошибка подключения несёт только безопасный код — без пароля и текста исключения', async () => {
     connectMock.mockRejectedValue(Object.assign(new Error('LOGIN boss@mail.ru app-secret-pass failed'), { authenticationFailed: true }));
 
-    const error = await new MailRuImapProvider().openSession(creds).catch((e) => e);
+    const error = await new ImapMailProvider().openSession(creds).catch((e) => e);
 
     expect(error).toBeInstanceOf(MailConnectError);
     expect(JSON.stringify(error)).not.toContain('app-secret-pass');
@@ -61,10 +62,49 @@ describe('MailRuImapProvider.openSession — подключение', () => {
 
   it('переподключение: после сбоя следующая попытка открывает новую сессию', async () => {
     connectMock.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'ECONNRESET' })).mockResolvedValueOnce(undefined);
-    const provider = new MailRuImapProvider();
+    const provider = new ImapMailProvider();
 
     await expect(provider.openSession(creds)).rejects.toMatchObject({ code: 'TIMEOUT' });
     await expect(provider.openSession(creds)).resolves.toBeDefined();
+  });
+});
+
+describe('ImapMailProvider: свой сервер и папки (владелец 23.10.2026)', () => {
+  beforeEach(() => {
+    connectMock.mockReset().mockResolvedValue(undefined);
+    (ImapFlow as unknown as jest.Mock).mockClear();
+  });
+
+  it('свой сервер: хост/порт/логин из учётных данных; без SSL — только со STARTTLS', async () => {
+    await new ImapMailProvider().openSession({ ...creds, login: 'CORP\\boss', imap: { host: 'mail.corp.kz', port: 143, secure: false } });
+
+    const options = (ImapFlow as unknown as jest.Mock).mock.calls[0][0];
+    expect(options).toMatchObject({ host: 'mail.corp.kz', port: 143, secure: false, doSTARTTLS: true, logger: false });
+    expect(options.auth.user).toBe('CORP\\boss');
+  });
+
+  it('ошибка сертификата — TLS_ERROR', async () => {
+    connectMock.mockRejectedValue(Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }));
+
+    await expect(new ImapMailProvider().openSession(creds)).rejects.toMatchObject({ code: 'TLS_ERROR' });
+  });
+
+  it('folders(): все открываемые папки, без \\Noselect; системная роль — у одной папки', async () => {
+    listMock.mockResolvedValue([
+      { path: 'INBOX', delimiter: '/', flags: new Set() },
+      { path: 'Sent', delimiter: '/', specialUse: '\\Sent', flags: new Set() },
+      { path: 'Отправленные', delimiter: '/', specialUse: '\\Sent', flags: new Set() },
+      { path: '[Gmail]', delimiter: '/', flags: new Set(['\\Noselect']) },
+      { path: 'Проекты/Завод', delimiter: '/', flags: new Set() },
+    ]);
+    const session = await new ImapMailProvider().openSession(creds);
+
+    expect(await session.folders()).toEqual([
+      { path: 'INBOX', role: 'INBOX', specialUse: null, delimiter: '/' },
+      { path: 'Sent', role: 'SENT', specialUse: '\\Sent', delimiter: '/' },
+      { path: 'Отправленные', role: 'OTHER', specialUse: '\\Sent', delimiter: '/' },
+      { path: 'Проекты/Завод', role: 'OTHER', specialUse: null, delimiter: '/' },
+    ]);
   });
 });
 

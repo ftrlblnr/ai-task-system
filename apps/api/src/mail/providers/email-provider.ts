@@ -1,9 +1,10 @@
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — абстракция почтового
 // провайдера: бизнес-логика (синк, треды, анализ, ассистент) знает только этот
-// интерфейс, а не Mail.ru/IMAP. Сейчас единственная реализация — MailRuImapProvider;
-// позже Microsoft365/Gmail/произвольный IMAP.
+// интерфейс, а не конкретный сервер. Реализация — ImapMailProvider (любой IMAP:
+// Mail.ru, корпоративный сервер).
 
-export type MailErrorCode = 'INVALID_CREDENTIALS' | 'IMAP_DISABLED' | 'TIMEOUT' | 'UNKNOWN';
+// TLS_ERROR — сертификат сервера не прошёл проверку (корпоративные серверы).
+export type MailErrorCode = 'INVALID_CREDENTIALS' | 'IMAP_DISABLED' | 'TIMEOUT' | 'TLS_ERROR' | 'UNKNOWN';
 
 // Ошибка подключения с БЕЗОПАСНЫМ кодом — текст исходного исключения наружу не
 // отдаётся и не логируется (в нём могут оказаться данные сервера/логин).
@@ -17,6 +18,9 @@ export class MailConnectError extends Error {
 export interface MailCredentials {
   emailAddress: string;
   appPassword: string;
+  // Имя пользователя на сервере (обычно = адрес) и сервер IMAP — см. mail-servers.ts.
+  login: string;
+  imap: { host: string; port: number; secure: boolean };
 }
 
 export type ProviderFolderRole = 'INBOX' | 'SENT' | 'ARCHIVE' | 'DRAFTS' | 'JUNK' | 'TRASH' | 'OTHER';
@@ -28,6 +32,8 @@ export interface ProviderFolder {
   // сервер его не сообщил. Почтовый агент v2.0 (раздел 9 ТЗ) определяет
   // Archive/Sent/Drafts/Trash через него, не по жёсткому имени.
   specialUse: string | null;
+  // Разделитель уровней пути («/» или «.»), если сервер его сообщил.
+  delimiter?: string | null;
 }
 
 export interface NormalizedAddress {
@@ -119,6 +125,7 @@ export class StaleLocatorError extends Error {
 export type MessageFlag = '\\Seen' | '\\Flagged';
 
 export interface EmailSession {
+  // Все папки, которые можно открыть (без \Noselect) — их и синхронизирует синк.
   folders(): Promise<ProviderFolder[]>;
   openFolder(path: string): Promise<OpenedFolder>;
   // Письма папки в порядке возрастания UID: только uid > afterUid, при afterUid=0 —

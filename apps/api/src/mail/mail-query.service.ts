@@ -22,7 +22,12 @@ export interface EmailFilters {
   needsAction?: boolean;
   // По умолчанию только входящие: «письма за вчера» — это то, что пришло.
   direction?: 'incoming' | 'outgoing' | 'all';
+  // Конкретная папка (список писем в почтовом клиенте) — тогда direction не
+  // применяется. Без папки Спам и Корзина в выборку не попадают.
+  folderId?: string;
 }
+
+const HIDDEN_BY_DEFAULT_ROLES = ['JUNK', 'TRASH'] as const;
 
 export const MAX_LIST_LIMIT = 50;
 // Потолок писем в утренней сводке (mail-digest.cron.ts) — на объём одного
@@ -31,13 +36,19 @@ export const MAX_LIST_LIMIT = 50;
 export const MAX_DIGEST_ITEMS = 100;
 
 // Чистая функция — покрыта тестами без БД.
-export function buildEmailWhere(mailboxId: string, f: EmailFilters): Prisma.EmailMessageWhereInput {
+// mailboxId — один ящик или несколько (ассистент ищет по всем ящикам владельца).
+export function buildEmailWhere(mailboxId: string | string[], f: EmailFilters): Prisma.EmailMessageWhereInput {
   const and: Prisma.EmailMessageWhereInput[] = [];
-  const where: Prisma.EmailMessageWhereInput = { mailboxId, providerMissing: false };
+  const where: Prisma.EmailMessageWhereInput = { mailboxId: Array.isArray(mailboxId) ? { in: mailboxId } : mailboxId, providerMissing: false };
 
-  const direction = f.direction ?? 'incoming';
-  if (direction === 'incoming') where.isOutgoing = false;
-  if (direction === 'outgoing') where.isOutgoing = true;
+  if (f.folderId) {
+    where.folderId = f.folderId;
+  } else {
+    const direction = f.direction ?? 'incoming';
+    if (direction === 'incoming') where.isOutgoing = false;
+    if (direction === 'outgoing') where.isOutgoing = true;
+    where.folder = { is: { role: { notIn: [...HIDDEN_BY_DEFAULT_ROLES] } } };
+  }
 
   if (f.dateFrom || f.dateTo) where.receivedAt = { ...(f.dateFrom ? { gte: f.dateFrom } : {}), ...(f.dateTo ? { lt: f.dateTo } : {}) };
   if (f.readStatus === 'read') where.isRead = true;
@@ -71,8 +82,14 @@ export function buildEmailWhere(mailboxId: string, f: EmailFilters): Prisma.Emai
   return where;
 }
 
+function mailboxWhere(mailboxId: string | string[]) {
+  return Array.isArray(mailboxId) ? { in: mailboxId } : mailboxId;
+}
+
 const LIST_SELECT = {
   id: true,
+  mailboxId: true,
+  folderId: true,
   threadId: true,
   subject: true,
   fromAddress: true,
@@ -81,6 +98,8 @@ const LIST_SELECT = {
   isRead: true,
   isOutgoing: true,
   hasAttachments: true,
+  // Получатели — для колонки «Кому» в Отправленных/Черновиках (первые три).
+  recipients: { where: { type: 'TO' }, select: { address: true, name: true }, take: 3 },
   thread: { select: { replyStatus: true } },
   analysis: { select: { summary: true, importance: true, category: true, needsReply: true, needsAction: true, actionSummary: true, deadline: true } },
 } satisfies Prisma.EmailMessageSelect;
@@ -89,7 +108,7 @@ const LIST_SELECT = {
 export class MailQueryService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async search(mailboxId: string, filters: EmailFilters, opts: { limit?: number; offset?: number } = {}) {
+  async search(mailboxId: string | string[], filters: EmailFilters, opts: { limit?: number; offset?: number } = {}) {
     const where = buildEmailWhere(mailboxId, filters);
     const requested = Number.isFinite(opts.limit) ? (opts.limit as number) : 20;
     const take = Math.min(Math.max(requested, 1), MAX_LIST_LIMIT);
@@ -101,11 +120,28 @@ export class MailQueryService {
     return { items, totalCount };
   }
 
+  // Папки ящика для почтового клиента (владелец 23.10.2026): только те, что
+  // есть на сервере по последнему синку, с числом писем и непрочитанных.
+  async listFolders(mailboxId: string) {
+    const folders = await this.prisma.emailFolder.findMany({
+      where: { mailboxId, lastSeenAt: { not: null } },
+      select: { id: true, path: true, role: true, delimiter: true },
+      orderBy: { path: 'asc' },
+    });
+    const [totals, unread] = await Promise.all([
+      this.prisma.emailMessage.groupBy({ by: ['folderId'], where: { mailboxId, providerMissing: false }, _count: { _all: true } }),
+      this.prisma.emailMessage.groupBy({ by: ['folderId'], where: { mailboxId, providerMissing: false, isRead: false }, _count: { _all: true } }),
+    ]);
+    const total = new Map(totals.map((t) => [t.folderId, t._count._all]));
+    const unseen = new Map(unread.map((t) => [t.folderId, t._count._all]));
+    return folders.map((f) => ({ ...f, totalCount: total.get(f.id) ?? 0, unreadCount: unseen.get(f.id) ?? 0 }));
+  }
+
   // Письмо + тред + вложения (метаданные). Принадлежность ящику проверяется здесь:
   // чужое/несуществующее письмо — 404 (не подтверждаем существование).
-  async getMessage(mailboxId: string, id: string) {
+  async getMessage(mailboxId: string | string[], id: string) {
     const message = await this.prisma.emailMessage.findFirst({
-      where: { id, mailboxId, providerMissing: false },
+      where: { id, mailboxId: mailboxWhere(mailboxId), providerMissing: false },
       select: {
         ...LIST_SELECT,
         internetMessageId: true,
@@ -123,7 +159,7 @@ export class MailQueryService {
     if (!message) throw new NotFoundException('Письмо не найдено');
     const threadMessages = message.threadId
       ? await this.prisma.emailMessage.findMany({
-          where: { threadId: message.threadId, mailboxId, providerMissing: false },
+          where: { threadId: message.threadId, mailboxId: message.mailboxId, providerMissing: false },
           select: { id: true, subject: true, fromAddress: true, fromName: true, receivedAt: true, isOutgoing: true, isRead: true },
           orderBy: { receivedAt: 'asc' },
           take: 100,
@@ -144,9 +180,9 @@ export class MailQueryService {
   // вложение не подтверждает даже факт существования. fileArtifactId может
   // быть null (сохранение при синке не удалось best-effort) — тогда
   // вложение существует, но нечего скачивать.
-  async getAttachmentForDownload(mailboxId: string, attachmentId: string): Promise<{ fileArtifactId: string }> {
+  async getAttachmentForDownload(mailboxId: string | string[], attachmentId: string): Promise<{ fileArtifactId: string }> {
     const attachment = await this.prisma.emailAttachment.findFirst({
-      where: { id: attachmentId, emailMessage: { is: { mailboxId } } },
+      where: { id: attachmentId, emailMessage: { is: { mailboxId: mailboxWhere(mailboxId) } } },
       select: { fileArtifactId: true },
     });
     if (!attachment || !attachment.fileArtifactId) throw new NotFoundException('Вложение не найдено');
@@ -160,7 +196,13 @@ export class MailQueryService {
   // сама важность уже видна в тексте каждой строки.
   findAllForDigest(mailboxId: string, periodFrom: Date, periodTo: Date) {
     return this.prisma.emailMessage.findMany({
-      where: { mailboxId, providerMissing: false, isOutgoing: false, receivedAt: { gte: periodFrom, lt: periodTo } },
+      where: {
+        mailboxId,
+        providerMissing: false,
+        isOutgoing: false,
+        folder: { is: { role: { notIn: [...HIDDEN_BY_DEFAULT_ROLES] } } },
+        receivedAt: { gte: periodFrom, lt: periodTo },
+      },
       select: DIGEST_SELECT,
       orderBy: { receivedAt: 'asc' },
       take: MAX_DIGEST_ITEMS,
@@ -289,5 +331,6 @@ export function parseEmailFilters(raw: Record<string, string | undefined>): Emai
     needsReply: bool(raw.needsReply),
     needsAction: bool(raw.needsAction),
     direction,
+    folderId: raw.folderId || undefined,
   };
 }

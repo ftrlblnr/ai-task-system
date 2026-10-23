@@ -26,7 +26,21 @@ interface StoredMsg {
 }
 
 class FakeStore {
-  mailbox: any = { id: 'mb1', employeeId: 'e1', provider: 'MAIL_RU', emailAddress: 'boss@mail.ru', appPasswordEncrypted: 'ENC', syncEnabled: true, syncState: 'IDLE', consecutiveAuthFailures: 0, initialDays: 30 };
+  mailbox: any = {
+    id: 'mb1',
+    employeeId: 'e1',
+    provider: 'MAIL_RU',
+    emailAddress: 'boss@mail.ru',
+    login: null,
+    imapHost: 'imap.mail.ru',
+    imapPort: 993,
+    imapSecure: true,
+    appPasswordEncrypted: 'ENC',
+    syncEnabled: true,
+    syncState: 'IDLE',
+    consecutiveAuthFailures: 0,
+    initialDays: 30,
+  };
   mailboxPatches: any[] = [];
   folders: { id: string; path: string; role: EmailFolderRole; uidValidity: string | null; lastUid: number }[] = [];
   messages: StoredMsg[] = [];
@@ -48,6 +62,7 @@ class FakeStore {
     }
     return { ...f };
   }
+  async markFoldersMissing() {}
   async updateFolder(id: string, patch: any) {
     Object.assign(this.folders.find((f) => f.id === id)!, patch);
   }

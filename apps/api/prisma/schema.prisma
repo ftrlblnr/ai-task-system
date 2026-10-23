@@ -101,7 +101,7 @@ model Employee {
   agentRunsInitiated         AgentRun[]
   tripMaterialsAdded         TripMaterial[]
   plaudConnection            PlaudConnection?
-  mailbox                    Mailbox?
+  mailboxes                  Mailbox[]
   conversations              Conversation[]
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
@@ -1129,6 +1129,8 @@ model PlaudConnection {
 
 enum MailProvider {
   MAIL_RU
+  // Любой IMAP/SMTP-сервер (корпоративная почта и т.п.), владелец 23.10.2026.
+  IMAP
 }
 
 enum MailboxSyncState {
@@ -1189,11 +1191,23 @@ enum EmailCategory {
 
 model Mailbox {
   id                      String           @id @default(cuid())
-  employeeId              String           @unique
+  // Несколько ящиков у сотрудника (владелец 23.10.2026: Mail.ru + корпоративный).
+  employeeId              String
   employee                Employee         @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   emailAddress            String
+  // Имя отправителя в письмах («Жанна Иванова»); null — без имени.
+  displayName             String?
   provider                MailProvider     @default(MAIL_RU)
-  // Пароль ПРИЛОЖЕНИЯ Mail.ru (не обычный пароль) — только зашифрованным,
+  // Серверы: для MAIL_RU заполняются пресетом, для IMAP — вводит пользователь.
+  imapHost                String
+  imapPort                Int              @default(993)
+  imapSecure              Boolean          @default(true)
+  smtpHost                String
+  smtpPort                Int              @default(465)
+  smtpSecure              Boolean          @default(true)
+  // Логин на сервере, если отличается от адреса (корпоративные серверы).
+  login                   String?
+  // Пароль (для Mail.ru — пароль приложения) — только зашифрованным,
   // никогда не отдаётся через API, не логируется, не попадает в промпт.
   appPasswordEncrypted    String
   syncEnabled             Boolean          @default(true)
@@ -1215,6 +1229,8 @@ model Mailbox {
   mailActionPlans MailActionPlan[]
   mailDrafts      MailDraft[]
   mailWatches     MailWatch[]
+
+  @@unique([employeeId, emailAddress])
 }
 
 model EmailFolder {
@@ -1227,6 +1243,10 @@ model EmailFolder {
   // недействителен, окно синхронизируется заново.
   uidValidity String?
   lastUid     Int             @default(0)
+  // Разделитель уровней пути («/» или «.») — для дерева папок в интерфейсе.
+  delimiter   String?
+  // Папка есть на сервере по последнему синку; удалённую на сервере скрываем.
+  lastSeenAt  DateTime?
 
   messages EmailMessage[]
 

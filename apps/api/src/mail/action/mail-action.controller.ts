@@ -6,6 +6,7 @@ import { CurrentDataOwner, DataOwnerGuard, type DataOwner } from '../../auth/dat
 import { MANAGER_ROLES } from '../../auth/roles';
 import { IdempotencyService } from '../../common/idempotency.service';
 import { MailStore } from '../mail-store';
+import { MAILBOX_HEADER } from '../mail-servers';
 import { ApproveMailActionGroupDto } from './dto/approve-mail-action-group.dto';
 import { CreateMailActionPlanDto } from './dto/create-mail-action-plan.dto';
 import { PatchMailActionItemDto } from './dto/patch-mail-action-item.dto';
@@ -39,9 +40,9 @@ export class MailActionController {
     return key;
   }
 
-  private async requireMailbox(owner: DataOwner) {
-    const mailbox = await this.store.getMailboxStatusByEmployee(owner.id);
-    if (!mailbox) throw new NotFoundException('Почта не подключена');
+  private async requireMailbox(owner: DataOwner, mailboxId?: string) {
+    const mailbox = await this.store.findOwnedMailbox(owner.id, mailboxId);
+    if (!mailbox) throw new NotFoundException(mailboxId ? 'Ящик не найден' : 'Почта не подключена');
     return mailbox;
   }
 
@@ -50,9 +51,10 @@ export class MailActionController {
     @Body() dto: CreateMailActionPlanDto,
     @CurrentDataOwner() owner: DataOwner,
     @Headers('idempotency-key') idemKey?: string,
+    @Headers(MAILBOX_HEADER) mailboxId?: string,
   ) {
     const key = this.requireIdempotencyKey(idemKey);
-    const mailbox = await this.requireMailbox(owner);
+    const mailbox = await this.requireMailbox(owner, mailboxId);
     const { body } = await this.idempotency.run(owner.id, key, 'mail.action-plans.create', dto, () => this.plans.createPlan(owner.id, mailbox.id, dto));
     // Анализ — LLM-вызов, не блокирует HTTP-ответ (план создаётся в
     // ANALYZING, клиент опрашивает GET .../:id до READY), тот же приём, что
@@ -63,8 +65,8 @@ export class MailActionController {
   }
 
   @Get('action-plans')
-  async listPlans(@CurrentDataOwner() owner: DataOwner) {
-    const mailbox = await this.requireMailbox(owner);
+  async listPlans(@Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner, mailboxId);
     return this.plans.listPlans(owner.id, mailbox.id);
   }
 

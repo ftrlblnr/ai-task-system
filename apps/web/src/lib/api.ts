@@ -19,8 +19,19 @@ export function setActAsLeader(value: boolean): void {
   actAsLeader = value;
 }
 
+// Владелец 23.10.2026 — несколько почтовых ящиков: выбранный на странице
+// «Почта» уходит заголовком X-Mailbox-Id во все запросы /mail.
+let mailboxId: string | null = null;
+
+export function setMailboxId(value: string | null): void {
+  mailboxId = value;
+}
+
 function actingHeaders(path: string): Record<string, string> {
-  return actAsLeader && (path.startsWith('/calendar') || path.startsWith('/mail')) ? { 'X-Act-As': 'leader' } : {};
+  const headers: Record<string, string> = {};
+  if (actAsLeader && (path.startsWith('/calendar') || path.startsWith('/mail'))) headers['X-Act-As'] = 'leader';
+  if (mailboxId && path.startsWith('/mail')) headers['X-Mailbox-Id'] = mailboxId;
+  return headers;
 }
 
 // signal — «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 14): клиентский

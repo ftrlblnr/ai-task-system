@@ -3,7 +3,12 @@ import { buildEmailWhere, MailQueryService, parseEmailFilters, MAX_LIST_LIMIT } 
 
 describe('buildEmailWhere — фильтры локальной почты', () => {
   it('по умолчанию: только входящие своего ящика, без пропавших с сервера', () => {
-    expect(buildEmailWhere('mb1', {})).toEqual({ mailboxId: 'mb1', providerMissing: false, isOutgoing: false });
+    expect(buildEmailWhere('mb1', {})).toEqual({ mailboxId: 'mb1', providerMissing: false, isOutgoing: false, folder: { is: { role: { notIn: ['JUNK', 'TRASH'] } } } });
+  });
+
+  it('конкретная папка: все письма папки (и Спам/Корзина), без фильтра направления; несколько ящиков — in', () => {
+    expect(buildEmailWhere('mb1', { folderId: 'f1' })).toEqual({ mailboxId: 'mb1', providerMissing: false, folderId: 'f1' });
+    expect(buildEmailWhere(['mb1', 'mb2'], { folderId: 'f1' }).mailboxId).toEqual({ in: ['mb1', 'mb2'] });
   });
 
   it('диапазон дат по receivedAt: [from, to)', () => {
@@ -105,6 +110,7 @@ describe('MailQueryService', () => {
       emailMessage: {
         findFirst: jest.fn().mockResolvedValue({
           id: 'm1',
+          mailboxId: 'mb1',
           threadId: 't1',
           subject: 'Тема',
           attachments: [{ id: 'a1', fileName: 'file.pdf', mimeType: 'application/pdf', sizeBytes: 100, fileArtifactId: 'fa1' }],

@@ -700,20 +700,50 @@ export interface RegisterInput {
 // Почта синхронизируется в локальную БД; API/ассистент работают по ней.
 export type MailSyncState = 'IDLE' | 'SYNCING' | 'ERROR' | 'PAUSED';
 
-export type MailStatus =
-  | { connected: false }
-  | {
-      connected: true;
-      id: string;
-      emailAddress: string;
-      syncEnabled: boolean;
-      syncState: MailSyncState;
-      // Безопасный код последней ошибки (INVALID_CREDENTIALS/IMAP_DISABLED/TIMEOUT/SYNC_FAILED/...).
-      lastError: string | null;
-      lastSyncedAt: string | null;
-      initialDays: number;
-      messageCount: number;
-    };
+// Владелец 23.10.2026 — ящиков несколько (Mail.ru + корпоративный).
+export type MailProviderKind = 'MAIL_RU' | 'IMAP';
+
+export interface MailboxStatus {
+  id: string;
+  emailAddress: string;
+  displayName: string | null;
+  provider: MailProviderKind;
+  imapHost: string;
+  smtpHost: string;
+  syncEnabled: boolean;
+  syncState: MailSyncState;
+  // Безопасный код последней ошибки (INVALID_CREDENTIALS/IMAP_DISABLED/TIMEOUT/TLS_ERROR/SYNC_FAILED/...).
+  lastError: string | null;
+  lastSyncedAt: string | null;
+  initialDays: number;
+  messageCount: number;
+}
+
+export interface MailStatus {
+  mailboxes: MailboxStatus[];
+}
+
+export type MailFolderRole = 'INBOX' | 'SENT' | 'ARCHIVE' | 'DRAFTS' | 'JUNK' | 'TRASH' | 'OTHER';
+
+// GET /mail/folder-tree — папки из синка с числом писем.
+export interface MailFolderItem {
+  id: string;
+  path: string;
+  role: MailFolderRole;
+  delimiter: string | null;
+  totalCount: number;
+  unreadCount: number;
+}
+
+export interface ConnectMailboxInput {
+  provider: MailProviderKind;
+  emailAddress: string;
+  appPassword: string;
+  initialDays?: number;
+  displayName?: string;
+  login?: string;
+  servers?: { imapHost: string; imapPort: number; imapSecure: boolean; smtpHost: string; smtpPort: number; smtpSecure: boolean };
+}
 
 export type EmailReplyStatus = 'AWAITING_MY_REPLY' | 'REPLIED' | 'NO_REPLY_REQUIRED' | 'AWAITING_THEIR_REPLY' | 'UNKNOWN';
 export type EmailImportance = 'CRITICAL' | 'IMPORTANT' | 'NORMAL' | 'LOW';
@@ -734,6 +764,8 @@ export interface EmailAnalysisSummary {
 
 export interface EmailListItem {
   id: string;
+  mailboxId: string;
+  folderId: string;
   threadId: string | null;
   subject: string | null;
   fromAddress: string;
@@ -744,6 +776,8 @@ export interface EmailListItem {
   hasAttachments: boolean;
   thread: { replyStatus: EmailReplyStatus } | null;
   analysis: EmailAnalysisSummary | null;
+  // Первые получатели (TO) — колонка «Кому» в Отправленных/Черновиках.
+  recipients: { address: string; name: string | null }[];
 }
 
 export interface EmailListResponse {

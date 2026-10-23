@@ -18,8 +18,6 @@ import {
   type ProviderFolderRole,
 } from './email-provider';
 
-const MAILRU_IMAP_HOST = 'imap.mail.ru';
-const MAILRU_IMAP_PORT = 993;
 
 // Потолки памяти (контейнер api — 512 МБ): письмо тяжелее MAX_SOURCE_BYTES читается
 // только на этот объём (заголовки + начало), тело помечается обрезанным; тексты режутся.
@@ -38,6 +36,9 @@ function mapConnectError(err: unknown): MailConnectError {
     // от неверного пароля по тексту ответа сервера (best-effort, уточняется на
     // реальном ящике).
     return new MailConnectError(/imap|disabled|not enabled|отключ|включ|доступ/i.test(text) ? 'IMAP_DISABLED' : 'INVALID_CREDENTIALS');
+  }
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|altnames|certificate/i.test(`${e?.code ?? ''} ${text}`)) {
+    return new MailConnectError('TLS_ERROR');
   }
   if (/timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|greeting/i.test(`${e?.code ?? ''} ${text}`)) {
     return new MailConnectError('TIMEOUT');
@@ -150,15 +151,22 @@ export function normalizeParsedMail(
   };
 }
 
-class MailRuImapSession implements EmailSession {
+class ImapMailSession implements EmailSession {
   constructor(private readonly client: ImapFlow) {}
 
+  // Владелец 23.10.2026: синхронизируются все папки, как в Outlook. Роль
+  // (кроме OTHER) — у одной папки: если сервер пометил две папки как Sent,
+  // вторая считается обычной.
   async folders(): Promise<ProviderFolder[]> {
-    const all = await this.listAllFolders();
-    const result = all.filter((f) => f.role === 'INBOX' || f.role === 'SENT');
-    // Если сервер вернул несколько кандидатов на Sent — берём первый (по special-use он один).
-    const seen = new Set<string>();
-    return result.filter((f) => (seen.has(f.role) ? false : (seen.add(f.role), true)));
+    const list = await this.client.list();
+    const seen = new Set<ProviderFolderRole>();
+    return list
+      .filter((f) => !f.flags?.has('\\Noselect') && !f.flags?.has('\\NonExistent'))
+      .map((f) => {
+        let role = mapSpecialUseToRole(f.path, f.specialUse ?? null);
+        if (role !== 'OTHER') role = seen.has(role) ? 'OTHER' : (seen.add(role), role);
+        return { path: f.path, role, specialUse: f.specialUse ?? null, delimiter: f.delimiter ?? null };
+      });
   }
 
   // Почтовый ИИ-агент v2.0 (05.10.2026) — ВСЕ папки, не только INBOX/SENT
@@ -295,13 +303,16 @@ class MailRuImapSession implements EmailSession {
 }
 
 @Injectable()
-export class MailRuImapProvider implements EmailProvider {
+export class ImapMailProvider implements EmailProvider {
   async openSession(credentials: MailCredentials): Promise<EmailSession> {
     const client = new ImapFlow({
-      host: MAILRU_IMAP_HOST,
-      port: MAILRU_IMAP_PORT,
-      secure: true,
-      auth: { user: credentials.emailAddress, pass: credentials.appPassword },
+      host: credentials.imap.host,
+      port: credentials.imap.port,
+      secure: credentials.imap.secure,
+      // Без SSL — только с STARTTLS: пароль открытым текстом не отправляем.
+      ...(credentials.imap.secure ? {} : { doSTARTTLS: true }),
+      auth: { user: credentials.login, pass: credentials.appPassword },
+      connectionTimeout: 20_000,
       // logger: false — иначе imapflow логирует обмен, включая LOGIN с паролем.
       logger: false,
     });
@@ -310,6 +321,6 @@ export class MailRuImapProvider implements EmailProvider {
     } catch (err) {
       throw mapConnectError(err);
     }
-    return new MailRuImapSession(client);
+    return new ImapMailSession(client);
   }
 }

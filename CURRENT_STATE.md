@@ -1998,6 +1998,38 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   `proxy_read_timeout 300s` (юрист отвечает до 1–2 минут; лимит Claude на
   вызов — 240 с).
 
+## Почта: несколько ящиков и свои серверы (владелец 23.10.2026, этап 1 почтового клиента)
+
+Цель — раздел «Почта» с функционалом Outlook для ящиков Mail.ru и корпоративного
+(IMAP/SMTP), плюс управление через ассистента. Этап 1 — фундамент:
+
+- **Несколько ящиков** у сотрудника: `Mailbox.employeeId` больше не unique,
+  `@@unique([employeeId, emailAddress])`, до 5 ящиков. Выбранный ящик — заголовок
+  `X-Mailbox-Id` во всех `/mail/*` (web `setMailboxId` в `lib/api.ts`); без него —
+  первый подключённый. Отключение — `DELETE /mail/mailboxes/:id`.
+  `GET /mail/status` → `{ mailboxes: [...] }`.
+- **Свои серверы**: `MailProvider.IMAP` + поля `imapHost/Port/Secure`,
+  `smtpHost/Port/Secure`, `login`, `displayName`. Mail.ru — пресет
+  `MAIL_RU_SERVERS` (`mail/mail-servers.ts`). Провайдер один —
+  `providers/imap.provider.ts` (`ImapMailProvider`, бывший MailRuImapProvider);
+  без SSL — только STARTTLS (`doSTARTTLS: true`). Ошибка сертификата — код
+  `TLS_ERROR`.
+- **Подключение** проверяет вход и по IMAP, и по SMTP (`smtp-sender.ts`,
+  nodemailer 10, логгер выключен) — ошибка с префиксом «IMAP:» / «Отправка (SMTP):».
+- **Синхронизация всех папок** (`session.folders()` — все без `\Noselect`,
+  системная роль только у одной папки), порядок INBOX → SENT → DRAFTS → ARCHIVE →
+  свои → JUNK → TRASH; исходящие — SENT и DRAFTS. Бюджет прогона исчерпан — сразу
+  следующий прогон через 5 с (большой ящик догружается подряд). Папки, пропавшие
+  с сервера, — `EmailFolder.lastSeenAt = null` (скрыты, письма остаются).
+- **Спам и Корзина** не анализируются, не попадают в дайджест и в список писем без
+  выбранной папки (`buildEmailWhere`). `GET /mail/folder-tree` — папки с числом
+  писем/непрочитанных; `GET /mail/messages?folderId=` — письма папки.
+- Ассистент (`search_emails`/`get_email`, и через MCP) ищет по всем ящикам владельца.
+- Web: переключатель ящиков, «Добавить ящик» (Mail.ru / «Другой сервер» с
+  настройками как в Outlook), список папок слева (`components/mail/`).
+- Проверено на локальном GreenMail (IMAPS/SMTPS): подключение, синк 6 папок,
+  письма по папкам, два ящика, чужой ящик — 404.
+
 ## Известные ограничения (не в рамках этого этапа)
 
 - Контекст голосового агента ограничен последними ≤40 задачами/событиями и

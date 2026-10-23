@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Download, Link2Off, Paperclip, RefreshCw, Search } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Download, Link2Off, Paperclip, Plus, RefreshCw, Search } from 'lucide-react';
 import type {
   EmailDetail,
   EmailListItem,
@@ -11,10 +11,12 @@ import type {
   MailDigestEmailItem,
   MailDigestListItem,
   MailDigestListResponse,
+  MailFolderItem,
   MailStatus,
+  MailboxStatus,
 } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, setMailboxId } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { DataOwnerScope, useActingAsLeader } from '@/components/data-owner-scope';
 import { Card, PageHeader } from '@/components/ui/card';
@@ -22,10 +24,12 @@ import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
-import { Field, Input, Select } from '@/components/ui/field';
+import { Input } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { MailAgentTab } from '@/components/mail-agent';
+import { MailboxConnectCard } from '@/components/mail/mailbox-connect';
+import { FolderList, folderLabel } from '@/components/mail/folder-list';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -34,12 +38,15 @@ import { MailAgentTab } from '@/components/mail-agent';
 const SYNC_POLL_MS = 5_000;
 
 const ERROR_LABELS: Record<string, string> = {
-  INVALID_CREDENTIALS: 'Неверный адрес или пароль приложения — подключите ящик заново.',
-  IMAP_DISABLED: 'Доступ по IMAP выключен в настройках Mail.ru — включите его и подключите ящик заново.',
-  TIMEOUT: 'Mail.ru не отвечает — повторим автоматически.',
+  INVALID_CREDENTIALS: 'Сервер отклонил логин или пароль — подключите ящик заново.',
+  IMAP_DISABLED: 'Доступ по IMAP выключен в настройках почты — включите его и подключите ящик заново.',
+  TIMEOUT: 'Почтовый сервер не отвечает — повторим автоматически.',
+  TLS_ERROR: 'Сертификат почтового сервера не прошёл проверку — проверьте адрес сервера и подключите ящик заново.',
   SYNC_FAILED: 'Синхронизация прервалась — повторим автоматически.',
-  UNKNOWN: 'Не удалось подключиться к Mail.ru — повторим автоматически.',
+  UNKNOWN: 'Не удалось подключиться к почтовому серверу — повторим автоматически.',
 };
+// Выбранный ящик — удобство на этом устройстве (не общее состояние).
+const SELECTED_MAILBOX_KEY = 'mail.selectedMailbox';
 
 const REPLY_STATUS_LABELS: Record<EmailReplyStatus, string> = {
   AWAITING_MY_REPLY: 'Ждёт вашего ответа',
@@ -135,67 +142,7 @@ function AttachmentItem({ attachment }: { attachment: EmailDetail['attachments']
   );
 }
 
-function ConnectCard({ onConnected }: { onConnected: () => void }) {
-  const [emailAddress, setEmailAddress] = useState('');
-  const [appPassword, setAppPassword] = useState('');
-  const [initialDays, setInitialDays] = useState(30);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function connect(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      await api.post('/mail/connect', { emailAddress, appPassword, initialDays });
-      setAppPassword('');
-      onConnected();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось подключить почту');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card title="Подключить Mail.ru">
-      <p className="ds-field-hint" style={{ marginBottom: 12 }}>
-        Письма синхронизируются в систему, а ассистент отвечает по ним из локальной базы. Нужен пароль для внешнего
-        приложения — обычный пароль от почты не подойдёт.
-      </p>
-      <ol className="setup-steps">
-        <li>В настройках Mail.ru включите доступ по IMAP (раздел «Почтовые программы»).</li>
-        <li>В настройках безопасности аккаунта создайте «Пароль для внешнего приложения» и скопируйте его.</li>
-        <li>Введите адрес ящика и этот пароль ниже. Пароль хранится только в зашифрованном виде.</li>
-      </ol>
-      <form onSubmit={connect} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <Field label="Адрес почты">
-          <Input type="email" value={emailAddress} onChange={(e) => setEmailAddress(e.target.value)} placeholder="name@mail.ru" required autoComplete="off" />
-        </Field>
-        <Field label="Пароль приложения">
-          <Input type="password" value={appPassword} onChange={(e) => setAppPassword(e.target.value)} required autoComplete="new-password" />
-        </Field>
-        <Field label="Загрузить письма за">
-          <Select
-            value={String(initialDays)}
-            onChange={(e) => setInitialDays(Number(e.target.value))}
-            options={[
-              { value: '30', label: '30 дней' },
-              { value: '90', label: '90 дней' },
-              { value: '180', label: '180 дней' },
-            ]}
-          />
-        </Field>
-        {error && <Alert tone="danger">{error}</Alert>}
-        <Button type="submit" variant="primary" disabled={busy} loading={busy}>
-          Подключить
-        </Button>
-      </form>
-    </Card>
-  );
-}
-
-function StatusBar({ status, onChange }: { status: Extract<MailStatus, { connected: true }>; onChange: () => void }) {
+function StatusBar({ status, onChange }: { status: MailboxStatus; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const actingAsLeader = useActingAsLeader();
@@ -215,10 +162,10 @@ function StatusBar({ status, onChange }: { status: Extract<MailStatus, { connect
   }
 
   async function disconnect() {
-    if (!window.confirm('Отключить почту? Синхронизированные письма будут удалены из системы.')) return;
+    if (!window.confirm(`Отключить ящик ${status.emailAddress}? Синхронизированные письма будут удалены из системы (на почтовом сервере они останутся).`)) return;
     setBusy(true);
     try {
-      await api.delete('/mail/disconnect');
+      await api.delete(`/mail/mailboxes/${status.id}`);
       onChange();
     } catch {
       setError('Не удалось отключить почту');
@@ -338,7 +285,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-function MessageList() {
+function MessageList({ folder }: { folder: MailFolderItem | null }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [submittedQuery, setSubmittedQuery] = useState('');
@@ -359,6 +306,7 @@ function MessageList() {
     if (filter === 'awaiting') params.set('replyStatus', 'AWAITING_MY_REPLY');
     if (filter === 'important') params.set('importance', 'CRITICAL,IMPORTANT');
     if (submittedQuery) params.set('q', submittedQuery);
+    if (folder) params.set('folderId', folder.id);
     api
       .get<EmailListResponse>(`/mail/messages?${params.toString()}`)
       .then((r) => {
@@ -370,9 +318,10 @@ function MessageList() {
         if (requestId !== requestIdRef.current) return;
         setError(err instanceof ApiError ? err.message : 'Не удалось загрузить письма');
       });
-  }, [filter, submittedQuery]);
+  }, [filter, submittedQuery, folder]);
 
   useEffect(load, [load]);
+  const outgoingFolder = folder?.role === 'SENT' || folder?.role === 'DRAFTS';
 
   const filters: { key: Filter; label: string }[] = [
     { key: 'all', label: 'Все' },
@@ -415,7 +364,7 @@ function MessageList() {
           <table className="ds-table">
             <thead>
               <tr>
-                <th>От</th>
+                <th>{outgoingFolder ? 'Кому' : 'От'}</th>
                 <th>Тема</th>
                 <th>Дата</th>
               </tr>
@@ -426,7 +375,7 @@ function MessageList() {
                 const importanceLabel = m.analysis?.importance ? IMPORTANCE_LABELS[m.analysis.importance] : '';
                 return (
                   <tr key={m.id} onClick={() => setOpenId(m.id)} style={{ cursor: 'pointer', fontWeight: m.isRead ? 400 : 600 }}>
-                    <td>{senderLabel(m)}</td>
+                    <td>{outgoingFolder ? m.recipients.map((r) => r.name || r.address).join(', ') || '—' : senderLabel(m)}</td>
                     <td>
                       {m.subject || '(без темы)'}
                       {m.hasAttachments && <Paperclip size={12} strokeWidth={1.75} style={{ marginLeft: 6, verticalAlign: -1 }} />}
@@ -587,10 +536,89 @@ function DigestList() {
 
 type MailTab = 'messages' | 'digests' | 'agent';
 
+function readSelectedMailbox(): string | null {
+  try {
+    return localStorage.getItem(SELECTED_MAILBOX_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberSelectedMailbox(id: string) {
+  try {
+    localStorage.setItem(SELECTED_MAILBOX_KEY, id);
+  } catch {
+    // приватный режим — просто не запомним выбор
+  }
+}
+
+// Письма выбранного ящика: папки слева, список справа (владелец 23.10.2026).
+function MessagesPane() {
+  const [folders, setFolders] = useState<MailFolderItem[] | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<MailFolderItem[]>('/mail/folder-tree')
+      .then(setFolders)
+      .catch(() => setFolders([]));
+  }, []);
+
+  const selected = folders?.find((f) => f.id === folderId) ?? folders?.find((f) => f.role === 'INBOX') ?? null;
+
+  return (
+    <div className="mail-layout">
+      <div>{folders && folders.length > 0 && <FolderList folders={folders} selectedId={selected?.id ?? null} onSelect={setFolderId} />}</div>
+      <div>
+        {selected && <h2 style={{ margin: '0 0 12px' }}>{folderLabel(selected)}</h2>}
+        <MessageList key={selected?.id ?? 'all'} folder={selected} />
+      </div>
+    </div>
+  );
+}
+
+// Содержимое одного ящика. Заголовок X-Mailbox-Id (api.ts) ставится до
+// первого запроса детей — они рендерятся, только когда выбор применён.
+function MailboxView({ mailbox, onChange }: { mailbox: MailboxStatus; onChange: () => void }) {
+  const [tab, setTab] = useState<MailTab>('messages');
+  const [applied, setApplied] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMailboxId(mailbox.id);
+    // Флаг модуля api.ts — внешнее состояние (тот же приём, что DataOwnerScope).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setApplied(mailbox.id);
+    return () => setMailboxId(null);
+  }, [mailbox.id]);
+
+  if (applied !== mailbox.id) return <p className="ds-field-hint">Загрузка…</p>;
+
+  return (
+    <>
+      <StatusBar status={mailbox} onChange={onChange} />
+      <div style={{ marginBottom: 16 }}>
+        <SegmentedControl
+          options={[
+            { value: 'messages', label: 'Письма' },
+            { value: 'digests', label: 'Дайджест' },
+            { value: 'agent', label: 'Разбор' },
+          ]}
+          value={tab}
+          onChange={(v) => setTab(v as MailTab)}
+        />
+      </div>
+      {tab === 'messages' && <MessagesPane />}
+      {tab === 'digests' && <DigestList />}
+      {tab === 'agent' && <MailAgentTab />}
+    </>
+  );
+}
+
 function MailView() {
   const [status, setStatus] = useState<MailStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<MailTab>('messages');
+  const [selectedId, setSelectedId] = useState<string | null>(readSelectedMailbox);
+  const [adding, setAdding] = useState(false);
   const actingAsLeader = useActingAsLeader();
 
   const load = useCallback(() => {
@@ -605,37 +633,66 @@ function MailView() {
 
   useEffect(load, [load]);
 
+  const mailboxes = status?.mailboxes ?? [];
+  const selected = mailboxes.find((m) => m.id === selectedId) ?? mailboxes[0] ?? null;
+
   // Пока идёт синхронизация — обновляем статус (счётчик писем растёт).
-  const syncing = status?.connected === true && status.syncState === 'SYNCING';
+  const syncing = mailboxes.some((m) => m.syncState === 'SYNCING');
   useEffect(() => {
     if (!syncing) return;
     const timer = setInterval(load, SYNC_POLL_MS);
     return () => clearInterval(timer);
   }, [syncing, load]);
 
+  function select(id: string) {
+    setSelectedId(id);
+    rememberSelectedMailbox(id);
+    setAdding(false);
+  }
+
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!status) return <p className="ds-field-hint">Загрузка…</p>;
-  if (!status.connected) {
-    return actingAsLeader ? <Alert tone="info">Почта руководителя не подключена — подключить её может только она сама.</Alert> : <ConnectCard onConnected={load} />;
+  if (mailboxes.length === 0) {
+    return actingAsLeader ? (
+      <Alert tone="info">Почта руководителя не подключена — подключить её может только она сама.</Alert>
+    ) : (
+      <MailboxConnectCard
+        onConnected={(id) => {
+          select(id);
+          load();
+        }}
+      />
+    );
   }
 
   return (
     <>
-      <StatusBar status={status} onChange={load} />
-      <div style={{ marginBottom: 16 }}>
-        <SegmentedControl
-          options={[
-            { value: 'messages', label: 'Письма' },
-            { value: 'digests', label: 'Дайджест' },
-            { value: 'agent', label: 'Разбор' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as MailTab)}
-        />
+      <div className="mail-boxes">
+        {mailboxes.length > 1 && (
+          <SegmentedControl
+            label="Ящик"
+            value={selected?.id ?? ''}
+            onChange={select}
+            options={mailboxes.map((m) => ({ value: m.id, label: m.emailAddress }))}
+          />
+        )}
+        {!actingAsLeader && !adding && (
+          <Button variant="secondary" size="sm" icon={Plus} onClick={() => setAdding(true)}>
+            Добавить ящик
+          </Button>
+        )}
       </div>
-      {tab === 'messages' && <MessageList />}
-      {tab === 'digests' && <DigestList />}
-      {tab === 'agent' && <MailAgentTab />}
+      {adding ? (
+        <MailboxConnectCard
+          onConnected={(id) => {
+            select(id);
+            load();
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        selected && <MailboxView key={selected.id} mailbox={selected} onChange={load} />
+      )}
     </>
   );
 }

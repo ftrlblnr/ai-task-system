@@ -5,10 +5,18 @@ import { FilesService } from '../files/files.service';
 import { extractAttachmentText } from './attachment-extraction';
 import { MailStore, type MailboxRecord, type ResolvedAttachment, type StoredFolder } from './mail-store';
 import { MailProviderRegistry } from './mail-provider.registry';
+import { credentialsFor } from './mail-servers';
 import { MailConnectError, type EmailSession, type NormalizedAttachment, type NormalizedMessage } from './providers/email-provider';
 import { normalizeSubject, resolveThread } from './thread-resolver';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Порядок синка папок: сначала то, что смотрят чаще (бюджет прогона ограничен).
+const FOLDER_SYNC_ORDER: EmailFolderRole[] = ['INBOX', 'SENT', 'DRAFTS', 'ARCHIVE', 'OTHER', 'JUNK', 'TRASH'];
+// Письма в этих папках — исходящие (свои): не анализируются как входящие.
+export const OUTGOING_FOLDER_ROLES: ReadonlySet<EmailFolderRole> = new Set(['SENT', 'DRAFTS']);
+// Пауза перед продолжением, если бюджет прогона исчерпан (большой ящик при
+// первом подключении догружается подряд, а не раз в 10 минут cron).
+const CONTINUE_DELAY_MS = 5_000;
 export const SYNC_BATCH_SIZE = 50;
 // Потолок одного прогона: начальная синхронизация большого ящика догоняется за
 // несколько прогонов cron (курсор lastUid сохраняется после каждого батча), а не
@@ -21,7 +29,7 @@ export type SyncOutcome =
   | { status: 'ok'; fetched: number; created: number }
   | { status: 'error'; code: string };
 
-// Stage 2, Phase R — синхронизация одного ящика: Inbox + Sent, идемпотентно
+// Stage 2, Phase R — синхронизация одного ящика: все папки (с 23.10.2026), идемпотентно
 // (unique(folderId, uid), повтор не плодит дубли), начальная (initialDays) +
 // инкрементальная (uid > lastUid), обновление прочитанности, письма, пропавшие с
 // сервера, помечаются providerMissing (не удаляются физически).
@@ -43,6 +51,7 @@ export class MailSyncService {
     this.running.add(mailboxId);
     const startedAt = Date.now();
     let session: EmailSession | null = null;
+    let continueLater = false;
     try {
       const mailbox = await this.store.getMailbox(mailboxId);
       if (!mailbox) return { status: 'skipped', reason: 'not-found' };
@@ -51,23 +60,22 @@ export class MailSyncService {
       await this.store.patchMailbox(mailboxId, { syncState: 'SYNCING' });
 
       try {
-        session = await this.registry.get(mailbox.provider).openSession({
-          emailAddress: mailbox.emailAddress,
-          appPassword: this.secretBox.decrypt(mailbox.appPasswordEncrypted),
-        });
+        session = await this.registry.get(mailbox.provider).openSession(credentialsFor(mailbox, this.secretBox.decrypt(mailbox.appPasswordEncrypted)));
       } catch (err) {
         return await this.handleConnectFailure(mailbox, err);
       }
 
       const folders = await session.folders();
-      const ordered = [...folders].sort((a, b) => (a.role === 'INBOX' ? -1 : b.role === 'INBOX' ? 1 : 0));
+      const ordered = [...folders].sort((a, b) => FOLDER_SYNC_ORDER.indexOf(a.role) - FOLDER_SYNC_ORDER.indexOf(b.role));
+      await this.store.markFoldersMissing(mailbox.id, folders.map((f) => f.path));
       let budget = MAX_MESSAGES_PER_RUN;
       let fetched = 0;
       let created = 0;
       const touchedThreads = new Set<string>();
 
       for (const f of ordered) {
-        const folder = await this.store.upsertFolder(mailbox.id, f.path, f.role === 'INBOX' ? EmailFolderRole.INBOX : EmailFolderRole.SENT);
+        const folder = await this.store.upsertFolder(mailbox.id, f.path, f.role, f.delimiter ?? null);
+        if (budget <= 0) continue;
         const result = await this.syncFolder(session, mailbox, folder, budget, touchedThreads);
         budget -= result.fetched;
         fetched += result.fetched;
@@ -79,6 +87,7 @@ export class MailSyncService {
       await this.store.patchMailbox(mailboxId, { syncState: 'IDLE', lastError: null, lastSyncedAt: new Date(), consecutiveAuthFailures: 0 });
       // Без адресов/тем/текстов писем — только счётчики (правило voice-логов).
       this.logger.log(`mail sync mailbox=${mailboxId} fetched=${fetched} created=${created} durationMs=${Date.now() - startedAt}`);
+      if (budget <= 0) continueLater = true;
       return { status: 'ok', fetched, created };
     } catch (err) {
       // Непредвиденный сбой середины синка (сеть/БД) — не пауза: следующий прогон
@@ -89,6 +98,7 @@ export class MailSyncService {
     } finally {
       await session?.close();
       this.running.delete(mailboxId);
+      if (continueLater) setTimeout(() => void this.syncMailbox(mailboxId).catch(() => undefined), CONTINUE_DELAY_MS).unref();
     }
   }
 
@@ -168,7 +178,7 @@ export class MailSyncService {
     const id = await this.store.createMessage({
       mailboxId: mailbox.id,
       folderId: folder.id,
-      isOutgoing: folder.role === EmailFolderRole.SENT,
+      isOutgoing: OUTGOING_FOLDER_ROLES.has(folder.role),
       threadId,
       message: m,
       attachments,
@@ -179,7 +189,7 @@ export class MailSyncService {
 
   // Release 2 — сохранение байт вложения (FileArtifact) + извлечение текста
   // (PDF) во время синка: mailparser уже декодирует байты при разборе
-  // письма (providers/mailru-imap.provider.ts), здесь они не выбрасываются,
+  // письма (providers/imap.provider.ts), здесь они не выбрасываются,
   // а сохраняются. Best-effort по КАЖДОМУ вложению отдельно — сбой одного
   // (нечитаемый PDF, ошибка диска) не должен блокировать создание письма
   // целиком, тот же принцип, что уже в reconcileFlags.

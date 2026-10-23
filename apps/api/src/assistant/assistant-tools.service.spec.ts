@@ -192,7 +192,7 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
   }
 
   it('search_emails: без подключённого ящика — MAIL_NOT_CONNECTED, поиск не вызывается', async () => {
-    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue(null) };
+    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([]) };
     const mailQuery = { search: jest.fn() };
     const service = serviceWithMail(mailStore, mailQuery);
 
@@ -204,7 +204,7 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
   });
 
   it('search_emails: подключённый ящик — маппит письма в компактные карточки', async () => {
-    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue({ id: 'mb1' }) };
+    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]) };
     const items = [
       {
         id: 'e1',
@@ -222,11 +222,11 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
 
     expect(result).toMatchObject({ tool: 'search_emails', totalCount: 1 });
     expect('items' in result && result.items[0]).toMatchObject({ emailId: 'e1', importance: 'IMPORTANT', needsReply: true });
-    expect(mailQuery.search).toHaveBeenCalledWith('mb1', expect.objectContaining({ query: 'тема', direction: 'incoming' }), { limit: expect.any(Number) });
+    expect(mailQuery.search).toHaveBeenCalledWith(['mb1'], expect.objectContaining({ query: 'тема', direction: 'incoming' }), { limit: expect.any(Number) });
   });
 
   it('get_email: без подключённого ящика — MAIL_NOT_CONNECTED', async () => {
-    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue(null) };
+    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([]) };
     const service = serviceWithMail(mailStore, {});
 
     const result = await service.execute('get_email', { emailId: 'e1' }, user({ role: Role.OWNER }));
@@ -236,7 +236,7 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
   });
 
   it('get_email: письмо не найдено/чужое — общий MAIL_LOOKUP_FAILED, не пробрасывает детали (404)', async () => {
-    const mailStore = { getMailboxStatusByEmployee: jest.fn().mockResolvedValue({ id: 'mb1' }) };
+    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]) };
     const mailQuery = { getMessage: jest.fn().mockRejectedValue(new Error('Письмо не найдено')) };
     const service = serviceWithMail(mailStore, mailQuery);
 

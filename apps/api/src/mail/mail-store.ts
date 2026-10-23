@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { EmailFolderRole, Prisma, type MailboxSyncState, type MailProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { NormalizedMessage } from './providers/email-provider';
+import type { MailboxServerFields } from './mail-servers';
 import { deriveReplyStatus } from './reply-status';
 import type { ThreadIndex } from './thread-resolver';
 
@@ -17,11 +18,11 @@ export interface StoredFolder {
   lastUid: number;
 }
 
-export interface MailboxRecord {
+export interface MailboxRecord extends MailboxServerFields {
   id: string;
   employeeId: string;
   provider: MailProvider;
-  emailAddress: string;
+  displayName: string | null;
   appPasswordEncrypted: string;
   syncEnabled: boolean;
   syncState: MailboxSyncState;
@@ -63,6 +64,42 @@ export interface MailboxStatePatch {
   consecutiveAuthFailures?: number;
 }
 
+const MAILBOX_RECORD_SELECT = {
+  id: true,
+  employeeId: true,
+  provider: true,
+  emailAddress: true,
+  displayName: true,
+  login: true,
+  imapHost: true,
+  imapPort: true,
+  imapSecure: true,
+  smtpHost: true,
+  smtpPort: true,
+  smtpSecure: true,
+  appPasswordEncrypted: true,
+  syncEnabled: true,
+  syncState: true,
+  consecutiveAuthFailures: true,
+  initialDays: true,
+} as const;
+
+// provider — источник на вкладке «Дайджест»; серверы показываются в
+// настройках ящика (без пароля).
+const MAILBOX_STATUS_SELECT = {
+  id: true,
+  emailAddress: true,
+  displayName: true,
+  provider: true,
+  imapHost: true,
+  smtpHost: true,
+  syncEnabled: true,
+  syncState: true,
+  lastError: true,
+  lastSyncedAt: true,
+  initialDays: true,
+} as const;
+
 @Injectable()
 export class MailStore {
   constructor(private readonly prisma: PrismaService) {}
@@ -70,33 +107,45 @@ export class MailStore {
   getMailbox(id: string): Promise<MailboxRecord | null> {
     return this.prisma.mailbox.findUnique({
       where: { id },
-      select: { id: true, employeeId: true, provider: true, emailAddress: true, appPasswordEncrypted: true, syncEnabled: true, syncState: true, consecutiveAuthFailures: true, initialDays: true },
+      select: MAILBOX_RECORD_SELECT,
     });
   }
 
-  // Ящик сотрудника без пароля (для статуса/UI) — appPasswordEncrypted наружу не выбираем.
-  getMailboxStatusByEmployee(employeeId: string) {
-    return this.prisma.mailbox.findUnique({
+  // Ящики сотрудника без пароля (для статуса/UI) — appPasswordEncrypted наружу
+  // не выбираем. Порядок — по подключению: первый ящик — «основной» по умолчанию.
+  listMailboxesByEmployee(employeeId: string) {
+    return this.prisma.mailbox.findMany({
       where: { employeeId },
-      // provider — не часть MailStatus (shared-types), нужен только
-      // mail.controller.ts для источника на вкладке «Дайджест».
-      select: { id: true, emailAddress: true, provider: true, syncEnabled: true, syncState: true, lastError: true, lastSyncedAt: true, initialDays: true },
+      orderBy: { createdAt: 'asc' },
+      select: MAILBOX_STATUS_SELECT,
     });
   }
 
-  // Повторное подключение заменяет реквизиты и сбрасывает состояние ошибок.
-  upsertMailbox(data: { employeeId: string; emailAddress: string; appPasswordEncrypted: string; initialDays: number }): Promise<{ id: string }> {
+  // Ящик владельца данных: конкретный (mailboxId) или первый подключённый.
+  // Чужой mailboxId — null (контроллер отвечает 404).
+  findOwnedMailbox(employeeId: string, mailboxId?: string | null) {
+    return this.prisma.mailbox.findFirst({
+      where: mailboxId ? { id: mailboxId, employeeId } : { employeeId },
+      orderBy: { createdAt: 'asc' },
+      select: MAILBOX_STATUS_SELECT,
+    });
+  }
+
+  // Повторное подключение того же адреса заменяет реквизиты и сбрасывает ошибки.
+  upsertMailbox(data: Omit<Prisma.MailboxUncheckedCreateInput, 'id'> & { employeeId: string; emailAddress: string }): Promise<{ id: string }> {
     const reset = { syncEnabled: true, syncState: 'IDLE' as const, lastError: null, consecutiveAuthFailures: 0 };
+    const { employeeId, emailAddress, ...rest } = data;
     return this.prisma.mailbox.upsert({
-      where: { employeeId: data.employeeId },
+      where: { employeeId_emailAddress: { employeeId, emailAddress } },
       create: { ...data, ...reset },
-      update: { emailAddress: data.emailAddress, appPasswordEncrypted: data.appPasswordEncrypted, initialDays: data.initialDays, ...reset },
+      update: { ...rest, ...reset },
       select: { id: true },
     });
   }
 
-  async deleteMailboxByEmployee(employeeId: string): Promise<void> {
-    await this.prisma.mailbox.deleteMany({ where: { employeeId } });
+  async deleteMailbox(employeeId: string, mailboxId: string): Promise<boolean> {
+    const res = await this.prisma.mailbox.deleteMany({ where: { id: mailboxId, employeeId } });
+    return res.count > 0;
   }
 
   listSyncableMailboxIds(): Promise<{ id: string }[]> {
@@ -107,13 +156,20 @@ export class MailStore {
     await this.prisma.mailbox.update({ where: { id }, data: patch });
   }
 
-  async upsertFolder(mailboxId: string, path: string, role: EmailFolderRole): Promise<StoredFolder> {
+  async upsertFolder(mailboxId: string, path: string, role: EmailFolderRole, delimiter: string | null = null): Promise<StoredFolder> {
+    const seen = { role, delimiter, lastSeenAt: new Date() };
     return this.prisma.emailFolder.upsert({
       where: { mailboxId_path: { mailboxId, path } },
-      create: { mailboxId, path, role },
-      update: { role },
+      create: { mailboxId, path, ...seen },
+      update: seen,
       select: { id: true, path: true, role: true, uidValidity: true, lastUid: true },
     });
+  }
+
+  // Папки, которых больше нет на сервере (удалены/переименованы в другом
+  // клиенте) — скрываются из интерфейса; письма остаются в БД.
+  async markFoldersMissing(mailboxId: string, presentPaths: string[]): Promise<void> {
+    await this.prisma.emailFolder.updateMany({ where: { mailboxId, path: { notIn: presentPaths } }, data: { lastSeenAt: null } });
   }
 
   async updateFolder(id: string, patch: { uidValidity?: string; lastUid?: number }): Promise<void> {
@@ -305,6 +361,8 @@ export class MailStore {
         isOutgoing: false,
         isAutomated: false,
         providerMissing: false,
+        // Спам и корзину не анализируем (владелец 23.10.2026: синк всех папок).
+        folder: { is: { role: { notIn: ['JUNK', 'TRASH'] } } },
         OR: [{ analysis: null }, { analysis: { is: { status: 'FAILED', attempts: { lt: maxAttempts } } } }],
       },
       select: {

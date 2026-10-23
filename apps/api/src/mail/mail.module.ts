@@ -11,7 +11,8 @@ import { MailQueryService } from './mail-query.service';
 import { MailStore } from './mail-store';
 import { MailSyncCron } from './mail-sync.cron';
 import { MailSyncService } from './mail-sync.service';
-import { MailRuImapProvider } from './providers/mailru-imap.provider';
+import { ImapMailProvider } from './providers/imap.provider';
+import { SmtpSender } from './smtp-sender';
 import { MailActionController } from './action/mail-action.controller';
 import { MailActionAnalysisService } from './action/mail-action-analysis.service';
 import { MailActionApprovalService } from './action/mail-action-approval.service';
@@ -32,7 +33,8 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
   controllers: [MailController, MailActionController],
   providers: [
     MailStore,
-    MailRuImapProvider,
+    ImapMailProvider,
+    SmtpSender,
     MailProviderRegistry,
     MailSyncService,
     MailConnectionService,

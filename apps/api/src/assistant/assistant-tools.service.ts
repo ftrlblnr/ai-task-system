@@ -1077,10 +1077,12 @@ export class AssistantToolsService {
   // createTaskFromMeeting выше: явный { error: true } результат, а не
   // throw, чтобы модель могла честно сказать пользователю, а не показать
   // общую "TOOL_ERROR".
-  private async requireMailboxId(user: AuthenticatedUser): Promise<string | { error: true; message: string }> {
-    const mailbox = await this.mailStore.getMailboxStatusByEmployee(user.id);
-    if (!mailbox) return { error: true, message: 'MAIL_NOT_CONNECTED: почта не подключена' };
-    return mailbox.id;
+  // Все ящики пользователя (владелец 23.10.2026: их может быть несколько) —
+  // поиск и чтение идут по всем сразу.
+  private async requireMailboxId(user: AuthenticatedUser): Promise<string[] | { error: true; message: string }> {
+    const mailboxes = await this.mailStore.listMailboxesByEmployee(user.id);
+    if (mailboxes.length === 0) return { error: true, message: 'MAIL_NOT_CONNECTED: почта не подключена' };
+    return mailboxes.map((m) => m.id);
   }
 
   private toMailToolSummary(item: {
@@ -1105,7 +1107,7 @@ export class AssistantToolsService {
 
   private async searchEmails(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
     const mailboxId = await this.requireMailboxId(user);
-    if (typeof mailboxId !== 'string') return { tool: 'search_emails', ...mailboxId };
+    if (!Array.isArray(mailboxId)) return { tool: 'search_emails', ...mailboxId };
 
     const typed = input as {
       query?: unknown;
@@ -1139,7 +1141,7 @@ export class AssistantToolsService {
 
   private async getEmail(emailId: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
     const mailboxId = await this.requireMailboxId(user);
-    if (typeof mailboxId !== 'string') return { tool: 'get_email', ...mailboxId };
+    if (!Array.isArray(mailboxId)) return { tool: 'get_email', ...mailboxId };
     if (!emailId) return { tool: 'get_email', error: true, message: 'INVALID_INPUT: не указан id письма' };
 
     const message = await this.mailQuery.getMessage(mailboxId, emailId);

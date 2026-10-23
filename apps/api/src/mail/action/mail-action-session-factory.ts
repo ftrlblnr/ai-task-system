@@ -3,6 +3,7 @@ import { SecretBoxService } from '../../crypto/secret-box.service';
 import { MailStore } from '../mail-store';
 import { MailProviderRegistry } from '../mail-provider.registry';
 import type { EmailSession } from '../providers/email-provider';
+import { credentialsFor } from '../mail-servers';
 
 // Открывает ОДНУ реальную IMAP-сессию на ящик — тот же приём, что
 // MailSyncService.syncMailbox() (registry.get(provider).openSession с
@@ -21,9 +22,6 @@ export class MailActionSessionFactory {
   async openSession(mailboxId: string): Promise<EmailSession> {
     const mailbox = await this.store.getMailbox(mailboxId);
     if (!mailbox) throw new Error(`Mailbox ${mailboxId} not found`);
-    return this.registry.get(mailbox.provider).openSession({
-      emailAddress: mailbox.emailAddress,
-      appPassword: this.secretBox.decrypt(mailbox.appPasswordEncrypted),
-    });
+    return this.registry.get(mailbox.provider).openSession(credentialsFor(mailbox, this.secretBox.decrypt(mailbox.appPasswordEncrypted)));
   }
 }

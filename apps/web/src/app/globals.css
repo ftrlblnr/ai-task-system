@@ -1848,3 +1848,15 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
 @media (max-width: 560px) { .rcp-task-row { grid-template-columns: 1fr; } }
 .rcp-task-link { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 14px; }
 .rcp-task-link:hover { color: var(--ink); }
+
+/* Почта (владелец 23.10.2026): папки слева, письма справа; на телефоне — папки над списком. */
+.mail-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; align-items: start; }
+.mail-folders { display: flex; flex-direction: column; gap: 2px; }
+.mail-folder { width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; font-family: inherit; }
+.mail-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-boxes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+@media (max-width: 760px) {
+  .mail-layout { grid-template-columns: minmax(0, 1fr); }
+  .mail-folders { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .mail-folder { width: auto; flex: 0 0 auto; padding-left: 10px !important; }
+}

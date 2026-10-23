@@ -1,18 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import type { MailProvider } from '@prisma/client';
 import type { EmailProvider } from './providers/email-provider';
-import { MailRuImapProvider } from './providers/mailru-imap.provider';
+import { ImapMailProvider } from './providers/imap.provider';
 
 // Единственное место, знающее соответствие «тип провайдера → реализация».
-// Microsoft365/Gmail/произвольный IMAP добавляются сюда, бизнес-логика не меняется.
+// Mail.ru и любой IMAP-сервер — одна реализация, отличаются только серверы
+// (mail-servers.ts).
 @Injectable()
 export class MailProviderRegistry {
-  constructor(private readonly mailRu: MailRuImapProvider) {}
+  constructor(private readonly imap: ImapMailProvider) {}
 
   get(provider: MailProvider): EmailProvider {
     switch (provider) {
       case 'MAIL_RU':
-        return this.mailRu;
+      case 'IMAP':
+        return this.imap;
     }
   }
 }

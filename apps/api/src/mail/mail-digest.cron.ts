@@ -5,18 +5,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import { localDateString, TIMEZONE_OFFSET_STRING } from '../common/timezone';
 import { MailQueryService, type DigestEmailItem } from './mail-query.service';
+import { PROVIDER_LABELS } from './mail-servers';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 }
-
-// Источник (владелец 29.09.2026: сейчас только Mail.ru, дальше планируются
-// другие провайдеры) — и в Telegram-сообщении, и на вкладке «Дайджест» в
-// вебе (mail.controller.ts переиспользует этот же экспорт). Единственное
-// место, где заводить label для нового значения MailProvider при расширении.
-export const PROVIDER_LABELS: Record<MailProvider, string> = {
-  MAIL_RU: 'Mail.ru',
-};
 
 const IMPORTANCE_LABELS: Record<string, string> = { CRITICAL: 'Критично', IMPORTANT: 'Важно', NORMAL: '', LOW: '' };
 

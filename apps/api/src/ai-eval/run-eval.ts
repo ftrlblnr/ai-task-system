@@ -81,7 +81,7 @@ async function assistantTools(): Promise<Anthropic.Tool[]> {
     const svc = Object.create(AssistantToolsService.prototype) as AssistantToolsService;
     Object.assign(svc, {
       prisma: { competency: { findMany: () => Promise.resolve([]) } },
-      mailStore: { getMailboxStatusByEmployee: () => Promise.resolve(null) },
+      mailStore: { listMailboxesByEmployee: () => Promise.resolve([]) },
     });
     toolsCache = await svc.buildTools({ id: 'eval', role: 'OWNER' } as never);
   }
