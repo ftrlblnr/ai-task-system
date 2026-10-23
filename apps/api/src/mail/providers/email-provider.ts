@@ -67,6 +67,8 @@ export interface NormalizedMessage {
   htmlBody: string | null;
   bodyTruncated: boolean;
   isRead: boolean;
+  isFlagged: boolean;
+  isAnswered: boolean;
   hasAttachments: boolean;
   // Рассылка/автоответ по заголовкам — правила без LLM.
   isAutomated: boolean;
@@ -122,7 +124,20 @@ export class StaleLocatorError extends Error {
   }
 }
 
-export type MessageFlag = '\\Seen' | '\\Flagged';
+export type MessageFlag = '\\Seen' | '\\Flagged' | '\\Answered';
+
+// Флаги письма, которые показывает почтовый клиент (владелец 23.10.2026).
+export interface MessageFlagState {
+  isRead: boolean;
+  isFlagged: boolean;
+  isAnswered: boolean;
+}
+
+export interface AppendResult {
+  // null — сервер не сообщил (нет UIDPLUS); письмо найдётся при синке.
+  uid: number | null;
+  uidValidity: string | null;
+}
 
 export interface EmailSession {
   // Все папки, которые можно открыть (без \Noselect) — их и синхронизирует синк.
@@ -131,9 +146,9 @@ export interface EmailSession {
   // Письма папки в порядке возрастания UID: только uid > afterUid, при afterUid=0 —
   // не старше since. Не более limit штук за вызов (синк идёт батчами).
   fetchNew(path: string, afterUid: number, since: Date | null, limit: number): Promise<NormalizedMessage[]>;
-  // UID → isRead для всех писем папки с uid >= fromUid (лёгкий запрос флагов):
-  // обновление прочитанности и обнаружение исчезнувших с сервера писем.
-  fetchFlagsFrom(path: string, fromUid: number): Promise<Map<number, boolean>>;
+  // UID → флаги для всех писем папки с uid >= fromUid (лёгкий запрос флагов):
+  // обновление прочитанности/пометок и обнаружение исчезнувших с сервера писем.
+  fetchFlagsFrom(path: string, fromUid: number): Promise<Map<number, MessageFlagState>>;
 
   // --- Почтовый ИИ-агент v2.0 (05.10.2026) — этап 1 ---
 
@@ -153,6 +168,18 @@ export interface EmailSession {
   // с таким именем/родителем уже существовала (раздел 9 ТЗ: "не создавать
   // дубликат").
   createFolder(parentPath: string | null, name: string): Promise<ProviderFolder & { created: boolean }>;
+
+  // --- Почтовый клиент (владелец 23.10.2026) ---
+
+  // Кладёт готовое письмо (RFC 822) в папку — копия отправленного в
+  // «Отправленные», черновик в «Черновики».
+  appendMessage(path: string, raw: Buffer, flags: MessageFlag[]): Promise<AppendResult>;
+  // UID письма с этим Message-ID в папке (null — нет): сервер мог сам положить
+  // копию отправленного в «Отправленные», тогда APPEND не нужен.
+  findUidByMessageId(path: string, internetMessageId: string): Promise<number | null>;
+  // Удаление ОДНОГО письма навсегда (UID EXPUNGE). Без UIDPLUS — отказ: общий
+  // EXPUNGE мог бы стереть чужие письма с флагом \Deleted.
+  deleteMessage(locator: MessageLocator): Promise<void>;
 
   close(): Promise<void>;
 }

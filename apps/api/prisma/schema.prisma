@@ -1295,6 +1295,9 @@ model EmailMessage {
   bodyTruncated Boolean @default(false)
 
   isRead         Boolean @default(false)
+  // Флажок и «отвечено» — флаги сервера \Flagged / \Answered (владелец 23.10.2026).
+  isFlagged      Boolean @default(false)
+  isAnswered     Boolean @default(false)
   isOutgoing     Boolean @default(false)
   hasAttachments Boolean @default(false)
   // Рассылка/автоответ по заголовкам (List-Unsubscribe, Precedence: bulk, noreply) —
@@ -1624,30 +1627,51 @@ model MailActionAttempt {
 
 enum MailDraftState {
   DRAFT
+  // Отправка идёт — повторное «Отправить» не отправит письмо второй раз.
+  SENDING
   SENT
   DISCARDED
 }
 
-// Этапы 2-3 ТЗ (DRAFT_REPLY/SEND_REPLY) — модель заведена вместе с общей
-// инфраструктурой (раздел 21, шаг 2), сервис появится при выпуске этапа.
+enum MailDraftMode {
+  NEW
+  REPLY
+  REPLY_ALL
+  FORWARD
+}
+
+// Черновик письма (владелец 23.10.2026, почтовый клиент): пишется в
+// Адъютанте, отправляется по SMTP ящика, копия кладётся в «Отправленные».
 model MailDraft {
-  id              String         @id @default(cuid())
-  mailboxId       String
-  mailbox         Mailbox        @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
-  sourceMessageId String?
-  version         Int            @default(1)
-  fromAddress     String?
-  toAddresses     String[]
-  ccAddresses     String[]
-  bccAddresses    String[]
-  subject         String?
-  body            String?
-  signature       String?
-  attachments     Json?
-  state           MailDraftState @default(DRAFT)
+  id                   String         @id @default(cuid())
+  mailboxId            String
+  mailbox              Mailbox        @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  mode                 MailDraftMode  @default(NEW)
+  // Письмо, на которое отвечаем / которое пересылаем (EmailMessage.id).
+  sourceMessageId      String?
+  // Оптимистическая блокировка автосохранения.
+  version              Int            @default(1)
+  toAddresses          String[]
+  ccAddresses          String[]
+  bccAddresses         String[]
+  subject              String?
+  // Текст письма (обычный текст; в HTML превращается при отправке).
+  body                 String?
+  // Свои вложения — FileArtifact (загружены через /files/upload).
+  fileIds              String[]       @default([])
+  // Вложения исходного письма при пересылке — EmailAttachment.id.
+  forwardAttachmentIds String[]       @default([])
+  state                MailDraftState @default(DRAFT)
+  // Безопасный текст последней ошибки отправки (для показа пользователю).
+  lastError            String?
+  sentAt               DateTime?
+  // Message-ID отправленного письма — сверка с «Отправленными».
+  sentMessageId        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([mailboxId, state, updatedAt])
 }
 
 enum MailWatchStatus {

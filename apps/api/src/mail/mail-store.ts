@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { EmailFolderRole, Prisma, type MailboxSyncState, type MailProvider } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import type { NormalizedMessage } from './providers/email-provider';
+import type { MessageFlagState, NormalizedMessage } from './providers/email-provider';
 import type { MailboxServerFields } from './mail-servers';
 import { deriveReplyStatus } from './reply-status';
 import type { ThreadIndex } from './thread-resolver';
@@ -30,12 +30,13 @@ export interface MailboxRecord extends MailboxServerFields {
   initialDays: number;
 }
 
-export interface LocalMessageRef {
+export interface LocalMessageRef extends MessageFlagState {
   id: string;
   uid: number;
-  isRead: boolean;
   providerMissing: boolean;
 }
+
+const FLAG_SELECT = { isRead: true, isFlagged: true, isAnswered: true } as const;
 
 // Release 2 — байты/извлечённый текст вложений разрешаются на уровне
 // MailSyncService (FilesService/attachment-extraction.ts), не здесь: MailStore
@@ -183,8 +184,8 @@ export class MailStore {
     return this.prisma.emailFolder.findMany({ where: { mailboxId }, select: { path: true, role: true } });
   }
 
-  findMessageByUid(folderId: string, uid: number): Promise<{ id: string; isRead: boolean } | null> {
-    return this.prisma.emailMessage.findUnique({ where: { folderId_uid: { folderId, uid } }, select: { id: true, isRead: true } });
+  findMessageByUid(folderId: string, uid: number): Promise<({ id: string } & MessageFlagState) | null> {
+    return this.prisma.emailMessage.findUnique({ where: { folderId_uid: { folderId, uid } }, select: { id: true, ...FLAG_SELECT } });
   }
 
   // Для случая смены UIDVALIDITY: то же письмо (Message-ID) уже есть в папке под
@@ -197,8 +198,8 @@ export class MailStore {
     await this.prisma.emailMessage.update({ where: { id }, data: { uid, providerMissing: false, deletedAt: null } });
   }
 
-  async setMessageRead(id: string, isRead: boolean): Promise<void> {
-    await this.prisma.emailMessage.update({ where: { id }, data: { isRead } });
+  async setMessageFlags(id: string, flags: Partial<MessageFlagState>): Promise<void> {
+    await this.prisma.emailMessage.update({ where: { id }, data: flags });
   }
 
   // null — письмо уже создано параллельно (unique(folderId, uid)) — не ошибка.
@@ -225,6 +226,8 @@ export class MailStore {
           htmlBody: m.htmlBody,
           bodyTruncated: m.bodyTruncated,
           isRead: m.isRead,
+          isFlagged: m.isFlagged,
+          isAnswered: m.isAnswered,
           isOutgoing: record.isOutgoing,
           hasAttachments: m.hasAttachments,
           isAutomated: m.isAutomated,
@@ -333,7 +336,7 @@ export class MailStore {
   listLocalFrom(folderId: string, fromUid: number): Promise<LocalMessageRef[]> {
     return this.prisma.emailMessage.findMany({
       where: { folderId, uid: { gte: fromUid } },
-      select: { id: true, uid: true, isRead: true, providerMissing: true },
+      select: { id: true, uid: true, ...FLAG_SELECT, providerMissing: true },
     });
   }
 

@@ -20,6 +20,8 @@ export interface EmailFilters {
   hasAttachments?: boolean;
   needsReply?: boolean;
   needsAction?: boolean;
+  // Только помеченные флажком.
+  flagged?: boolean;
   // По умолчанию только входящие: «письма за вчера» — это то, что пришло.
   direction?: 'incoming' | 'outgoing' | 'all';
   // Конкретная папка (список писем в почтовом клиенте) — тогда direction не
@@ -54,6 +56,7 @@ export function buildEmailWhere(mailboxId: string | string[], f: EmailFilters): 
   if (f.readStatus === 'read') where.isRead = true;
   if (f.readStatus === 'unread') where.isRead = false;
   if (f.hasAttachments !== undefined) where.hasAttachments = f.hasAttachments;
+  if (f.flagged !== undefined) where.isFlagged = f.flagged;
 
   const contains = (value: string) => ({ contains: value, mode: 'insensitive' as const });
   if (f.subject) where.subject = contains(f.subject);
@@ -96,6 +99,8 @@ const LIST_SELECT = {
   fromName: true,
   receivedAt: true,
   isRead: true,
+  isFlagged: true,
+  isAnswered: true,
   isOutgoing: true,
   hasAttachments: true,
   // Получатели — для колонки «Кому» в Отправленных/Черновиках (первые три).
@@ -108,10 +113,11 @@ const LIST_SELECT = {
 export class MailQueryService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async search(mailboxId: string | string[], filters: EmailFilters, opts: { limit?: number; offset?: number } = {}) {
+  // maxLimit — потолок для почтового клиента («Показать ещё»); ассистенту — MAX_LIST_LIMIT.
+  async search(mailboxId: string | string[], filters: EmailFilters, opts: { limit?: number; offset?: number; maxLimit?: number } = {}) {
     const where = buildEmailWhere(mailboxId, filters);
     const requested = Number.isFinite(opts.limit) ? (opts.limit as number) : 20;
-    const take = Math.min(Math.max(requested, 1), MAX_LIST_LIMIT);
+    const take = Math.min(Math.max(requested, 1), opts.maxLimit ?? MAX_LIST_LIMIT);
     const skip = Number.isFinite(opts.offset) ? Math.max(opts.offset as number, 0) : 0;
     const [items, totalCount] = await Promise.all([
       this.prisma.emailMessage.findMany({ where, select: LIST_SELECT, orderBy: { receivedAt: 'desc' }, take, skip }),
@@ -147,7 +153,12 @@ export class MailQueryService {
         internetMessageId: true,
         sentAt: true,
         textBody: true,
+        // HTML показывается в изолированном iframe (web), картинки — по кнопке.
+        htmlBody: true,
         bodyTruncated: true,
+        inReplyTo: true,
+        referencesIds: true,
+        folder: { select: { id: true, role: true, path: true } },
         recipients: { select: { type: true, address: true, name: true } },
         // fileArtifactId читается только чтобы посчитать downloadable ниже —
         // сам id FileArtifact наружу клиенту не отдаётся (ссылка на
@@ -330,6 +341,7 @@ export function parseEmailFilters(raw: Record<string, string | undefined>): Emai
     hasAttachments: bool(raw.hasAttachments),
     needsReply: bool(raw.needsReply),
     needsAction: bool(raw.needsAction),
+    flagged: bool(raw.flagged),
     direction,
     folderId: raw.folderId || undefined,
   };

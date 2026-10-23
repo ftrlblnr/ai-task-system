@@ -107,6 +107,33 @@ export class FilesService {
     return this.persist(employeeId, buffer, sanitizeFileName(name), mimeType, FileArtifactSource.INTERNAL);
   }
 
+  // Почтовый клиент (владелец 23.10.2026) — свои вложения к письму: тот же
+  // путь, что вложения синка (без allowlist чата — в деловой почте ходят
+  // .doc/.xls/.zip), но это ещё не вложение какого-либо письма (EmailAttachment
+  // на файл не ссылается). Так и отличаются от сохранённых при синке.
+  async findMailUploads(employeeId: string, ids: string[]): Promise<{ id: string }[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.prisma.fileArtifact.findMany({
+      where: { id: { in: ids }, employeeId, source: FileArtifactSource.INTERNAL, messageId: null },
+      select: { id: true },
+    });
+    const synced = await this.prisma.emailAttachment.findMany({ where: { fileArtifactId: { in: rows.map((r) => r.id) } }, select: { fileArtifactId: true } });
+    return rows.filter((r) => !synced.some((s) => s.fileArtifactId === r.id));
+  }
+
+  // Черновик отправлен/удалён или вложение снято — файл больше не нужен
+  // (копия письма с вложениями лежит на почтовом сервере). Best-effort.
+  async deleteMailUploads(employeeId: string, ids: string[]): Promise<void> {
+    for (const { id } of await this.findMailUploads(employeeId, ids)) {
+      try {
+        const file = await this.prisma.fileArtifact.delete({ where: { id } });
+        await this.registry.resolve(file.storageProvider).delete(file.storageKey);
+      } catch (err) {
+        this.logger.warn(`mail upload cleanup failed fileId=${id}: ${err instanceof Error ? err.name : 'unknown'}`);
+      }
+    }
+  }
+
   // Phase F.2 (аудит 17.09.2026, P0 — storage/DB consistency) — раньше
   // storage.save() и prisma.fileArtifact.create() не были ничем связаны:
   // сбой БД после успешной записи на диск оставлял физический файл без

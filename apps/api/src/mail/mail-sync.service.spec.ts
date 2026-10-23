@@ -10,7 +10,9 @@ import { normalizeSubject } from './thread-resolver';
 interface StoredMsg {
   id: string;
   folderId: string;
-  uid: number;
+  isRead: boolean;
+  isFlagged: boolean;
+  isAnswered: boolean;
   isRead: boolean;
   isOutgoing: boolean;
   isAutomated: boolean;
@@ -77,8 +79,8 @@ class FakeStore {
     m.uid = uid;
     m.providerMissing = false;
   }
-  async setMessageRead(id: string, isRead: boolean) {
-    this.messages.find((x) => x.id === id)!.isRead = isRead;
+  async setMessageFlags(id: string, flags: any) {
+    Object.assign(this.messages.find((x) => x.id === id)!, flags);
   }
   async createMessage(r: any) {
     const m = r.message as NormalizedMessage;
@@ -89,6 +91,8 @@ class FakeStore {
       folderId: r.folderId,
       uid: m.uid,
       isRead: m.isRead,
+      isFlagged: m.isFlagged,
+      isAnswered: m.isAnswered,
       isOutgoing: r.isOutgoing,
       isAutomated: m.isAutomated,
       internetMessageId: m.internetMessageId,
@@ -139,7 +143,7 @@ class FakeStore {
     return uids.length ? Math.min(...uids) : null;
   }
   async listLocalFrom(folderId: string, fromUid: number) {
-    return this.messages.filter((m) => m.folderId === folderId && m.uid >= fromUid).map((m) => ({ id: m.id, uid: m.uid, isRead: m.isRead, providerMissing: m.providerMissing }));
+    return this.messages.filter((m) => m.folderId === folderId && m.uid >= fromUid).map((m) => ({ id: m.id, uid: m.uid, isRead: m.isRead, isFlagged: m.isFlagged, isAnswered: m.isAnswered, providerMissing: m.providerMissing }));
   }
   async setMissing(ids: string[], missing: boolean) {
     for (const m of this.messages) if (ids.includes(m.id)) m.providerMissing = missing;
@@ -194,6 +198,8 @@ class FakeServer {
       htmlBody: null,
       bodyTruncated: false,
       isRead: m.isRead ?? false,
+      isFlagged: false,
+      isAnswered: false,
       hasAttachments: false,
       isAutomated: m.automated ?? false,
       inReplyTo: m.inReplyTo ?? null,
@@ -215,7 +221,7 @@ class FakeServer {
             .slice(0, limit)
             .map((m) => this.toNormalized(m)),
         fetchFlagsFrom: async (path: string, fromUid: number) =>
-          new Map<number, boolean>(this.emptyFlags ? [] : this.list(path).filter((m) => m.uid >= fromUid).map((m) => [m.uid, m.isRead ?? false] as [number, boolean])),
+          new Map(this.emptyFlags ? [] : this.list(path).filter((m) => m.uid >= fromUid).map((m) => [m.uid, { isRead: m.isRead ?? false, isFlagged: false, isAnswered: false }] as const)),
         close: async () => undefined,
       };
     },

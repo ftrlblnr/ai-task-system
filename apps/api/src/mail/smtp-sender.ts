@@ -21,6 +21,13 @@ function mapSmtpError(err: unknown): MailConnectError {
   return new MailConnectError('UNKNOWN');
 }
 
+export class SmtpRejectedError extends Error {
+  constructor() {
+    super('SMTP_REJECTED');
+    this.name = 'SmtpRejectedError';
+  }
+}
+
 @Injectable()
 export class SmtpSender {
   private transport(server: MailServerSettings, auth: SmtpAuth): Transporter {
@@ -37,6 +44,24 @@ export class SmtpSender {
       logger: false,
       debug: false,
     });
+  }
+
+  // Отправка готового письма (raw — RFC 822 без Bcc). Возвращает принятые и
+  // отклонённые сервером адреса; ошибка соединения/входа — MailConnectError.
+  async send(server: MailServerSettings, auth: SmtpAuth, envelope: { from: string; to: string[] }, raw: Buffer): Promise<{ accepted: string[]; rejected: string[] }> {
+    const transport = this.transport(server, auth);
+    try {
+      const info = (await transport.sendMail({ envelope, raw })) as { accepted?: unknown[]; rejected?: unknown[] };
+      const list = (v: unknown[] | undefined) => (v ?? []).map((x) => (typeof x === 'string' ? x : String((x as { address?: string }).address ?? ''))).filter(Boolean);
+      return { accepted: list(info.accepted), rejected: list(info.rejected) };
+    } catch (err) {
+      const e = err as { code?: string; rejected?: unknown[] };
+      // Сервер отклонил всех получателей — это не сбой соединения.
+      if (e?.code === 'EENVELOPE') throw new SmtpRejectedError();
+      throw mapSmtpError(err);
+    } finally {
+      transport.close();
+    }
   }
 
   // Проверка входа на SMTP-сервер при подключении ящика.

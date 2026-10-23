@@ -65,6 +65,23 @@ export class FilesCleanupCron {
         ...(referencedIds.length > 0 ? { id: { notIn: referencedIds } } : {}),
       },
     });
+    // Почтовый клиент (23.10.2026): своё вложение к письму (INTERNAL, но ни
+    // одно EmailAttachment на него не ссылается) нужно, только пока лежит в
+    // неотправленном черновике; загруженное и брошенное — чистится здесь же.
+    const draftFileIds = (await this.prisma.mailDraft.findMany({ where: { state: { in: ['DRAFT', 'SENDING'] } }, select: { fileIds: true } })).flatMap((d) => d.fileIds);
+    const mailUploads = await this.prisma.fileArtifact.findMany({
+      where: {
+        source: FileArtifactSource.INTERNAL,
+        messageId: null,
+        createdAt: { lt: cutoff },
+        ...(draftFileIds.length > 0 ? { id: { notIn: draftFileIds } } : {}),
+      },
+    });
+    const synced = new Set(
+      (await this.prisma.emailAttachment.findMany({ where: { fileArtifactId: { in: mailUploads.map((f) => f.id) } }, select: { fileArtifactId: true } })).map((a) => a.fileArtifactId),
+    );
+    orphans.push(...mailUploads.filter((f) => !synced.has(f.id)));
+
     let deleted = 0;
     for (const file of orphans) {
       // storage.delete теперь best-effort только для ENOENT (файла и так

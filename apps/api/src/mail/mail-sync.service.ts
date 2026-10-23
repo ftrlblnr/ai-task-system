@@ -6,7 +6,7 @@ import { extractAttachmentText } from './attachment-extraction';
 import { MailStore, type MailboxRecord, type ResolvedAttachment, type StoredFolder } from './mail-store';
 import { MailProviderRegistry } from './mail-provider.registry';
 import { credentialsFor } from './mail-servers';
-import { MailConnectError, type EmailSession, type NormalizedAttachment, type NormalizedMessage } from './providers/email-provider';
+import { MailConnectError, type EmailSession, type MessageFlagState, type NormalizedAttachment, type NormalizedMessage } from './providers/email-provider';
 import { normalizeSubject, resolveThread } from './thread-resolver';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -23,6 +23,13 @@ export const SYNC_BATCH_SIZE = 50;
 // держит процесс/память 512 МБ и соединение с Mail.ru часами.
 export const MAX_MESSAGES_PER_RUN = 300;
 export const MAX_AUTH_FAILURES = 3;
+
+// Только изменившиеся флаги (null — ничего не поменялось, запись в БД не нужна).
+export function changedFlags(local: MessageFlagState, remote: MessageFlagState): Partial<MessageFlagState> | null {
+  const patch: Partial<MessageFlagState> = {};
+  for (const key of ['isRead', 'isFlagged', 'isAnswered'] as const) if (local[key] !== remote[key]) patch[key] = remote[key];
+  return Object.keys(patch).length > 0 ? patch : null;
+}
 
 export type SyncOutcome =
   | { status: 'skipped'; reason: 'already-running' | 'disabled' | 'not-found' }
@@ -162,7 +169,8 @@ export class MailSyncService {
   private async storeMessage(mailbox: MailboxRecord, folder: StoredFolder, m: NormalizedMessage, touchedThreads: Set<string>): Promise<boolean> {
     const existing = await this.store.findMessageByUid(folder.id, m.uid);
     if (existing) {
-      if (existing.isRead !== m.isRead) await this.store.setMessageRead(existing.id, m.isRead);
+      const changed = changedFlags(existing, m);
+      if (changed) await this.store.setMessageFlags(existing.id, changed);
       return false;
     }
     if (m.internetMessageId) {
@@ -246,13 +254,14 @@ export class MailSyncService {
     const missing: string[] = [];
     const present: string[] = [];
     for (const l of local) {
-      const isRead = remote.get(l.uid);
-      if (isRead === undefined) {
+      const flags = remote.get(l.uid);
+      if (flags === undefined) {
         if (!l.providerMissing) missing.push(l.id);
         continue;
       }
       if (l.providerMissing) present.push(l.id);
-      if (l.isRead !== isRead) await this.store.setMessageRead(l.id, isRead);
+      const changed = changedFlags(l, flags);
+      if (changed) await this.store.setMessageFlags(l.id, changed);
     }
     await this.store.setMissing(missing, true);
     await this.store.setMissing(present, false);

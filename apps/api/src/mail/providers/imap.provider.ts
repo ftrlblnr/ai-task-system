@@ -7,7 +7,9 @@ import {
   type EmailProvider,
   type EmailSession,
   type MailCredentials,
+  type AppendResult,
   type MessageFlag,
+  type MessageFlagState,
   type MessageLocator,
   type MoveResult,
   type NormalizedAddress,
@@ -109,9 +111,13 @@ function headerString(parsed: ParsedMail, name: string): string {
 }
 
 // Чистая нормализация разобранного письма (вынесена ради тестов без сети).
+export function flagState(flags: Set<string> | undefined): MessageFlagState {
+  return { isRead: Boolean(flags?.has('\\Seen')), isFlagged: Boolean(flags?.has('\\Flagged')), isAnswered: Boolean(flags?.has('\\Answered')) };
+}
+
 export function normalizeParsedMail(
   parsed: ParsedMail,
-  meta: { uid: number; isRead: boolean; receivedAt: Date | null; truncated: boolean },
+  meta: { uid: number; isRead: boolean; isFlagged?: boolean; isAnswered?: boolean; receivedAt: Date | null; truncated: boolean },
 ): NormalizedMessage {
   const from = toAddresses(parsed.from)[0] ?? { address: 'unknown@invalid', name: null };
   const references = Array.isArray(parsed.references) ? parsed.references : parsed.references ? [parsed.references] : [];
@@ -143,6 +149,8 @@ export function normalizeParsedMail(
     htmlBody,
     bodyTruncated: meta.truncated || rawText.length > MAX_TEXT_CHARS,
     isRead: meta.isRead,
+    isFlagged: meta.isFlagged ?? false,
+    isAnswered: meta.isAnswered ?? false,
     hasAttachments: attachments.length > 0,
     isAutomated: automated,
     inReplyTo: normalizeMessageId(parsed.inReplyTo),
@@ -268,7 +276,7 @@ class ImapMailSession implements EmailSession {
         messages.push(
           normalizeParsedMail(parsed, {
             uid,
-            isRead: Boolean(msg.flags?.has('\\Seen')),
+            ...flagState(msg.flags),
             receivedAt: internalDate,
             truncated: (msg.size ?? 0) > MAX_SOURCE_BYTES,
           }),
@@ -280,14 +288,46 @@ class ImapMailSession implements EmailSession {
     }
   }
 
-  async fetchFlagsFrom(path: string, fromUid: number): Promise<Map<number, boolean>> {
+  async fetchFlagsFrom(path: string, fromUid: number): Promise<Map<number, MessageFlagState>> {
     const lock = await this.client.getMailboxLock(path, { readOnly: true });
     try {
-      const flags = new Map<number, boolean>();
+      const flags = new Map<number, MessageFlagState>();
       for await (const msg of this.client.fetch(`${Math.max(fromUid, 1)}:*`, { uid: true, flags: true }, { uid: true })) {
-        if (msg.uid >= fromUid) flags.set(msg.uid, Boolean(msg.flags?.has('\\Seen')));
+        if (msg.uid >= fromUid) flags.set(msg.uid, flagState(msg.flags));
       }
       return flags;
+    } finally {
+      lock.release();
+    }
+  }
+
+  async appendMessage(path: string, raw: Buffer, flags: MessageFlag[]): Promise<AppendResult> {
+    const result = await this.client.append(path, raw, flags);
+    if (!result) throw new Error('Сервер не принял письмо в папку');
+    return { uid: result.uid ?? null, uidValidity: result.uidValidity != null ? String(result.uidValidity) : null };
+  }
+
+  async findUidByMessageId(path: string, internetMessageId: string): Promise<number | null> {
+    const lock = await this.client.getMailboxLock(path, { readOnly: true });
+    try {
+      const found = (await this.client.search({ header: { 'message-id': internetMessageId } }, { uid: true })) || [];
+      return found.length > 0 ? Math.max(...found) : null;
+    } finally {
+      lock.release();
+    }
+  }
+
+  async deleteMessage(locator: MessageLocator): Promise<void> {
+    if (!this.capabilities().uidplus) {
+      throw new Error('Сервер не поддерживает удаление одного письма (UIDPLUS) — операция недоступна');
+    }
+    const lock = await this.client.getMailboxLock(locator.folderPath);
+    try {
+      const status = await this.client.status(locator.folderPath, { uidValidity: true });
+      if (String(status.uidValidity) !== locator.uidValidity) throw new StaleLocatorError();
+      // С UIDPLUS imapflow делает UID EXPUNGE ровно этого UID.
+      const ok = await this.client.messageDelete(String(locator.uid), { uid: true });
+      if (!ok) throw new Error('Удаление не выполнено сервером');
     } finally {
       lock.release();
     }

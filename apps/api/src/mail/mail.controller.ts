@@ -1,15 +1,23 @@
-import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, StreamableFile, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, NotFoundException, Param, Patch, Post, Query, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Type } from 'class-transformer';
 import { IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { assertOwnIntegration, CurrentDataOwner, DataOwnerGuard, type DataOwner } from '../auth/data-owner';
 import { MANAGER_ROLES } from '../auth/roles';
+import { AuditService } from '../audit/audit.service';
 import { contentDisposition } from '../common/http/content-disposition';
+import { fixMultipartFileName } from '../common/http/multipart-filename';
 import { FilesService } from '../files/files.service';
 import { MailActionSessionFactory } from './action/mail-action-session-factory';
 import { CreateMailFolderDto } from './dto/create-mail-folder.dto';
+import { CreateDraftDto, MessageActionsDto, UpdateDraftDto } from './dto/mail-client.dto';
+import { MailComposeService } from './mail-compose.service';
+import { MailMessageActionsService, type MessageAction } from './mail-message-actions.service';
 import { MailConnectionService } from './mail-connection.service';
 import { MAILBOX_HEADER, PROVIDER_LABELS } from './mail-servers';
 import { MailQueryService, parseEmailFilters } from './mail-query.service';
@@ -82,6 +90,25 @@ export class ConnectMailboxDto {
   initialDays?: number;
 }
 
+// Список в почтовом клиенте растёт кнопкой «Показать ещё».
+const CLIENT_LIST_LIMIT = 500;
+const MAX_MAIL_UPLOAD_BYTES = 20 * 1024 * 1024;
+const BLOCKED_ATTACHMENT_EXT = /\.(exe|com|bat|cmd|scr|pif|msi|vbs|vbe|js|jse|wsf|wsh|ps1|lnk|hta|cpl|jar)$/i;
+
+function toMessageAction(spec: MessageActionsDto['action']): MessageAction {
+  switch (spec.type) {
+    case 'read':
+    case 'flag':
+      if (typeof spec.value !== 'boolean') throw new BadRequestException('Не указано значение');
+      return { type: spec.type, value: spec.value };
+    case 'move':
+      if (!spec.folderId) throw new BadRequestException('Не указана папка');
+      return { type: 'move', folderId: spec.folderId };
+    default:
+      return { type: spec.type };
+  }
+}
+
 // Как Plaud/календарь — личная интеграция (решение владельца 25.09.2026). Каждый
 // запрос работает только с ящиком владельца данных (Mailbox.employeeId), чужие
 // письма недоступны по id (404). С 20.10.2026 ящик есть и у администратора, а
@@ -97,6 +124,9 @@ export class MailController {
     private readonly query: MailQueryService,
     private readonly files: FilesService,
     private readonly sessions: MailActionSessionFactory,
+    private readonly compose: MailComposeService,
+    private readonly actions: MailMessageActionsService,
+    private readonly audit: AuditService,
   ) {}
 
   @Get('status')
@@ -138,6 +168,7 @@ export class MailController {
     return this.query.search(mailbox.id, parseEmailFilters(raw), {
       limit: raw.limit ? Number(raw.limit) : undefined,
       offset: raw.offset ? Number(raw.offset) : undefined,
+      maxLimit: CLIENT_LIST_LIMIT,
     });
   }
 
@@ -145,6 +176,72 @@ export class MailController {
   async getOne(@Param('id') id: string, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
     const mailbox = await this.requireMailbox(owner, mailboxId);
     return this.query.getMessage(mailbox.id, id);
+  }
+
+  // Действия над письмами (почтовый клиент, 23.10.2026): прочитано, флажок,
+  // переместить, архив, корзина, удалить навсегда — сразу на сервере.
+  @Post('messages/actions')
+  @HttpCode(HttpStatus.OK)
+  async messageActions(@Body() dto: MessageActionsDto, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner, mailboxId);
+    return this.actions.apply(mailbox.id, dto.ids, toMessageAction(dto.action));
+  }
+
+  // --- Черновики и отправка ---
+
+  @Get('drafts')
+  async listDrafts(@Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner, mailboxId);
+    return this.compose.list(mailbox.id);
+  }
+
+  @Post('drafts')
+  async createDraft(@Body() dto: CreateDraftDto, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailboxRecord(owner, mailboxId);
+    return this.compose.create(mailbox, dto.mode, dto.sourceMessageId);
+  }
+
+  @Get('drafts/:id')
+  async getDraft(@Param('id') id: string, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailbox(owner, mailboxId);
+    return this.compose.get(mailbox.id, id);
+  }
+
+  @Patch('drafts/:id')
+  async updateDraft(@Param('id') id: string, @Body() dto: UpdateDraftDto, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailboxRecord(owner, mailboxId);
+    return this.compose.update(mailbox, id, dto);
+  }
+
+  @Delete('drafts/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async discardDraft(@Param('id') id: string, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    const mailbox = await this.requireMailboxRecord(owner, mailboxId);
+    await this.compose.discard(mailbox, id);
+  }
+
+  // Отправка — только по кнопке «Отправить» пользователя. В журнал — кто
+  // отправил (администратор в режиме руководителя — он сам), без адресов и текста.
+  @Post('drafts/:id/send')
+  @HttpCode(HttpStatus.OK)
+  async sendDraft(@Param('id') id: string, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner, @CurrentUser() user: AuthenticatedUser) {
+    const mailbox = await this.requireMailboxRecord(owner, mailboxId);
+    const result = await this.compose.send(mailbox, id);
+    if (!result.alreadySent) await this.audit.log(user.id, 'MAIL_SENT', 'MailDraft', id, { mailboxId: mailbox.id, actingAsLeader: owner.actingAsLeader, rejected: result.rejected.length });
+    return result;
+  }
+
+  // Своё вложение к письму. Без allowlist чата (в почте ходят .doc/.xls/.zip),
+  // но исполняемые файлы не принимаем — их режут и почтовые серверы.
+  @Post('attachments')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_MAIL_UPLOAD_BYTES } }))
+  async uploadAttachment(@UploadedFile() file: Express.Multer.File | undefined, @Headers(MAILBOX_HEADER) mailboxId: string | undefined, @CurrentDataOwner() owner: DataOwner) {
+    await this.requireMailbox(owner, mailboxId);
+    if (!file) throw new BadRequestException('Файл не получен или больше 20 МБ');
+    const name = fixMultipartFileName(file.originalname);
+    if (BLOCKED_ATTACHMENT_EXT.test(name)) throw new BadRequestException('Исполняемые файлы почтой не отправляются — упакуйте в архив или отправьте ссылкой');
+    const artifact = await this.files.createMailAttachment(owner.id, file.buffer, name, file.mimetype || 'application/octet-stream');
+    return { fileId: artifact.id, name: artifact.name, mimeType: artifact.mimeType, size: artifact.size };
   }
 
   // Release 2 — скачивание вложения. Владение проверяется дважды: сначала
@@ -216,6 +313,14 @@ export class MailController {
 
   private digestSource(mailbox: { provider: string; emailAddress: string }): string {
     return `${PROVIDER_LABELS[mailbox.provider as keyof typeof PROVIDER_LABELS] ?? mailbox.provider}, ${mailbox.emailAddress}`;
+  }
+
+  // Полная запись ящика (серверы, пароль в зашифрованном виде) — для отправки.
+  private async requireMailboxRecord(owner: DataOwner, mailboxId?: string) {
+    const mailbox = await this.requireMailbox(owner, mailboxId);
+    const record = await this.store.getMailbox(mailbox.id);
+    if (!record) throw new NotFoundException('Ящик не найден');
+    return record;
   }
 
   // Ящик из заголовка X-Mailbox-Id (выбран в интерфейсе) или первый подключённый.

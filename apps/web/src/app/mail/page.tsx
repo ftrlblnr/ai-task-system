@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, Link2Off, Paperclip, Plus, RefreshCw, Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Archive, Download, Flag, Forward, Link2Off, Mail, MailOpen, Paperclip, PenSquare, Plus, RefreshCw, Reply, ReplyAll, Search, Trash2, X } from 'lucide-react';
 import type {
   EmailDetail,
   EmailListItem,
@@ -11,7 +11,11 @@ import type {
   MailDigestEmailItem,
   MailDigestListItem,
   MailDigestListResponse,
+  MailDraftMode,
+  MailDraftView,
   MailFolderItem,
+  MailMessageAction,
+  MailMessageActionResult,
   MailStatus,
   MailboxStatus,
 } from '@ai-task-system/shared-types';
@@ -24,12 +28,14 @@ import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
-import { Input } from '@/components/ui/field';
+import { Input, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { MailAgentTab } from '@/components/mail-agent';
 import { MailboxConnectCard } from '@/components/mail/mailbox-connect';
-import { FolderList, folderLabel } from '@/components/mail/folder-list';
+import { FolderList, folderLabel, sortFolders } from '@/components/mail/folder-list';
+import { ComposePanel } from '@/components/mail/compose-panel';
+import { MessageBody } from '@/components/mail/message-body';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -79,7 +85,7 @@ const IMPORTANCE_BADGE_TONE: Record<string, BadgeTone> = {
   LOW: 'neutral',
 };
 
-type Filter = 'all' | 'unread' | 'awaiting' | 'important';
+type Filter = 'all' | 'unread' | 'flagged' | 'awaiting' | 'important';
 
 function formatDate(value: string | null): string {
   return value ? new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
@@ -206,26 +212,140 @@ function StatusBar({ status, onChange }: { status: MailboxStatus; onChange: () =
   );
 }
 
-function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
+// Действие над письмами (почтовый клиент, 23.10.2026) — сразу на почтовом
+// сервере; ошибки по отдельным письмам возвращаются списком.
+async function runMessageAction(ids: string[], action: MailMessageAction): Promise<string | null> {
+  try {
+    const res = await api.post<MailMessageActionResult>('/mail/messages/actions', { ids, action });
+    if (res.failed.length === 0) return null;
+    const first = res.failed[0].error;
+    return res.failed.length === 1 ? first : `${first} (писем: ${res.failed.length})`;
+  } catch (err) {
+    return err instanceof ApiError ? err.message : 'Действие не выполнено';
+  }
+}
+
+async function createDraft(mode: MailDraftMode, sourceMessageId?: string): Promise<string> {
+  const draft = await api.post<MailDraftView>('/mail/drafts', { mode, sourceMessageId });
+  return draft.id;
+}
+
+function MoveSelect({ folders, currentId, onMove, disabled }: { folders: MailFolderItem[]; currentId?: string; onMove: (folderId: string) => void; disabled?: boolean }) {
+  return (
+    <Select
+      aria-label="Переместить в папку"
+      value=""
+      disabled={disabled}
+      onChange={(e) => e.target.value && onMove(e.target.value)}
+      style={{ width: 'auto', minWidth: 150 }}
+      options={[{ value: '', label: 'Переместить в…' }, ...sortFolders(folders).filter((f) => f.id !== currentId).map((f) => ({ value: f.id, label: f.path.includes(f.delimiter ?? '/') && f.role === 'OTHER' ? f.path : folderLabel(f) }))]}
+    />
+  );
+}
+
+interface MailPaneContext {
+  folders: MailFolderItem[];
+  onCompose: (draftId: string) => void;
+  onChanged: () => void;
+}
+
+function MessageDetail({ id, ctx, onClose }: { id: string; ctx: MailPaneContext; onClose: () => void }) {
   const [detail, setDetail] = useState<EmailDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { onChanged } = ctx;
 
   // Состояние сбрасывается сменой key у родителя (см. MessageList) — не setState в эффекте.
   useEffect(() => {
     api
       .get<EmailDetail>(`/mail/messages/${id}`)
-      .then(setDetail)
+      .then((d) => {
+        setDetail(d);
+        // Открытое письмо — прочитано, как в Outlook.
+        if (!d.isRead) {
+          void runMessageAction([d.id], { type: 'read', value: true }).then((e) => {
+            if (!e) {
+              setDetail((cur) => (cur ? { ...cur, isRead: true } : cur));
+              onChanged();
+            }
+          });
+        }
+      })
       .catch((err) => setError(err instanceof ApiError ? err.message : 'Не удалось открыть письмо'));
-  }, [id]);
+  }, [id, onChanged]);
+
+  async function act(action: MailMessageAction, closeAfter: boolean) {
+    if (!detail) return;
+    setBusy(true);
+    setError(null);
+    const failure = await runMessageAction([detail.id], action);
+    setBusy(false);
+    if (failure) return setError(failure);
+    if (action.type === 'read') setDetail({ ...detail, isRead: action.value });
+    if (action.type === 'flag') setDetail({ ...detail, isFlagged: action.value });
+    onChanged();
+    if (closeAfter) onClose();
+  }
+
+  async function reply(mode: MailDraftMode) {
+    if (!detail) return;
+    setBusy(true);
+    try {
+      ctx.onCompose(await createDraft(mode, detail.id));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать письмо');
+      setBusy(false);
+    }
+  }
+
+  const inTrash = detail?.folder.role === 'TRASH' || detail?.folder.role === 'JUNK';
 
   return (
     <Card style={{ marginTop: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-        <h2 style={{ marginBottom: 6 }}>{detail?.subject ?? 'Письмо'}</h2>
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Закрыть
-        </Button>
+        <h2 style={{ marginBottom: 6 }}>{detail?.subject || (detail ? '(без темы)' : 'Письмо')}</h2>
+        <IconButton icon={X} label="Закрыть" onClick={onClose} />
       </div>
+      {detail && (
+        <div className="mail-toolbar">
+          <Button variant="secondary" size="sm" icon={Reply} onClick={() => reply('REPLY')} disabled={busy}>
+            Ответить
+          </Button>
+          <Button variant="ghost" size="sm" icon={ReplyAll} onClick={() => reply('REPLY_ALL')} disabled={busy}>
+            Ответить всем
+          </Button>
+          <Button variant="ghost" size="sm" icon={Forward} onClick={() => reply('FORWARD')} disabled={busy}>
+            Переслать
+          </Button>
+          <span className="mail-toolbar-gap" />
+          <IconButton
+            icon={Flag}
+            label={detail.isFlagged ? 'Снять флажок' : 'Пометить флажком'}
+            className={detail.isFlagged ? 'mail-flag-on' : undefined}
+            onClick={() => act({ type: 'flag', value: !detail.isFlagged }, false)}
+            disabled={busy}
+          />
+          <IconButton
+            icon={detail.isRead ? Mail : MailOpen}
+            label={detail.isRead ? 'Отметить непрочитанным' : 'Отметить прочитанным'}
+            onClick={() => act({ type: 'read', value: !detail.isRead }, false)}
+            disabled={busy}
+          />
+          {detail.folder.role !== 'ARCHIVE' && ctx.folders.some((f) => f.role === 'ARCHIVE') && (
+            <IconButton icon={Archive} label="В архив" onClick={() => act({ type: 'archive' }, true)} disabled={busy} />
+          )}
+          <IconButton
+            icon={Trash2}
+            label={inTrash ? 'Удалить навсегда' : 'Удалить'}
+            onClick={() => {
+              if (inTrash && !window.confirm('Удалить письмо навсегда? Восстановить его будет нельзя.')) return;
+              void act({ type: inTrash ? 'delete' : 'trash' }, true);
+            }}
+            disabled={busy}
+          />
+          <MoveSelect folders={ctx.folders} currentId={detail.folder.id} onMove={(folderId) => void act({ type: 'move', folderId }, true)} disabled={busy} />
+        </div>
+      )}
       {error && <Alert tone="danger">{error}</Alert>}
       {!detail && !error && <p className="ds-field-hint">Загрузка…</p>}
       {detail && (
@@ -263,9 +383,7 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
               ))}
             </p>
           )}
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, maxHeight: 420, overflow: 'auto' }}>
-            {detail.textBody ?? '(тело письма недоступно)'}
-          </pre>
+          <MessageBody html={detail.htmlBody} text={detail.textBody} />
           {detail.bodyTruncated && <p className="ds-field-hint">Письмо большое — показано начало.</p>}
           {detail.threadMessages.length > 1 && (
             <>
@@ -285,13 +403,16 @@ function MessageDetail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-function MessageList({ folder }: { folder: MailFolderItem | null }) {
+const PAGE_SIZE = 30;
+
+function MessageList({ folder, query, ctx, reloadKey }: { folder: MailFolderItem | null; query: string; ctx: MailPaneContext; reloadKey: number }) {
   const [filter, setFilter] = useState<Filter>('all');
-  const [query, setQuery] = useState('');
-  const [submittedQuery, setSubmittedQuery] = useState('');
   const [data, setData] = useState<EmailListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [limit, setLimit] = useState(PAGE_SIZE);
   // Переключение вкладки/поиска до того, как ответил предыдущий запрос,
   // могло применить более старый ответ (пришёл позже из-за сети), если он
   // разрешился ПОСЛЕ нового — список тогда показывал письма не той вкладки
@@ -301,72 +422,144 @@ function MessageList({ folder }: { folder: MailFolderItem | null }) {
 
   const load = useCallback(() => {
     const requestId = ++requestIdRef.current;
-    const params = new URLSearchParams({ limit: '30' });
+    const params = new URLSearchParams({ limit: String(limit) });
     if (filter === 'unread') params.set('readStatus', 'unread');
     if (filter === 'awaiting') params.set('replyStatus', 'AWAITING_MY_REPLY');
     if (filter === 'important') params.set('importance', 'CRITICAL,IMPORTANT');
-    if (submittedQuery) params.set('q', submittedQuery);
-    if (folder) params.set('folderId', folder.id);
+    if (filter === 'flagged') params.set('flagged', 'true');
+    // Поиск — по всем папкам (кроме Спама и Корзины), как в Outlook.
+    if (query) {
+      params.set('q', query);
+      params.set('direction', 'all');
+    } else if (folder) {
+      params.set('folderId', folder.id);
+    }
     api
       .get<EmailListResponse>(`/mail/messages?${params.toString()}`)
       .then((r) => {
         if (requestId !== requestIdRef.current) return;
         setData(r);
         setError(null);
+        setSelected((cur) => new Set(r.items.filter((i) => cur.has(i.id)).map((i) => i.id)));
       })
       .catch((err) => {
         if (requestId !== requestIdRef.current) return;
         setError(err instanceof ApiError ? err.message : 'Не удалось загрузить письма');
       });
-  }, [filter, submittedQuery, folder]);
+  }, [filter, query, folder, limit]);
 
-  useEffect(load, [load]);
-  const outgoingFolder = folder?.role === 'SENT' || folder?.role === 'DRAFTS';
+  useEffect(load, [load, reloadKey]);
+  const outgoingFolder = !query && (folder?.role === 'SENT' || folder?.role === 'DRAFTS');
+  const inTrash = !query && (folder?.role === 'TRASH' || folder?.role === 'JUNK');
+  const hasArchive = ctx.folders.some((f) => f.role === 'ARCHIVE');
 
   const filters: { key: Filter; label: string }[] = [
     { key: 'all', label: 'Все' },
     { key: 'unread', label: 'Непрочитанные' },
+    { key: 'flagged', label: 'С флажком' },
     { key: 'awaiting', label: 'Ждут ответа' },
     { key: 'important', label: 'Важные' },
   ];
 
+  async function bulk(action: MailMessageAction) {
+    if (action.type === 'delete' && !window.confirm(`Удалить навсегда писем: ${selected.size}? Восстановить их будет нельзя.`)) return;
+    setBusy(true);
+    const failure = await runMessageAction([...selected], action);
+    setBusy(false);
+    setError(failure);
+    if (action.type !== 'read' && action.type !== 'flag') setSelected(new Set());
+    if (openId && selected.has(openId) && action.type !== 'read' && action.type !== 'flag') setOpenId(null);
+    load();
+    ctx.onChanged();
+  }
+
+  async function toggleFlag(m: EmailListItem) {
+    const failure = await runMessageAction([m.id], { type: 'flag', value: !m.isFlagged });
+    if (failure) return setError(failure);
+    setData((cur) => (cur ? { ...cur, items: cur.items.map((i) => (i.id === m.id ? { ...i, isFlagged: !m.isFlagged } : i)) } : cur));
+  }
+
+  function toggle(id: string) {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const allSelected = Boolean(data && data.items.length > 0 && data.items.every((i) => selected.has(i.id)));
+  const childCtx: MailPaneContext = {
+    ...ctx,
+    onChanged: () => {
+      load();
+      ctx.onChanged();
+    },
+  };
+
   return (
     <>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+      <div className="mail-filters">
         <SegmentedControl
           options={filters.map((f) => ({ value: f.key, label: f.label }))}
           value={filter}
           onChange={(v) => {
             setFilter(v as Filter);
             setOpenId(null);
+            setLimit(PAGE_SIZE);
           }}
         />
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setSubmittedQuery(query.trim());
-            setOpenId(null);
-          }}
-          style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}
-        >
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по письмам" style={{ minWidth: 220 }} />
-          <IconButton icon={Search} label="Искать" variant="outline" size="sm" type="submit" />
-        </form>
       </div>
+
+      {selected.size > 0 && (
+        <div className="mail-toolbar mail-bulk">
+          <span>Выбрано: {selected.size}</span>
+          <Button variant="ghost" size="sm" icon={MailOpen} onClick={() => bulk({ type: 'read', value: true })} disabled={busy}>
+            Прочитано
+          </Button>
+          <Button variant="ghost" size="sm" icon={Mail} onClick={() => bulk({ type: 'read', value: false })} disabled={busy}>
+            Не прочитано
+          </Button>
+          <Button variant="ghost" size="sm" icon={Flag} onClick={() => bulk({ type: 'flag', value: true })} disabled={busy}>
+            Флажок
+          </Button>
+          {hasArchive && folder?.role !== 'ARCHIVE' && (
+            <Button variant="ghost" size="sm" icon={Archive} onClick={() => bulk({ type: 'archive' })} disabled={busy}>
+              В архив
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" icon={Trash2} onClick={() => bulk({ type: inTrash ? 'delete' : 'trash' })} disabled={busy}>
+            {inTrash ? 'Удалить навсегда' : 'Удалить'}
+          </Button>
+          <MoveSelect folders={ctx.folders} currentId={query ? undefined : folder?.id} onMove={(folderId) => void bulk({ type: 'move', folderId })} disabled={busy} />
+        </div>
+      )}
 
       {error && <Alert tone="danger">{error}</Alert>}
       {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
       {data && data.items.length === 0 && (
-        <EmptyState title="Писем не найдено" description="Если ящик только что подключён, первая синхронизация может занять несколько минут." />
+        <EmptyState
+          title="Писем не найдено"
+          description={query ? 'Поиск идёт по всем папкам, кроме «Спама» и «Корзины».' : 'Если ящик только что подключён, первая синхронизация может занять несколько минут.'}
+        />
       )}
       {data && data.items.length > 0 && (
         <div className="ds-table-wrap">
-          <table className="ds-table">
+          <table className="ds-table mail-table">
             <thead>
               <tr>
+                <th className="mail-col-check">
+                  <input
+                    type="checkbox"
+                    aria-label="Выбрать все"
+                    checked={allSelected}
+                    onChange={() => setSelected(allSelected ? new Set() : new Set(data.items.map((i) => i.id)))}
+                  />
+                </th>
                 <th>{outgoingFolder ? 'Кому' : 'От'}</th>
                 <th>Тема</th>
                 <th>Дата</th>
+                <th className="mail-col-flag" aria-label="Флажок" />
               </tr>
             </thead>
             <tbody>
@@ -374,8 +567,14 @@ function MessageList({ folder }: { folder: MailFolderItem | null }) {
                 const replyLabel = m.thread ? REPLY_STATUS_LABELS[m.thread.replyStatus] : '';
                 const importanceLabel = m.analysis?.importance ? IMPORTANCE_LABELS[m.analysis.importance] : '';
                 return (
-                  <tr key={m.id} onClick={() => setOpenId(m.id)} style={{ cursor: 'pointer', fontWeight: m.isRead ? 400 : 600 }}>
-                    <td>{outgoingFolder ? m.recipients.map((r) => r.name || r.address).join(', ') || '—' : senderLabel(m)}</td>
+                  <tr key={m.id} onClick={() => setOpenId(m.id)} className={m.id === openId ? 'is-open' : undefined} style={{ cursor: 'pointer', fontWeight: m.isRead ? 400 : 600 }}>
+                    <td className="mail-col-check" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" aria-label="Выбрать письмо" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
+                    </td>
+                    <td>
+                      {m.isAnswered && <Reply size={12} strokeWidth={1.75} style={{ marginRight: 4, verticalAlign: -1 }} aria-label="Отвечено" />}
+                      {outgoingFolder ? m.recipients.map((r) => r.name || r.address).join(', ') || '—' : senderLabel(m)}
+                    </td>
                     <td>
                       {m.subject || '(без темы)'}
                       {m.hasAttachments && <Paperclip size={12} strokeWidth={1.75} style={{ marginLeft: 6, verticalAlign: -1 }} />}
@@ -392,6 +591,17 @@ function MessageList({ folder }: { folder: MailFolderItem | null }) {
                       {m.analysis?.summary && <div className="ds-field-hint" style={{ fontWeight: 400 }}>{m.analysis.summary}</div>}
                     </td>
                     <td>{formatDate(m.receivedAt)}</td>
+                    <td className="mail-col-flag" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className={`mail-flag${m.isFlagged ? ' mail-flag-on' : ''}`}
+                        aria-label={m.isFlagged ? 'Снять флажок' : 'Пометить флажком'}
+                        aria-pressed={m.isFlagged}
+                        onClick={() => void toggleFlag(m)}
+                      >
+                        <Flag size={14} strokeWidth={1.75} />
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -400,11 +610,16 @@ function MessageList({ folder }: { folder: MailFolderItem | null }) {
         </div>
       )}
       {data && data.totalCount > data.items.length && (
-        <p className="ds-field-hint" style={{ marginTop: 8 }}>
-          Показано {data.items.length} из {data.totalCount}.
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+          <span className="ds-field-hint">
+            Показано {data.items.length} из {data.totalCount}
+          </span>
+          <Button variant="ghost" size="sm" onClick={() => setLimit((l) => l + PAGE_SIZE)}>
+            Показать ещё
+          </Button>
+        </div>
       )}
-      {openId && <MessageDetail key={openId} id={openId} onClose={() => setOpenId(null)} />}
+      {openId && <MessageDetail key={openId} id={openId} ctx={childCtx} onClose={() => setOpenId(null)} />}
     </>
   );
 }
@@ -552,26 +767,152 @@ function rememberSelectedMailbox(id: string) {
   }
 }
 
+// Неотправленные черновики почтового клиента — в папке «Черновики» сверху.
+function LocalDrafts({ onOpen, reloadKey }: { onOpen: (id: string) => void; reloadKey: number }) {
+  const [drafts, setDrafts] = useState<MailDraftView[]>([]);
+
+  useEffect(() => {
+    api
+      .get<MailDraftView[]>('/mail/drafts')
+      .then(setDrafts)
+      .catch(() => setDrafts([]));
+  }, [reloadKey]);
+
+  if (drafts.length === 0) return null;
+  return (
+    <div className="ds-table-wrap" style={{ marginBottom: 16 }}>
+      <table className="ds-table">
+        <thead>
+          <tr>
+            <th>Кому</th>
+            <th>Тема</th>
+            <th>Изменён</th>
+          </tr>
+        </thead>
+        <tbody>
+          {drafts.map((d) => (
+            <tr key={d.id} onClick={() => onOpen(d.id)} style={{ cursor: 'pointer' }}>
+              <td>{d.to.join(', ') || '—'}</td>
+              <td>
+                {d.subject || '(без темы)'}
+                {d.lastError && (
+                  <span style={{ marginLeft: 8 }}>
+                    <Badge tone="danger">Не отправлено</Badge>
+                  </span>
+                )}
+              </td>
+              <td>{formatDate(d.updatedAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Письма выбранного ящика: папки слева, список справа (владелец 23.10.2026).
 function MessagesPane() {
   const [folders, setFolders] = useState<MailFolderItem[] | null>(null);
   const [folderId, setFolderId] = useState<string | null>(null);
+  const [composeId, setComposeId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [submittedQuery, setSubmittedQuery] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadFolders = useCallback(() => {
     api
       .get<MailFolderItem[]>('/mail/folder-tree')
       .then(setFolders)
       .catch(() => setFolders([]));
   }, []);
+  useEffect(loadFolders, [loadFolders]);
 
   const selected = folders?.find((f) => f.id === folderId) ?? folders?.find((f) => f.role === 'INBOX') ?? null;
+  const ctx: MailPaneContext = useMemo(
+    () => ({
+      folders: folders ?? [],
+      onCompose: (id: string) => {
+        setNotice(null);
+        setComposeId(id);
+      },
+      onChanged: loadFolders,
+    }),
+    [folders, loadFolders],
+  );
+
+  async function newMessage() {
+    setError(null);
+    try {
+      ctx.onCompose(await createDraft('NEW'));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать письмо');
+    }
+  }
+
+  function closeCompose() {
+    setComposeId(null);
+    setReloadKey((k) => k + 1);
+  }
 
   return (
     <div className="mail-layout">
-      <div>{folders && folders.length > 0 && <FolderList folders={folders} selectedId={selected?.id ?? null} onSelect={setFolderId} />}</div>
       <div>
-        {selected && <h2 style={{ margin: '0 0 12px' }}>{folderLabel(selected)}</h2>}
-        <MessageList key={selected?.id ?? 'all'} folder={selected} />
+        <Button variant="primary" icon={PenSquare} onClick={newMessage} style={{ width: '100%', marginBottom: 12 }}>
+          Написать
+        </Button>
+        {folders && folders.length > 0 && (
+          <FolderList
+            folders={folders}
+            selectedId={submittedQuery ? null : (selected?.id ?? null)}
+            onSelect={(id) => {
+              setFolderId(id);
+              setComposeId(null);
+              setSubmittedQuery('');
+              setQuery('');
+            }}
+          />
+        )}
+      </div>
+      <div>
+        <div className="mail-pane-head">
+          <h2 style={{ margin: 0 }}>{submittedQuery ? `Поиск: «${submittedQuery}»` : selected ? folderLabel(selected) : 'Письма'}</h2>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setSubmittedQuery(query.trim());
+              setComposeId(null);
+            }}
+            style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}
+          >
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по всей почте" style={{ minWidth: 220 }} />
+            <IconButton icon={Search} label="Искать" variant="outline" size="sm" type="submit" />
+          </form>
+        </div>
+        {error && <Alert tone="danger">{error}</Alert>}
+        {notice && (
+          <div style={{ marginBottom: 12 }}>
+            <Alert tone="ok">{notice}</Alert>
+          </div>
+        )}
+        {composeId ? (
+          <ComposePanel
+            key={composeId}
+            draftId={composeId}
+            onClose={closeCompose}
+            onSent={(r) => {
+              closeCompose();
+              loadFolders();
+              setNotice(r.rejected.length ? `Письмо отправлено, но сервер не принял адреса: ${r.rejected.join(', ')}` : 'Письмо отправлено');
+            }}
+          />
+        ) : (
+          <>
+            {!submittedQuery && selected?.role === 'DRAFTS' && <LocalDrafts onOpen={ctx.onCompose} reloadKey={reloadKey} />}
+            <MessageList key={`${submittedQuery ? 'q' : (selected?.id ?? 'all')}:${submittedQuery}`} folder={selected} query={submittedQuery} ctx={ctx} reloadKey={reloadKey} />
+          </>
+        )}
       </div>
     </div>
   );

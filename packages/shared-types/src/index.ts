@@ -772,6 +772,9 @@ export interface EmailListItem {
   fromName: string | null;
   receivedAt: string | null;
   isRead: boolean;
+  // Флаги сервера \Flagged / \Answered (почтовый клиент, 23.10.2026).
+  isFlagged: boolean;
+  isAnswered: boolean;
   isOutgoing: boolean;
   hasAttachments: boolean;
   thread: { replyStatus: EmailReplyStatus } | null;
@@ -789,7 +792,10 @@ export interface EmailDetail extends EmailListItem {
   internetMessageId: string | null;
   sentAt: string | null;
   textBody: string | null;
+  // Оригинальное оформление — показывается в изолированном iframe.
+  htmlBody: string | null;
   bodyTruncated: boolean;
+  folder: { id: string; role: MailFolderRole; path: string };
   recipients: { type: 'TO' | 'CC' | 'BCC'; address: string; name: string | null }[];
   // downloadable=false — байты вложения не сохранились (сбой при синке,
   // или письмо синхронизировано ещё в Release 1, где вложения не
@@ -1525,4 +1531,47 @@ export interface CreateCalendarPlanInput {
     targetEventId?: string;
     parameters: Record<string, unknown>;
   }[];
+}
+
+// Почтовый клиент (владелец 23.10.2026): черновики, отправка, действия.
+export type MailDraftMode = 'NEW' | 'REPLY' | 'REPLY_ALL' | 'FORWARD';
+
+export interface MailDraftView {
+  id: string;
+  mailboxId: string;
+  mode: MailDraftMode;
+  sourceMessageId: string | null;
+  version: number;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+  // file — своё вложение; forward — вложение пересылаемого письма.
+  attachments: { id: string; kind: 'file' | 'forward'; fileName: string; sizeBytes: number | null }[];
+  // Шапка цитаты исходного письма (От/Отправлено/Кому/Тема) — для показа.
+  quote: { label: string; value: string }[] | null;
+  state: 'DRAFT' | 'SENDING' | 'SENT' | 'DISCARDED';
+  lastError: string | null;
+  updatedAt: string;
+}
+
+export interface MailSendResult {
+  ok: true;
+  alreadySent?: boolean;
+  messageId: string | null;
+  rejected: string[];
+}
+
+export type MailMessageAction =
+  | { type: 'read'; value: boolean }
+  | { type: 'flag'; value: boolean }
+  | { type: 'move'; folderId: string }
+  | { type: 'archive' }
+  | { type: 'trash' }
+  | { type: 'delete' };
+
+export interface MailMessageActionResult {
+  done: string[];
+  failed: { id: string; error: string }[];
 }

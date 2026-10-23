@@ -13,6 +13,8 @@ import { MailSyncCron } from './mail-sync.cron';
 import { MailSyncService } from './mail-sync.service';
 import { ImapMailProvider } from './providers/imap.provider';
 import { SmtpSender } from './smtp-sender';
+import { MailComposeService } from './mail-compose.service';
+import { MailMessageActionsService } from './mail-message-actions.service';
 import { MailActionController } from './action/mail-action.controller';
 import { MailActionAnalysisService } from './action/mail-action-analysis.service';
 import { MailActionApprovalService } from './action/mail-action-approval.service';
@@ -35,6 +37,8 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
     MailStore,
     ImapMailProvider,
     SmtpSender,
+    MailComposeService,
+    MailMessageActionsService,
     MailProviderRegistry,
     MailSyncService,
     MailConnectionService,

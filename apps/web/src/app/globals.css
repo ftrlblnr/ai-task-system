@@ -1860,3 +1860,27 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
   .mail-folders { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
   .mail-folder { width: auto; flex: 0 0 auto; padding-left: 10px !important; }
 }
+
+/* Почтовый клиент (23.10.2026): панель действий, письмо в iframe, окно письма */
+.mail-pane-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.mail-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 4px 0 12px; }
+.mail-toolbar-gap { flex: 1; }
+.mail-bulk { padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2, transparent); }
+.mail-bulk > span:first-child { margin-right: 8px; font-weight: 600; }
+.mail-table .mail-col-check, .mail-table .mail-col-flag { width: 32px; text-align: center; }
+.mail-table tr.is-open td { background: var(--surface-2, rgba(0, 0, 0, 0.04)); }
+.mail-flag { border: 0; background: transparent; padding: 4px; border-radius: 6px; cursor: pointer; color: var(--ink-3, #999); opacity: 0.45; display: inline-flex; }
+.mail-table tr:hover .mail-flag, .mail-flag:focus-visible { opacity: 1; }
+.mail-flag-on, .mail-flag.mail-flag-on { color: var(--danger, #d33); opacity: 1; }
+.mail-html-frame { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: block; }
+.mail-images-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--ink-2, inherit); font-size: 13px; }
+.mail-compose { display: flex; flex-direction: column; gap: 10px; }
+.mail-compose-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.mail-compose-row > span { color: var(--ink-2, inherit); font-size: 13px; }
+.mail-quote { font-size: 13px; color: var(--ink-2, inherit); border-left: 3px solid var(--line); padding-left: 10px; }
+.mail-quote summary { cursor: pointer; }
+@media (max-width: 720px) {
+  .mail-compose-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .mail-compose-row > span { grid-column: 1 / -1; }
+}
+.mail-filters { margin-bottom: 12px; max-width: 100%; overflow-x: auto; }
