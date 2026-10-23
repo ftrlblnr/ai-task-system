@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { FilesService } from '../files/files.service';
 import { AssistantReplyService, type ReplyHistoryItem, type AssistantReplyResult } from './assistant-reply.service';
+import { loadMailCardState, type MailCardState } from './assistant-mail-state';
 import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
 import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
@@ -60,7 +61,7 @@ export function isUniqueConstraintError(err: unknown): boolean {
 // внутренний объект. tool_activity/error намеренно пропускаются — статус
 // "проверяю задачи" или текст ошибки не несут содержательного контекста
 // для следующего вопроса пользователя.
-export function serializeMessageForModelContext(parts: MessagePart[]): string {
+export function serializeMessageForModelContext(parts: MessagePart[], mailState?: MailCardState): string {
   return parts
     .map((p) => {
       switch (p.type) {
@@ -78,15 +79,15 @@ export function serializeMessageForModelContext(parts: MessagePart[]): string {
           const d = p.data as unknown as FilePartData;
           return `[file]\nid=${d.fileId}\nname=${d.name}\nmimeType=${d.mimeType}`;
         }
-        // Почта, этап 3: что было предложено/подготовлено — но не исполнено,
-        // пока пользователь не нажал кнопку в карточке.
+        // Почта, этап 3: что было предложено/подготовлено и что с ним стало
+        // сейчас (mailState — живой статус из БД, см. assistant-mail-state.ts).
         case MessagePartType.MAIL_PLAN_CARD: {
           const d = p.data as unknown as MailPlanCardData;
-          return `[shown_mail_plan]\nid=${d.planId}\nactions=${d.actions.map((a) => `${a.type}:${a.count}`).join(',')}\nstatus=awaiting_user_confirmation`;
+          return `[shown_mail_plan]\nid=${d.planId}\nactions=${d.actions.map((a) => `${a.type}:${a.count}`).join(',')}\nstatus=${mailState?.plans.get(d.planId) ?? 'awaiting_user_confirmation'}`;
         }
         case MessagePartType.MAIL_DRAFT_CARD: {
           const d = p.data as unknown as MailDraftCardData;
-          return `[shown_mail_draft]\nid=${d.draftId}\nsubject=${d.subject}\nto=${d.to.join(',')}\nstatus=awaiting_user_send`;
+          return `[shown_mail_draft]\nid=${d.draftId}\nsubject=${d.subject}\nto=${d.to.join(',')}\nstatus=${mailState?.drafts.get(d.draftId) ?? 'awaiting_user_send'}`;
         }
         default:
           return null;
@@ -302,11 +303,12 @@ export class AssistantChatService {
       take: HISTORY_LIMIT,
       include: { parts: { orderBy: { order: 'asc' } } },
     });
+    const mailState = await loadMailCardState(this.prisma, history.flatMap((m) => m.parts));
     return history
       .reverse()
       .map((m) => ({
         role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
-        text: serializeMessageForModelContext(m.parts),
+        text: serializeMessageForModelContext(m.parts, mailState),
       }))
       .filter((h) => h.text);
   }

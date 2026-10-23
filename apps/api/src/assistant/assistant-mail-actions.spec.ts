@@ -1,6 +1,7 @@
 import { Role } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
-import { buildMailPlanCandidates, parseMailToolActions, summarizeCandidates } from './assistant-mail-actions';
+import { buildMailPlanCandidates, parseMailToolActions, resolveArchiveTarget, summarizeCandidates } from './assistant-mail-actions';
+import { describePlanState } from './assistant-mail-state';
 import { AssistantToolsService, toolResultForModel } from './assistant-tools.service';
 import { buildAssistantParts } from './assistant-render';
 import { serializeMessageForModelContext } from './assistant-chat.service';
@@ -9,6 +10,7 @@ import { stripLeakedContextMarkers } from './assistant-reply.service';
 // Почта, этап 3 (23.10.2026): ассистент предлагает действия и готовит
 // письма, исполнение — только кнопкой пользователя.
 
+const folders = (...paths: string[]) => paths.map((path) => ({ path, role: path === 'INBOX' ? 'INBOX' : path === 'Архив-роль' ? 'ARCHIVE' : 'OTHER' }));
 const msg = (id: string, mailboxId = 'mb1', uidValidity: string | null = '7') => ({ id, mailboxId, uid: 10, folder: { path: 'INBOX', uidValidity } });
 
 describe('parseMailToolActions / buildMailPlanCandidates', () => {
@@ -31,7 +33,7 @@ describe('parseMailToolActions / buildMailPlanCandidates', () => {
       { emailId: 'foreign', type: 'FLAG', folderPath: null, reason: '' },
       { emailId: 'nosync', type: 'FLAG', folderPath: null, reason: '' },
     ]);
-    const draft = buildMailPlanCandidates(actions, [msg('e1'), msg('e2', 'mb2'), msg('nosync', 'mb1', null)], new Map([['mb2', new Set(['Проекты'])]]));
+    const draft = buildMailPlanCandidates(actions, [msg('e1'), msg('e2', 'mb2'), msg('nosync', 'mb1', null)], new Map([['mb1', folders('INBOX', 'Архив-роль')], ['mb2', folders('Проекты')]]));
     expect(draft.unknownEmailIds).toEqual(['foreign', 'nosync']);
     expect(draft.missingFolders).toEqual([]);
     expect(draft.byMailbox.get('mb1')!.map((c) => c.type)).toEqual(['ARCHIVE', 'SET_READ']);
@@ -43,9 +45,40 @@ describe('parseMailToolActions / buildMailPlanCandidates', () => {
   });
 
   it('MOVE в несуществующую папку — не пункт, а missingFolders', () => {
-    const draft = buildMailPlanCandidates(parseMailToolActions([{ emailId: 'e1', type: 'MOVE', folderPath: 'Нет такой', reason: '' }]), [msg('e1')], new Map([['mb1', new Set(['INBOX'])]]));
+    const draft = buildMailPlanCandidates(parseMailToolActions([{ emailId: 'e1', type: 'MOVE', folderPath: 'Нет такой', reason: '' }]), [msg('e1')], new Map([['mb1', folders('INBOX')]]));
     expect(draft.byMailbox.size).toBe(0);
     expect(draft.missingFolders).toEqual(['Нет такой']);
+  });
+});
+
+describe('архив в ящике без папки \\Archive (инцидент 23.10.2026)', () => {
+  it('resolveArchiveTarget: роль есть → исполнитель найдёт сам; есть «Archive»/«Архив» по имени → она; нет → создать', () => {
+    expect(resolveArchiveTarget(folders('INBOX', 'Архив-роль'))).toBeNull();
+    expect(resolveArchiveTarget(folders('INBOX', 'INBOX.Archive'))).toEqual({ path: 'INBOX.Archive', create: false });
+    expect(resolveArchiveTarget(folders('INBOX', 'Архив'))).toEqual({ path: 'Архив', create: false });
+    expect(resolveArchiveTarget(folders('INBOX', 'Sent', 'Trash'))).toEqual({ path: 'Archive', create: true });
+  });
+
+  it('нет папки — в плане сначала «Создать папку Archive», архивы зависят от неё (одна папка на ящик)', () => {
+    const actions = parseMailToolActions([
+      { emailId: 'e1', type: 'ARCHIVE', folderPath: null, reason: '' },
+      { emailId: 'e2', type: 'ARCHIVE', folderPath: null, reason: '' },
+    ]);
+    const draft = buildMailPlanCandidates(actions, [msg('e1'), msg('e2')], new Map([['mb1', folders('INBOX', 'Sent', 'Trash')]]));
+    const list = draft.byMailbox.get('mb1')!;
+    expect(list.map((c) => c.type)).toEqual(['CREATE_FOLDER', 'ARCHIVE', 'ARCHIVE']);
+    expect(list[0]).toMatchObject({ stableObjectIds: [], parameters: { parentPath: null, name: 'Archive' } });
+    expect(list[1]).toMatchObject({ parameters: { folderPath: 'Archive' }, dependsOnLocalIds: [list[0].localId] });
+    expect(list[2].dependsOnLocalIds).toEqual([list[0].localId]);
+  });
+
+  it('describePlanState — живой статус карточки для модели', () => {
+    const item = (status: string, selected = true, errorCode: string | null = null) => ({ planId: 'p', type: 'ARCHIVE', status: status as never, selected, errorCode });
+    expect(describePlanState([item('NEEDS_REVIEW')])).toBe('awaiting_user_confirmation');
+    expect(describePlanState([item('NEEDS_REVIEW', false)])).toBe('declined_by_user');
+    expect(describePlanState([item('RUNNING')])).toBe('executing');
+    expect(describePlanState([item('FAILED', true, 'ARCHIVE_FOLDER_MISSING')])).toBe('finished ARCHIVE:failed(ARCHIVE_FOLDER_MISSING)');
+    expect(describePlanState([item('SUCCEEDED')])).toBe('finished ARCHIVE:done');
   });
 });
 
@@ -61,7 +94,7 @@ describe('AssistantToolsService — почтовые пишущие инстру
     };
     const mailStore = {
       listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]),
-      listFolders: jest.fn().mockResolvedValue((over.folders ?? ['INBOX', 'Archive']).map((path) => ({ path }))),
+      listFolders: jest.fn().mockResolvedValue((over.folders ?? ['INBOX', 'Archive']).map((path) => ({ path, role: 'OTHER' }))),
       findOwnedMailbox: jest.fn().mockResolvedValue({ id: 'mb1', emailAddress: 'boss@shark.kz' }),
       getMailbox: jest.fn().mockResolvedValue({ id: 'mb1', emailAddress: 'boss@shark.kz', employeeId: 'u1' }),
     };
@@ -153,5 +186,16 @@ describe('карточки почты в чате', () => {
     expect(text).toContain('[shown_mail_plan]\nid=p1');
     expect(text).toContain('status=awaiting_user_send');
     expect(stripLeakedContextMarkers(`Готово.\n${text}`)).toBe('Готово.');
+  });
+  it('живой статус из БД подставляется в пометку (перенос упал / письмо отправлено)', () => {
+    const text = serializeMessageForModelContext(
+      [
+        { type: 'MAIL_PLAN_CARD', data: plan },
+        { type: 'MAIL_DRAFT_CARD', data: draft },
+      ] as any,
+      { plans: new Map([['p1', 'finished ARCHIVE:failed(ARCHIVE_FOLDER_MISSING)']]), drafts: new Map([[draft.draftId, 'sent']]) },
+    );
+    expect(text).toContain('status=finished ARCHIVE:failed(ARCHIVE_FOLDER_MISSING)');
+    expect(text).toContain('status=sent');
   });
 });

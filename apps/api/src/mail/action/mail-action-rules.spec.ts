@@ -118,3 +118,11 @@ describe('topoSortMailActionItems (ТЗ разд. 8)', () => {
     expect(sorted.map((i) => i.localId)).toEqual(['a', 'b']);
   });
 });
+
+describe('computeMailActionPayloadHash — порядок ключей (jsonb)', () => {
+  it('не зависит от порядка ключей в parameters', () => {
+    expect(computeMailActionPayloadHash('CREATE_FOLDER', { parentPath: null, name: 'Archive' })).toBe(
+      computeMailActionPayloadHash('CREATE_FOLDER', { name: 'Archive', parentPath: null }),
+    );
+  });
+});

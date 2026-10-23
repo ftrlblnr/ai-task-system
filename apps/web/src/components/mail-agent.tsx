@@ -14,7 +14,7 @@ import type {
   MailActionPlanStatus,
   MailFolder,
 } from '@ai-task-system/shared-types';
-import { MAIL_ACTION_TYPE_LABELS } from '@ai-task-system/shared-types';
+import { MAIL_ACTION_ERROR_LABELS, MAIL_ACTION_TYPE_LABELS } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { Card } from '@/components/ui/card';
@@ -63,15 +63,7 @@ const GROUPS: { type: MailActionGroupType; title: string; approveLabel: string }
   { type: 'TRASH', title: 'Корзина', approveLabel: 'Переместить в корзину' },
 ];
 
-const ERROR_LABELS: Record<string, string> = {
-  ARCHIVE_FOLDER_MISSING: 'В ящике нет папки «Архив» — выберите или создайте папку.',
-  TRASH_FOLDER_MISSING: 'В ящике не найдена корзина.',
-  MISSING_FOLDER_PATH: 'Не указана папка.',
-  MISSING_FOLDER_NAME: 'Не указано имя папки.',
-  LOCATOR_CHANGED: 'Письмо переместили или изменили после анализа.',
-  NOT_IMPLEMENTED: 'Это действие агент пока не умеет выполнять.',
-  EXECUTOR_ERROR: 'Почтовый сервер вернул ошибку.',
-};
+const ERROR_LABELS = MAIL_ACTION_ERROR_LABELS;
 
 const EDITABLE: ReadonlySet<MailActionItemStatus> = new Set(['DRAFT', 'NEEDS_REVIEW', 'APPROVED', 'FAILED', 'UNKNOWN', 'SKIPPED_CHANGED', 'BLOCKED_DEPENDENCY']);
 const RETRIABLE: ReadonlySet<MailActionItemStatus> = new Set(['FAILED', 'UNKNOWN']);

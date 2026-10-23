@@ -13,7 +13,7 @@ import type {
   MailPlanCardData,
   MailSendResult,
 } from '@ai-task-system/shared-types';
-import { MAIL_ACTION_TYPE_LABELS } from '@ai-task-system/shared-types';
+import { MAIL_ACTION_ERROR_LABELS, MAIL_ACTION_TYPE_LABELS } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Alert, Badge, Button, Card, Textarea, type BadgeTone } from '@/components/ui';
 
@@ -35,6 +35,7 @@ const ITEM_STATUS: Partial<Record<MailActionItemStatus, [BadgeTone, string]>> = 
   FAILED: ['danger', 'Ошибка'],
   UNKNOWN: ['warn', 'Результат неизвестен'],
   SKIPPED_CHANGED: ['neutral', 'Письмо изменилось'],
+  BLOCKED_DEPENDENCY: ['neutral', 'Не выполнено'],
   CANCELLED: ['neutral', 'Остановлено'],
 };
 const IN_PROGRESS: ReadonlySet<MailActionItemStatus> = new Set(['APPROVED', 'QUEUED', 'RUNNING']);
@@ -135,6 +136,8 @@ export function MailPlanCard({ data }: { data: MailPlanCardData }) {
 
   const messages = context?.messages ?? {};
   const done = list.length > 0 && pending.length === 0 && !running && !declined;
+  const failed = list.filter((i) => i.status === 'FAILED' || i.status === 'UNKNOWN' || i.status === 'BLOCKED_DEPENDENCY').length;
+  const succeeded = list.filter((i) => i.status === 'SUCCEEDED').length;
 
   return (
     <Card tone="sunken" className="mail-card">
@@ -142,7 +145,7 @@ export function MailPlanCard({ data }: { data: MailPlanCardData }) {
         <Mail size={16} strokeWidth={1.75} />
         <strong>{plan?.requestText ?? 'Действия с письмами'}</strong>
         {declined && <Badge tone="neutral">Отменено</Badge>}
-        {done && <Badge tone={list.some((i) => i.status === 'FAILED' || i.status === 'UNKNOWN') ? 'warn' : 'ok'}>Выполнено</Badge>}
+        {done && (failed === 0 ? <Badge tone="ok">Выполнено</Badge> : <Badge tone={succeeded > 0 ? 'warn' : 'danger'}>{succeeded > 0 ? 'Выполнено частично' : 'Не выполнено'}</Badge>)}
       </div>
       <p className="ds-field-hint mail-card-sub">{data.mailboxAddress}</p>
       {loadError && <Alert tone="danger">{loadError}</Alert>}
@@ -151,7 +154,9 @@ export function MailPlanCard({ data }: { data: MailPlanCardData }) {
           {list.map((item) => {
             const message = item.stableObjectIds[0] ? messages[item.stableObjectIds[0]] : undefined;
             const status = ITEM_STATUS[item.status];
-            const folder = item.type === 'MOVE' ? (item.parameters as { folderPath?: string } | null)?.folderPath : null;
+            const params = item.parameters as { folderPath?: string; name?: string } | null;
+            const folder = item.type === 'CREATE_FOLDER' ? params?.name : item.type === 'MOVE' || item.type === 'ARCHIVE' ? params?.folderPath : null;
+            const errorCode = item.status === 'NEEDS_REVIEW' ? null : item.lastAttempt?.errorCode;
             return (
               <li key={item.id} className={!item.selected ? 'is-off' : undefined}>
                 <span className="mail-card-action">
@@ -159,10 +164,11 @@ export function MailPlanCard({ data }: { data: MailPlanCardData }) {
                   {folder ? ` «${folder}»` : ''}
                 </span>
                 <span className="mail-card-subject">
-                  {message?.subject || '(без темы)'}
+                  {item.type !== 'CREATE_FOLDER' && (message?.subject || '(без темы)')}
                   {message && <span className="ds-field-hint"> — {message.fromName || message.fromAddress}</span>}
                 </span>
                 {status && <Badge tone={status[0]}>{status[1]}</Badge>}
+                {errorCode && <span className="mail-card-error">{MAIL_ACTION_ERROR_LABELS[errorCode] ?? MAIL_ACTION_ERROR_LABELS.EXECUTOR_ERROR}</span>}
               </li>
             );
           })}

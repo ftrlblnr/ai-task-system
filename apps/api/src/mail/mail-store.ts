@@ -180,8 +180,9 @@ export class MailStore {
   // Почтовый ИИ-агент v2.0 — список папок уже СИНКНУТЫХ ящиком (не живой
   // IMAP-запрос): для подсказки анализу (раздел 9 ТЗ: MOVE предлагается
   // только в реально существующую папку, агент не придумывает имена).
+  // Пропавшие с сервера папки (lastSeenAt=null) не предлагаются.
   listFolders(mailboxId: string): Promise<{ path: string; role: EmailFolderRole }[]> {
-    return this.prisma.emailFolder.findMany({ where: { mailboxId }, select: { path: true, role: true } });
+    return this.prisma.emailFolder.findMany({ where: { mailboxId, lastSeenAt: { not: null } }, select: { path: true, role: true } });
   }
 
   findMessageByUid(folderId: string, uid: number): Promise<({ id: string } & MessageFlagState) | null> {

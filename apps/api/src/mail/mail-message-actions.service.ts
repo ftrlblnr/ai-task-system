@@ -33,6 +33,13 @@ const MISSING_FOLDER_TEXT: Partial<Record<EmailFolderRole, string>> = {
   ARCHIVE: 'В ящике нет папки «Архив» — переместите письмо в нужную папку',
   TRASH: 'В ящике нет папки «Корзина»',
 };
+// Сервер без папки с ролью \Archive (корпоративный shark.kz, 23.10.2026):
+// архивом считается папка «Archive»/«Архив» — её создаёт план ассистента
+// (assistant-mail-actions.ts) по подтверждению или сам пользователь.
+export function isArchiveFolderName(path: string): boolean {
+  return /^(archive|архив)$/i.test(path.split(/[/.]/).pop() ?? '');
+}
+
 const STALE_TEXT = 'Письмо изменилось на сервере — список обновляется, повторите действие';
 
 interface TargetMessage {
@@ -107,7 +114,13 @@ export class MailMessageActionsService {
     const role = ROLE_FOR_ACTION[action.type];
     if (!role) return null;
     const folder = await this.prisma.emailFolder.findFirst({ where: { mailboxId, role, lastSeenAt: { not: null } }, select: { id: true, path: true, uidValidity: true } });
-    return folder ?? (MISSING_FOLDER_TEXT[role] as string);
+    if (folder) return folder;
+    if (role === 'ARCHIVE') {
+      const others = await this.prisma.emailFolder.findMany({ where: { mailboxId, role: 'OTHER', lastSeenAt: { not: null } }, select: { id: true, path: true, uidValidity: true } });
+      const named = others.find((f) => isArchiveFolderName(f.path));
+      if (named) return named;
+    }
+    return MISSING_FOLDER_TEXT[role] as string;
   }
 
   private async applyOne(session: EmailSession, m: TargetMessage, action: MessageAction, target: { id: string; path: string; uidValidity: string | null } | null): Promise<void> {

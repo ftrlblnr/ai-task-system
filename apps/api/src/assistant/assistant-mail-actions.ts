@@ -1,4 +1,6 @@
+import type { Prisma } from '@prisma/client';
 import type { MailActionCandidate } from '../mail/action/mail-action-plan.service';
+import { isArchiveFolderName } from '../mail/mail-message-actions.service';
 import { STAGE1_ANALYSIS_ACTION_TYPES, type Stage1AnalysisActionType } from '../mail/action/mail-action-analysis';
 
 // Почта, этап 3 (владелец 23.10.2026) — ассистент в чате предлагает действия с
@@ -21,6 +23,28 @@ export interface MailToolMessage {
   mailboxId: string;
   uid: number;
   folder: { path: string; uidValidity: string | null };
+}
+
+export interface MailToolFolder {
+  path: string;
+  role: string;
+}
+
+// Имя, под которым создаётся папка-архив, если в ящике её нет. Английское —
+// как Sent/Drafts/Trash у корпоративных серверов; Outlook покажет «Архив».
+export const ARCHIVE_FOLDER_NAME = 'Archive';
+const ARCHIVE_LOCAL_ID = 'create-archive-folder';
+
+// Куда архивировать в ящике без папки с ролью \Archive (инцидент 23.10.2026:
+// корпоративный сервер её не держит — перенос падал с ARCHIVE_FOLDER_MISSING).
+// null — роль есть, исполнитель найдёт папку сам; иначе — папка «Archive»/«Архив»
+// по имени (создана раньше этим же путём или вручную) или её создание в том
+// же плане. Ничего не делается без «Подтвердить»: создание папки — отдельная
+// строка карточки.
+export function resolveArchiveTarget(folders: MailToolFolder[]): { path: string; create: boolean } | null {
+  if (folders.some((f) => f.role === 'ARCHIVE')) return null;
+  const named = folders.find((f) => isArchiveFolderName(f.path));
+  return named ? { path: named.path, create: false } : { path: ARCHIVE_FOLDER_NAME, create: true };
 }
 
 export interface MailPlanDraft {
@@ -48,7 +72,7 @@ export function parseMailToolActions(raw: unknown): MailToolActionInput[] {
   return out;
 }
 
-export function buildMailPlanCandidates(actions: MailToolActionInput[], messages: MailToolMessage[], foldersByMailbox: Map<string, ReadonlySet<string>>): MailPlanDraft {
+export function buildMailPlanCandidates(actions: MailToolActionInput[], messages: MailToolMessage[], foldersByMailbox: Map<string, MailToolFolder[]>): MailPlanDraft {
   const byId = new Map(messages.map((m) => [m.id, m]));
   const byMailbox = new Map<string, MailActionCandidate[]>();
   const unknownEmailIds: string[] = [];
@@ -63,8 +87,8 @@ export function buildMailPlanCandidates(actions: MailToolActionInput[], messages
       return;
     }
     if (action.type === 'MOVE') {
-      const folders = foldersByMailbox.get(message.mailboxId);
-      if (!action.folderPath || !folders?.has(action.folderPath)) {
+      const folders = foldersByMailbox.get(message.mailboxId) ?? [];
+      if (!action.folderPath || !folders.some((f) => f.path === action.folderPath)) {
         missingFolders.push(action.folderPath ?? '(не указана)');
         return;
       }
@@ -75,6 +99,26 @@ export function buildMailPlanCandidates(actions: MailToolActionInput[], messages
       moved.add(message.id);
     }
     const list = byMailbox.get(message.mailboxId) ?? [];
+    let parameters: Prisma.InputJsonObject = action.type === 'MOVE' ? { folderPath: action.folderPath } : {};
+    let dependsOnLocalIds: string[] | undefined;
+    if (action.type === 'ARCHIVE') {
+      const target = resolveArchiveTarget(foldersByMailbox.get(message.mailboxId) ?? []);
+      if (target) parameters = { folderPath: target.path };
+      if (target?.create) {
+        if (!list.some((c) => c.localId === ARCHIVE_LOCAL_ID)) {
+          list.unshift({
+            localId: ARCHIVE_LOCAL_ID,
+            type: 'CREATE_FOLDER',
+            stableObjectIds: [],
+            sourceLocators: {},
+            reason: 'В ящике нет папки для архива',
+            relevance: 'RECOMMENDED',
+            parameters: { parentPath: null, name: ARCHIVE_FOLDER_NAME },
+          });
+        }
+        dependsOnLocalIds = [ARCHIVE_LOCAL_ID];
+      }
+    }
     list.push({
       localId: `c${index}`,
       type: action.type,
@@ -82,7 +126,8 @@ export function buildMailPlanCandidates(actions: MailToolActionInput[], messages
       sourceLocators: { folderPath: message.folder.path, uidValidity: message.folder.uidValidity, uid: message.uid },
       reason: action.reason || 'Предложено ассистентом по вашей просьбе',
       relevance: 'RECOMMENDED',
-      parameters: action.type === 'MOVE' ? { folderPath: action.folderPath } : {},
+      parameters,
+      dependsOnLocalIds,
     });
     byMailbox.set(message.mailboxId, list);
   });

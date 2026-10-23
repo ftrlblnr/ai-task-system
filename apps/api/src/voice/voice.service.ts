@@ -25,6 +25,7 @@ import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
 import { buildVoiceAssistantParts, resolveClarificationReason } from './voice-render';
+import { loadMailCardState } from '../assistant/assistant-mail-state';
 import { voiceActionCardParts, type MessagePartInput } from '../assistant/assistant-render';
 import { isPromptEcho } from './stt-echo';
 import type {
@@ -1093,11 +1094,12 @@ export class VoiceService {
       take: VOICE_HISTORY_LIMIT,
       include: { parts: { orderBy: { order: 'asc' } } },
     });
+    const mailState = await loadMailCardState(this.prisma, rows.flatMap((m) => m.parts));
     return rows
       .reverse()
       .map((m) => ({
         role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
-        text: serializeMessageForModelContext(m.parts),
+        text: serializeMessageForModelContext(m.parts, mailState),
       }))
       .filter((h) => h.text);
   }

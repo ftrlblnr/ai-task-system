@@ -1402,6 +1402,16 @@ export const MAIL_ACTION_TYPE_LABELS: Record<MailActionType, string> = {
   WATCH_COMMITMENT: 'Следить за обещанием',
   DRAFT_REMINDER: 'Черновик напоминания',
 };
+// Почему пункт плана не выполнился (MailActionAttempt.errorCode) — для «Разбора» и карточки в чате.
+export const MAIL_ACTION_ERROR_LABELS: Record<string, string> = {
+  ARCHIVE_FOLDER_MISSING: 'В ящике нет папки «Архив» — выберите или создайте папку.',
+  TRASH_FOLDER_MISSING: 'В ящике не найдена корзина.',
+  MISSING_FOLDER_PATH: 'Не указана папка.',
+  MISSING_FOLDER_NAME: 'Не указано имя папки.',
+  LOCATOR_CHANGED: 'Письмо переместили или изменили после анализа.',
+  NOT_IMPLEMENTED: 'Это действие агент пока не умеет выполнять.',
+  EXECUTOR_ERROR: 'Почтовый сервер вернул ошибку.',
+};
 export type MailActionGroupType = 'MAILBOX_ORDER' | 'WORK_OBJECTS' | 'EXTERNAL_SEND' | 'TRASH';
 export type MailActionPlanStatus = 'ANALYZING' | 'READY' | 'EXECUTING' | 'DONE' | 'CANCELLED';
 export type MailActionItemStatus =

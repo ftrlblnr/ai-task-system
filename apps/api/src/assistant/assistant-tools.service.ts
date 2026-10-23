@@ -16,7 +16,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
 import { MailActionPlanService } from '../mail/action/mail-action-plan.service';
 import { MailComposeService, type DraftView } from '../mail/mail-compose.service';
-import { buildMailPlanCandidates, MAIL_TOOL_ACTION_TYPES, MAX_MAIL_TOOL_ACTIONS, parseMailToolActions, summarizeCandidates } from './assistant-mail-actions';
+import { buildMailPlanCandidates, MAIL_TOOL_ACTION_TYPES, MAX_MAIL_TOOL_ACTIONS, parseMailToolActions, summarizeCandidates, type MailToolFolder } from './assistant-mail-actions';
 import { buildTasksWorkbookBuffer } from './task-export';
 import { isManager } from '../auth/roles';
 import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service';
@@ -1254,13 +1254,13 @@ export class AssistantToolsService {
       where: { id: { in: [...new Set(actions.map((a) => a.emailId))] }, mailboxId: { in: mailboxIds } },
       select: { id: true, mailboxId: true, uid: true, folder: { select: { path: true, uidValidity: true } } },
     });
-    const foldersByMailbox = new Map<string, ReadonlySet<string>>();
+    const foldersByMailbox = new Map<string, MailToolFolder[]>();
     for (const mailboxId of new Set(messages.map((m) => m.mailboxId))) {
-      foldersByMailbox.set(mailboxId, new Set((await this.mailStore.listFolders(mailboxId)).map((f) => f.path)));
+      foldersByMailbox.set(mailboxId, await this.mailStore.listFolders(mailboxId));
     }
     const draft = buildMailPlanCandidates(actions, messages, foldersByMailbox);
     if (draft.missingFolders.length > 0) {
-      const available = [...new Set([...foldersByMailbox.values()].flatMap((f) => [...f]))].join(', ');
+      const available = [...new Set([...foldersByMailbox.values()].flatMap((f) => f.map((x) => x.path)))].join(', ');
       return {
         tool: 'propose_mail_actions',
         error: true,

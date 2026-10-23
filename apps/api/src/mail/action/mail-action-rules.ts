@@ -188,8 +188,25 @@ export function computeMailActionPayloadHash(
   parameters: unknown,
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify({ type, parameters }))
+    .update(JSON.stringify({ type, parameters: canonicalJson(parameters) }))
     .digest('hex');
+}
+
+// jsonb в Postgres хранит ключи в своём порядке — хэш, посчитанный при
+// создании пункта, и хэш, пересчитанный из прочитанного обратно parameters,
+// должны совпадать (инцидент 23.10.2026: {parentPath, name} у CREATE_FOLDER
+// → ITEM_PAYLOAD_CHANGED при «Подтвердить»). Объекты с одним ключом
+// (все прежние пункты) хэшируются как раньше.
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((k) => [k, canonicalJson((value as Record<string, unknown>)[k])]),
+    );
+  }
+  return value;
 }
 
 // Раздел 14 ТЗ — хэш ВСЕГО замороженного снимка согласия (не одного
