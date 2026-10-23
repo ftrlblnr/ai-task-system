@@ -5,6 +5,7 @@ import {
   TRIP_LEG_MODES,
   buildExtractionTool,
   buildMaterialContentBlock,
+  docxHtmlToText,
   isExtractableMimeType,
 } from './trip-extraction';
 
@@ -17,8 +18,8 @@ describe('isExtractableMimeType', () => {
     expect(isExtractableMimeType('text/csv')).toBe(true);
   });
 
-  it('отклоняет docx/xlsx — нет мультимодального блока под них', () => {
-    expect(isExtractableMimeType('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe(false);
+  it('принимает docx (текст через mammoth), отклоняет xlsx', () => {
+    expect(isExtractableMimeType('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe(true);
     expect(isExtractableMimeType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')).toBe(false);
   });
 });
@@ -92,7 +93,16 @@ describe('buildMaterialContentBlock', () => {
     expect(block).toEqual({ type: 'text', text: longText.slice(0, MAX_TEXT_MATERIAL_CHARS) });
   });
 
-  it('docx — нет блока (null), вызывающий код должен не отправлять такой материал в модель', () => {
+  it('docx — синхронного блока нет (null), его готовит buildDocxContentBlock', () => {
     expect(buildMaterialContentBlock(Buffer.from('zip-bytes'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'program.docx')).toBeNull();
+  });
+});
+
+describe('docxHtmlToText', () => {
+  it('строка таблицы — одной строкой, абзацы внутри ячейки — через «; »', () => {
+    const html =
+      '<h2>24.10.2026 • Суббота</h2><table><tr><td><p><strong>14:00</strong></p></td><td><p>Вылет из Астаны</p></td>' +
+      '<td><p>Рейс в Пекин.<br />Время &amp; место</p><p>уточняются</p></td></tr><tr><td><p>07:30</p></td><td><p>Подъём</p></td><td></td></tr></table>';
+    expect(docxHtmlToText(html)).toBe('24.10.2026 • Суббота\n14:00 | Вылет из Астаны | Рейс в Пекин.; Время & место; уточняются\n07:30 | Подъём');
   });
 });

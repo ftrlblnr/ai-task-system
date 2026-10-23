@@ -1,4 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { convertToHtml } from 'mammoth';
+import { DOCX_MIME } from '../files/file-signature';
 
 // Агент поездок (ТЗ 08.10.2026, раздел 5/8/18) — чистый билдер промпта/схемы
 // тула + content-блока для ОДНОГО материала, тот же приём, что mail/mail-analysis.ts:
@@ -8,12 +10,12 @@ import type Anthropic from '@anthropic-ai/sdk';
 // В отличие от mail-analysis.ts (текстовый вход), здесь материал передаётся
 // МУЛЬТИМОДАЛЬНО (document/image content block) — билеты и скриншоты часто
 // значимы по вёрстке (номер места, QR-код), извлечение в чистый текст
-// потеряло бы это. DOCX/XLSX из общего upload-allowlist НЕ входят в
-// extractable-подмножество этой версии — у Claude нет нативного блока для
-// них, а превращать .docx-zip в текст через toString() дало бы мусор;
-// такой материал помечается unreadable без вызова модели (экономия вызова).
+// потеряло бы это. DOCX (23.10.2026 — программы поездок присылают в Word)
+// у Claude нативного блока не имеет: mammoth → HTML → текст, где строка
+// таблицы остаётся одной строкой «ячейка | ячейка» (время и пункт программы
+// не разъезжаются). XLSX по-прежнему unreadable без вызова модели.
 
-export const EXTRACTABLE_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'text/plain', 'text/csv'] as const;
+export const EXTRACTABLE_MIME_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'text/plain', 'text/csv', DOCX_MIME] as const;
 
 export function isExtractableMimeType(mimeType: string): boolean {
   return (EXTRACTABLE_MIME_TYPES as readonly string[]).includes(mimeType);
@@ -200,7 +202,9 @@ export function buildExtractionSystemPrompt(): string {
   Шанхай, Гуанчжоу, — +08:00; Москва — +03:00). У перелёта вылет — по поясу города вылета, прилёт — по поясу
   города прилёта. Если в материале явно указано другое время (например, "по Астане"), используй его пояс.
   Без смещения — только если место действительно не понять ни из пункта, ни из остального материала. Если у события известна только дата, без часа — "2026-12-01" (10 символов,
-  без времени) и ничего не изобретай для часа.
+  без времени) и ничего не изобретай для часа. Пункты программы идут по порядку: если пункт после
+  вечернего события стоит «около полуночи»/«в 00:30»/«после прилёта», это уже СЛЕДУЮЩИЙ календарный день
+  (прилёт 24.10 в 22:15, трансфер около полуночи — "2026-10-25T00:00:00+08:00"), а не начало того же дня.
 - bookingReference (у перелёта/переезда) — перевозчик и/или номер рейса/бронирования в одну строку, например
   "Air Astana KC901"; если в материале есть только одно из двух — пиши то, что есть.
 - facts — только то, что не укладывается в leg/event/stay/contact (виза, бюджет, особые требования и т.п.).
@@ -235,6 +239,54 @@ export function buildMaterialContentBlock(buffer: Buffer, mimeType: string, file
     return { type: 'text', text: buffer.toString('utf-8').slice(0, MAX_TEXT_MATERIAL_CHARS) };
   }
   return null;
+}
+
+const HTML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, code: string) => {
+    if (code[0] === '#') {
+      const n = code[1] === 'x' || code[1] === 'X' ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isFinite(n) ? String.fromCodePoint(n) : m;
+    }
+    return HTML_ENTITIES[code.toLowerCase()] ?? m;
+  });
+}
+
+// HTML от mammoth → текст для модели: заголовки и абзацы — строками, строка
+// таблицы — одной строкой с ячейками через « | », перенос внутри ячейки — «; ».
+export function docxHtmlToText(html: string): string {
+  const text = html
+    .replace(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi, (_, cell: string) => {
+      const inner = cell
+        .replace(/<\/(p|li)>|<br\s*\/?>/gi, '; ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/(\s*;\s*)+$/, '');
+      return `${inner} | `;
+    })
+    .replace(/<br\s*\/?>/gi, '; ')
+    .replace(/<\/(tr|p|h[1-6]|li)>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '');
+  return decodeEntities(text)
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/[\t\u00a0 ]+/g, ' ')
+        .replace(/(\s*\|\s*)+$/, '')
+        .replace(/\s*\|\s*/g, ' | ')
+        .trim(),
+    )
+    .filter((line) => line && line !== '|')
+    .join('\n');
+}
+
+// DOCX → текстовый блок (null, если текста нет — скан картинкой внутри Word).
+export async function buildDocxContentBlock(buffer: Buffer, fileName: string): Promise<Anthropic.Messages.ContentBlockParam | null> {
+  const { value } = await convertToHtml({ buffer });
+  const text = docxHtmlToText(value);
+  if (!text) return null;
+  return { type: 'text', text: `Документ «${fileName}»:\n\n${text}`.slice(0, MAX_TEXT_MATERIAL_CHARS) };
 }
 
 export const MAX_TEXT_MATERIAL_CHARS = 50_000;

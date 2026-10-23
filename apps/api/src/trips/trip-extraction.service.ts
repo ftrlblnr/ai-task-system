@@ -2,7 +2,8 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { FilesService } from '../files/files.service';
-import { buildExtractionSystemPrompt, buildExtractionTool, buildMaterialContentBlock, isExtractableMimeType, type TripExtractionDraft } from './trip-extraction';
+import { buildDocxContentBlock, buildExtractionSystemPrompt, buildExtractionTool, buildMaterialContentBlock, isExtractableMimeType, type TripExtractionDraft } from './trip-extraction';
+import { DOCX_MIME } from '../files/file-signature';
 import { AiUsageService, trackedCreate } from '../ai-usage/ai-usage.service';
 
 // Один forced tool-use вызов на материал (не агентный луп) — тот же приём,
@@ -46,7 +47,12 @@ export class TripExtractionService {
     if (!isExtractableMimeType(file.mimeType)) {
       return { status: 'UNREADABLE', issue: `Формат файла (${file.mimeType}) не поддерживается автоматическим извлечением в этой версии`, fileName: file.name };
     }
-    const block = buildMaterialContentBlock(buffer, file.mimeType, file.name);
+    let block: Anthropic.Messages.ContentBlockParam | null;
+    try {
+      block = file.mimeType === DOCX_MIME ? await buildDocxContentBlock(buffer, file.name) : buildMaterialContentBlock(buffer, file.mimeType, file.name);
+    } catch {
+      block = null;
+    }
     if (!block) {
       return { status: 'UNREADABLE', issue: `Не удалось подготовить файл «${file.name}» для анализа`, fileName: file.name };
     }
