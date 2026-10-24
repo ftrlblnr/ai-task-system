@@ -4,7 +4,7 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { Paperclip } from 'lucide-react';
 import type { UploadedFileInfo } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
-import { FileChip, IconButton } from '@/components/ui';
+import { FileChip } from '@/components/ui';
 
 // Вложения к сообщению ассистенту (Phase F): загрузка до отправки, чипы над
 // полем ввода. Вынесено из assistant-screen.tsx (редизайн M5, §4.6) без
@@ -72,7 +72,7 @@ export function PendingAttachmentsRow({ attachments }: { attachments: PendingAtt
   const { pending, uploading, uploadError, remove } = attachments;
   if (pending.length === 0 && !uploading && !uploadError) return null;
   return (
-    <div className="ds-task-meta">
+    <div className="ds-task-meta asst-attachments">
       {pending.map((a) => (
         <FileChip key={a.fileId} name={a.name} onRemove={() => remove(a.fileId)} />
       ))}
@@ -94,13 +94,16 @@ export function AttachButton({ attachments, disabled }: { attachments: PendingAt
   return (
     <>
       <input ref={inputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
-      <IconButton
-        icon={Paperclip}
-        label="Прикрепить файл"
-        size="sm"
+      <button
+        type="button"
+        className="asst-icon-btn"
+        aria-label="Прикрепить файл"
+        title="Прикрепить файл"
         disabled={disabled || attachments.uploading || attachments.full}
         onClick={() => inputRef.current?.click()}
-      />
+      >
+        <Paperclip size={20} strokeWidth={2} />
+      </button>
     </>
   );
 }

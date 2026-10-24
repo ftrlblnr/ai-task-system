@@ -1177,408 +1177,240 @@ select {
   margin-bottom: 14px;
 }
 
-/* ============ Assistant chat (Stage 2, Phase D, владелец 15.09.2026;
-   Phase H, владелец 18.09.2026 — голос объединён сюда же, отдельного
-   .voice-screen/.voice-chat каркаса больше нет) ======
-   calc(100dvh-120px), flex+min-height:0 для скролла — вывод ассистента
-   почти обычный текстовый поток (спека §23), не одинаковые bubble для
-   обеих сторон. */
+/* ============ Ассистент (редизайн M5, MINIAPP_REDESIGN.md §4.6) ======
+   Раздел без своего скролла (.app-screen.is-fill): заголовок сверху, лента
+   скроллится сама, поле ввода прижато к низу над нижней панелью.
+   chatRef.scrollTo в message-list.tsx рассчитан на то, что скролл-контейнер
+   — именно лента. */
+/* clip, не hidden: hidden-контейнер браузер всё равно прокручивает при
+   фокусе/scrollIntoView, и экран уезжал вбок. */
 .assistant-screen {
   display: flex;
   flex-direction: column;
-  /* Высота — вся область раздела над нижней панелью (.app-screen). */
   height: 100%;
-  overflow: hidden;
+  overflow: clip;
 }
-/* Лента скроллится сама, поле ввода прижато к низу над нижней панелью.
-   Раньше лента росла на всю высоту, а поле ввода оказывалось ниже края —
-   в SwipeShell это маскировал общий скролл экрана, в AppShell раздел
-   ассистента без своего скролла (.is-fill). chatRef.scrollTo тоже
-   рассчитан на то, что скролл-контейнер — именно лента. */
+.assistant-screen > .screen-header {
+  flex: none;
+  margin-bottom: 8px;
+}
 .assistant-screen > .ds-thread {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  max-width: none;
+  padding: 4px 0 12px;
+  gap: 14px;
 }
-.assistant-screen > .ds-composer {
-  flex: none;
-}
-.assistant-chat {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 6px 2px 10px;
-  position: relative;
-}
-.assistant-user-bubble {
-  align-self: flex-end;
-  max-width: 84%;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: var(--accent);
-  color: var(--accent-contrast);
-  border-bottom-right-radius: 4px;
-  font-size: 0.88rem;
-  line-height: 1.42;
-  white-space: pre-wrap;
-}
-.assistant-response {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  align-self: stretch;
-}
-.assistant-pending {
-  align-self: flex-start;
-  color: var(--ink-faint);
-  font-style: italic;
-  font-size: 0.85rem;
+.asst-empty {
+  margin: auto 0;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--ink-3);
 }
 
-/* Markdown — sanitize через отсутствие rehype-raw в react-markdown
-   (спека §22: raw HTML от модели запрещён), эти стили только про
-   типографику/переносимость, не про безопасность. */
-.assistant-markdown {
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--ink);
+/* Пузыри: пользователь справа на --ink, ассистент слева на --surface. */
+.assistant-screen .ds-msg-user {
+  max-width: 84%;
 }
-.assistant-markdown > *:first-child {
+.assistant-screen .ds-bubble {
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 18px 18px 6px 18px;
+}
+.assistant-screen .ds-msg-agent {
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+}
+.assistant-screen .ds-msg-agent-avatar {
+  width: 24px;
+  height: 24px;
+  margin-top: 6px;
+}
+.assistant-screen .ds-msg-agent-body {
+  gap: 8px;
+  padding-top: 0;
+}
+.assistant-screen .ds-msg-agent-body .ds-stream {
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 18px 6px;
+  overflow-wrap: anywhere;
+}
+.assistant-screen .ds-msg-agent-body .ds-stream > :first-child {
   margin-top: 0;
 }
-.assistant-markdown > *:last-child {
+.assistant-screen .ds-msg-agent-body .ds-stream > :last-child {
   margin-bottom: 0;
 }
-.assistant-markdown p,
-.assistant-markdown ul,
-.assistant-markdown ol,
-.assistant-markdown blockquote {
-  margin: 0 0 8px;
-}
-.assistant-markdown ul,
-.assistant-markdown ol {
-  padding-left: 20px;
-}
-.assistant-markdown h1,
-.assistant-markdown h2,
-.assistant-markdown h3 {
-  margin: 14px 0 6px;
-  font-size: 1rem;
-  font-weight: 600;
-}
-.assistant-markdown blockquote {
-  border-left: 3px solid var(--border-strong);
-  padding-left: 10px;
-  color: var(--ink-soft);
-}
-.assistant-markdown code {
-  font-size: 0.85em;
-  background: var(--surface-2);
-  border-radius: 4px;
-  padding: 1px 4px;
-}
-.assistant-markdown pre {
+.assistant-screen .ds-table-wrap {
   overflow-x: auto;
-  background: var(--surface-2);
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  margin: 0 0 8px;
 }
-.assistant-markdown pre code {
-  background: none;
-  padding: 0;
-}
-.assistant-markdown-table-wrap {
-  overflow-x: auto;
-  margin: 0 0 8px;
-}
-.assistant-markdown table {
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-.assistant-markdown th,
-.assistant-markdown td {
-  border: 1px solid var(--border);
-  padding: 5px 9px;
-  text-align: left;
-}
-.assistant-copy-btn {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: none;
-  box-shadow: none;
-  width: auto;
-  padding: 0;
-  color: var(--ink-faint);
-  font-size: 0.76rem;
-}
-
-.assistant-tool-activity {
-  align-self: flex-start;
-  font-size: 0.78rem;
-  color: var(--ink-faint);
-  background: var(--surface-2);
-  padding: 4px 10px;
-  border-radius: 999px;
-}
-
-.assistant-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface);
+/* Карточки задач/встреч — как строки раздела «Задачи». */
+.assistant-screen .ds-entity {
+  max-width: 100%;
+  border-radius: 18px;
   padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: 92%;
 }
-.assistant-card-title {
-  font-weight: 600;
-  font-size: 0.92rem;
+.assistant-screen .ds-entity-title {
+  font-size: 15px;
+  font-weight: 700;
 }
-.assistant-card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.8rem;
-  color: var(--ink-soft);
+.assistant-screen .ds-entity-meta {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
 }
-.assistant-card-open {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  background: transparent;
-  font-size: 0.82rem;
-  width: auto;
-}
-.assistant-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.assistant-chip {
-  display: inline-flex;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--accent);
-  font-size: 0.76rem;
-}
-
-/* Stage 2, Phase N (седьмой внешний аудит) — частичный сбой (например, не
-   добавился один из участников) внутри карточки, которая в целом успешна
-   (EventCard всё равно построена) — мягче, чем .assistant-error (та
-   означает "действие не выполнено целиком"), поэтому свой, не переиспользуем
-   danger-токены буквально. */
-.assistant-card-warning {
-  margin-top: 6px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm, 8px);
-  background: rgba(217, 119, 6, 0.12);
-  color: #b45309;
-  font-size: 0.8rem;
-}
-
-/* Stage 2, Phase O (Meeting → Task workflow) — задача, поставленная через
-   create_task_from_meeting, показывает происхождение (встреча + таймкод)
-   прямо в карточке ответа ассистента, тем же визуальным языком (иконка +
-   чип-таймкод), что уже есть у .source-card на Web (apps/web). Нейтральный
-   информационный тон, не warning-оттенок — это не проблема, а метаданные. */
-.assistant-card-source {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm, 8px);
-  background: var(--surface-2);
-  color: var(--ink-soft);
-  font-size: 0.78rem;
-}
-.assistant-card-source .mono {
-  margin-left: auto;
-  opacity: 0.85;
-}
-
-.assistant-error {
-  align-self: flex-start;
-  max-width: 92%;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  background: var(--danger-soft);
-  border: 1px solid var(--danger);
-  color: var(--danger);
-  font-size: 0.86rem;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-start;
+.assistant-screen > .ds-alert {
+  flex: none;
 }
 
 .assistant-scroll-down {
   position: sticky;
   bottom: 6px;
   align-self: center;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 6px 14px;
-  font-size: 0.78rem;
-  color: var(--ink-soft);
-  box-shadow: var(--shadow-sm);
-  width: auto;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  box-shadow: var(--shadow-1);
 }
 
-.assistant-composer {
+/* Поле ввода: подсказки, поле 44px, круглая кнопка на акценте. */
+.asst-composer {
   flex: none;
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 10px;
+  background: var(--bg);
+}
+.asst-composer.is-busy .asst-field {
+  border-color: var(--accent);
+}
+.asst-prompts {
+  margin: 0;
+  padding: 0 0 2px;
+}
+.filter-chip:disabled {
+  opacity: 0.5;
+}
+.asst-live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+}
+.asst-attachments {
+  margin: 0;
+}
+.asst-input-row {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  /* safe-area снизу теперь у нижней панели, не у поля ввода. */
-  padding: 10px 2px;
-  border-top: 1px solid var(--border);
+  gap: 6px;
 }
-/* P1.6 (аудит 16.09.2026) — счётчик символов, только когда близко к
-   MAX_TEXT_LENGTH (см. assistant-screen.tsx) — не занимает место в потоке
-   composer'а (сам composer — flex-строка из кнопки/textarea/кнопки),
-   поэтому позиционируется поверх, у верхнего края textarea. */
-.assistant-char-counter {
-  position: absolute;
-  top: -2px;
-  right: 52px;
-  font-size: 0.7rem;
-}
-.assistant-composer textarea {
-  flex: 1;
-  resize: none;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  font: inherit;
-  font-size: 0.9rem;
-  max-height: 140px;
-  background: var(--surface);
-  color: var(--ink);
-}
-.assistant-send-btn {
+.asst-icon-btn,
+.asst-action {
   flex: none;
-  width: 40px;
-  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.asst-icon-btn {
+  margin-left: -6px;
+  background: transparent;
+  color: var(--ink-3);
+}
+.asst-action {
   background: var(--accent);
   color: var(--accent-contrast);
+}
+.asst-action.is-stop {
+  background: var(--ink);
+  color: var(--bg);
+}
+.asst-icon-btn:active,
+.asst-action:active {
+  transform: scale(0.94);
+}
+.asst-icon-btn:disabled,
+.asst-action:disabled {
+  opacity: 0.4;
+}
+.asst-field {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: center;
-  border: none;
-  padding: 0;
-}
-.assistant-send-btn:disabled {
-  opacity: 0.5;
-}
-.assistant-attach-btn {
-  flex: none;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: none;
-  color: var(--ink-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-strong);
-  padding: 0;
-}
-.assistant-attach-btn:disabled {
-  opacity: 0.5;
-}
-
-/* Вложения — Stage 2, Phase F */
-.assistant-pending-attachments {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 0 2px 6px;
-}
-.assistant-pending-attachment {
-  gap: 6px;
-}
-.assistant-pending-attachment button {
-  display: inline-flex;
-  background: none;
-  border: none;
-  box-shadow: none;
-  width: auto;
-  padding: 0;
-  color: inherit;
-}
-.assistant-file-part {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
   background: var(--surface);
-  padding: 10px 12px;
-  max-width: 92%;
-  margin-top: 8px;
 }
-.assistant-file-info {
+.asst-field:focus-within {
+  border-color: var(--ink-3);
+}
+.asst-field.is-voice {
+  padding: 10px 16px;
+}
+.asst-field.is-voice .live-transcript {
   flex: 1;
   min-width: 0;
 }
-.assistant-file-name {
-  font-size: 0.85rem;
-  font-weight: 500;
+/* 16px — меньше iOS увеличивает страницу при фокусе на поле. */
+.asst-field textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  max-height: 140px;
+  box-sizing: border-box;
+  padding: 10px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  font-size: 16px;
+  line-height: 22px;
+  color: var(--ink);
+}
+.asst-field textarea::placeholder {
+  color: var(--ink-3);
+}
+/* Плейсхолдер — в одну строку, иначе на 360px он переносится под край поля. */
+.asst-field textarea:placeholder-shown {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.assistant-file-size {
-  font-size: 0.76rem;
-  color: var(--ink-faint);
-}
-.assistant-file-download {
+.asst-timer {
   flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: var(--surface-2);
-  color: var(--ink-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  padding: 0;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
 }
-.assistant-file-download:disabled {
-  opacity: 0.5;
-}
-/* Внутри цветного user-bubble (Stage 2, Phase F) — светлая полупрозрачная
-   карточка вместо непрозрачного --surface, чтобы не выбиваться из акцентного фона. */
-.assistant-user-bubble .assistant-file-part {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.3);
-  color: var(--accent-contrast);
-}
-.assistant-user-bubble .assistant-file-size {
-  color: rgba(255, 255, 255, 0.75);
-}
-.assistant-user-bubble .assistant-file-download {
-  background: rgba(255, 255, 255, 0.2);
-  color: var(--accent-contrast);
+.asst-count {
+  align-self: flex-end;
+  margin-right: 50px;
 }
 
 /* ============ Наблюдатели/подзадачи (владелец 08.09.2026) ============ */
@@ -1669,56 +1501,6 @@ select {
 }
 .subtask-add-form input {
   flex: 1;
-}
-
-/* Stage 2, Phase Q — панель живого голоса (GPT-Live) над composer'ом */
-.assistant-live-panel {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  margin: 0 2px 6px;
-  border: 1px solid var(--accent-soft-border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-}
-.assistant-live-dot {
-  flex: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--danger);
-  animation: assistant-live-pulse 1.2s ease-in-out infinite;
-}
-@keyframes assistant-live-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-.assistant-live-status {
-  flex: none;
-  font-weight: 600;
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-.assistant-live-caption {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.assistant-live-stop {
-  flex: none;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  color: var(--ink);
-  padding: 6px 12px;
-  font-size: 0.8rem;
-}
-.assistant-live-stop:disabled {
-  opacity: 0.5;
 }
 
 /* Программа поездки (23.10.2026): дни, «Вы сейчас здесь», «Далее» */

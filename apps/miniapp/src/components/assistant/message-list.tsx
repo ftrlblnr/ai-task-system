@@ -10,15 +10,6 @@ import type { VoiceUndoEntry } from './voice-controls';
 // и кнопка «↓ Новые сообщения». Вынесено из assistant-screen.tsx (редизайн
 // M5, §4.6) без изменения поведения.
 
-// Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
-// — пустой чат: приглашение + подсказки-чипы с типовыми поручениями
-// (примеры, не настоящие данные). Клик — подставляет текст в композер.
-const SUGGESTION_PROMPTS = [
-  'Поставь задачу Ивану на завтра',
-  'Что по задачам на этой неделе?',
-  'Какие встречи у меня сегодня?',
-];
-
 // Порог "у низа" — тот же порядок величины, что визуально ощущается как
 // "почти внизу", не точный 0 (иначе любой суб-пиксельный скролл во время
 // стрима считался бы "ушёл вверх").
@@ -36,7 +27,6 @@ export function MessageList({
   onUndo,
   failed,
   onRetry,
-  onSuggestion,
 }: {
   messages: ConversationMessage[];
   freshMessageIds: Set<string>;
@@ -44,7 +34,6 @@ export function MessageList({
   onUndo: (entry: VoiceUndoEntry) => void;
   failed: boolean;
   onRetry: () => void;
-  onSuggestion: (text: string) => void;
 }) {
   const chatRef = useRef<HTMLDivElement>(null);
   // P1.5 (аудит 16.09.2026, находка про автоскролл во время стрима) — в
@@ -92,26 +81,8 @@ export function MessageList({
 
   return (
     <div className="ds-thread" ref={chatRef}>
-      {messages.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '32px 16px' }}>
-          {/* "display" — типографика только для экрана входа и этого места
-              (project/README.md); utility-класса под неё нет в ds.css
-              (значения баковые per-компонент), поэтому здесь — инлайн. */}
-          <p style={{ margin: '0 0 8px', fontSize: 32, lineHeight: '38px', fontWeight: 650, letterSpacing: '-0.025em' }}>
-            Чем помочь?
-          </p>
-          <p className="ds-field-hint" style={{ margin: '0 0 16px' }}>
-            Спросите текстом или надиктуйте задачу/встречу голосом.
-          </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-            {SUGGESTION_PROMPTS.map((p) => (
-              <button key={p} type="button" className="ds-chip" onClick={() => onSuggestion(p)}>
-                {p}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Пустой чат — короткое приглашение; подсказки-чипы над полем ввода. */}
+      {messages.length === 0 && <p className="asst-empty">Спросите текстом или надиктуйте задачу, встречу, поручение.</p>}
       {messages.map((m) => {
         if (m.role === 'user') {
           return (

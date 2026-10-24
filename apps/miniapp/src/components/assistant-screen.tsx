@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { prefetchLiveTranscription } from '@/lib/live-transcription';
 import { useAssistantRequest } from './app-shell';
-import { Alert } from '@/components/ui';
+import { Alert, ScreenHeader } from '@/components/ui';
 import { usePendingAttachments } from './assistant/attachments';
 import { Composer } from './assistant/composer';
 import { MessageList } from './assistant/message-list';
@@ -53,9 +53,13 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- send пересоздаётся каждый рендер
   }, [assistantRequest, stream.historyLoadedAt, stream.sending, stream.conversationId]);
 
+  // Kicker пока без «Память: N пунктов» — появится с ARMS фазы 1.
+  const header = <ScreenHeader kicker="Ассистент Адъютанта" title="Ассистент" />;
+
   if (!stream.messages) {
     return (
       <div className="assistant-screen">
+        {header}
         {stream.loadError ? <Alert tone="danger">{stream.loadError}</Alert> : <p className="ds-field-hint">Загрузка…</p>}
       </div>
     );
@@ -64,6 +68,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const failed = stream.failedSend;
   return (
     <div className="assistant-screen">
+      {header}
       <MessageList
         messages={stream.messages}
         freshMessageIds={stream.freshMessageIds}
@@ -71,7 +76,6 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         onUndo={(entry) => void voice.undo(entry)}
         failed={failed !== null}
         onRetry={() => failed && void stream.send(failed.text, failed.attachments, failed.clientRequestId)}
-        onSuggestion={setText}
       />
 
       {voice.error && <Alert tone="danger">{voice.error}</Alert>}
@@ -81,6 +85,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         text={text}
         onTextChange={setText}
         onSend={() => send()}
+        onPrompt={send}
         sending={stream.sending}
         onStop={stream.stopSending}
         conversationReady={!!stream.conversationId}

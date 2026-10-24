@@ -5,6 +5,7 @@ import { MapPin } from 'lucide-react';
 import type { DashboardEventItem, DashboardOverview, EmailListItem } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { companyDate, companyDayKey, companyTime, formatDuration } from '@/lib/company-time';
+import { QUICK_PROMPTS } from '@/lib/labels';
 import { notificationHaptic } from '@/lib/telegram';
 import { Alert, Button, SectionLabel, Skeleton, StatTile, useAppToast } from '@/components/ui';
 import { useAskAssistant, useOpenSection } from '../app-shell';
@@ -15,9 +16,6 @@ import { AttentionStack, type AttentionItem } from './attention-stack';
 // «Сегодня» руководителя (§4.2): ближайшая встреча, счётчики, «Требует вас»,
 // быстрые вопросы ассистенту. Всё — из GET /dashboard/overview (каждый его
 // раздел сам ok/error) и писем, ждущих ответа.
-
-// Пока нет навыков (ARMS фазы 3–4) — готовые вопросы ассистенту, без чипа модели.
-export const QUICK_PROMPTS = ['Что у меня важного сегодня?', 'Подготовь меня к ближайшей встрече', 'Разбери просрочки по исполнителям', 'Итоги недели'];
 
 const MAIL_CARDS = 3;
 

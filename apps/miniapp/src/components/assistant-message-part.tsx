@@ -19,7 +19,7 @@ import type {
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
 import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
-import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
+import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusPill } from '@/components/ui';
 import { TaskDetailOverlay } from './task-detail-overlay';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -142,7 +142,7 @@ function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) 
       <EntityCard
         kind="task"
         title={data.title}
-        status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
+        status={KNOWN_STATUS.has(data.status) ? <StatusPill status={data.status as TaskStatus} /> : undefined}
         due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
         assignee={data.assignee?.name}
         source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
