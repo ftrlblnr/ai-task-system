@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronRight, Plane } from 'lucide-react';
+import { ChevronRight, Mail, Plane } from 'lucide-react';
 import { isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { companyKicker } from '@/lib/company-time';
@@ -37,11 +37,18 @@ export function TodayScreen({ active = true }: { active?: boolean }) {
 
       {user.role === 'OWNER' ? <OwnerToday active={active} /> : <EmployeeToday active={active} userId={user.id} />}
 
-      {/* У руководителя Поездок нет в нижней панели — пятое место занял Календарь. */}
+      {/* У руководителя Почты и Поездок нет в нижней панели — пятое место занял Календарь. */}
       {manager && (
         <>
           <SectionLabel>Разделы</SectionLabel>
           <div className="list-card">
+            <button type="button" className="list-row" onClick={() => openSection('mail')}>
+              <span className="list-row-icon">
+                <Mail size={18} strokeWidth={1.75} />
+              </span>
+              <span className="list-row-label">Почта</span>
+              <ChevronRight size={18} className="list-row-chevron" />
+            </button>
             <button type="button" className="list-row" onClick={() => openSection('trips')}>
               <span className="list-row-icon">
                 <Plane size={18} strokeWidth={1.75} />

@@ -12,7 +12,7 @@ import { BottomNav } from './bottom-nav';
 // ассистент не теряет ленту и стрим, списки — прокрутку. active, как и
 // раньше, говорит экрану перезагрузить данные при возврате на него.
 
-export type SectionKey = 'today' | 'tasks' | 'assistant' | 'calendar' | 'reception' | 'trips';
+export type SectionKey = 'today' | 'tasks' | 'assistant' | 'calendar' | 'reception' | 'trips' | 'mail';
 
 export interface AppSection {
   key: SectionKey;

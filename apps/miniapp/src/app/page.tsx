@@ -3,9 +3,10 @@
 import { useAuth } from '@/lib/auth-context';
 import { LoginScreen } from '@/components/login-screen';
 import { LinkScreen } from '@/components/link-screen';
-import { CalendarDays, DoorOpen, ListChecks, Mic, Plane, Sun } from 'lucide-react';
+import { CalendarDays, DoorOpen, ListChecks, Mail, Mic, Plane, Sun } from 'lucide-react';
 import { AppShell, type AppSection, type SectionKey } from '@/components/app-shell';
 import { TodayScreen } from '@/components/today-screen';
+import { MailScreen } from '@/components/mail/mail-screen';
 import { TasksScreen } from '@/components/tasks-screen';
 import { CalendarScreen } from '@/components/calendar-screen';
 import { AssistantScreen } from '@/components/assistant-screen';
@@ -66,7 +67,7 @@ export default function Home() {
   // Поездки (ТЗ 08.10.2026) доступны всем: создатель и путешествующий
   // руководитель могут быть разными людьми, видимость решает backend через
   // TripMember. У руководителя пятое место панели занято Календарём, поэтому
-  // Поездки открываются строкой «Разделы» на «Сегодня».
+  // Поездки (и Почта) открываются строкой «Разделы» на «Сегодня».
   const manager = isManagerRole(user.role);
   const sections: AppSection[] = [
     { key: 'today', label: 'Сегодня', icon: Sun, render: (active) => <TodayScreen active={active} /> },
@@ -75,6 +76,9 @@ export default function Home() {
     ...(manager ? [{ key: 'calendar', label: 'Календарь', icon: CalendarDays, render: (active: boolean) => <CalendarScreen active={active} /> } as AppSection] : []),
     { key: 'reception', label: 'Приёмная', icon: DoorOpen, render: (active) => <ReceptionScreen active={active} /> },
     { key: 'trips', label: 'Поездки', icon: Plane, render: (active) => <TripsScreen active={active} /> },
+    // Почта (владелец 24.10.2026) — как и в web, только руководству (MANAGER_ROLES
+    // на API). В панели места нет — открывается строкой «Разделы» на «Сегодня».
+    ...(manager ? [{ key: 'mail', label: 'Почта', icon: Mail, render: (active: boolean) => <MailScreen active={active} /> } as AppSection] : []),
   ];
   const nav: SectionKey[] = manager
     ? ['today', 'tasks', 'assistant', 'calendar', 'reception']

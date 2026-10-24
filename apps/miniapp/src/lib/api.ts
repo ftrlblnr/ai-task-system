@@ -104,11 +104,12 @@ async function requestStream(path: string, body: unknown, signal?: AbortSignal):
 // защищено Bearer-токеном, не куки/сессией, обычная ссылка его не пошлёт.
 // Отдаёт Blob, вызывающий код (assistant-message-part.tsx) сам делает
 // временный <a download> с URL.createObjectURL.
-async function downloadBlob(path: string): Promise<Blob> {
+// headers — вложения почты: ящик письма (X-Mailbox-Id).
+async function downloadBlob(path: string, headers?: HeadersInit): Promise<Blob> {
   const token = typeof window !== 'undefined' ? sessionStorage.getItem('accessToken') : null;
 
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
   });
 
   if (!res.ok) {
@@ -136,7 +137,7 @@ export const api = {
   postForm: <T>(path: string, formData: FormData, headers?: HeadersInit) => requestForm<T>(path, formData, headers),
   putForm: <T>(path: string, formData: FormData) => requestForm<T>(path, formData, undefined, 'PUT'),
   postStream: (path: string, body: unknown, signal?: AbortSignal) => requestStream(path, body, signal),
-  downloadBlob: (path: string) => downloadBlob(path),
+  downloadBlob: (path: string, headers?: HeadersInit) => downloadBlob(path, headers),
   patch: <T>(path: string, body?: unknown, headers?: HeadersInit) =>
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined, headers }),
   delete: <T>(path: string, headers?: HeadersInit) => request<T>(path, { method: 'DELETE', headers }),
