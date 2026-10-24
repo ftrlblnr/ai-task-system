@@ -1924,3 +1924,20 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
 .mail-card-fields dd { margin: 0; overflow-wrap: anywhere; }
 .mail-card-body { white-space: pre-wrap; font-size: 14px; line-height: 1.5; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); overflow-wrap: anywhere; }
 .mail-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Живая расшифровка во время записи голоса (владелец 24.10.2026): последние
+   строки, новые снизу; предпросмотр — команду разбирает сервер по записи. */
+.live-transcript {
+  margin: 0;
+  max-height: 96px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.live-transcript.is-empty {
+  color: var(--ink-3);
+}

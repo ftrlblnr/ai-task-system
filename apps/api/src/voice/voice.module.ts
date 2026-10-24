@@ -7,6 +7,7 @@ import { VoiceController } from './voice.controller';
 import { VoiceService } from './voice.service';
 import { WhisperService } from './whisper.service';
 import { DraftExtractionService } from './draft-extraction.service';
+import { LiveTranscriptionService } from './live-transcription.service';
 
 @Module({
   // TasksModule/CalendarModule — чтобы голосовой агент мог отвечать на
@@ -21,7 +22,7 @@ import { DraftExtractionService } from './draft-extraction.service';
   // независимой от LLM проверки assigneeRawText (см. VoiceService).
   imports: [TasksModule, CalendarModule, AssistantModule, EmployeesModule],
   controllers: [VoiceController],
-  providers: [VoiceService, WhisperService, DraftExtractionService],
+  providers: [VoiceService, WhisperService, DraftExtractionService, LiveTranscriptionService],
   // Stage 2, Phase Q — LiveModule исполняет делегации GPT-Live через
   // VoiceService.parseTranscript (тот же пайплайн, что голос, без STT).
   exports: [VoiceService],

@@ -302,6 +302,11 @@ function RequestDialog({
                 Идёт запись · {Math.floor(dictation.elapsedSec / 60)}:{String(dictation.elapsedSec % 60).padStart(2, '0')} — нажмите ■, чтобы закончить
               </p>
             )}
+            {(recording || processing) && dictation.liveText && (
+              <p className="live-transcript" aria-live="polite">
+                {dictation.liveText}
+              </p>
+            )}
             {dictation.error && <Alert tone="danger">{dictation.error}</Alert>}
 
             <div className="rcp-templates">

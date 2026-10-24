@@ -16,6 +16,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
+import { LiveTranscriber, prefetchLiveTranscription } from '@/lib/live-transcription';
 import { useRealtime } from '@/lib/use-realtime';
 import { Protected } from '@/components/protected';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
@@ -189,6 +190,10 @@ function AssistantView() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [voicePhase, setVoicePhase] = useState<'idle' | 'recording' | 'processing'>('idle');
+  // Живая расшифровка во время записи (владелец 24.10.2026) — предпросмотр,
+  // команду по-прежнему разбирает /voice/parse по записи.
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const transcriberRef = useRef<LiveTranscriber | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceElapsedSec, setVoiceElapsedSec] = useState(0);
   const [voiceUndos, setVoiceUndos] = useState<VoiceUndoEntry[]>([]);
@@ -295,7 +300,13 @@ function AssistantView() {
       if (voiceAutoStopTimerRef.current) clearTimeout(voiceAutoStopTimerRef.current);
       if (voiceTickTimerRef.current) clearInterval(voiceTickTimerRef.current);
       voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
+      transcriberRef.current?.close();
     };
+  }, []);
+
+  // Секрет живой расшифровки — заранее, чтобы текст пошёл сразу после «запись».
+  useEffect(() => {
+    prefetchLiveTranscription();
   }, []);
 
   async function startVoiceRecording() {
@@ -326,6 +337,10 @@ function AssistantView() {
     voiceStreamRef.current = stream;
     recorderRef.current = recorder;
     recorder.start();
+    setLiveTranscript('');
+    transcriberRef.current?.close();
+    transcriberRef.current = new LiveTranscriber(setLiveTranscript);
+    void transcriberRef.current.start(stream);
 
     setVoiceElapsedSec(0);
     setVoicePhase('recording');
@@ -338,6 +353,8 @@ function AssistantView() {
     if (voiceTickTimerRef.current) clearInterval(voiceTickTimerRef.current);
     voiceAutoStopTimerRef.current = null;
     voiceTickTimerRef.current = null;
+    // Финальный текст фразы приходит после commit — пока идёт разбор записи.
+    void transcriberRef.current?.finish();
     recorderRef.current?.stop();
     voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
   }
@@ -377,6 +394,7 @@ function AssistantView() {
       setVoiceError(err instanceof ApiError ? err.message : 'Не удалось обработать голосовое сообщение.');
     } finally {
       setVoicePhase('idle');
+      setLiveTranscript('');
     }
   }
 
@@ -845,9 +863,15 @@ function AssistantView() {
             </div>
           )}
           <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={onFileSelected} />
+          {voicePhase !== 'idle' && (
+            <p className={cx('live-transcript', !liveTranscript && 'is-empty')} aria-live="polite">
+              {liveTranscript || (voicePhase === 'recording' ? 'Говорите…' : 'Распознаю…')}
+            </p>
+          )}
           <textarea
             ref={textareaRef}
             rows={1}
+            hidden={voicePhase !== 'idle'}
             placeholder="Напишите задачу, вопрос или поручение…"
             aria-label="Сообщение ассистенту"
             value={text}

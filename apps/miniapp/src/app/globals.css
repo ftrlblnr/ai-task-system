@@ -727,6 +727,22 @@ select {
   color: var(--tone-orange-ink);
 }
 
+/* Живая расшифровка во время записи голоса: последние строки, новые снизу. */
+.live-transcript {
+  margin: 0;
+  max-height: 96px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.live-transcript.is-empty {
+  color: var(--ink-3);
+}
+
 /* Тост — над нижней панелью, по центру (§4.1). */
 .app-toast {
   position: fixed;

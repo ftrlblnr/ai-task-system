@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from './api';
+import { LiveTranscriber, prefetchLiveTranscription } from './live-transcription';
 
 // Надиктовать текст: запись в браузере → POST <endpoint> (Whisper) → текст.
 // Тот же MediaRecorder-флоу и формулировки ошибок, что у голоса в
@@ -16,6 +17,10 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
   const [phase, setPhase] = useState<DictationPhase>('idle');
   const [elapsedSec, setElapsedSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Живая расшифровка во время записи (владелец 24.10.2026) — только
+  // предпросмотр; в поле ответа уходит текст из endpoint, как и раньше.
+  const [liveText, setLiveText] = useState('');
+  const transcriberRef = useRef<LiveTranscriber | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -43,7 +48,13 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
       clearTimers();
       if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      transcriberRef.current?.close();
     };
+  }, []);
+
+  // Секрет живой расшифровки — заранее, чтобы текст пошёл сразу после «запись».
+  useEffect(() => {
+    prefetchLiveTranscription();
   }, []);
 
   async function start() {
@@ -68,6 +79,10 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
     streamRef.current = stream;
     recorderRef.current = recorder;
     recorder.start();
+    setLiveText('');
+    transcriberRef.current?.close();
+    transcriberRef.current = new LiveTranscriber(setLiveText);
+    void transcriberRef.current.start(stream);
     setElapsedSec(0);
     setPhase('recording');
     timersRef.current = {
@@ -78,6 +93,7 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
 
   function stop() {
     clearTimers();
+    void transcriberRef.current?.finish();
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
   }
@@ -98,9 +114,12 @@ export function useDictation(endpoint: string, onText: (text: string) => void, f
     } catch (err) {
       if (!cancelledRef.current) setError(err instanceof ApiError ? err.message : 'Не удалось распознать запись.');
     } finally {
-      if (!cancelledRef.current) setPhase('idle');
+      if (!cancelledRef.current) {
+        setPhase('idle');
+        setLiveText('');
+      }
     }
   }
 
-  return { phase, elapsedSec, error, start, stop };
+  return { phase, elapsedSec, error, liveText, start, stop };
 }

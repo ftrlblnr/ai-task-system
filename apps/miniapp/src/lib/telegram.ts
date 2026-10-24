@@ -85,8 +85,16 @@ function applyChromeColor(app: TelegramWebApp) {
 // Небольшие настройки (последний открытый раздел): CloudStorage Telegram —
 // общая для всех устройств пользователя, вне Telegram и в старых клиентах —
 // localStorage. Ошибки хранилища не мешают работе.
+// CloudStorage — с Bot API 6.9 и только внутри Telegram: вне его и в старых
+// клиентах SDK вместо ответа пишет ошибку в консоль.
+function cloudStorage() {
+  const app = getTelegramWebApp();
+  if (!app?.initData || !app.isVersionAtLeast?.('6.9')) return undefined;
+  return app.CloudStorage;
+}
+
 export function loadPref(key: string): Promise<string | null> {
-  const cloud = getTelegramWebApp()?.CloudStorage;
+  const cloud = cloudStorage();
   const local = () => {
     try {
       return localStorage.getItem(key);
@@ -111,7 +119,7 @@ export function savePref(key: string, value: string) {
     // приватный режим и т.п.
   }
   try {
-    getTelegramWebApp()?.CloudStorage?.setItem(key, value);
+    cloudStorage()?.setItem(key, value);
   } catch {
     // старый клиент Telegram
   }

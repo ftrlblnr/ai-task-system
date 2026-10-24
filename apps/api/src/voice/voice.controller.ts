@@ -5,6 +5,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { VoiceService } from './voice.service';
+import { LiveTranscriptionService } from './live-transcription.service';
 import { ParseVoiceDto } from './dto/parse-voice.dto';
 import { VoiceUndoDto } from './dto/voice-undo.dto';
 
@@ -24,7 +25,16 @@ const ALLOWED_MIME_TYPES = [
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('voice')
 export class VoiceController {
-  constructor(private readonly voice: VoiceService) {}
+  constructor(
+    private readonly voice: VoiceService,
+    private readonly liveTranscription: LiveTranscriptionService,
+  ) {}
+
+  // Секрет для живой расшифровки во время записи (предпросмотр текста).
+  @Post('live-transcription')
+  createLiveTranscription() {
+    return this.liveTranscription.createSecret();
+  }
 
   @Post('parse')
   @UseInterceptors(

@@ -2176,6 +2176,26 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
 - «Сегодня»/сроки/время — по Asia/Almaty (`lib/company-time.ts`).
 - Фильтр «Просрочено» при переходе с плитки — в M3 (сейчас открываются «Задачи»).
 
+## Голос: живая расшифровка во время записи (владелец 24.10.2026)
+
+- Пока идёт запись (микрофон ассистента в web и Mini App, диктовка ответа в
+  приёмной web), текст появляется по мере речи. Это предпросмотр: команду, как
+  и раньше, разбирает `POST /voice/parse` (и `/reception/transcribe`) по записи.
+- `POST /voice/live-transcription` (`voice/live-transcription.service.ts`, все
+  роли) выдаёт короткоживущий (60 с) секрет OpenAI Realtime для сессии ТОЛЬКО
+  расшифровки (`type: "transcription"`, модель `gpt-live-transcribe`, `ru`,
+  `turn_detection: null`). Ключ OpenAI в браузер не попадает. Журнал AiCall —
+  feature `voice.live_transcription`. Выключатель: `LIVE_TRANSCRIPTION_ENABLED=false`;
+  модель — `LIVE_TRANSCRIPTION_MODEL`.
+- Клиент `lib/live-transcription.ts` (web и miniapp, зеркала): тот же поток
+  микрофона по WebRTC → `https://api.openai.com/v1/realtime/calls`, события
+  `conversation.item.input_audio_transcription.delta/completed` по data channel
+  `oai-events`; на «стоп» — `input_audio_buffer.commit` (у модели нет VAD) и
+  ожидание финала ≤1.5 с. Трек — через `addTrack`: с `sendonly`-трансивером
+  OpenAI звук не получает. Секрет запрашивается заранее, когда открыт экран с
+  микрофоном, — первый текст ~через 1 с. Сбой предпросмотра запись не ломает.
+- Mini App: CloudStorage используется только внутри Telegram с версии 6.9.
+
 ## Известные ограничения (не в рамках этого этапа)
 
 - Контекст голосового агента ограничен последними ≤40 задачами/событиями и
