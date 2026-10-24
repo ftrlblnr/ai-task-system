@@ -13,8 +13,8 @@ describe('LiveTranscriptionService', () => {
   });
 
   it('выдаёт секрет сессии только расшифровки, ключ OpenAI наружу не отдаёт', async () => {
-    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ value: 'ek_test', expires_at: 123 }) });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ value: 'ek_test', expires_at: 123 }) });
+    global.fetch = fetchMock;
     const service = new LiveTranscriptionService(config({ OPENAI_API_KEY: 'sk-secret' }));
 
     const result = await service.createSecret();
@@ -34,7 +34,7 @@ describe('LiveTranscriptionService', () => {
   });
 
   it('ошибка OpenAI — 502, а не сырой ответ провайдера', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) }) as unknown as typeof fetch;
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401, json: () => Promise.resolve({}) });
     await expect(new LiveTranscriptionService(config({ OPENAI_API_KEY: 'sk' })).createSecret()).rejects.toBeInstanceOf(BadGatewayException);
   });
 });
