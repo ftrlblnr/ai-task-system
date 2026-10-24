@@ -496,6 +496,237 @@ select {
   color: inherit;
 }
 
+/* ============ «Сегодня» (редизайн M2, §4.2) ============ */
+/* Четыре плитки руководителя — 2×2, число и подпись в строку: в одну
+   строку на 360px «Просрочено» не помещается. Три плитки сотрудника — в ряд. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.stat-grid .stat-tile {
+  min-height: 60px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+.stat-grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.stat-grid-3 .stat-tile {
+  min-height: 76px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 10px;
+}
+
+.meeting-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  margin-bottom: 12px;
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.meeting-when {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.meeting-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.meeting-place {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.meeting-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+.meeting-people {
+  display: inline-flex;
+  align-items: center;
+}
+.meeting-people > * + * {
+  margin-left: -8px;
+}
+.meeting-people > * {
+  box-shadow: 0 0 0 2px var(--surface);
+  border-radius: 50%;
+}
+.meeting-more {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink-3);
+  padding-left: 12px;
+  box-shadow: none !important;
+}
+/* Главное действие экрана — на акценте (§3), а не тёмная ds-btn-primary. */
+.meeting-prepare,
+.attention-primary {
+  margin-left: auto;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: 14px;
+}
+
+/* Стопка: две подложки — псевдоэлементы, чтобы не плодить пустые div. */
+.attention-stack {
+  position: relative;
+  padding-bottom: 14px;
+}
+.attention-stack::before,
+.attention-stack::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 7px;
+  height: 40px;
+  border-radius: 22px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.attention-stack::after {
+  left: 24px;
+  right: 24px;
+  bottom: 0;
+  opacity: 0.6;
+}
+.attention-stack[data-depth="1"]::before,
+.attention-stack[data-depth="1"]::after,
+.attention-stack[data-depth="2"]::after {
+  display: none;
+}
+.attention-stack[data-depth="1"] {
+  padding-bottom: 0;
+}
+.attention-stack[data-depth="2"] {
+  padding-bottom: 7px;
+}
+.attention-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 170px;
+  padding: 18px;
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.attention-skeleton {
+  background: var(--surface-2);
+}
+.attention-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.attention-count {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.attention-title {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 750;
+  line-height: 1.25;
+  color: var(--ink);
+}
+.attention-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.attention-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+}
+.attention-empty {
+  padding: 22px 18px;
+  border-radius: 22px;
+  border: 1px dashed var(--line);
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.prompt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.prompt-chip {
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+}
+.prompt-chip:active {
+  background: var(--surface-2);
+}
+
+.today-task .list-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.today-task-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.today-task-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.due {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.due.is-overdue {
+  color: var(--tone-orange-ink);
+}
+
 /* Тост — над нижней панелью, по центру (§4.1). */
 .app-toast {
   position: fixed;

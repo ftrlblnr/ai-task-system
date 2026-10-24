@@ -1045,6 +1045,8 @@ export interface DashboardEventItem {
   startAt: string;
   endAt: string;
   allDay: boolean;
+  location: string | null;
+  participants: { id: string; fullName: string }[];
 }
 
 export interface DashboardCalendarSection {

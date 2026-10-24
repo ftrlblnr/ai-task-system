@@ -69,7 +69,7 @@ export default function Home() {
   // Поездки открываются строкой «Разделы» на «Сегодня».
   const manager = isManagerRole(user.role);
   const sections: AppSection[] = [
-    { key: 'today', label: 'Сегодня', icon: Sun, render: () => <TodayScreen /> },
+    { key: 'today', label: 'Сегодня', icon: Sun, render: (active) => <TodayScreen active={active} /> },
     { key: 'tasks', label: 'Задачи', icon: ListChecks, render: (active) => <TasksScreen active={active} /> },
     { key: 'assistant', label: 'Ассистент', icon: Mic, fill: true, render: (active) => <AssistantScreen active={active} /> },
     ...(manager ? [{ key: 'calendar', label: 'Календарь', icon: CalendarDays, render: (active: boolean) => <CalendarScreen active={active} /> } as AppSection] : []),

@@ -4,41 +4,40 @@ import { useState } from 'react';
 import { ChevronRight, Plane } from 'lucide-react';
 import { isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
+import { companyKicker } from '@/lib/company-time';
 import { ScreenHeader, SectionLabel } from '@/components/ui';
 import { useOpenSection } from './app-shell';
 import { Avatar } from './avatar';
 import { ProfileOverlay } from './profile-overlay';
+import { OwnerToday } from './today/owner-today';
+import { EmployeeToday } from './today/employee-today';
 
-// «Сегодня» — стартовый раздел (редизайн §4.2). На M1 — только каркас:
-// заголовок с датой, профиль и «Разделы → Поездки» для руководителя (в его
-// нижней панели Поездок нет). Сводка дня — встреча, счётчики, «Требует
-// вас» — появится на M2.
-
-// Дата — по времени компании (Казахстан), а не устройства: руководитель в
-// поездке видит тот же «сегодня», что и сервер со сроками задач.
-const kickerFormat = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' });
-
-export function TodayScreen() {
+// «Сегодня» — стартовый раздел (редизайн §4.2, M2). Вариант руководителя
+// строится на GET /dashboard/overview, а он закрыт @Roles(OWNER) — поэтому
+// ADMIN пока видит вариант сотрудника (решение владельца, не менять без него).
+export function TodayScreen({ active = true }: { active?: boolean }) {
   const { user } = useAuth();
   const openSection = useOpenSection();
   const [profileOpen, setProfileOpen] = useState(false);
-  const manager = user ? isManagerRole(user.role) : false;
+  if (!user) return null;
+  const manager = isManagerRole(user.role);
 
   return (
     <div>
       <ScreenHeader
-        kicker={kickerFormat.format(new Date())}
+        kicker={companyKicker(new Date())}
         title="Сегодня"
         action={
-          user && (
-            <button type="button" className="screen-header-avatar" onClick={() => setProfileOpen(true)} aria-label="Профиль">
-              <Avatar id={user.id} name={user.fullName} size={40} />
-            </button>
-          )
+          <button type="button" className="screen-header-avatar" onClick={() => setProfileOpen(true)} aria-label="Профиль">
+            <Avatar id={user.id} name={user.fullName} size={40} />
+          </button>
         }
       />
       {profileOpen && <ProfileOverlay onClose={() => setProfileOpen(false)} />}
 
+      {user.role === 'OWNER' ? <OwnerToday active={active} /> : <EmployeeToday active={active} userId={user.id} />}
+
+      {/* У руководителя Поездок нет в нижней панели — пятое место занял Календарь. */}
       {manager && (
         <>
           <SectionLabel>Разделы</SectionLabel>

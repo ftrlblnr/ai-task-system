@@ -18,6 +18,7 @@ import { api, ApiError } from '@/lib/api';
 import { haptic, notificationHaptic } from '@/lib/telegram';
 import { LiveVoiceClient, type LiveVoicePhase } from '@/lib/live-voice';
 import { MessagePartsList, FilePartView } from './assistant-message-part';
+import { useAssistantRequest } from './app-shell';
 import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -170,6 +171,11 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Когда последний раз догрузилась история — запрос из другого раздела
+  // (useAssistantRequest) отправляем только после неё, иначе ответ load()
+  // затёр бы только что добавленное сообщение.
+  const [historyLoadedAt, setHistoryLoadedAt] = useState(0);
+  const [assistantRequest, consumeAssistantRequest] = useAssistantRequest();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   // Сетевой сбой самой отправки/обрыв стрима (не серверная ошибка внутри
@@ -485,7 +491,10 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         setConversationId(id);
         return api.get<ConversationMessage[]>(`/assistant/conversations/${id}/messages`).then(setMessages);
       })
-      .then(() => setLoadError(null))
+      .then(() => {
+        setLoadError(null);
+        setHistoryLoadedAt(Date.now());
+      })
       .catch((err) => setLoadError(err instanceof ApiError ? err.message : 'Не удалось загрузить переписку'));
   }
 
@@ -497,6 +506,15 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (active) load();
   }, [active]);
+
+  // Текст из другого раздела («Подготовиться», «Ответить», быстрые вопросы
+  // на «Сегодня») — отправляем как обычное сообщение пользователя.
+  useEffect(() => {
+    if (!assistantRequest || sending || !conversationId || historyLoadedAt < assistantRequest.at) return;
+    consumeAssistantRequest();
+    void send(assistantRequest.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- send пересоздаётся каждый рендер
+  }, [assistantRequest, historyLoadedAt, sending, conversationId]);
 
   // P1.5 (аудит 16.09.2026) — слушатель скролла живёт всё время монтирования
   // экрана (не только во время стрима): пользователь может пролистать

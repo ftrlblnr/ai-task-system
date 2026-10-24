@@ -25,16 +25,47 @@ export interface AppSection {
 
 const PREF_KEY = 'miniapp_section';
 
-const ShellNavContext = createContext<(key: SectionKey) => void>(() => {});
+// Запрос ассистенту из другого раздела («Подготовиться» к встрече, «Ответить»
+// на письмо, быстрые вопросы на «Сегодня»): оболочка открывает ассистента, а
+// тот отправляет текст, когда догрузит историю. at — чтобы ассистент не
+// отправил раньше, чем закончится загрузка, начатая уже после запроса.
+export interface AssistantRequest {
+  text: string;
+  at: number;
+}
+
+interface ShellContextValue {
+  open: (key: SectionKey) => void;
+  askAssistant: (text: string) => void;
+  assistantRequest: AssistantRequest | null;
+  consumeAssistantRequest: () => void;
+}
+
+const ShellContext = createContext<ShellContextValue>({
+  open: () => {},
+  askAssistant: () => {},
+  assistantRequest: null,
+  consumeAssistantRequest: () => {},
+});
 
 // Переход в раздел из глубины экрана («Разделы → Поездки» на «Сегодня» и т.п.).
 export function useOpenSection() {
-  return useContext(ShellNavContext);
+  return useContext(ShellContext).open;
+}
+
+export function useAskAssistant() {
+  return useContext(ShellContext).askAssistant;
+}
+
+export function useAssistantRequest() {
+  const { assistantRequest, consumeAssistantRequest } = useContext(ShellContext);
+  return [assistantRequest, consumeAssistantRequest] as const;
 }
 
 export function AppShell({ sections, nav }: { sections: AppSection[]; nav: SectionKey[] }) {
   const [current, setCurrent] = useState<SectionKey>('today');
   const [visited, setVisited] = useState<ReadonlySet<SectionKey>>(() => new Set(['today']));
+  const [assistantRequest, setAssistantRequest] = useState<AssistantRequest | null>(null);
 
   // Последний открытый раздел — между запусками; первый запуск — «Сегодня».
   // Раздел, которого у пользователя нет (сменилась роль), игнорируется.
@@ -60,8 +91,20 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
     savePref(PREF_KEY, key);
   }
 
+  function askAssistant(text: string) {
+    setAssistantRequest({ text, at: Date.now() });
+    open('assistant');
+  }
+
+  const context: ShellContextValue = {
+    open,
+    askAssistant,
+    assistantRequest,
+    consumeAssistantRequest: () => setAssistantRequest(null),
+  };
+
   return (
-    <ShellNavContext.Provider value={open}>
+    <ShellContext.Provider value={context}>
       <div className="app-shell">
         <main className="app-content">
           {sections
@@ -74,6 +117,6 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
         </main>
         <BottomNav items={nav.map((key) => sections.find((s) => s.key === key)!).filter(Boolean)} current={current} onOpen={open} />
       </div>
-    </ShellNavContext.Provider>
+    </ShellContext.Provider>
   );
 }

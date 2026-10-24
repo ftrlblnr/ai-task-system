@@ -47,13 +47,16 @@ export class EventsService {
   // ранний startAt, чем ещё не начавшиеся — сортировать по "текущее/будущее"
   // отдельно не нужно. Только минимальные поля — дашборду не нужны
   // participants/location/description.
+  // location и участники — для карточки «Ближайшая встреча» на «Сегодня»
+  // в Mini App (редизайн M2, 24.10.2026).
   async findUpcoming(employeeId: string, limit: number) {
-    return this.prisma.event.findMany({
+    const events = await this.prisma.event.findMany({
       where: { createdById: employeeId, status: EventStatus.CONFIRMED, endAt: { gte: new Date() } },
       orderBy: [{ startAt: 'asc' }, { id: 'asc' }],
       take: limit,
-      select: { id: true, title: true, startAt: true, endAt: true, allDay: true },
+      select: { id: true, title: true, startAt: true, endAt: true, allDay: true, location: true, ...PARTICIPANTS_INCLUDE },
     });
+    return events.map(withParticipants);
   }
 
   // ownerId обязателен (календарный агент ТЗ, раздел 4, C06) — модуль
