@@ -34,6 +34,7 @@ import { UpdateEventDto } from './dto/update-event.dto';
 import { SetGoogleOAuthConfigDto } from './dto/set-google-oauth-config.dto';
 import { AddEventParticipantDto } from './dto/add-event-participant.dto';
 import { FindAvailabilityDto } from './dto/find-availability.dto';
+import { ListEventsDto } from './dto/list-events.dto';
 import { UpdateCalendarPolicyDto } from './dto/update-calendar-policy.dto';
 
 // Календарь руководителя (раздел 14.2 ТЗ / Адъютант, скорректировано
@@ -72,8 +73,11 @@ export class CalendarController {
   }
 
   @Get('events')
-  findAll(@CurrentDataOwner() owner: DataOwner) {
-    return this.events.findAll(owner.id);
+  findAll(@Query() query: ListEventsDto, @CurrentDataOwner() owner: DataOwner) {
+    return this.events.findAll(owner.id, {
+      from: query.from ? new Date(query.from) : undefined,
+      to: query.to ? new Date(query.to) : undefined,
+    });
   }
 
   // Idempotency-Key обязателен (раздел 18.2 ТЗ календарного агента) —

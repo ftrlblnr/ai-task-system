@@ -153,7 +153,7 @@ export function OwnerToday({ active }: { active: boolean }) {
         {overview ? (
           <>
             <StatTile value={tasks?.counts.active ?? '—'} label="Активные" onClick={() => openSection('tasks')} />
-            <StatTile value={tasks?.counts.overdue ?? '—'} label="Просрочено" accent={(tasks?.counts.overdue ?? 0) > 0} onClick={() => openSection('tasks')} />
+            <StatTile value={tasks?.counts.overdue ?? '—'} label="Просрочено" accent={(tasks?.counts.overdue ?? 0) > 0} onClick={() => openSection('tasks', 'overdue')} />
             <StatTile value={tasks?.counts.inReview ?? '—'} label="На проверке" onClick={() => openSection('tasks')} />
             <StatTile value={reception?.waitingCount ?? '—'} label="В приёмной" onClick={() => openSection('reception')} />
           </>

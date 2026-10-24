@@ -32,9 +32,15 @@ export class EventsService {
     private readonly bot: TelegramBotService,
   ) {}
 
-  async findAll(employeeId: string) {
+  // range — события, пересекающие [from, to) (неделя календаря Mini App);
+  // любая граница может отсутствовать.
+  async findAll(employeeId: string, range: { from?: Date; to?: Date } = {}) {
     const events = await this.prisma.event.findMany({
-      where: { createdById: employeeId },
+      where: {
+        createdById: employeeId,
+        ...(range.to ? { startAt: { lt: range.to } } : {}),
+        ...(range.from ? { endAt: { gt: range.from } } : {}),
+      },
       orderBy: { startAt: 'asc' },
       include: PARTICIPANTS_INCLUDE,
     });

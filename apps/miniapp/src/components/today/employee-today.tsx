@@ -53,8 +53,8 @@ export function EmployeeToday({ active, userId }: { active: boolean; userId: str
       <div className="stat-grid stat-grid-3">
         {tasks ? (
           <>
-            <StatTile value={dueToday.length} label="На сегодня" onClick={() => openSection('tasks')} />
-            <StatTile value={overdue.length} label="Просрочено" accent={overdue.length > 0} onClick={() => openSection('tasks')} />
+            <StatTile value={dueToday.length} label="На сегодня" onClick={() => openSection('tasks', 'today')} />
+            <StatTile value={overdue.length} label="Просрочено" accent={overdue.length > 0} onClick={() => openSection('tasks', 'overdue')} />
             <StatTile value={inReview.length} label="На проверке" onClick={() => openSection('tasks')} />
           </>
         ) : (

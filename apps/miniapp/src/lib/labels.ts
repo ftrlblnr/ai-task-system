@@ -24,17 +24,6 @@ export const PRIORITY_LABELS: Record<TaskPriority, string> = {
 // с apps/api/src/tasks/tasks.service.ts (EMPLOYEE_ALLOWED_STATUSES).
 export const EMPLOYEE_SETTABLE_STATUSES: TaskStatus[] = ['IN_PROGRESS', 'IN_REVIEW', 'DONE'];
 
-// Порядок секций списка задач — та же логика, что колонки канбана в web.
-export const TASK_SECTIONS: TaskStatus[] = [
-  'DRAFT',
-  'NEW',
-  'IN_PROGRESS',
-  'IN_REVIEW',
-  'DONE',
-  'RETURNED',
-  'CANCELLED',
-];
-
 export const STATUS_DOT_COLOR: Record<TaskStatus, string> = {
   DRAFT: 'var(--ink-faint)',
   NEW: 'var(--accent)',

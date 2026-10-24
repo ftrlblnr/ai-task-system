@@ -1,52 +1,72 @@
 'use client';
 
-import { CircleAlert, Calendar, FileAudio, ListChecks } from 'lucide-react';
-import type { TaskListItem } from '@ai-task-system/shared-types';
-import { StatusBadge, PriorityMark, AgentMark, cx } from '@/components/ui';
+import { Check } from 'lucide-react';
+import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
+import { StatusPill, cx } from '@/components/ui';
 import { Avatar } from '@/components/avatar';
+import { companyDate, companyDayKey, companyTime } from '@/lib/company-time';
+import { STATUS_LABELS } from '@/lib/labels';
 
-// Порт TaskCard (project/components/src/index.jsx) — та же карточка, что в
-// web/components/task-card.tsx, без drag-свойств (Mini App — списки, не
-// канбан).
+// Карточка задачи (редизайн M3, MINIAPP_REDESIGN.md §4.3): чекбокс слева,
+// название, статус + срок, аватар исполнителя. Чекбокс и сама карточка —
+// две отдельные кнопки: вложенные интерактивные элементы недоступны с
+// клавиатуры и читалок экрана.
 
-export function TaskCard({ task, onClick }: { task: TaskListItem; onClick: () => void }) {
+// Срок: сегодня — время, иначе дата (по времени компании).
+function dueLabel(dueDate: string): string {
+  return companyDayKey(dueDate) === companyDayKey(new Date()) ? `сегодня ${companyTime(dueDate)}` : companyDate(dueDate);
+}
+
+export function TaskCard({
+  task,
+  next,
+  busy,
+  onAdvance,
+  onOpen,
+}: {
+  task: TaskListItem;
+  // Следующий статус, если пользователь вправе перевести задачу дальше
+  // (см. nextTaskStatus в tasks-screen.tsx), иначе чекбокса нет.
+  next: TaskStatus | null;
+  busy?: boolean;
+  onAdvance: () => void;
+  onOpen: () => void;
+}) {
+  const done = task.status === 'DONE';
   return (
-    <article className="ds-task" tabIndex={0} role="button" onClick={onClick}>
-      <h3 className="ds-task-title">{task.title}</h3>
-      {(task.status || task.fromAgent || task.source) && (
-        <div className="ds-task-meta">
-          <StatusBadge status={task.status} />
-          {task.fromAgent && (
-            <span className="ds-task-origin">
-              <AgentMark size={12} state="done" />
-              Ассистент
-            </span>
-          )}
-          {task.source && (
-            <span className="ds-task-origin" style={{ color: 'var(--ink-3)' }}>
-              <FileAudio size={13} strokeWidth={1.75} />
-              {task.source}
-            </span>
-          )}
-        </div>
+    <div className={cx('task-row', done && 'is-done')}>
+      {next ? (
+        <button
+          type="button"
+          className={cx('task-check', next === 'DONE' && 'is-final')}
+          onClick={onAdvance}
+          disabled={busy}
+          aria-label={`Перевести «${task.title}» в статус «${STATUS_LABELS[next]}»`}
+        >
+          <Check size={16} strokeWidth={2.5} />
+        </button>
+      ) : (
+        done && (
+          <span className="task-check is-checked" aria-hidden="true">
+            <Check size={16} strokeWidth={2.5} />
+          </span>
+        )
       )}
-      <div className="ds-task-foot">
-        <PriorityMark priority={task.priority} showLabel={false} />
-        {task.dueDate && (
-          <span className={cx('ds-task-due', task.isOverdue && 'is-overdue')}>
-            {task.isOverdue ? <CircleAlert size={13} strokeWidth={1.75} /> : <Calendar size={13} strokeWidth={1.75} />}
-            {task.isOverdue ? 'Просрочена · ' : ''}
-            {new Date(task.dueDate).toLocaleDateString('ru-RU')}
+      <button type="button" className="task-row-main" onClick={onOpen}>
+        <span className="task-row-text">
+          <span className="task-row-title">{task.title}</span>
+          <span className="task-row-meta">
+            <StatusPill status={task.status} />
+            {task.dueDate && <span className={cx('due', task.isOverdue && 'is-overdue')}>{dueLabel(task.dueDate)}</span>}
+            {task.subtaskCount > 0 && (
+              <span className="due">
+                {task.subtaskDoneCount}/{task.subtaskCount}
+              </span>
+            )}
           </span>
-        )}
-        {task.subtaskCount > 0 && (
-          <span className="ds-task-sub">
-            <ListChecks size={13} strokeWidth={1.75} />
-            {task.subtaskDoneCount}/{task.subtaskCount}
-          </span>
-        )}
-        {task.assignee && <Avatar id={task.assignee.id} name={task.assignee.fullName} size={22} />}
-      </div>
-    </article>
+        </span>
+        {task.assignee && <Avatar id={task.assignee.id} name={task.assignee.fullName} size={32} />}
+      </button>
+    </div>
   );
 }

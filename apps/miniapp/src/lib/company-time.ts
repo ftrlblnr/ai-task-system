@@ -33,3 +33,65 @@ export function formatDuration(minutes: number): string {
   const m = minutes % 60;
   return m ? `${h} ч ${m} мин` : `${h} ч`;
 }
+
+// Арифметика дней по ключу YYYY-MM-DD (календарь, M3): сам ключ — дата
+// компании, поэтому считаем в UTC без участия часового пояса устройства.
+function keyToUtc(key: string): number {
+  const [y, m, d] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, d);
+}
+
+export function addDays(key: string, days: number): string {
+  return new Date(keyToUtc(key) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+// 0 — понедельник … 6 — воскресенье.
+export function weekdayIndex(key: string): number {
+  return (new Date(keyToUtc(key)).getUTCDay() + 6) % 7;
+}
+
+export function weekStartKey(key: string): string {
+  return addDays(key, -weekdayIndex(key));
+}
+
+export function dayOfMonth(key: string): number {
+  return Number(key.slice(8, 10));
+}
+
+const partsFormat = new Intl.DateTimeFormat('en-US', {
+  timeZone: TIME_ZONE,
+  hourCycle: 'h23',
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: 'numeric',
+  second: 'numeric',
+});
+
+// Смещение пояса компании от UTC в момент at — через Intl, а не константой
+// +5: правила пояса меняются (Казахстан перешёл с +6 на +5 в 2024).
+function zoneOffsetMs(at: number): number {
+  const p = Object.fromEntries(partsFormat.formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+  const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+  return asUtc - Math.floor(at / 1000) * 1000;
+}
+
+// Полночь дня компании как момент времени.
+export function companyDayStart(key: string): Date {
+  const utc = keyToUtc(key);
+  return new Date(utc - zoneOffsetMs(utc));
+}
+
+// Минуты от полуночи дня компании (может быть <0 или >1440 для соседних дней).
+export function minutesFromDayStart(date: Date | string, key: string): number {
+  return (new Date(date).getTime() - companyDayStart(key).getTime()) / 60_000;
+}
+
+const monthFormat = new Intl.DateTimeFormat('ru-RU', { timeZone: 'UTC', month: 'long', year: 'numeric' });
+
+// «Октябрь 2026» — надзаголовок календаря.
+export function monthLabel(key: string): string {
+  const s = monthFormat.format(new Date(keyToUtc(key))).replace(/\s*г\.$/, '');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}

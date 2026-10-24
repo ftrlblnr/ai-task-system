@@ -59,8 +59,12 @@ class FakePrisma {
       const row = this.events.find((e) => e.id === where.id);
       return row ? this.withParticipants(row) : null;
     },
-    findMany: async ({ where }: { where: { createdById: string } }) =>
-      this.events.filter((e) => e.createdById === where.createdById).map((e) => this.withParticipants(e)),
+    findMany: async ({ where }: { where: { createdById: string; startAt?: { lt: Date }; endAt?: { gt: Date } } }) =>
+      this.events
+        .filter((e) => e.createdById === where.createdById)
+        .filter((e) => !where.startAt || e.startAt < where.startAt.lt)
+        .filter((e) => !where.endAt || e.endAt > where.endAt.gt)
+        .map((e) => this.withParticipants(e)),
     update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
       const row = this.events.find((e) => e.id === where.id)!;
       applyUpdate(row, data);
@@ -165,6 +169,15 @@ describe('EventsService (календарный агент, раздел 4 ТЗ:
     await createFor('owner-2');
     const all = await service.findAll('owner-1');
     expect(all).toHaveLength(1);
+  });
+
+  it('findAll с диапазоном — только события, пересекающие его', async () => {
+    const event = await createFor('owner-1');
+    const start = new Date(event.startAt);
+    const end = new Date(event.endAt);
+    expect(await service.findAll('owner-1', { from: new Date(start.getTime() - 3600_000), to: new Date(start.getTime() + 60_000) })).toHaveLength(1);
+    expect(await service.findAll('owner-1', { from: end, to: new Date(end.getTime() + 3600_000) })).toHaveLength(0);
+    expect(await service.findAll('owner-1', { to: start })).toHaveLength(0);
   });
 
   describe('раздел 17 ТЗ: optimistic concurrency', () => {

@@ -34,8 +34,17 @@ export interface AssistantRequest {
   at: number;
 }
 
+// Переход в раздел с уточнением («Просрочено» на «Сегодня» → Задачи с этим
+// фильтром). Раздел сам забирает значение и сбрасывает его.
+export interface SectionIntent {
+  key: SectionKey;
+  value: string;
+}
+
 interface ShellContextValue {
-  open: (key: SectionKey) => void;
+  open: (key: SectionKey, intent?: string) => void;
+  intent: SectionIntent | null;
+  consumeIntent: () => void;
   askAssistant: (text: string) => void;
   assistantRequest: AssistantRequest | null;
   consumeAssistantRequest: () => void;
@@ -43,6 +52,8 @@ interface ShellContextValue {
 
 const ShellContext = createContext<ShellContextValue>({
   open: () => {},
+  intent: null,
+  consumeIntent: () => {},
   askAssistant: () => {},
   assistantRequest: null,
   consumeAssistantRequest: () => {},
@@ -51,6 +62,11 @@ const ShellContext = createContext<ShellContextValue>({
 // Переход в раздел из глубины экрана («Разделы → Поездки» на «Сегодня» и т.п.).
 export function useOpenSection() {
   return useContext(ShellContext).open;
+}
+
+export function useSectionIntent(key: SectionKey) {
+  const { intent, consumeIntent } = useContext(ShellContext);
+  return [intent?.key === key ? intent.value : null, consumeIntent] as const;
 }
 
 export function useAskAssistant() {
@@ -66,6 +82,7 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
   const [current, setCurrent] = useState<SectionKey>('today');
   const [visited, setVisited] = useState<ReadonlySet<SectionKey>>(() => new Set(['today']));
   const [assistantRequest, setAssistantRequest] = useState<AssistantRequest | null>(null);
+  const [intent, setIntent] = useState<SectionIntent | null>(null);
 
   // Последний открытый раздел — между запусками; первый запуск — «Сегодня».
   // Раздел, которого у пользователя нет (сменилась роль), игнорируется.
@@ -83,8 +100,9 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
     // eslint-disable-next-line react-hooks/exhaustive-deps -- только при запуске
   }, []);
 
-  function open(key: SectionKey) {
+  function open(key: SectionKey, value?: string) {
     if (!sections.some((s) => s.key === key)) return;
+    setIntent(value ? { key, value } : null);
     if (key !== current) haptic('light');
     setCurrent(key);
     setVisited((v) => (v.has(key) ? v : new Set(v).add(key)));
@@ -98,6 +116,8 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
 
   const context: ShellContextValue = {
     open,
+    intent,
+    consumeIntent: () => setIntent(null),
     askAssistant,
     assistantRequest,
     consumeAssistantRequest: () => setAssistantRequest(null),
@@ -115,7 +135,7 @@ export function AppShell({ sections, nav }: { sections: AppSection[]; nav: Secti
               </section>
             ))}
         </main>
-        <BottomNav items={nav.map((key) => sections.find((s) => s.key === key)!).filter(Boolean)} current={current} onOpen={open} />
+        <BottomNav items={nav.map((key) => sections.find((s) => s.key === key)!).filter(Boolean)} current={current} onOpen={(key) => open(key)} />
       </div>
     </ShellContext.Provider>
   );
