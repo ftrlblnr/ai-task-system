@@ -16,8 +16,12 @@ export class ApiError extends Error {
 // что и у обычного переоткрытия: auth-context.tsx заново пройдёт либо
 // Telegram initData, либо покажет форму входа, вместо того чтобы экраны
 // тихо показывали "Не удалось загрузить" на каждый запрос.
-function handleUnauthorized() {
-  if (typeof window === 'undefined') return;
+// Только если запрос шёл с токеном: 401 без токена — это ответ самого входа
+// (/auth/telegram: NO_EMPLOYEE_LINKED, неверный пароль), его показывает экран
+// входа. Иначе перезагрузка повторяет тот же вход по кругу — бесконечное
+// мерцание (24.10.2026, после отвязки Telegram в web).
+function handleUnauthorized(token: string | null) {
+  if (typeof window === 'undefined' || !token) return;
   sessionStorage.removeItem('accessToken');
   window.location.reload();
 }
@@ -36,7 +40,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    if (res.status === 401) handleUnauthorized();
+    if (res.status === 401) handleUnauthorized(token);
     throw new ApiError(body.message ?? `Ошибка запроса (${res.status})`, res.status);
   }
 
@@ -63,7 +67,7 @@ async function requestForm<T>(path: string, formData: FormData, headers?: Header
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    if (res.status === 401) handleUnauthorized();
+    if (res.status === 401) handleUnauthorized(token);
     throw new ApiError(body.message ?? `Ошибка запроса (${res.status})`, res.status);
   }
 
@@ -93,7 +97,7 @@ async function requestStream(path: string, body: unknown, signal?: AbortSignal):
 
   if (!res.ok) {
     const respBody = await res.json().catch(() => ({}));
-    if (res.status === 401) handleUnauthorized();
+    if (res.status === 401) handleUnauthorized(token);
     throw new ApiError(respBody.message ?? `Ошибка запроса (${res.status})`, res.status);
   }
 
@@ -113,7 +117,7 @@ async function downloadBlob(path: string, headers?: HeadersInit): Promise<Blob> 
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleUnauthorized();
+    if (res.status === 401) handleUnauthorized(token);
     throw new ApiError(`Ошибка запроса (${res.status})`, res.status);
   }
 
