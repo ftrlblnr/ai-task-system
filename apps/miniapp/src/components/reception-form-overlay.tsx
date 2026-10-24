@@ -16,16 +16,11 @@ import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { ReceptionAttachmentPicker } from './reception-attachments';
+import { REQUEST_TYPE_LABELS } from '@/lib/labels';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026), раздел 8 — подача/
 // редактирование. Порт apps/web/src/app/reception/page.tsx:RequestForm в
 // стилистику оверлея Mini App (тот же приём, что task-create-overlay.tsx).
-const REQUEST_TYPE_LABELS: Record<ReceptionRequestType, string> = {
-  DECISION: 'Решение',
-  APPROVAL: 'Согласование',
-  DISCUSSION: 'Обсуждение',
-  HELP: 'Помощь',
-};
 const EXPECTED_MINUTES_OPTIONS = [5, 10, 15, 30];
 
 export function ReceptionFormOverlay({

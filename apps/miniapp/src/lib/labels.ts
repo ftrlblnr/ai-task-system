@@ -1,7 +1,7 @@
 // Идентично apps/web/src/lib/labels.ts — единый источник истины по смыслу,
 // но пока не вынесено в shared-types, чтобы не тащить это решение молча
 // (см. обсуждение дублирования типов в packages/shared-types).
-import type { TaskPriority, TaskStatus } from '@ai-task-system/shared-types';
+import type { ReceptionRequestStatus, ReceptionRequestType, TaskPriority, TaskStatus } from '@ai-task-system/shared-types';
 
 export const STATUS_LABELS: Record<TaskStatus, string> = {
   DRAFT: 'Черновик',
@@ -32,4 +32,22 @@ export const STATUS_DOT_COLOR: Record<TaskStatus, string> = {
   DONE: 'var(--ok)',
   RETURNED: 'var(--danger)',
   CANCELLED: 'var(--ink-faint)',
+};
+
+// Приёмная: тип вопроса (форма подачи, очередь руководителя) и статус.
+export const REQUEST_TYPE_LABELS: Record<ReceptionRequestType, string> = {
+  DECISION: 'Решение',
+  APPROVAL: 'Согласование',
+  DISCUSSION: 'Обсуждение',
+  HELP: 'Помощь',
+};
+
+export const RECEPTION_STATUS_LABELS: Record<ReceptionRequestStatus, string> = {
+  WAITING: 'Ожидает',
+  CALLED: 'Вызван',
+  COMPLETED: 'Обсуждено',
+  ANSWERED: 'Отвечено',
+  DELEGATED: 'Разберитесь сами',
+  REJECTED: 'Отклонено',
+  WITHDRAWN: 'Отозвано',
 };
