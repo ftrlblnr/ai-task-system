@@ -6,6 +6,7 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { AvatarsProvider } from "@/lib/avatars";
 import { Sidebar } from "@/components/sidebar";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, внедрение по
 // project/implementation.md, шаг 1) — Plus Jakarta Sans не содержал
@@ -29,7 +30,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="ru" className={`${sans.variable} ${mono.variable}`}>
+    // suppressHydrationWarning: data-theme на <html> ставит скрипт до гидрации.
+    <html lang="ru" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>
         <AuthProvider>
           <AvatarsProvider>

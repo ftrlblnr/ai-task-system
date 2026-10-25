@@ -5,6 +5,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { ReceptionService } from '../reception/reception.service';
 import { EventsService } from '../calendar/events.service';
 import { isTaskOverdue } from '../tasks/tasks.service';
+import { DashboardPanelsService } from './dashboard-panels.service';
 
 // «Стол руководителя» (владелец 05.10.2026, ТЗ v1.0) — раздел 13.2:
 // рекомендованный агрегирующий контракт, три независимых раздела (tasks/
@@ -23,7 +24,9 @@ const TIMEZONE = 'Asia/Almaty';
 
 // Без `as const` — Prisma ожидает мутабельный TaskStatus[] в notIn, readonly
 // tuple туда не присваивается (их же TaskWhereInput это требует).
-const ACTIVE_STATUS: Prisma.TaskWhereInput = { status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] } };
+const ACTIVE_STATUS: Prisma.TaskWhereInput = {
+  status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] },
+};
 
 export interface SectionError {
   status: 'error';
@@ -31,8 +34,14 @@ export interface SectionError {
   message: string;
 }
 
-function errorSection(err: unknown, logger: Logger, label: string): SectionError {
-  logger.error(`dashboard overview: ${label} failed: ${err instanceof Error ? err.name : 'unknown'}`);
+function errorSection(
+  err: unknown,
+  logger: Logger,
+  label: string,
+): SectionError {
+  logger.error(
+    `dashboard overview: ${label} failed: ${err instanceof Error ? err.name : 'unknown'}`,
+  );
   return { status: 'error', fetchedAt: null, message: 'Данные недоступны' };
 }
 
@@ -44,23 +53,63 @@ export class DashboardService {
     private readonly prisma: PrismaService,
     private readonly reception: ReceptionService,
     private readonly events: EventsService,
+    private readonly panels: DashboardPanelsService,
   ) {}
 
   async getOverview(user: AuthenticatedUser) {
-    const [tasks, reception, calendar] = await Promise.all([
-      this.getTasksSection().catch((err: unknown) => errorSection(err, this.logger, 'tasks')),
-      this.getReceptionSection().catch((err: unknown) => errorSection(err, this.logger, 'reception')),
-      this.getCalendarSection(user.id).catch((err: unknown) => errorSection(err, this.logger, 'calendar')),
+    const safe = <T>(label: string, run: () => Promise<T>) =>
+      run().catch((err: unknown) => errorSection(err, this.logger, label));
+    // Пульт (ARMS, фаза 6): панели почты, регламентов, навыков, файлов,
+    // расхода и счётчики приложений — тот же контракт status/fetchedAt.
+    const [
+      tasks,
+      reception,
+      calendar,
+      mail,
+      routines,
+      skills,
+      files,
+      usage,
+      apps,
+    ] = await Promise.all([
+      safe('tasks', () => this.getTasksSection()),
+      safe('reception', () => this.getReceptionSection()),
+      safe('calendar', () => this.getCalendarSection(user.id)),
+      safe('mail', () => this.panels.mail(user.id)),
+      safe('routines', () => this.panels.routines(user.id)),
+      safe('skills', () => this.panels.skills(user.id)),
+      safe('files', () => this.panels.files(user.id)),
+      safe('usage', () => this.panels.usage()),
+      safe('apps', () => this.panels.apps(user.id)),
     ]);
-    return { generatedAt: new Date().toISOString(), timezone: TIMEZONE, tasks, reception, calendar };
+    return {
+      generatedAt: new Date().toISOString(),
+      timezone: TIMEZONE,
+      tasks,
+      reception,
+      calendar,
+      mail,
+      routines,
+      skills,
+      files,
+      usage,
+      apps,
+    };
   }
 
   private async getTasksSection() {
-    const activeWhere: Prisma.TaskWhereInput = { parentTaskId: null, ...ACTIVE_STATUS };
+    const activeWhere: Prisma.TaskWhereInput = {
+      parentTaskId: null,
+      ...ACTIVE_STATUS,
+    };
     const [active, overdue, inReview, candidates] = await Promise.all([
       this.prisma.task.count({ where: activeWhere }),
-      this.prisma.task.count({ where: { ...activeWhere, dueDate: { lt: new Date() } } }),
-      this.prisma.task.count({ where: { parentTaskId: null, status: TaskStatus.IN_REVIEW } }),
+      this.prisma.task.count({
+        where: { ...activeWhere, dueDate: { lt: new Date() } },
+      }),
+      this.prisma.task.count({
+        where: { parentTaskId: null, status: TaskStatus.IN_REVIEW },
+      }),
       this.prisma.task.findMany({
         where: activeWhere,
         select: {
@@ -109,7 +158,11 @@ export class DashboardService {
   }
 
   private async getReceptionSection() {
-    const view = await this.reception.getQueueView({}, RECEPTION_PREVIEW_LIMIT, 0);
+    const view = await this.reception.getQueueView(
+      {},
+      RECEPTION_PREVIEW_LIMIT,
+      0,
+    );
     return {
       status: 'ok' as const,
       fetchedAt: new Date().toISOString(),
@@ -120,7 +173,14 @@ export class DashboardService {
   }
 
   private async getCalendarSection(employeeId: string) {
-    const items = await this.events.findUpcoming(employeeId, CALENDAR_PREVIEW_LIMIT);
-    return { status: 'ok' as const, fetchedAt: new Date().toISOString(), items };
+    const items = await this.events.findUpcoming(
+      employeeId,
+      CALENDAR_PREVIEW_LIMIT,
+    );
+    return {
+      status: 'ok' as const,
+      fetchedAt: new Date().toISOString(),
+      items,
+    };
   }
 }

@@ -125,7 +125,8 @@ function SkillsPage() {
   const [skills, setSkills] = useState<SkillListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<'ACTIVE' | 'ARCHIVED'>('ACTIVE');
-  const [creating, setCreating] = useState(false);
+  // ?new=1 — «+ навык» с пульта: сразу открыть форму.
+  const [creating, setCreating] = useState(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('new') === '1');
   const router = useRouter();
 
   const load = useCallback(() => {

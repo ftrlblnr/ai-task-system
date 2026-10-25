@@ -1,7 +1,18 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DashboardCalendarSection, DashboardOverview, DashboardReceptionSection, DashboardTasksSection } from '@ai-task-system/shared-types';
+import type {
+  DashboardAppsSection,
+  DashboardCalendarSection,
+  DashboardFilesSection,
+  DashboardMailSection,
+  DashboardOverview,
+  DashboardReceptionSection,
+  DashboardRoutinesSection,
+  DashboardSkillsSection,
+  DashboardTasksSection,
+  DashboardUsageSection,
+} from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 
 // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 14) — state machine
@@ -14,7 +25,20 @@ const AUTO_REFRESH_MS = 60_000;
 const FETCH_TIMEOUT_MS = 15_000;
 export const STALE_AFTER_MS = 120_000;
 
-interface SectionState<T> {
+// Панели пульта (ARMS, фаза 6) — тот же принцип: своя ошибка, данные
+// последнего успешного ответа не теряются.
+export interface PanelSections {
+  mail: DashboardMailSection;
+  routines: DashboardRoutinesSection;
+  skills: DashboardSkillsSection;
+  files: DashboardFilesSection;
+  usage: DashboardUsageSection;
+  apps: DashboardAppsSection;
+}
+const PANEL_KEYS = ['mail', 'routines', 'skills', 'files', 'usage', 'apps'] as const;
+type PanelStates = { [K in keyof PanelSections]: SectionState<PanelSections[K]> };
+
+export interface SectionState<T> {
   data: T | null;
   fetchedAt: string | null;
   error: string | null;
@@ -28,6 +52,14 @@ export function useDashboardOverview() {
   const [tasks, setTasks] = useState<SectionState<DashboardTasksSection>>(initialSection);
   const [reception, setReception] = useState<SectionState<DashboardReceptionSection>>(initialSection);
   const [calendar, setCalendar] = useState<SectionState<DashboardCalendarSection>>(initialSection);
+  const [panels, setPanels] = useState<PanelStates>(() => ({
+    mail: initialSection(),
+    routines: initialSection(),
+    skills: initialSection(),
+    files: initialSection(),
+    usage: initialSection(),
+    apps: initialSection(),
+  }));
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   // Комбинированная метка «Обновлено» — только когда ВСЕ ТРИ раздела
@@ -66,6 +98,15 @@ export function useDashboardOverview() {
         if (calendarSection.status === 'ok') setCalendar({ data: calendarSection, fetchedAt: calendarSection.fetchedAt, error: null });
         else setCalendar((prev) => ({ ...prev, error: calendarSection.message }));
 
+        setPanels((prev) => {
+          const next = { ...prev } as Record<keyof PanelSections, SectionState<unknown>>;
+          for (const key of PANEL_KEYS) {
+            const section = res[key];
+            next[key] = section.status === 'ok' ? { data: section, fetchedAt: section.fetchedAt, error: null } : { ...prev[key], error: section.message };
+          }
+          return next as PanelStates;
+        });
+
         setAllFreshAt(
           tasksSection.status === 'ok' && receptionSection.status === 'ok' && calendarSection.status === 'ok' ? res.generatedAt : null,
         );
@@ -78,6 +119,11 @@ export function useDashboardOverview() {
         setTasks((prev) => ({ ...prev, error: message }));
         setReception((prev) => ({ ...prev, error: message }));
         setCalendar((prev) => ({ ...prev, error: message }));
+        setPanels((prev) => {
+          const next = { ...prev } as Record<keyof PanelSections, SectionState<unknown>>;
+          for (const key of PANEL_KEYS) next[key] = { ...prev[key], error: message };
+          return next as PanelStates;
+        });
         setAllFreshAt(null);
       })
       .finally(() => {
@@ -115,7 +161,7 @@ export function useDashboardOverview() {
     };
   }, [fetchOverview]);
 
-  return { tasks, reception, calendar, loading, refreshing, allFreshAt, refresh: fetchOverview };
+  return { tasks, reception, calendar, panels, loading, refreshing, allFreshAt, refresh: fetchOverview };
 }
 
 export function isStale(fetchedAt: string | null): boolean {

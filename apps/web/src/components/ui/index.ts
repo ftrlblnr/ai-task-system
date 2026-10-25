@@ -21,3 +21,4 @@ export * from './agent-message';
 export * from './user-message';
 export * from './live-voice-bar';
 export * from './agent-suggestion';
+export * from './panel';

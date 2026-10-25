@@ -24,10 +24,16 @@ class FakePrisma {
 
   private filter(where: any): TaskRow[] {
     return this.tasks.filter((t) => {
-      if (where.parentTaskId !== undefined && t.parentTaskId !== where.parentTaskId) return false;
+      if (
+        where.parentTaskId !== undefined &&
+        t.parentTaskId !== where.parentTaskId
+      )
+        return false;
       if (where.status) {
-        if (where.status.notIn && where.status.notIn.includes(t.status)) return false;
-        if (typeof where.status === 'string' && t.status !== where.status) return false;
+        if (where.status.notIn && where.status.notIn.includes(t.status))
+          return false;
+        if (typeof where.status === 'string' && t.status !== where.status)
+          return false;
       }
       if (where.dueDate?.lt) {
         if (!t.dueDate || !(t.dueDate < where.dueDate.lt)) return false;
@@ -48,8 +54,27 @@ function task(partial: Partial<TaskRow> & { id: string }): TaskRow {
   };
 }
 
-function buildService(prisma: FakePrisma, reception: any = { getQueueView: jest.fn() }, events: any = { findUpcoming: jest.fn() }) {
-  return new DashboardService(prisma as any, reception, events);
+function okPanels(overrides: Record<string, () => Promise<unknown>> = {}) {
+  const ok = () =>
+    Promise.resolve({ status: 'ok', fetchedAt: new Date().toISOString() });
+  return {
+    mail: ok,
+    routines: ok,
+    skills: ok,
+    files: ok,
+    usage: ok,
+    apps: ok,
+    ...overrides,
+  };
+}
+
+function buildService(
+  prisma: FakePrisma,
+  reception: any = { getQueueView: jest.fn() },
+  events: any = { findUpcoming: jest.fn() },
+  panels: any = okPanels(),
+) {
+  return new DashboardService(prisma as any, reception, events, panels);
 }
 
 describe('DashboardService.getOverview («Стол руководителя», владелец 05.10.2026)', () => {
@@ -66,13 +91,23 @@ describe('DashboardService.getOverview («Стол руководителя», �
       task({ id: 't4', status: TaskStatus.DONE, dueDate: past }), // не active (DONE исключён, даже если dueDate в прошлом)
       task({ id: 't5', status: TaskStatus.CANCELLED }), // не active
     ];
-    const reception = { getQueueView: jest.fn().mockResolvedValue({ current: null, items: [], totalCount: 0, totalWaiting: 0 }) };
+    const reception = {
+      getQueueView: jest.fn().mockResolvedValue({
+        current: null,
+        items: [],
+        totalCount: 0,
+        totalWaiting: 0,
+      }),
+    };
     const events = { findUpcoming: jest.fn().mockResolvedValue([]) };
     const service = buildService(prisma, reception, events);
 
     const result = await service.getOverview(user);
 
-    expect(result.tasks).toMatchObject({ status: 'ok', counts: { active: 3, overdue: 1, inReview: 1 } });
+    expect(result.tasks).toMatchObject({
+      status: 'ok',
+      counts: { active: 3, overdue: 1, inReview: 1 },
+    });
   });
 
   it('сортирует «В центре внимания»: просроченные → IN_REVIEW → по сроку → по id, топ-5', async () => {
@@ -89,7 +124,14 @@ describe('DashboardService.getOverview («Стол руководителя», �
       task({ id: 'overdue', status: TaskStatus.IN_PROGRESS, dueDate: past }),
       task({ id: 'z-no-due', status: TaskStatus.NEW, dueDate: null }),
     ];
-    const reception = { getQueueView: jest.fn().mockResolvedValue({ current: null, items: [], totalCount: 0, totalWaiting: 0 }) };
+    const reception = {
+      getQueueView: jest.fn().mockResolvedValue({
+        current: null,
+        items: [],
+        totalCount: 0,
+        totalWaiting: 0,
+      }),
+    };
     const events = { findUpcoming: jest.fn().mockResolvedValue([]) };
     const service = buildService(prisma, reception, events);
 
@@ -100,22 +142,43 @@ describe('DashboardService.getOverview («Стол руководителя», �
     // overdue первой; затем in-review; затем по сроку возрастание (due-soon
     // раньше due-later); без срока — в конец группы, тай-брейк по id
     // (a-no-due < b-no-due), и ровно 5 из 7 кандидатов (топ-5, не все).
-    expect(ids).toEqual(['overdue', 'in-review', 'due-soon', 'due-later', 'a-no-due']);
+    expect(ids).toEqual([
+      'overdue',
+      'in-review',
+      'due-soon',
+      'due-later',
+      'a-no-due',
+    ]);
     expect(ids).toHaveLength(5);
   });
 
   it('один упавший источник не ломает остальные — reception падает, tasks/calendar остаются ok', async () => {
     const prisma = new FakePrisma();
     prisma.tasks = [task({ id: 't1', status: TaskStatus.NEW })];
-    const reception = { getQueueView: jest.fn().mockRejectedValue(new Error('db unreachable')) };
-    const events = { findUpcoming: jest.fn().mockResolvedValue([{ id: 'e1', title: 'Встреча', startAt: new Date(), endAt: new Date(), allDay: false }]) };
+    const reception = {
+      getQueueView: jest.fn().mockRejectedValue(new Error('db unreachable')),
+    };
+    const events = {
+      findUpcoming: jest.fn().mockResolvedValue([
+        {
+          id: 'e1',
+          title: 'Встреча',
+          startAt: new Date(),
+          endAt: new Date(),
+          allDay: false,
+        },
+      ]),
+    };
     const service = buildService(prisma, reception, events);
 
     const result = await service.getOverview(user);
 
     expect(result.tasks.status).toBe('ok');
     expect(result.calendar.status).toBe('ok');
-    expect(result.reception).toMatchObject({ status: 'error', fetchedAt: null });
+    expect(result.reception).toMatchObject({
+      status: 'error',
+      fetchedAt: null,
+    });
     // Безопасное сообщение, не текст исключения наружу (раздел 15 ТЗ).
     expect((result.reception as any).message).not.toMatch(/db unreachable/);
   });
@@ -124,26 +187,78 @@ describe('DashboardService.getOverview («Стол руководителя», �
     const prisma = new FakePrisma();
     const current = { id: 'r1', notificationStatus: 'SENT' };
     const reception = {
-      getQueueView: jest.fn().mockResolvedValue({ current, items: [{ id: 'r2' }, { id: 'r3' }], totalCount: 2, totalWaiting: 2 }),
+      getQueueView: jest.fn().mockResolvedValue({
+        current,
+        items: [{ id: 'r2' }, { id: 'r3' }],
+        totalCount: 2,
+        totalWaiting: 2,
+      }),
     };
     const events = { findUpcoming: jest.fn().mockResolvedValue([]) };
     const service = buildService(prisma, reception, events);
 
     const result = await service.getOverview(user);
 
-    expect(result.reception).toMatchObject({ status: 'ok', waitingCount: 2, current });
+    expect(result.reception).toMatchObject({
+      status: 'ok',
+      waitingCount: 2,
+      current,
+    });
     expect((result.reception as any).items).toHaveLength(2);
     expect(reception.getQueueView).toHaveBeenCalledWith({}, 3, 0);
   });
 
   it('calendar вызывает findUpcoming с лимитом 3 для текущего пользователя', async () => {
     const prisma = new FakePrisma();
-    const reception = { getQueueView: jest.fn().mockResolvedValue({ current: null, items: [], totalCount: 0, totalWaiting: 0 }) };
+    const reception = {
+      getQueueView: jest.fn().mockResolvedValue({
+        current: null,
+        items: [],
+        totalCount: 0,
+        totalWaiting: 0,
+      }),
+    };
     const events = { findUpcoming: jest.fn().mockResolvedValue([]) };
     const service = buildService(prisma, reception, events);
 
     await service.getOverview(user);
 
     expect(events.findUpcoming).toHaveBeenCalledWith('owner-1', 3);
+  });
+
+  it('пульт: упавшая панель (почта) — error, остальные панели и задачи — ok', async () => {
+    const prisma = new FakePrisma();
+    const reception = {
+      getQueueView: jest.fn().mockResolvedValue({
+        current: null,
+        items: [],
+        totalCount: 0,
+        totalWaiting: 0,
+      }),
+    };
+    const events = { findUpcoming: jest.fn().mockResolvedValue([]) };
+    const service = buildService(
+      prisma,
+      reception,
+      events,
+      okPanels({ mail: () => Promise.reject(new Error('imap')) }),
+    );
+
+    const result = await service.getOverview(user);
+
+    expect(result.mail).toMatchObject({
+      status: 'error',
+      fetchedAt: null,
+      message: 'Данные недоступны',
+    });
+    for (const key of [
+      'tasks',
+      'routines',
+      'skills',
+      'files',
+      'usage',
+      'apps',
+    ] as const)
+      expect(result[key].status).toBe('ok');
   });
 });

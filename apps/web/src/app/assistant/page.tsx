@@ -459,8 +459,20 @@ function AssistantView() {
       .then((list) => {
         setConversations(list);
         setConversationsError(null);
+        // ?q=<текст> — строка «Спросить агента» на пульте: новый разговор с
+        // подставленным текстом, отправляет сам человек (Enter).
+        const params = new URLSearchParams(window.location.search);
+        const question = params.get('q')?.trim();
+        if (question) {
+          window.history.replaceState(null, '', '/assistant');
+          void createConversation().then(() => {
+            setText(question);
+            textareaRef.current?.focus();
+          });
+          return;
+        }
         // ?c=<id> — ссылка «открыть ответ» навыка (запуск ▶ создаёт разговор).
-        const wanted = new URLSearchParams(window.location.search).get('c');
+        const wanted = params.get('c');
         const targetId = (wanted && list.some((c) => c.id === wanted) ? wanted : list[0]?.id) ?? null;
         if (targetId) {
           setConversationId(targetId);

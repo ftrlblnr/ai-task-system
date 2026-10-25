@@ -1063,6 +1063,130 @@ export interface DashboardOverview {
   tasks: DashboardTasksSection | DashboardSectionError;
   reception: DashboardReceptionSection | DashboardSectionError;
   calendar: DashboardCalendarSection | DashboardSectionError;
+  // Пульт (ARMS, фаза 6) — панели без вызова модели.
+  mail: DashboardMailSection | DashboardSectionError;
+  routines: DashboardRoutinesSection | DashboardSectionError;
+  skills: DashboardSkillsSection | DashboardSectionError;
+  files: DashboardFilesSection | DashboardSectionError;
+  usage: DashboardUsageSection | DashboardSectionError;
+  apps: DashboardAppsSection | DashboardSectionError;
+}
+
+export type EmailCategory =
+  | 'ACTION_REQUIRED'
+  | 'DECISION_REQUIRED'
+  | 'INFORMATION'
+  | 'DOCUMENT'
+  | 'COMMERCIAL'
+  | 'LEGAL'
+  | 'FINANCE'
+  | 'PROJECT'
+  | 'MEETING'
+  | 'NEWSLETTER'
+  | 'OTHER';
+
+export const EMAIL_CATEGORY_LABELS: Record<EmailCategory, string> = {
+  ACTION_REQUIRED: 'Нужно действие',
+  DECISION_REQUIRED: 'Нужно решение',
+  INFORMATION: 'Информация',
+  DOCUMENT: 'Документы',
+  COMMERCIAL: 'Коммерция',
+  LEGAL: 'Юридическое',
+  FINANCE: 'Финансы',
+  PROJECT: 'Проекты',
+  MEETING: 'Встречи',
+  NEWSLETTER: 'Рассылки',
+  OTHER: 'Прочее',
+};
+
+interface DashboardSectionOk {
+  status: 'ok';
+  fetchedAt: string;
+}
+
+export interface DashboardMailItem {
+  id: string;
+  subject: string | null;
+  from: string;
+  receivedAt: string | null;
+  importance: EmailImportance | null;
+  needsReply: boolean;
+  summary: string | null;
+}
+
+export interface DashboardMailSection extends DashboardSectionOk {
+  connected: boolean;
+  received24h: number;
+  needsYou: DashboardMailItem[];
+  mix: { category: EmailCategory; count: number }[];
+  lastSyncedAt: string | null;
+}
+
+// status: статус сегодняшнего прогона (RoutineRunStatus) или NEXT — ближайший запуск.
+export interface DashboardRoutineItem {
+  id: string;
+  routineId: string;
+  title: string;
+  at: string;
+  status: RoutineRunStatus | 'NEXT';
+  conversationId: string | null;
+}
+
+export interface DashboardRoutinesSection extends DashboardSectionOk {
+  activeCount: number;
+  items: DashboardRoutineItem[];
+}
+
+export interface DashboardSkillItem {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  kind: SkillKind;
+  model: SkillModel;
+  effort: SkillEffort;
+  runs30d: number;
+}
+
+export interface DashboardSkillsSection extends DashboardSectionOk {
+  total: number;
+  items: DashboardSkillItem[];
+  // Все включённые — для подсказок по «/» в строке «Спросить агента».
+  all: { id: string; slug: string; title: string }[];
+}
+
+export interface DashboardFileItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  createdAt: string;
+  conversationId: string | null;
+}
+
+export interface DashboardFilesSection extends DashboardSectionOk {
+  total: number;
+  items: DashboardFileItem[];
+}
+
+export interface DashboardUsageTotals {
+  calls: number;
+  tokens: number;
+  costUsd: number;
+  cacheShare: number | null;
+}
+
+export interface DashboardUsageSection extends DashboardSectionOk {
+  today: DashboardUsageTotals;
+  week: DashboardUsageTotals;
+  daily: { date: string; costUsd: number; calls: number }[];
+}
+
+export interface DashboardAppsSection extends DashboardSectionOk {
+  meetings7d: number;
+  trips: number;
+  memoryPending: number;
+  recommendations: number;
 }
 
 
