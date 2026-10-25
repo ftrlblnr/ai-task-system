@@ -106,6 +106,7 @@ model Employee {
   memoryItems                MemoryItem[]
   skills                     Skill[]
   skillRuns                  SkillRun[]
+  routines                   Routine[]
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
   meetingSegmentsSpoken      MeetingSegment[]
@@ -2820,6 +2821,7 @@ model Skill {
 
   revisions SkillRevision[]
   runs      SkillRun[]
+  routines  Routine[]
 
   @@unique([ownerId, slug])
 }
@@ -2873,5 +2875,100 @@ model SkillRun {
   finishedAt      DateTime?
 
   @@index([skillId, createdAt])
+  @@index([status, lockedAt])
+}
+
+// ARMS, фаза 4 — регламенты: навык или своя инструкция по расписанию.
+// ACTIVE присылает итог всегда, PASSIVE — только если агент вызвал
+// notify_owner (нашёл важное), иначе прогон SILENT и никому ничего.
+enum RoutineMode {
+  ACTIVE
+  PASSIVE
+}
+
+// FEED — разговор в ассистенте; TELEGRAM — сообщение боту; BOTH — оба.
+enum RoutineChannel {
+  FEED
+  TELEGRAM
+  BOTH
+}
+
+// DRAFT — предложен ассистентом в чате (propose_routine), ждёт включения.
+enum RoutineState {
+  DRAFT
+  ACTIVE
+  PAUSED
+}
+
+enum RoutineRunTrigger {
+  SCHEDULE
+  BUTTON
+}
+
+enum RoutineRunStatus {
+  QUEUED
+  RUNNING
+  DONE
+  SILENT
+  SKIPPED_CAP
+  FAILED
+}
+
+model Routine {
+  id             String         @id @default(cuid())
+  ownerId        String
+  owner          Employee       @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title          String
+  // Либо навык, либо своя инструкция (prompt). Навык удалён — регламент
+  // не запускается, пока не выберут другой.
+  skillId        String?
+  skill          Skill?         @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  prompt         String?
+  // cron из 5 полей в местном времени (Алматы, UTC+5); null — только по кнопке.
+  schedule       String?
+  mode           RoutineMode
+  channel        RoutineChannel
+  // Лимит токенов (вход + выход) за 7 дней; null — без лимита.
+  weeklyTokenCap Int?
+  state          RoutineState   @default(ACTIVE)
+  // Идемпотентность черновика из чата: chat:<msgId>:<idx>.
+  sourceKey      String?        @unique
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+  // Когда последний раз сообщили «упёрся в лимит» — не чаще раза в неделю.
+  capNotifiedAt  DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  runs RoutineRun[]
+
+  @@index([state, nextRunAt])
+  @@index([ownerId])
+}
+
+// Прогон регламента — фоновая задача (claim SKIP LOCKED). slot — плановое
+// время запуска: unique(routineId, slot) не даёт выполнить слот дважды.
+model RoutineRun {
+  id             String            @id @default(cuid())
+  routineId      String
+  routine        Routine           @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  trigger        RoutineRunTrigger
+  status         RoutineRunStatus  @default(QUEUED)
+  slot           DateTime?
+  idempotencyKey String?           @unique
+  tokensIn       Int               @default(0)
+  tokensOut      Int               @default(0)
+  costUsd        Float?
+  summary        String?
+  conversationId String?
+  error          String?
+  lockedAt       DateTime?
+  attempts       Int               @default(0)
+  createdAt      DateTime          @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  @@unique([routineId, slot])
+  @@index([routineId, createdAt])
   @@index([status, lockedAt])
 }

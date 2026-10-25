@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale, Gauge, Brain, Sparkles } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale, Gauge, Brain, Sparkles, Repeat } from 'lucide-react';
 import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -71,6 +71,7 @@ const NAV_ITEMS = [
   { href: '/memory', label: 'Память', icon: Brain, ownerOnly: true },
   // ARMS, фаза 3 — навыки ассистента: «/команда» в чате или ▶.
   { href: '/skills', label: 'Навыки', icon: Sparkles, ownerOnly: true },
+  { href: '/routines', label: 'Регламенты', icon: Repeat, ownerOnly: true },
   // ARMS, фаза 2 — сколько стоят функции ИИ и где не работает кэш.
   { href: '/ai-usage', label: 'Расход ИИ', icon: Gauge, ownerOnly: true },
 ];

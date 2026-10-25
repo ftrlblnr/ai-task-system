@@ -1818,3 +1818,86 @@ export type CreateSkillInput = Pick<SkillView, 'slug' | 'title' | 'description' 
   Partial<Pick<SkillView, 'allowedTools' | 'output'>>;
 export type UpdateSkillInput = Partial<Omit<SkillView, 'id' | 'slug' | 'version' | 'shared' | 'own' | 'updatedAt'>>;
 
+
+// ARMS, фаза 4 — регламенты: навык или своя инструкция по расписанию.
+export type RoutineMode = 'ACTIVE' | 'PASSIVE';
+export type RoutineChannel = 'FEED' | 'TELEGRAM' | 'BOTH';
+export type RoutineState = 'DRAFT' | 'ACTIVE' | 'PAUSED';
+export type RoutineRunStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'SILENT' | 'SKIPPED_CAP' | 'FAILED';
+
+export const ROUTINE_MODE_LABELS: Record<RoutineMode, string> = { ACTIVE: 'Всегда присылать', PASSIVE: 'Только важное' };
+export const ROUTINE_CHANNEL_LABELS: Record<RoutineChannel, string> = { FEED: 'Ассистент', TELEGRAM: 'Telegram', BOTH: 'Ассистент и Telegram' };
+export const ROUTINE_RUN_STATUS_LABELS: Record<RoutineRunStatus, string> = {
+  QUEUED: 'В очереди',
+  RUNNING: 'Выполняется',
+  DONE: 'Отправлено',
+  SILENT: 'Ничего важного',
+  SKIPPED_CAP: 'Лимит',
+  FAILED: 'Ошибка',
+};
+// 1 = понедельник … 7 = воскресенье.
+export const WEEKDAY_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'] as const;
+
+export interface RoutineRunView {
+  id: string;
+  trigger: 'SCHEDULE' | 'BUTTON';
+  status: RoutineRunStatus;
+  slot: string | null;
+  tokens: number;
+  costUsd: number | null;
+  summary: string | null;
+  conversationId: string | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface RoutineView {
+  id: string;
+  title: string;
+  skill: { id: string; slug: string; title: string } | null;
+  prompt: string | null;
+  schedule: string | null;
+  // Простой вид расписания (дни 1..7 + «ЧЧ:ММ»); null — по кнопке или сложный cron.
+  days: number[] | null;
+  time: string | null;
+  mode: RoutineMode;
+  channel: RoutineChannel;
+  weeklyTokenCap: number | null;
+  state: RoutineState;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  createdAt: string;
+  // За 7 дней.
+  week: { runs: number; tokens: number; costUsd: number };
+  lastRun: RoutineRunView | null;
+}
+
+export interface SystemCronView {
+  title: string;
+  schedule: string;
+}
+
+export interface RoutinesOverview {
+  routines: RoutineView[];
+  systemCrons: SystemCronView[];
+}
+
+export interface RoutineInput {
+  title: string;
+  skillId?: string | null;
+  prompt?: string | null;
+  // Пустой список дней — только по кнопке.
+  days: number[];
+  time: string;
+  mode: RoutineMode;
+  channel: RoutineChannel;
+  weeklyTokenCap?: number | null;
+}
+
+export interface RoutineRunState {
+  id: string;
+  status: RoutineRunStatus;
+  conversationId: string | null;
+  error: string | null;
+}

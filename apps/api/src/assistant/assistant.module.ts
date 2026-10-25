@@ -9,6 +9,7 @@ import { LegalModule } from '../legal/legal.module';
 import { MemoryModule } from '../memory/memory.module';
 import { SkillsModule } from '../skills/skills.module';
 import { TelegramModule } from '../telegram/telegram.module';
+import { RoutinesModule } from '../routines/routines.module';
 import { AssistantChatController } from './assistant-chat.controller';
 import { AssistantChatService } from './assistant-chat.service';
 import { AssistantReplyService } from './assistant-reply.service';
@@ -16,6 +17,7 @@ import { AssistantToolsService } from './assistant-tools.service';
 import { LegalReviewNotifier } from './legal-review-notifier.service';
 import { ConversationCompactionService } from './conversation-compaction.service';
 import { SkillRunExecutionService } from './skill-run-execution.service';
+import { RoutineRunExecutionService } from './routine-run-execution.service';
 
 @Module({
   // TasksModule/CalendarModule — AssistantToolsService читает через
@@ -35,10 +37,11 @@ import { SkillRunExecutionService } from './skill-run-execution.service';
   // LegalModule — инструмент legal_ask (агент-юрист). MemoryModule — память
   // ассистента (ARMS, фаза 1): инструменты remember/recall/forget и индекс.
   // SkillsModule (ARMS, фаза 3) — «/slug» в чате, тон писем; TelegramModule —
-  // результат запуска навыка кнопкой уходит и в Telegram.
-  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule, SkillsModule, TelegramModule],
+  // результат запуска навыка кнопкой уходит и в Telegram. RoutinesModule
+  // (ARMS, фаза 4) — propose_routine и прогон регламентов.
+  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule, SkillsModule, TelegramModule, RoutinesModule],
   controllers: [AssistantChatController],
-  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService],
+  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService, RoutineRunExecutionService],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.

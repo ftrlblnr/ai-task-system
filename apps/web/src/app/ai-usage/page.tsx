@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { AiUsageGroupBy, AiUsageRow, AiUsageSummary } from '@ai-task-system/shared-types';
+import type { AiUsageGroupBy, AiUsageRow, AiUsageSummary, RoutinesOverview } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api } from '@/lib/api';
 import { Protected } from '@/components/protected';
@@ -45,8 +45,13 @@ const MODEL_LABELS: Record<string, string> = {
 const CACHE_WARN_MIN_INPUT_PER_CALL = 2000;
 const CACHE_WARN_SHARE = 0.1;
 
-function label(groupBy: AiUsageGroupBy, key: string): string {
+// routineNames — названия регламентов по id (ARMS 4: routine.run:<id>).
+function label(groupBy: AiUsageGroupBy, key: string, routineNames: Record<string, string> = {}): string {
   if (groupBy === 'model') return MODEL_LABELS[key] ?? key;
+  if (key.startsWith('routine.run:')) {
+    const name = routineNames[key.slice('routine.run:'.length)];
+    return name ? `Регламент «${name}»` : 'Регламент (удалён)';
+  }
   // Навыки (ARMS 3): skill.run:<slug> — запуск, skill.train:<slug> — правка инструкции.
   if (key.startsWith('skill.run:')) return `Навык /${key.slice('skill.run:'.length)}`;
   if (key.startsWith('skill.train:')) return `Навык /${key.slice('skill.train:'.length)} — обучение`;
@@ -104,13 +109,13 @@ function Stat({ label: title, value, hint }: { label: string; value: string | nu
   );
 }
 
-function UsageRow({ row, groupBy, sort, max }: { row: AiUsageRow; groupBy: AiUsageGroupBy; sort: SortKey; max: number }) {
+function UsageRow({ row, groupBy, sort, max, routineNames }: { row: AiUsageRow; groupBy: AiUsageGroupBy; sort: SortKey; max: number; routineNames: Record<string, string> }) {
   const value = sortValue(row, sort);
   const priced = row.calls - row.unpricedCalls;
   return (
     <li className="usage-row">
       <div className="usage-row-head">
-        <strong>{label(groupBy, row.key)}</strong>
+        <strong>{label(groupBy, row.key, routineNames)}</strong>
         {cacheIdle(row) && <Badge tone="warn">кэш не работает</Badge>}
         {row.errors > 0 && <Badge tone="danger">ошибок: {row.errors}</Badge>}
         <span className="usage-row-cost ds-num">{priced > 0 ? usd(row.costUsd) : 'без оценки'}</span>
@@ -142,6 +147,14 @@ function AiUsagePage() {
   const [sort, setSort] = useState<SortKey>('cost');
   const [data, setData] = useState<AiUsageSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [routineNames, setRoutineNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    api
+      .get<RoutinesOverview>('/routines')
+      .then((o) => setRoutineNames(Object.fromEntries(o.routines.map((r) => [r.id, r.title]))))
+      .catch(() => setRoutineNames({}));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -242,7 +255,7 @@ function AiUsagePage() {
         {rows.length > 0 && (
           <ul className="usage-list">
             {rows.map((r) => (
-              <UsageRow key={r.key} row={r} groupBy={groupBy} sort={sort} max={max} />
+              <UsageRow key={r.key} row={r} groupBy={groupBy} sort={sort} max={max} routineNames={routineNames} />
             ))}
           </ul>
         )}
@@ -256,7 +269,7 @@ function AiUsagePage() {
           <ul className="usage-idle">
             {shown.idle.map((f) => (
               <li key={f.key}>
-                <span>{label('feature', f.key)}</span>
+                <span>{label('feature', f.key, routineNames)}</span>
                 <span className="ds-field-hint">{daysAgo(f.lastCallAt)}</span>
               </li>
             ))}

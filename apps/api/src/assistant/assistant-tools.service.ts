@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, MemoryKind, Prisma, TaskFromMeetingStatus, type MemoryItem } from '@prisma/client';
+import { EventStatus, MemoryKind, Prisma, RoutineChannel, RoutineMode, TaskFromMeetingStatus, type MemoryItem } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -25,6 +25,7 @@ import { legalAllowedForRole } from '../legal/legal-access';
 import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toReviewView } from '../legal/legal-review.service';
 import { MemoryService } from '../memory/memory.service';
 import { MEMORY_TEXT_MAX } from '../memory/memory-index';
+import { RoutinesService } from '../routines/routines.service';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -129,7 +130,8 @@ type KnownToolName =
   | 'draft_mail_reply'
   | 'remember'
   | 'recall_memory'
-  | 'forget_memory';
+  | 'forget_memory'
+  | 'propose_routine';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -150,6 +152,7 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'remember') return 'remember';
   if (name === 'recall_memory') return 'recall_memory';
   if (name === 'forget_memory') return 'forget_memory';
+  if (name === 'propose_routine') return 'propose_routine';
   return 'get_tasks';
 }
 
@@ -166,7 +169,8 @@ function resolveToolName(name: string): KnownToolName {
 // тоже строится из writeToolCallIndex.
 // Память (ARMS, фаза 1): remember создаёт пункт — ключ идемпотентности из
 // writeToolCallIndex; forget_memory меняет данные — порядок важен.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory']);
+// Регламенты (ARMS, фаза 4): propose_routine создаёт черновик — ключ из writeToolCallIndex.
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory', 'propose_routine']);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -198,6 +202,7 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   remember: 'MEMORY_SAVE_FAILED: не удалось сохранить в память',
   recall_memory: 'MEMORY_LOOKUP_FAILED: не удалось проверить память',
   forget_memory: 'MEMORY_FORGET_FAILED: не удалось убрать пункт из памяти',
+  propose_routine: 'ROUTINE_PROPOSE_FAILED: не удалось подготовить регламент',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -290,6 +295,7 @@ export type ToolExecutionResult =
   | { tool: 'remember'; item: MemoryToolItem; duplicate: boolean; replaced: MemoryToolItem | null; similar: MemoryToolItem[] }
   | { tool: 'recall_memory'; items: (MemoryToolItem & { details: string | null })[]; totalCount: number }
   | { tool: 'forget_memory'; item: MemoryToolItem }
+  | { tool: 'propose_routine'; routine: { id: string; title: string; schedule: string | null; mode: RoutineMode; channel: RoutineChannel } }
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -329,6 +335,13 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
         : 'Сохранено в память. Коротко подтверди одной фразой.';
     return { ...result, note };
   }
+  if (result.tool === 'propose_routine') {
+    return {
+      ...result,
+      enabled: false,
+      note: 'Это черновик: регламент ещё не работает. Руководитель проверит и включит его на странице «Регламенты». Коротко скажи, что подготовил (что, когда, куда присылать), и куда зайти, чтобы включить.',
+    };
+  }
   return result;
 }
 
@@ -366,6 +379,8 @@ export class AssistantToolsService {
     @Optional() private readonly mailCompose?: MailComposeService,
     // Память (ARMS, фаза 1) — без неё (юнит-тесты) инструменты памяти не предлагаются.
     @Optional() private readonly memory?: MemoryService,
+    // Регламенты (ARMS, фаза 4) — без них propose_routine не предлагается.
+    @Optional() private readonly routines?: RoutinesService,
   ) {}
 
   // Память — сначала руководству (план ARMS: всё новое — OWNER/ADMIN).
@@ -674,6 +689,26 @@ export class AssistantToolsService {
       );
     }
 
+    if (this.routines && isManager(user.role)) {
+      tools.push({
+        name: 'propose_routine',
+        description:
+          'Подготовить черновик регламента — поручения, которое ассистент будет сам выполнять по расписанию («каждый понедельник в 9:00 присылай…», «каждый день проверяй…»). Вызывай, когда пользователь просит что-то делать регулярно. Ничего не включается сразу: пользователь проверит черновик и включит его на странице «Регламенты».',
+        input_schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', maxLength: 80, description: 'Короткое название, 2–6 слов' },
+            instructions: { type: 'string', description: 'Что делать в каждом прогоне: что проверить, что считать важным, в каком виде прислать' },
+            days: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, description: 'Дни недели: 1 — понедельник … 7 — воскресенье; каждый день — все семь' },
+            time: { type: 'string', description: 'Время по Алматы, ЧЧ:ММ' },
+            mode: { type: 'string', enum: ['ACTIVE', 'PASSIVE'], description: 'ACTIVE — присылать итог всегда (сводки, отчёты); PASSIVE — писать только если нашлось важное (проверки, «следи за…»)' },
+            channel: { type: 'string', enum: ['FEED', 'TELEGRAM', 'BOTH'], description: 'Куда присылать: FEED — в ассистент, TELEGRAM — в Telegram, BOTH — оба. По умолчанию TELEGRAM' },
+          },
+          required: ['title', 'instructions', 'days', 'time', 'mode', 'channel'],
+        },
+      });
+    }
+
     return tools;
   }
 
@@ -788,6 +823,7 @@ export class AssistantToolsService {
         );
       }
       if (name === 'legal_review_status') return await this.legalReviewStatus(user);
+      if (name === 'propose_routine') return await this.proposeRoutine(input, user, userMessageId, writeToolCallIndex);
       if (name === 'remember' || name === 'recall_memory' || name === 'forget_memory') {
         return await this.runMemoryTool(name, input, user, userMessageId, writeToolCallIndex);
       }
@@ -801,6 +837,33 @@ export class AssistantToolsService {
       const err2 = err instanceof Error ? err : new Error(String(err));
       this.logger.error(`tool=${name} failed: ${err2.message}`, err2.stack);
       return { tool, error: true, message: TOOL_ERROR_MESSAGES[tool] };
+    }
+  }
+
+  // Регламенты (ARMS, фаза 4): только черновик — включает человек.
+  // Неверные поля — понятная модели ошибка, а не исключение.
+  private async proposeRoutine(input: unknown, user: AuthenticatedUser, userMessageId: string | undefined, writeToolCallIndex: number | undefined): Promise<ToolExecutionResult> {
+    if (!this.routines || !isManager(user.role)) return { tool: 'propose_routine', error: true, message: 'ROUTINE_UNAVAILABLE: регламенты недоступны' };
+    if (!userMessageId || writeToolCallIndex === undefined) throw new Error('propose_routine: отсутствует userMessageId/writeToolCallIndex');
+    const typed = (input ?? {}) as { title?: unknown; instructions?: unknown; days?: unknown; time?: unknown; mode?: unknown; channel?: unknown };
+    const days = Array.isArray(typed.days) ? typed.days.filter((d): d is number => typeof d === 'number') : [];
+    try {
+      const routine = await this.routines.proposeDraft(
+        user.id,
+        {
+          title: typeof typed.title === 'string' ? typed.title : '',
+          prompt: typeof typed.instructions === 'string' ? typed.instructions : '',
+          days,
+          time: typeof typed.time === 'string' ? typed.time.padStart(5, '0') : '',
+          mode: typed.mode === 'PASSIVE' ? RoutineMode.PASSIVE : RoutineMode.ACTIVE,
+          channel: typed.channel === 'FEED' ? RoutineChannel.FEED : typed.channel === 'BOTH' ? RoutineChannel.BOTH : RoutineChannel.TELEGRAM,
+        },
+        `chat:${userMessageId}:${writeToolCallIndex}`,
+      );
+      return { tool: 'propose_routine', routine: { id: routine.id, title: routine.title, schedule: routine.schedule, mode: routine.mode, channel: routine.channel } };
+    } catch (err) {
+      if (err instanceof BadRequestException) return { tool: 'propose_routine', error: true, message: `INVALID_INPUT: ${err.message}` };
+      throw err;
     }
   }
 
