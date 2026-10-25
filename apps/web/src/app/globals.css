@@ -1941,3 +1941,36 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
 .live-transcript.is-empty {
   color: var(--ink-3);
 }
+
+/* «Расход ИИ» (ARMS, фаза 2): итог за период, полоса по дням, бары «на что уходит». */
+.usage-page { display: flex; flex-direction: column; gap: 20px; }
+.usage-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.usage-stat { display: flex; flex-direction: column; gap: 8px; }
+.usage-stat-value { font-size: 30px; line-height: 36px; font-weight: 650; }
+.usage-days { display: flex; align-items: flex-end; gap: 4px; height: 72px; padding: 0 2px; }
+.usage-day { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+.usage-day-bar { width: 100%; max-width: 40px; border-radius: 4px 4px 0 0; background: var(--agent); opacity: 0.85; }
+.usage-day-label { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+.usage-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.usage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.usage-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); }
+.usage-row:first-child { border-top: 0; padding-top: 4px; }
+.usage-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.usage-row-head strong { font-weight: 600; }
+.usage-row-cost { margin-left: auto; font-family: var(--font-mono); font-weight: 600; }
+.usage-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.usage-bar span { display: block; height: 100%; border-radius: 3px; background: var(--agent); }
+.usage-row-meta { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); font-family: var(--font-mono); }
+.usage-note { margin: 12px 0 0; }
+.usage-idle { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.usage-idle li { display: flex; justify-content: space-between; gap: 12px; }
+@media (max-width: 1023px) {
+  .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .usage-page .ds-pagehead { flex-wrap: wrap; align-items: flex-start; padding-left: 0; padding-right: 0; }
+  .usage-page .ds-card-head { flex-wrap: wrap; }
+  .usage-controls { width: 100%; }
+  .usage-controls .ds-seg { display: grid; width: 100%; }
+  .usage-controls .ds-seg-btn { padding-left: 4px; padding-right: 4px; }
+}

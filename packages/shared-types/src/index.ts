@@ -1630,3 +1630,49 @@ export interface MailMessageActionResult {
 }
 export * from './trip-timeline';
 export * from './trip-changes';
+
+// --- «Расход ИИ» (ARMS, фаза 2) ----------------------------------------------
+// GET /ai-usage/summary?days=7|30&groupBy=feature|model — сводка журнала
+// AiCall за период. Стоимость — оценка по таблице цен в коде
+// (ai-usage/ai-usage-prices.ts); вызовы моделей без цены (OpenAI: расшифровка,
+// живой голос) в costUsd не входят и считаются в unpricedCalls.
+
+export type AiUsageGroupBy = 'feature' | 'model';
+
+export interface AiUsageTotals {
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  // Доля входа, прочитанная из кэша: cacheRead / (input + cacheRead + cacheWrite);
+  // null — у вызовов нет токенов (голос OpenAI).
+  cacheShare: number | null;
+  costUsd: number;
+  unpricedCalls: number;
+  audioSeconds: number;
+}
+
+export interface AiUsageRow extends AiUsageTotals {
+  key: string;
+  costPerCallUsd: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  lastCallAt: string;
+}
+
+export interface AiUsageSummary {
+  days: number;
+  groupBy: AiUsageGroupBy;
+  from: string;
+  to: string;
+  pricesAsOf: string;
+  total: AiUsageTotals;
+  rows: AiUsageRow[];
+  // Расход по дням периода (время компании), для полосы сверху.
+  daily: { date: string; costUsd: number; calls: number }[];
+  // Функции, которые за последние 30 дней не вызывались ни разу (журнал
+  // хранит 90 дней) — кандидаты на отключение.
+  idle: { key: string; lastCallAt: string }[];
+}

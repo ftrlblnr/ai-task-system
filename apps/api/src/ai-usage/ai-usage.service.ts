@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type Anthropic from '@anthropic-ai/sdk';
 import { Prisma } from '@prisma/client';
+import type { AiUsageGroupBy, AiUsageSummary } from '@ai-task-system/shared-types';
 import { PrismaService } from '../prisma/prisma.service';
+import { TIMEZONE_OFFSET_HOURS, localDateString } from '../common/timezone';
+import { PRICES_AS_OF } from './ai-usage-prices';
+import { summarizeAiCalls } from './ai-usage-summary';
 
 // Журнал вызовов ИИ (владелец 21.10.2026: «производительность и
 // оптимизация») — время ответа, токены и кэш по каждой функции, чтобы
@@ -72,6 +76,42 @@ export class AiUsageService {
       });
       throw err;
     }
+  }
+
+  // Экран «Расход ИИ» (ARMS, фаза 2): период — последние `days` дней по
+  // времени компании, включая сегодня. Строк за 30 дней — тысячи, не
+  // миллионы (журнал хранит 90 дней), поэтому сводка считается в памяти.
+  async summary(days: number, groupBy: AiUsageGroupBy): Promise<AiUsageSummary> {
+    const to = new Date();
+    const todayStartUtc = new Date(`${localDateString(to)}T00:00:00.000Z`).getTime() - TIMEZONE_OFFSET_HOURS * 3_600_000;
+    const from = new Date(todayStartUtc - (days - 1) * 86_400_000);
+    const [calls, lastByFeature] = await Promise.all([
+      this.prisma.aiCall.findMany({
+        where: { createdAt: { gte: from } },
+        select: {
+          feature: true,
+          model: true,
+          latencyMs: true,
+          inputTokens: true,
+          outputTokens: true,
+          cacheReadTokens: true,
+          cacheWriteTokens: true,
+          audioMs: true,
+          ok: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.aiCall.groupBy({ by: ['feature'], _max: { createdAt: true } }),
+    ]);
+    return summarizeAiCalls({
+      calls,
+      groupBy,
+      days,
+      from,
+      to,
+      pricesAsOf: PRICES_AS_OF,
+      lastCallByFeature: lastByFeature.flatMap((f) => (f._max.createdAt ? [{ feature: f.feature, lastCallAt: f._max.createdAt }] : [])),
+    });
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_4AM)

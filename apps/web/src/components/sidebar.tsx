@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale } from 'lucide-react';
+import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale, Gauge } from 'lucide-react';
 import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
@@ -67,6 +67,8 @@ const NAV_ITEMS = [
   // Stage 2, Phase R — почта Mail.ru (личная интеграция руководителя, как Plaud/календарь).
   { href: '/mail', label: 'Почта', icon: Mail, ownerOnly: true },
   { href: '/employees', label: 'Сотрудники', icon: Users, ownerOnly: true },
+  // ARMS, фаза 2 — сколько стоят функции ИИ и где не работает кэш.
+  { href: '/ai-usage', label: 'Расход ИИ', icon: Gauge, ownerOnly: true },
 ];
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 5)
