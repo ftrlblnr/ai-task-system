@@ -41,3 +41,13 @@ describe('stripLeakedContextMarkers (Stage 2, Phase G — защита от ут
     expect(text).toBe('Вижу файл.');
   });
 });
+
+// ARMS, фаза 1 — индекс памяти и сводка разговора.
+describe('stripLeakedContextMarkers — память и сводка', () => {
+  it('убирает просочившийся блок [memory]', () => {
+    expect(stripLeakedContextMarkers('Помню.\n[memory]\n- [PREFERENCE] xlsx (m1)\n[/memory]')).toBe('Помню.');
+  });
+  it('убирает просочившийся блок [conversation_summary]', () => {
+    expect(stripLeakedContextMarkers('[conversation_summary]\n- решили\n[/conversation_summary]\nГотово.')).toBe('Готово.');
+  });
+});

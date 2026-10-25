@@ -48,6 +48,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'legal_review_status') return { label: 'Не удалось проверить разборы договоров' };
     if (result.tool === 'propose_mail_actions') return { label: 'Не удалось подготовить действия с письмами' };
     if (result.tool === 'draft_mail_reply') return { label: 'Не удалось подготовить письмо' };
+    if (result.tool === 'remember') return { label: 'Не удалось сохранить в память' };
+    if (result.tool === 'recall_memory') return { label: 'Не удалось проверить память' };
+    if (result.tool === 'forget_memory') return { label: 'Не удалось убрать из памяти' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -74,6 +77,10 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     return { label: `Подготовил действия с письмами: ${count} — ждут подтверждения` };
   }
   if (result.tool === 'draft_mail_reply') return { label: 'Подготовил письмо — ждёт отправки' };
+  // Память (ARMS, фаза 1).
+  if (result.tool === 'remember') return { label: result.duplicate ? `Уже помню: «${result.item.text}»` : `Запомнил: «${result.item.text}»` };
+  if (result.tool === 'recall_memory') return { label: `Проверил память: найдено ${result.totalCount}` };
+  if (result.tool === 'forget_memory') return { label: `Забыл: «${result.item.text}»` };
   // Stage 2, Phase O — create_task_from_meeting.
   return { label: `Поставил задачу «${result.task.title}»` };
 }

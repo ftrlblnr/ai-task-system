@@ -309,6 +309,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
       expect.any(String),
       expect.any(Function),
       abortController.signal,
+      null,
     );
   });
 });

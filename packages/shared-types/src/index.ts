@@ -1676,3 +1676,50 @@ export interface AiUsageSummary {
   // хранит 90 дней) — кандидаты на отключение.
   idle: { key: string; lastCallAt: string }[];
 }
+
+// --- Память ассистента (ARMS, фаза 1) ----------------------------------------
+// /memory — пункты памяти текущего пользователя (руководство). ACTIVE — в
+// контексте ассистента, PENDING — предложено ИИ и ждёт подтверждения,
+// ARCHIVED — забыто/отклонено.
+
+export type MemoryKind = 'PREFERENCE' | 'FACT' | 'PERSON' | 'RULE' | 'CONTEXT';
+export type MemorySource = 'EXPLICIT' | 'SUGGESTED' | 'MANUAL';
+export type MemoryStatus = 'ACTIVE' | 'PENDING' | 'ARCHIVED';
+
+export const MEMORY_KIND_LABELS: Record<MemoryKind, string> = {
+  PREFERENCE: 'Предпочтение',
+  FACT: 'Факт',
+  PERSON: 'Человек',
+  RULE: 'Правило',
+  CONTEXT: 'Контекст',
+};
+
+export const MEMORY_TEXT_MAX = 280;
+
+export interface MemoryItemView {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+  details: string | null;
+  source: MemorySource;
+  status: MemoryStatus;
+  pinned: boolean;
+  useCount: number;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateMemoryInput {
+  kind: MemoryKind;
+  text: string;
+  details?: string;
+}
+
+export interface UpdateMemoryInput {
+  kind?: MemoryKind;
+  text?: string;
+  details?: string | null;
+  pinned?: boolean;
+  status?: 'ACTIVE' | 'ARCHIVED';
+}

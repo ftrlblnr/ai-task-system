@@ -219,17 +219,41 @@ describe('AssistantReplyService.streamOnce — system-промпт и кэш (21
     return { service, streamSpy };
   }
 
-  it('system — неизменный SYSTEM_PROMPT с меткой кэша, без текущей даты', async () => {
+  it('system — неизменный SYSTEM_PROMPT с меткой кэша на 1 час, без текущей даты', async () => {
     const { service, streamSpy } = makeStreamingService();
 
-    await service.streamOnce([], [], undefined, undefined);
+    await service.reply('привет', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1');
 
     const [payload] = streamSpy.mock.calls[0];
     expect(payload.system).toHaveLength(1);
     expect(payload.system[0].text).toContain('ассистент корпоративной системы задач');
     expect(payload.system[0].text).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-    expect(payload.system[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(payload.system[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
     expect(payload.cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  // ARMS, фаза 1: индекс памяти — вторым блоком system (тоже в кэше), только
+  // руководству; сводка ранней части разговора — перед историей.
+  it('индекс памяти — второй блок system у руководителя, у сотрудника его нет', async () => {
+    const memory = { buildIndex: jest.fn().mockResolvedValue('[memory]\n- [PREFERENCE] xlsx (m1)\n[/memory]') };
+    const make = () => {
+      const service = new AssistantReplyService({} as any, { buildTools: jest.fn().mockResolvedValue([]) } as any, undefined, memory as any) as any;
+      const streamSpy = jest.fn().mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], usage: {} }) });
+      service.client = { messages: { stream: streamSpy } };
+      return { service, streamSpy };
+    };
+    const owner = make();
+    await owner.service.reply('привет', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1', '- решили перенести сдачу');
+    const [payload] = owner.streamSpy.mock.calls[0];
+    expect(payload.system).toHaveLength(2);
+    expect(payload.system[1].text).toContain('[memory]');
+    expect(payload.system[1].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(payload.messages[0]).toEqual({ role: 'user', content: '[conversation_summary]\n- решили перенести сдачу\n[/conversation_summary]' });
+
+    const employee = make();
+    await employee.service.reply('привет', [], { id: 'u2', role: 'EMPLOYEE' }, 'c1', 'm1');
+    expect(employee.streamSpy.mock.calls[0][0].system).toHaveLength(1);
+    expect(memory.buildIndex).toHaveBeenCalledTimes(1);
   });
 
   it('текущая дата уходит в последнее сообщение пользователя', async () => {

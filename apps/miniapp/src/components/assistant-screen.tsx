@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { isManagerRole } from '@ai-task-system/shared-types';
+import { useAuth } from '@/lib/auth-context';
 import { prefetchLiveTranscription } from '@/lib/live-transcription';
 import { useAssistantRequest } from './app-shell';
 import { Alert, ScreenHeader } from '@/components/ui';
@@ -9,6 +11,7 @@ import { Composer } from './assistant/composer';
 import { MessageList } from './assistant/message-list';
 import { useAssistantStream } from './assistant/use-assistant-stream';
 import { useLiveVoice, useVoiceRecorder } from './assistant/voice-controls';
+import { MemoryOverlay, memoryCountLabel, useMemoryCount } from './assistant/memory-overlay';
 
 // Текстовый AI-чат поверх /assistant/* (Stage 2, Phase D — базовый чат;
 // Phase E — streaming; Phase F/F.2 — вложения; Phase H — голос объединён в
@@ -24,6 +27,19 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const attachments = usePendingAttachments();
   const voice = useVoiceRecorder({ conversationId: stream.conversationId, onMessages: stream.appendMessages, onUndone: stream.load });
   const live = useLiveVoice({ conversationIdRef: stream.conversationIdRef, refresh: stream.refreshMessagesSilently });
+  // Память (ARMS, фаза 1) — руководству: число пунктов в надзаголовке, тап
+  // открывает список. После каждого ответа пересчитываем: «запомни…» мог
+  // добавить пункт.
+  const { user } = useAuth();
+  const memoryEnabled = !!user && isManagerRole(user.role);
+  const [memoryCount, refreshMemoryCount] = useMemoryCount(memoryEnabled, active);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const wasSending = useRef(false);
+  useEffect(() => {
+    if (wasSending.current && !stream.sending) refreshMemoryCount();
+    wasSending.current = stream.sending;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshMemoryCount пересоздаётся каждый рендер
+  }, [stream.sending]);
 
   function send(overrideText?: string) {
     void stream.send(overrideText ?? text, attachments.pending, undefined, () => {
@@ -53,8 +69,27 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- send пересоздаётся каждый рендер
   }, [assistantRequest, stream.historyLoadedAt, stream.sending, stream.conversationId]);
 
-  // Kicker пока без «Память: N пунктов» — появится с ARMS фазы 1.
-  const header = <ScreenHeader kicker="Ассистент Адъютанта" title="Ассистент" />;
+  const kicker =
+    memoryEnabled && memoryCount !== null ? (
+      <button type="button" className="kicker-link" onClick={() => setMemoryOpen(true)}>
+        {memoryCountLabel(memoryCount)}
+      </button>
+    ) : (
+      'Ассистент Адъютанта'
+    );
+  const header = (
+    <>
+      <ScreenHeader kicker={kicker} title="Ассистент" />
+      {memoryOpen && (
+        <MemoryOverlay
+          onClose={() => {
+            setMemoryOpen(false);
+            refreshMemoryCount();
+          }}
+        />
+      )}
+    </>
+  );
 
   if (!stream.messages) {
     return (

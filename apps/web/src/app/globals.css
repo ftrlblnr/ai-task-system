@@ -1974,3 +1974,21 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
   .usage-controls .ds-seg { display: grid; width: 100%; }
   .usage-controls .ds-seg-btn { padding-left: 4px; padding-right: 4px; }
 }
+
+/* «Память» (ARMS, фаза 1): группы по видам, строка — текст, откуда, действия иконками. */
+.memory-page { display: flex; flex-direction: column; gap: 16px; }
+.memory-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.memory-toolbar .ds-search { flex: 1 1 240px; }
+.memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.memory-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); }
+.memory-row:first-child { border-top: 0; padding-top: 0; }
+.memory-row.is-editing { flex-direction: column; align-items: stretch; gap: 8px; }
+.memory-row.is-archived .memory-row-text { color: var(--ink-2); }
+.memory-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.memory-row-text { font-size: 15px; line-height: 22px; overflow-wrap: anywhere; }
+.memory-row-details { white-space: pre-wrap; }
+.memory-pin { color: var(--agent); margin-right: 6px; vertical-align: -2px; }
+.memory-row-actions { display: flex; gap: 4px; align-items: center; flex: none; }
+.memory-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.memory-add select { flex: 0 0 170px; }
+.memory-add input { flex: 1 1 260px; }

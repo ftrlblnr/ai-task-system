@@ -1,7 +1,7 @@
 // Цены моделей для экрана «Расход ИИ» (ARMS, фаза 2) — оценка, не счёт:
 // точная сумма — в консоли Anthropic. $ за 1 млн токенов, сверено со
 // справочником claude-api на PRICES_AS_OF. Кэш: чтение — доля от цены входа,
-// запись 5-минутного кэша — ×1.25 (TTL 1 час у нас не используется).
+// запись кэша — ×1.25 (TTL 5 минут) или ×2 (TTL 1 час).
 // Модели OpenAI (расшифровка, живой голос) сюда не внесены: токенов их
 // вызовы не пишут, а цены за минуту в справочнике нет — экран показывает их
 // отдельно как «без оценки».
@@ -16,6 +16,7 @@ export interface ModelPrice {
 }
 
 export const CACHE_WRITE_MULTIPLIER = 1.25;
+export const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   'claude-haiku-5-5': {
@@ -35,6 +36,7 @@ export interface PricedTokens {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
+  cacheWrite1hTokens?: number | null;
 }
 
 // null — модель без цены (вызов не входит в сумму).
@@ -44,11 +46,13 @@ export function callCostUsd(call: PricedTokens): number | null {
   const input = call.inputTokens ?? 0;
   const cacheRead = call.cacheReadTokens ?? 0;
   const cacheWrite = call.cacheWriteTokens ?? 0;
+  const cacheWrite1h = Math.min(call.cacheWrite1hTokens ?? 0, cacheWrite);
   const prompt = input + cacheRead + cacheWrite;
   const rate = price.longContext && prompt > price.longContext.aboveTokens ? price.longContext : price;
   const usd =
     input * rate.input +
-    cacheWrite * rate.input * CACHE_WRITE_MULTIPLIER +
+    (cacheWrite - cacheWrite1h) * rate.input * CACHE_WRITE_MULTIPLIER +
+    cacheWrite1h * rate.input * CACHE_WRITE_1H_MULTIPLIER +
     cacheRead * rate.cacheRead +
     (call.outputTokens ?? 0) * rate.output;
   return usd / 1_000_000;

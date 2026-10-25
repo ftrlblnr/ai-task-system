@@ -23,6 +23,11 @@ describe('callCostUsd', () => {
     const usd = callCostUsd({ model: 'claude-haiku-5-5', inputTokens: 40_000, outputTokens: 40_000, cacheReadTokens: 40_000, cacheWriteTokens: 0 });
     expect(usd).toBeCloseTo((40_000 * 0.1 + 40_000 * 0.5 + 40_000 * 0.01) / 1_000_000, 10);
     expect(callCostUsd({ model: 'claude-haiku-5-5', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 80_000 })).toBeCloseTo(0.01, 10);
+    // Из них 40K — кэш на 1 час: ×2 вместо ×1.25.
+    expect(callCostUsd({ model: 'claude-haiku-5-5', inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 80_000, cacheWrite1hTokens: 40_000 })).toBeCloseTo(
+      (40_000 * 0.1 * 1.25 + 40_000 * 0.1 * 2) / 1_000_000,
+      10,
+    );
   });
 
   it('берёт цену длинного запроса Haiku выше 100K токенов (вход + кэш)', () => {

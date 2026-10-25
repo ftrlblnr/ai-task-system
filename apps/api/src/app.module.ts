@@ -25,6 +25,7 @@ import { ReceptionModule } from './reception/reception.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { TripsModule } from './trips/trips.module';
 import { AiUsageModule } from './ai-usage/ai-usage.module';
+import { MemoryModule } from './memory/memory.module';
 import { LegalModule } from './legal/legal.module';
 import { McpModule } from './mcp/mcp.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -35,6 +36,7 @@ import { RealtimeModule } from './realtime/realtime.module';
     ScheduleModule.forRoot(),
     PrismaModule,
     AiUsageModule,
+    MemoryModule,
     RealtimeModule,
     CryptoModule,
     AuditModule,

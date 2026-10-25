@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Conversation, FileArtifact, Message, MessagePart, MessageRole, MessageStatus, MessagePartType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -8,6 +8,8 @@ import { AssistantReplyService, type ReplyHistoryItem, type AssistantReplyResult
 import { loadMailCardState, type MailCardState } from './assistant-mail-state';
 import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from './assistant-render';
 import { SendMessageDto } from './dto/send-message.dto';
+import { ConversationCompactionService } from './conversation-compaction.service';
+import { COMPACT_MIN_BATCH } from './conversation-summary';
 import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
@@ -15,6 +17,10 @@ import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailD
 // делится по времени (в отличие от voice): один Conversation — один
 // логически непрерывный диалог, а не заметки, между которыми могло пройти
 // много часов.
+//
+// ARMS, фаза 1.2: всё старше окна сворачивается в Conversation.summary
+// (ConversationCompactionService); история — сообщения после сводки, до
+// HISTORY_LIMIT + COMPACT_MIN_BATCH, пока фоновое сжатие не догонит.
 const HISTORY_LIMIT = 20;
 
 export type MessageWithParts = Message & { parts: MessagePart[] };
@@ -142,6 +148,8 @@ export class AssistantChatService {
     private readonly prisma: PrismaService,
     private readonly reply: AssistantReplyService,
     private readonly files: FilesService,
+    // ARMS 1.2 — без неё (юнит-тесты) история просто не сворачивается.
+    @Optional() private readonly compaction?: ConversationCompactionService,
   ) {}
 
   // MVP (Stage 2 §4.1): у каждого сотрудника должен быть хотя бы один
@@ -296,21 +304,34 @@ export class AssistantChatService {
   // добавлял dto.text отдельным элементом — модель получала вопрос
   // дважды. Явное исключение убирает дубль, не завязываясь на то, вызван
   // ли loadHistory до или после создания строки.
-  private async loadHistory(conversationId: string, excludeMessageId: string): Promise<ReplyHistoryItem[]> {
+  private async loadHistory(conversationId: string, excludeMessageId: string): Promise<{ history: ReplyHistoryItem[]; summary: string | null }> {
+    const conversation = await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { summary: true, summaryUpToAt: true } });
     const history = await this.prisma.message.findMany({
-      where: { conversationId, id: { not: excludeMessageId } },
+      where: {
+        conversationId,
+        id: { not: excludeMessageId },
+        ...(conversation?.summaryUpToAt ? { createdAt: { gt: conversation.summaryUpToAt } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
-      take: HISTORY_LIMIT,
+      take: HISTORY_LIMIT + COMPACT_MIN_BATCH,
       include: { parts: { orderBy: { order: 'asc' } } },
     });
     const mailState = await loadMailCardState(this.prisma, history.flatMap((m) => m.parts));
-    return history
-      .reverse()
-      .map((m) => ({
-        role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
-        text: serializeMessageForModelContext(m.parts, mailState),
-      }))
-      .filter((h) => h.text);
+    return {
+      summary: conversation?.summary ?? null,
+      history: history
+        .reverse()
+        .map((m) => ({
+          role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
+          text: serializeMessageForModelContext(m.parts, mailState),
+        }))
+        .filter((h) => h.text),
+    };
+  }
+
+  // После ответа — в фоне, ответ пользователю не ждёт.
+  private scheduleCompaction(conversationId: string) {
+    void this.compaction?.maybeCompact(conversationId, HISTORY_LIMIT, serializeMessageForModelContext);
   }
 
   // Phase F — вложения. Phase F.2 (аудит 17.09.2026, P2.11) — раньше
@@ -600,14 +621,14 @@ export class AssistantChatService {
     const requestId = randomUUID();
     const t0 = Date.now();
 
-    const history = await this.loadHistory(conversationId, userMessage.id);
+    const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
     const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
     let toolExecutionMs = 0;
     try {
-      const result = await this.reply.reply(currentTurnText, history, user, conversationId, userMessage.id);
+      const result = await this.reply.reply(currentTurnText, history, user, conversationId, userMessage.id, summary);
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
       const partsInput = buildAssistantParts(result);
@@ -631,6 +652,7 @@ export class AssistantChatService {
             },
             generatedFileIds,
           );
+      this.scheduleCompaction(conversationId);
     } catch (err) {
       // Техническая ошибка — только в логи (Stage 2 §5.6/§32); пользователю
       // уходит безопасный текст через ErrorPart.
@@ -748,7 +770,7 @@ export class AssistantChatService {
     const requestId = randomUUID();
     const t0 = Date.now();
 
-    const history = await this.loadHistory(conversationId, userMessage.id);
+    const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
     const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
@@ -818,6 +840,7 @@ export class AssistantChatService {
           }
         },
         abortSignal,
+        summary,
       );
 
       const toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
@@ -834,6 +857,7 @@ export class AssistantChatService {
       emit({ event: 'message.completed', messageId: assistantMessage.id, message: updated });
 
       await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+      this.scheduleCompaction(conversationId);
       this.logger.log(
         `assistant chat reqId=${requestId} conversationId=${conversationId} status=COMPLETED ` +
           `toolsCalled=${toolNames.length ? toolNames.join(',') : 'none'} toolExecutionMs=${toolExecutionMs} ` +

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, Prisma, TaskFromMeetingStatus } from '@prisma/client';
+import { EventStatus, MemoryKind, Prisma, TaskFromMeetingStatus, type MemoryItem } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -23,6 +23,8 @@ import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service
 import { formatLegalAnswer, type LegalAnswer } from '../legal/legal-agent';
 import { legalAllowedForRole } from '../legal/legal-access';
 import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toReviewView } from '../legal/legal-review.service';
+import { MemoryService } from '../memory/memory.service';
+import { MEMORY_TEXT_MAX } from '../memory/memory-index';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -124,7 +126,10 @@ type KnownToolName =
   | 'legal_review_contract'
   | 'legal_review_status'
   | 'propose_mail_actions'
-  | 'draft_mail_reply';
+  | 'draft_mail_reply'
+  | 'remember'
+  | 'recall_memory'
+  | 'forget_memory';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'get_events') return 'get_events';
@@ -142,6 +147,9 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'legal_review_status') return 'legal_review_status';
   if (name === 'propose_mail_actions') return 'propose_mail_actions';
   if (name === 'draft_mail_reply') return 'draft_mail_reply';
+  if (name === 'remember') return 'remember';
+  if (name === 'recall_memory') return 'recall_memory';
+  if (name === 'forget_memory') return 'forget_memory';
   return 'get_tasks';
 }
 
@@ -156,7 +164,9 @@ function resolveToolName(name: string): KnownToolName {
 // Почта, этап 3: propose_mail_actions/draft_mail_reply сами ничего не
 // исполняют (план и черновик ждут кнопки), но создают записи — их ключ
 // тоже строится из writeToolCallIndex.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply']);
+// Память (ARMS, фаза 1): remember создаёт пункт — ключ идемпотентности из
+// writeToolCallIndex; forget_memory меняет данные — порядок важен.
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory']);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -185,6 +195,9 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   legal_review_status: 'LEGAL_REVIEW_LOOKUP_FAILED: не удалось получить статус разборов',
   propose_mail_actions: 'MAIL_PLAN_FAILED: не удалось подготовить действия с письмами',
   draft_mail_reply: 'MAIL_DRAFT_FAILED: не удалось подготовить письмо',
+  remember: 'MEMORY_SAVE_FAILED: не удалось сохранить в память',
+  recall_memory: 'MEMORY_LOOKUP_FAILED: не удалось проверить память',
+  forget_memory: 'MEMORY_FORGET_FAILED: не удалось убрать пункт из памяти',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -224,6 +237,19 @@ export interface MailToolEmailDetail extends MailToolEmailSummary {
   actionSummary: string | null;
 }
 
+// Память (ARMS, фаза 1) — пункт в том виде, в каком его видит модель.
+export interface MemoryToolItem {
+  id: string;
+  kind: MemoryKind;
+  text: string;
+}
+
+function toMemoryToolItem(item: MemoryItem): MemoryToolItem {
+  return { id: item.id, kind: item.kind, text: item.text };
+}
+
+const MEMORY_KINDS: MemoryKind[] = ['PREFERENCE', 'FACT', 'PERSON', 'RULE', 'CONTEXT'];
+
 export interface MeetingTranscriptMatchData {
   meetingId: string;
   meetingTitle: string;
@@ -261,6 +287,9 @@ export type ToolExecutionResult =
   | { tool: 'legal_review_status'; items: LegalReviewView[] }
   | { tool: 'propose_mail_actions'; plans: MailPlanCardData[]; unknownEmailIds: string[] }
   | { tool: 'draft_mail_reply'; draft: MailDraftCardData }
+  | { tool: 'remember'; item: MemoryToolItem; duplicate: boolean; replaced: MemoryToolItem | null; similar: MemoryToolItem[] }
+  | { tool: 'recall_memory'; items: (MemoryToolItem & { details: string | null })[]; totalCount: number }
+  | { tool: 'forget_memory'; item: MemoryToolItem }
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -291,6 +320,14 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
       sent: false,
       note: 'Письмо НЕ отправлено. Пользователь видит карточку с текстом письма и кнопкой «Отправить» — уйдёт только после неё. Не повторяй текст письма целиком, коротко скажи, что черновик готов к проверке.',
     };
+  }
+  if (result.tool === 'remember') {
+    const note = result.duplicate
+      ? 'Почти такой же пункт уже был в памяти — новый не создан. Скажи, что это уже помнишь.'
+      : result.similar.length > 0
+        ? 'Сохранено. В памяти есть похожие пункты (similar) — если новый их заменяет, коротко спроси пользователя, убрать ли старые (forget_memory).'
+        : 'Сохранено в память. Коротко подтверди одной фразой.';
+    return { ...result, note };
   }
   return result;
 }
@@ -327,7 +364,14 @@ export class AssistantToolsService {
     // Почта, этап 3 — без них (юнит-тесты) пишущие почтовые инструменты не предлагаются.
     @Optional() private readonly mailPlans?: MailActionPlanService,
     @Optional() private readonly mailCompose?: MailComposeService,
+    // Память (ARMS, фаза 1) — без неё (юнит-тесты) инструменты памяти не предлагаются.
+    @Optional() private readonly memory?: MemoryService,
   ) {}
+
+  // Память — сначала руководству (план ARMS: всё новое — OWNER/ADMIN).
+  memoryAvailable(user: AuthenticatedUser): boolean {
+    return !!this.memory && isManager(user.role);
+  }
 
   private legalAvailable(user: AuthenticatedUser): boolean {
     return !!this.legal && !!this.config && legalAllowedForRole(this.config, user.role);
@@ -591,6 +635,45 @@ export class AssistantToolsService {
       }
     }
 
+    if (this.memoryAvailable(user)) {
+      tools.push(
+        {
+          name: 'remember',
+          description:
+            'Сохранить в долговременную память ассистента сведение или предпочтение пользователя. Вызывай, когда пользователь просит запомнить («запомни», «впредь», «я предпочитаю», «всегда/никогда делай…») или сообщает устойчивый факт о себе, людях, компании. Один вызов — одна мысль, коротко, от третьего лица («Отчёты присылать в xlsx, не в pdf»). Если новое уточняет или противоречит пункту из блока [memory] — передай его id в replacesId: старый пункт уйдёт в архив. Разовые поручения и задачи сюда не сохраняй.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: MEMORY_KINDS, description: 'PREFERENCE — предпочтение, RULE — правило работы, PERSON — о человеке, FACT — факт о компании/делах, CONTEXT — длительный контекст' },
+              text: { type: 'string', maxLength: MEMORY_TEXT_MAX, description: 'Суть одной фразой' },
+              details: { type: 'string', description: 'Необязательные подробности' },
+              replacesId: { type: 'string', description: 'id пункта из [memory], который этот заменяет' },
+            },
+            required: ['kind', 'text'],
+          },
+        },
+        {
+          name: 'recall_memory',
+          description:
+            'Поиск в памяти ассистента по словам — для подробностей, которых нет в блоке [memory] (он показывает только краткий список). Используй, когда ответ может зависеть от сохранённых сведений, а в [memory] их не видно.',
+          input_schema: {
+            type: 'object',
+            properties: { query: { type: 'string', description: 'Ключевые слова' } },
+            required: ['query'],
+          },
+        },
+        {
+          name: 'forget_memory',
+          description: 'Убрать пункт из памяти ассистента (в архив), когда пользователь просит забыть или пункт устарел. id — из блока [memory] или результата recall_memory.',
+          input_schema: {
+            type: 'object',
+            properties: { id: { type: 'string', description: 'id пункта памяти' } },
+            required: ['id'],
+          },
+        },
+      );
+    }
+
     return tools;
   }
 
@@ -705,6 +788,9 @@ export class AssistantToolsService {
         );
       }
       if (name === 'legal_review_status') return await this.legalReviewStatus(user);
+      if (name === 'remember' || name === 'recall_memory' || name === 'forget_memory') {
+        return await this.runMemoryTool(name, input, user, userMessageId, writeToolCallIndex);
+      }
       return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
     } catch (err) {
       const tool = resolveToolName(name);
@@ -715,6 +801,63 @@ export class AssistantToolsService {
       const err2 = err instanceof Error ? err : new Error(String(err));
       this.logger.error(`tool=${name} failed: ${err2.message}`, err2.stack);
       return { tool, error: true, message: TOOL_ERROR_MESSAGES[tool] };
+    }
+  }
+
+  // Память (ARMS, фаза 1). Доступ перепроверяется здесь (роль могла смениться
+  // после истории), владелец пункта — в MemoryService: чужой id = «не найден».
+  private async runMemoryTool(
+    name: 'remember' | 'recall_memory' | 'forget_memory',
+    input: unknown,
+    user: AuthenticatedUser,
+    userMessageId: string | undefined,
+    writeToolCallIndex: number | undefined,
+  ): Promise<ToolExecutionResult> {
+    if (!this.memory || !this.memoryAvailable(user)) {
+      return { tool: name, error: true, message: 'MEMORY_UNAVAILABLE: память недоступна' };
+    }
+    const typed = (input ?? {}) as { kind?: unknown; text?: unknown; details?: unknown; replacesId?: unknown; query?: unknown; id?: unknown };
+    if (name === 'recall_memory') {
+      const { items, totalCount } = await this.memory.recall(user.id, typeof typed.query === 'string' ? typed.query : '');
+      return { tool: 'recall_memory', items: items.map((i) => ({ ...toMemoryToolItem(i), details: i.details })), totalCount };
+    }
+    if (name === 'forget_memory') {
+      const id = typeof typed.id === 'string' ? typed.id.trim() : '';
+      try {
+        return { tool: 'forget_memory', item: toMemoryToolItem(await this.memory.forget(user.id, id)) };
+      } catch (err) {
+        if (err instanceof NotFoundException) return { tool: 'forget_memory', error: true, message: 'MEMORY_NOT_FOUND: такого пункта в памяти нет' };
+        throw err;
+      }
+    }
+    if (!userMessageId || writeToolCallIndex === undefined) {
+      // Как у create_task_from_meeting: без идентичности вызова нет ключа идемпотентности.
+      throw new Error('remember: отсутствует userMessageId/writeToolCallIndex');
+    }
+    const kind = MEMORY_KINDS.includes(typed.kind as MemoryKind) ? (typed.kind as MemoryKind) : MemoryKind.FACT;
+    const text = typeof typed.text === 'string' ? typed.text.trim() : '';
+    if (text.length < 2) return { tool: 'remember', error: true, message: 'INVALID_INPUT: пустой текст пункта памяти' };
+    try {
+      const result = await this.memory.remember(
+        user.id,
+        {
+          kind,
+          text,
+          details: typeof typed.details === 'string' ? typed.details : undefined,
+          replacesId: typeof typed.replacesId === 'string' && typed.replacesId.trim() ? typed.replacesId.trim() : undefined,
+        },
+        `chat:${userMessageId}:${writeToolCallIndex}`,
+      );
+      return {
+        tool: 'remember',
+        item: toMemoryToolItem(result.item),
+        duplicate: result.duplicate,
+        replaced: result.replaced ? toMemoryToolItem(result.replaced) : null,
+        similar: result.similar.map(toMemoryToolItem),
+      };
+    } catch (err) {
+      if (err instanceof NotFoundException) return { tool: 'remember', error: true, message: 'MEMORY_NOT_FOUND: заменяемого пункта в памяти нет' };
+      throw err;
     }
   }
 

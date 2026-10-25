@@ -13,6 +13,7 @@ export interface AiCallRow {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
+  cacheWrite1hTokens?: number | null;
   audioMs: number | null;
   ok: boolean;
   createdAt: Date;

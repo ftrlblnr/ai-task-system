@@ -2068,3 +2068,43 @@ select {
   display: flex;
   gap: 8px;
 }
+
+/* Память ассистента (ARMS, фаза 1): надзаголовок-ссылка и список с удалением. */
+.kicker-link {
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+.memory-overlay section + section {
+  margin-top: 14px;
+}
+.memory-overlay .memory-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 6px 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.memory-overlay .memory-row:first-child {
+  border-top: 0;
+}
+.memory-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+.memory-pin {
+  color: var(--accent);
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+.memory-overlay > .ds-field-hint {
+  margin-top: 14px;
+}

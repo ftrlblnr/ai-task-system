@@ -103,6 +103,7 @@ model Employee {
   plaudConnection            PlaudConnection?
   mailboxes                  Mailbox[]
   conversations              Conversation[]
+  memoryItems                MemoryItem[]
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
   meetingSegmentsSpoken      MeetingSegment[]
@@ -172,13 +173,19 @@ enum MessageStatus {
 }
 
 model Conversation {
-  id         String    @id @default(cuid())
-  employeeId String
-  employee   Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  title      String?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  archivedAt DateTime?
+  id               String    @id @default(cuid())
+  employeeId       String
+  employee         Employee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  title            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  archivedAt       DateTime?
+  // ARMS, фаза 1.2: сводка сообщений, выпавших из окна истории
+  // (HISTORY_LIMIT) — решения, поручения, даты, открытые вопросы. Покрывает
+  // всё до summaryUpToAt включительно; обновляется в фоне после ответа.
+  summary          String?
+  summaryUpToAt    DateTime?
+  summaryUpdatedAt DateTime?
 
   messages                  Message[]
   fileArtifacts             FileArtifact[]
@@ -2514,6 +2521,8 @@ model AiCall {
   outputTokens     Int?
   cacheReadTokens  Int?
   cacheWriteTokens Int?
+  // Из cacheWriteTokens — запись кэша с TTL 1 час (дороже: ×2 к входу, не ×1.25).
+  cacheWrite1hTokens Int?
   audioMs          Int?
   ok               Boolean
   error            String?
@@ -2671,4 +2680,58 @@ model OAuthGrant {
   createdAt        DateTime    @default(now())
 
   @@index([employeeId, createdAt])
+}
+
+// ARMS, фаза 1: долговременная память ассистента о руководителе — короткие
+// пункты (одна мысль), всегда в контексте как индекс (memory-index.ts).
+// EXPLICIT — «запомни…» в чате, SUGGESTED — предложил ИИ (PENDING до
+// подтверждения), MANUAL — добавлено на странице «Память». Отклонённое
+// предложение — ARCHIVED, чтобы не предлагать повторно.
+enum MemoryKind {
+  PREFERENCE
+  FACT
+  PERSON
+  RULE
+  CONTEXT
+}
+
+enum MemorySource {
+  EXPLICIT
+  SUGGESTED
+  MANUAL
+}
+
+enum MemoryStatus {
+  ACTIVE
+  PENDING
+  ARCHIVED
+}
+
+model MemoryItem {
+  id         String       @id @default(cuid())
+  ownerId    String
+  owner      Employee     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  kind       MemoryKind
+  text       String
+  details    String?
+  source     MemorySource
+  status     MemoryStatus
+  pinned     Boolean      @default(false)
+  useCount   Int          @default(0)
+  lastUsedAt DateTime?
+  // Ключ идемпотентности инструмента remember (`chat:<userMessageId>:<index>`):
+  // повтор того же ответа не создаёт второй пункт.
+  sourceKey  String?      @unique
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@index([ownerId, status])
+}
+
+// Докуда ежедневный разбор переписки уже предлагал пункты памяти — следующий
+// запуск берёт только новые сообщения (memory-suggest.service.ts).
+model MemoryScanState {
+  ownerId     String   @id
+  scannedUpTo DateTime
+  updatedAt   DateTime @updatedAt
 }
