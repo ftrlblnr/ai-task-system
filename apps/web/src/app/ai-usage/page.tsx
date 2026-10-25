@@ -29,6 +29,7 @@ const FEATURE_LABELS: Record<string, string> = {
   'legal.ask': 'Юрист — вопрос по НПА',
   'legal.review': 'Юрист — разбор договора',
   'memory.suggest': 'Память — предложения за день',
+  'recos.weekly': 'Рекомендации за неделю',
   'conversation.compact': 'Ассистент — сжатие разговора',
   router: 'Ассистент — выбор модели',
 };

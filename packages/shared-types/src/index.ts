@@ -1733,7 +1733,7 @@ export type SkillEffort = 'LOW' | 'MEDIUM' | 'HIGH';
 export type SkillOutput = 'CHAT' | 'DOCX' | 'TELEGRAM';
 export type SkillFeedbackValue = 'UP' | 'DOWN';
 export type SkillRevisionStatus = 'GENERATING' | 'PROPOSED' | 'APPLIED' | 'REJECTED' | 'FAILED';
-export type SkillRevisionSource = 'MANUAL' | 'FEEDBACK' | 'SENT_MAIL';
+export type SkillRevisionSource = 'MANUAL' | 'FEEDBACK' | 'SENT_MAIL' | 'RECOMMENDATION';
 export type SkillRunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
 
 export const SKILL_KIND_LABELS: Record<SkillKind, string> = { PLAYBOOK: 'Порядок действий', KNOWLEDGE: 'Знание', ACTION: 'Кнопка' };
@@ -1900,4 +1900,72 @@ export interface RoutineRunState {
   status: RoutineRunStatus;
   conversationId: string | null;
   error: string | null;
+}
+
+// --- Рекомендации (ARMS, фаза 5) ---
+
+export type RecommendationArea = 'APPS' | 'ROUTINES' | 'MEMORY' | 'SKILLS';
+export type RecommendationAction =
+  | 'CREATE_ROUTINE'
+  | 'REVISE_SKILL'
+  | 'ADD_MEMORY'
+  | 'ARCHIVE_MEMORY'
+  | 'DOWNGRADE_SKILL_MODEL'
+  | 'SET_ROUTINE_CAP'
+  | 'DISABLE_SKILL'
+  | 'DEV_TASK';
+export type RecommendationStatus = 'NEW' | 'IN_CART' | 'APPLIED' | 'DISMISSED';
+export type RecommendationEffort = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export const RECOMMENDATION_AREA_LABELS: Record<RecommendationArea, string> = {
+  APPS: 'Приложения',
+  ROUTINES: 'Регламенты',
+  MEMORY: 'Память',
+  SKILLS: 'Навыки',
+};
+
+export const RECOMMENDATION_EFFORT_LABELS: Record<RecommendationEffort, string> = {
+  LOW: 'Легко',
+  MEDIUM: 'Средне',
+  HIGH: 'Сложно',
+};
+
+export interface RecommendationResult {
+  kind: 'routine' | 'skill' | 'skillRevision' | 'memory' | 'task';
+  id: string;
+  label: string;
+}
+
+export interface RecommendationView {
+  id: string;
+  area: RecommendationArea;
+  action: RecommendationAction;
+  title: string;
+  benefit: string;
+  plan: string;
+  effort: RecommendationEffort;
+  // 1 — высокий, 3 — низкий.
+  priority: number;
+  tokenSaving: number | null;
+  // DEV_TASK — постановка для разработчика (markdown).
+  devTask: string | null;
+  status: RecommendationStatus;
+  result: RecommendationResult | null;
+  error: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface RecommendationBatchView {
+  id: string;
+  status: 'GENERATING' | 'DONE' | 'FAILED';
+  trigger: 'SCHEDULE' | 'BUTTON';
+  createdAt: string;
+  finishedAt: string | null;
+  costUsd: number | null;
+}
+
+export interface RecommendationsOverview {
+  items: RecommendationView[];
+  batch: RecommendationBatchView | null;
 }

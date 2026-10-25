@@ -107,6 +107,8 @@ model Employee {
   skills                     Skill[]
   skillRuns                  SkillRun[]
   routines                   Routine[]
+  recommendations            Recommendation[]
+  recommendationBatches      RecommendationBatch[]
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
   meetingSegmentsSpoken      MeetingSegment[]
@@ -2771,6 +2773,7 @@ enum SkillRevisionSource {
   MANUAL
   FEEDBACK
   SENT_MAIL
+  RECOMMENDATION
 }
 
 enum SkillRevisionStatus {
@@ -2971,4 +2974,106 @@ model RoutineRun {
   @@unique([routineId, slot])
   @@index([routineId, createdAt])
   @@index([status, lockedAt])
+}
+
+// ARMS, фаза 5 — рекомендации: раз в неделю (пятница утром) Opus разбирает
+// последние 7 дней (чат, расход ИИ, навыки, регламенты, память) и предлагает
+// улучшения. Применяет человек кнопкой — только данные (черновик регламента,
+// предложение по навыку, память, модель/лимит); код — задачей разработчику.
+enum RecommendationArea {
+  APPS
+  ROUTINES
+  MEMORY
+  SKILLS
+}
+
+enum RecommendationAction {
+  CREATE_ROUTINE
+  REVISE_SKILL
+  ADD_MEMORY
+  ARCHIVE_MEMORY
+  DOWNGRADE_SKILL_MODEL
+  SET_ROUTINE_CAP
+  DISABLE_SKILL
+  DEV_TASK
+}
+
+enum RecommendationStatus {
+  NEW
+  IN_CART
+  APPLIED
+  DISMISSED
+}
+
+enum RecommendationEffort {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum RecommendationBatchStatus {
+  GENERATING
+  DONE
+  FAILED
+}
+
+enum RecommendationBatchTrigger {
+  SCHEDULE
+  BUTTON
+}
+
+// Один прогон анализа — фоновая задача (claim SKIP LOCKED). weekKey — дата
+// пятницы для планового прогона: unique(ownerId, weekKey) не даёт собрать
+// неделю дважды; у «Собрать сейчас» weekKey = null.
+model RecommendationBatch {
+  id         String                     @id @default(cuid())
+  ownerId    String
+  owner      Employee                   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  trigger    RecommendationBatchTrigger
+  status     RecommendationBatchStatus  @default(GENERATING)
+  weekKey    String?
+  error      String?
+  tokensIn   Int                        @default(0)
+  tokensOut  Int                        @default(0)
+  costUsd    Float?
+  lockedAt   DateTime?
+  attempts   Int                        @default(0)
+  createdAt  DateTime                   @default(now())
+  finishedAt DateTime?
+
+  recommendations Recommendation[]
+
+  @@unique([ownerId, weekKey])
+  @@index([status, lockedAt])
+}
+
+model Recommendation {
+  id          String               @id @default(cuid())
+  ownerId     String
+  owner       Employee             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  batchId     String
+  batch       RecommendationBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  area        RecommendationArea
+  action      RecommendationAction
+  title       String
+  benefit     String
+  plan        String
+  effort      RecommendationEffort
+  // 1 — высокий, 3 — низкий.
+  priority    Int
+  // Оценка экономии токенов в неделю; null — не про экономию.
+  tokenSaving Int?
+  // Параметры действия (id навыка/регламента/пункта памяти, текст, лимит…).
+  payload     Json
+  // action + цель + нормализованный заголовок: отклонённое не предлагаем снова.
+  fingerprint String
+  status      RecommendationStatus @default(NEW)
+  // Что создано при применении: { kind, id, label }.
+  result      Json?
+  error       String?
+  createdAt   DateTime             @default(now())
+  decidedAt   DateTime?
+
+  @@index([ownerId, status])
+  @@index([ownerId, fingerprint])
 }

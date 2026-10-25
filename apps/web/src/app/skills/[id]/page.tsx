@@ -20,7 +20,7 @@ const EFFORTS = Object.keys(SKILL_EFFORT_LABELS) as SkillEffort[];
 const OUTPUTS = Object.keys(SKILL_OUTPUT_LABELS) as SkillOutput[];
 const TONE_SLUG = 'тон';
 
-const SOURCE_LABELS: Record<SkillRevisionView['source'], string> = { MANUAL: 'Вручную', FEEDBACK: 'По отзывам', SENT_MAIL: 'Из отправленных писем' };
+const SOURCE_LABELS: Record<SkillRevisionView['source'], string> = { MANUAL: 'Вручную', FEEDBACK: 'По отзывам', SENT_MAIL: 'Из отправленных писем', RECOMMENDATION: 'Из рекомендаций' };
 const STATUS_LABELS: Record<SkillRevisionView['status'], string> = {
   GENERATING: 'готовится',
   PROPOSED: 'ждёт решения',

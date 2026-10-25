@@ -2070,6 +2070,40 @@ a.routine-run-text:hover { color: var(--link); }
 .routine-drafts li > div { display: flex; flex-direction: column; gap: 2px; flex: 1 1 240px; min-width: 0; }
 .routine-system li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; color: var(--ink-2); }
 .routine-system li .ds-field-hint { flex: none; text-align: right; }
+
+/* Рекомендации (ARMS, фаза 5): область — цветом слева, корзина — снизу. */
+.reco-page { padding-bottom: 72px; }
+.reco-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; align-items: start; }
+.reco-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.reco-areas { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 16px; }
+.reco-area-btn { --area: var(--ink-3); display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 0; border-radius: var(--radius-md); background: none; color: var(--ink-2); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.reco-area-btn::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--area); }
+.reco-area-btn span:first-child { flex: 1; }
+.reco-area-btn .ds-num { color: var(--ink-3); font-size: 13px; }
+.reco-area-btn:hover { background: var(--surface-2); }
+.reco-area-btn[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1); }
+.reco-area-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.is-apps { --area: var(--info); --area-soft: var(--info-soft); }
+.is-routines { --area: var(--agent); --area-soft: var(--agent-soft); }
+.is-memory { --area: var(--review); --area-soft: var(--review-soft); }
+.is-skills { --area: var(--ok); --area-soft: var(--ok-soft); }
+.reco-card { border-left: 3px solid var(--area); }
+.reco-card.is-in-cart { box-shadow: 0 0 0 1px var(--area), var(--shadow-1); }
+.reco-area { font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--area); }
+.reco-facts { margin: 0; display: grid; gap: 2px; font-size: 14px; }
+.reco-facts dt { color: var(--ink-3); font-size: 12px; margin-top: 4px; }
+.reco-facts dd { margin: 0; color: var(--ink-2); }
+.reco-history-toggle { align-self: flex-start; }
+.reco-cart { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: var(--z-sticky); display: flex; align-items: center; gap: 16px; padding: 8px 8px 8px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-pill); box-shadow: var(--shadow-3); font-size: 14px; white-space: nowrap; }
+@media (max-width: 720px) {
+  .reco-layout { grid-template-columns: 1fr; }
+  .reco-areas { position: static; flex-direction: row; flex-wrap: wrap; }
+  .reco-area-btn { flex: none; padding: 6px 10px; }
+  .reco-cart { left: 16px; right: 16px; transform: none; justify-content: space-between; }
+}
+@media (max-width: 640px) {
+  .reco-page .ds-pagehead, .routines-page .ds-pagehead { flex-wrap: wrap; align-items: flex-start; padding-left: 0; padding-right: 0; }
+}
 .routine-form { display: flex; flex-direction: column; gap: 12px; }
 .routine-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .routine-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

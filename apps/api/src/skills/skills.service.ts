@@ -334,6 +334,23 @@ export class SkillsService implements OnModuleInit {
     });
   }
 
+  // Рекомендация (ARMS, фаза 5) с готовой инструкцией — сразу PROPOSED:
+  // человек смотрит дифф на странице навыка и применяет сам.
+  async proposeRevision(userId: string, skillId: string, instructions: string, reason: string) {
+    const skill = await this.findVisible(userId, skillId);
+    return this.prisma.skillRevision.create({
+      data: {
+        skillId,
+        source: SkillRevisionSource.RECOMMENDATION,
+        status: SkillRevisionStatus.PROPOSED,
+        baseVersion: skill.version,
+        instructions: instructions.trim(),
+        reason,
+        createdById: userId,
+      },
+    });
+  }
+
   private async findOwnRevision(userId: string, revisionId: string) {
     const revision = await this.prisma.skillRevision.findUnique({ where: { id: revisionId } });
     if (!revision) throw new NotFoundException('Предложение не найдено');
