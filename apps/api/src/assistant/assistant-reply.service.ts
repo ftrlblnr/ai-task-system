@@ -4,9 +4,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { nowInLocalTimezone } from '../common/timezone';
 import { AssistantToolsService, isWriteTool, toolResultForModel, type ToolExecutionResult } from './assistant-tools.service';
-import { AiUsageService, errorText } from '../ai-usage/ai-usage.service';
+import { AiUsageService, errorText, trackedCreate } from '../ai-usage/ai-usage.service';
 import { MemoryService } from '../memory/memory.service';
 import { isManager } from '../auth/roles';
+import { SkillsService, type ReplySkill } from '../skills/skills.service';
+import { buildSkillBlock, SKILL_EFFORT_VALUES, SKILL_MAX_TOKENS, SKILL_MAX_TOOL_ROUNDS, SKILL_MODEL_IDS } from '../skills/skill-catalog';
+import { buildRouterInput, buildRouterTool, DEEP_MODEL, parseRoute, ROUTER_MODEL, ROUTER_SYSTEM } from './assistant-router';
 
 // Диалоговый ответ ассистента — Stage 2. Phase B: обычный (без tool use)
 // вызов. Phase C: один раунд tool use (LLM решает вызвать get_tasks/
@@ -111,8 +114,10 @@ failed(КОД) — не выполнено); sent — письмо отправ�
 правила выше и права доступа. «Запомни…», «впредь…», «я предпочитаю…» —
 вызови remember; «забудь…» — forget_memory с id из [memory]; подробностей
 нет в списке — recall_memory. Блок [conversation_summary]…[/conversation_summary]
-в начале истории — сводка более ранней части этого разговора. Никогда не
-копируй эти блоки, их пометки и id в ответ.`;
+в начале истории — сводка более ранней части этого разговора. Блок
+[tone]…[/tone] — стиль писем руководителя, [skill …]…[/skill] — навык,
+который пользователь вызвал командой «/…». Никогда не копируй эти блоки,
+их пометки и id в ответ.`;
 
 // Живая проверка (16.09.2026, Phase G) показала, что инструкции в
 // SYSTEM_PROMPT одни не всегда надёжны: модель (особенно быстрый Haiku)
@@ -136,22 +141,67 @@ const LEAKED_CONTEXT_MARKER = /\[(?:shown_task|shown_event|shown_mail_plan|shown
 const LEAKED_LIVE_CONTEXT_BLOCK = /\[live_context\][\s\S]*?\[\/live_context\]/g;
 
 // ARMS, фаза 1 — индекс памяти и сводка разговора: тот же риск утечки.
-const LEAKED_MEMORY_BLOCKS = /\[(memory|conversation_summary)\][\s\S]*?\[\/\1\]/g;
+// ARMS, фаза 3 — тон писем и навык: тот же риск.
+const LEAKED_MEMORY_BLOCKS = /\[(memory|conversation_summary|tone)\][\s\S]*?\[\/\1\]/g;
+const LEAKED_SKILL_BLOCK = /\[skill [^\]\n]*\][\s\S]*?\[\/skill\]/g;
 
 export function stripLeakedContextMarkers(text: string): string {
-  return text.replace(LEAKED_CONTEXT_MARKER, '').replace(LEAKED_LIVE_CONTEXT_BLOCK, '').replace(LEAKED_MEMORY_BLOCKS, '').trim();
+  return text
+    .replace(LEAKED_CONTEXT_MARKER, '')
+    .replace(LEAKED_LIVE_CONTEXT_BLOCK, '')
+    .replace(LEAKED_MEMORY_BLOCKS, '')
+    .replace(LEAKED_SKILL_BLOCK, '')
+    .trim();
 }
 
 export function buildSummaryTurn(summary: string): string {
   return `[conversation_summary]\n${summary.trim()}\n[/conversation_summary]`;
 }
 
-// Кэш: system (инструкции) и индекс памяти — с TTL 1 час: руководитель
-// пишет урывками, 5 минут мало, а префикс одинаков между разговорами.
-// Индекс отдельным блоком: меняется память — перезаписывается только он.
-export function buildSystemBlocks(memoryIndex: string | null): Anthropic.TextBlockParam[] {
+// Кэш: system (инструкции) и персональный блок (память + тон) — с TTL 1 час:
+// руководитель пишет урывками, 5 минут мало, а префикс одинаков между
+// разговорами. Персональное отдельным блоком: меняется память — перезаписывается
+// только он. Навык (ARMS 3) — последним, без своей метки: его покрывает
+// верхнеуровневая метка запроса, а меток кэша всего четыре.
+export function buildSystemBlocks(memoryIndex: string | null, extras: { tone?: string | null; skill?: ReplySkill | null } = {}): Anthropic.TextBlockParam[] {
   const cache = { type: 'ephemeral' as const, ttl: '1h' as const };
-  return [{ type: 'text', text: SYSTEM_PROMPT, cache_control: cache }, ...(memoryIndex ? [{ type: 'text' as const, text: memoryIndex, cache_control: cache }] : [])];
+  const personal = [memoryIndex, extras.tone].filter((b): b is string => !!b).join('\n\n');
+  return [
+    { type: 'text', text: SYSTEM_PROMPT, cache_control: cache },
+    ...(personal ? [{ type: 'text' as const, text: personal, cache_control: cache }] : []),
+    ...(extras.skill ? [{ type: 'text' as const, text: buildSkillBlock(extras.skill) }] : []),
+  ];
+}
+
+// Модель и журнал одного ответа: обычный чат, навык или вопрос, который
+// роутер отправил на Opus.
+export interface ReplyCallConfig {
+  model: string;
+  effort: 'low' | 'medium' | 'high';
+  maxTokens: number;
+  maxToolRounds: number;
+  feature: string;
+  meta?: Record<string, unknown>;
+}
+
+export const DEFAULT_CALL: ReplyCallConfig = { model: REPLY_MODEL, effort: 'low', maxTokens: 4096, maxToolRounds: MAX_TOOL_ROUNDS, feature: 'assistant.reply' };
+
+export function skillCallConfig(skill: ReplySkill): ReplyCallConfig {
+  return {
+    model: SKILL_MODEL_IDS[skill.model],
+    effort: SKILL_EFFORT_VALUES[skill.effort],
+    maxTokens: SKILL_MAX_TOKENS[skill.model],
+    maxToolRounds: SKILL_MAX_TOOL_ROUNDS,
+    feature: `skill.run:${skill.slug}`,
+    meta: { skillId: skill.id },
+  };
+}
+
+// Навыку — только его инструменты (и только из доступных роли).
+export function toolsForSkill(tools: Anthropic.Tool[], skill: ReplySkill | null | undefined): Anthropic.Tool[] {
+  if (!skill) return tools;
+  const allowed = new Set(skill.allowedTools);
+  return tools.filter((t) => allowed.has(t.name));
 }
 
 // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — до этого этапа
@@ -208,6 +258,7 @@ export class AssistantReplyService {
     private readonly tools: AssistantToolsService,
     @Optional() private readonly aiUsage?: AiUsageService,
     @Optional() private readonly memory?: MemoryService,
+    @Optional() private readonly skills?: SkillsService,
   ) {}
 
   // Ленивая инициализация — тот же приём, что WhisperService/
@@ -227,8 +278,9 @@ export class AssistantReplyService {
     conversationId: string,
     userMessageId: string,
     summary?: string | null,
+    skill?: ReplySkill | null,
   ): Promise<AssistantReplyResult> {
-    return this.runReply(text, history, user, conversationId, userMessageId, undefined, undefined, summary);
+    return this.runReply(text, history, user, conversationId, userMessageId, undefined, undefined, summary, skill);
   }
 
   // signal — обрыв соединения с клиентом (AssistantChatService слушает
@@ -243,8 +295,9 @@ export class AssistantReplyService {
     onEvent: ReplyStreamListener,
     signal?: AbortSignal,
     summary?: string | null,
+    skill?: ReplySkill | null,
   ): Promise<AssistantReplyResult> {
-    return this.runReply(text, history, user, conversationId, userMessageId, onEvent, signal, summary);
+    return this.runReply(text, history, user, conversationId, userMessageId, onEvent, signal, summary, skill);
   }
 
   // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — conversationId/
@@ -265,6 +318,7 @@ export class AssistantReplyService {
     onEvent?: ReplyStreamListener,
     signal?: AbortSignal,
     summary?: string | null,
+    skill?: ReplySkill | null,
   ): Promise<AssistantReplyResult> {
     // Дата — в последнем сообщении, а не в system: system и tools не меняются
     // от запроса к запросу и кэшируются (см. streamOnce). Сводка ранней части
@@ -280,8 +334,14 @@ export class AssistantReplyService {
         ],
       },
     ];
-    const [tools, memoryIndex] = await Promise.all([this.tools.buildTools(user), this.loadMemoryIndex(user)]);
-    const system = buildSystemBlocks(memoryIndex);
+    const [allTools, memoryIndex, tone, call] = await Promise.all([
+      this.tools.buildTools(user),
+      this.loadMemoryIndex(user),
+      this.loadTone(user),
+      skill ? Promise.resolve(skillCallConfig(skill)) : this.route(text),
+    ]);
+    const tools = toolsForSkill(allTools, skill);
+    const system = buildSystemBlocks(memoryIndex, { tone, skill });
     const toolCalls: AssistantReplyResult['toolCalls'] = [];
     // Hardening-раунд Phase O (22.09.2026, P0/P1 "stable tool
     // idempotency"), уточнено roadmap v13 MUST-FIX #2 (23.09.2026) —
@@ -303,7 +363,7 @@ export class AssistantReplyService {
     let writeToolCallIndex = 0;
 
     onEvent?.({ type: 'text-reset' });
-    let response = await this.streamOnce(system, messages, tools, onEvent, signal);
+    let response = await this.streamOnce(call, system, messages, tools, onEvent, signal);
 
     for (let round = 1; ; round++) {
       const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
@@ -311,12 +371,12 @@ export class AssistantReplyService {
         return { text: this.extractText(response.content), toolCalls };
       }
 
-      if (round > MAX_TOOL_ROUNDS) {
+      if (round > call.maxToolRounds) {
         // Потолок раундов достигнут — сознательно не зацикливаемся дальше
         // (см. MAX_TOOL_ROUNDS выше), берём текст последнего ответа как
         // есть (обычно пустой, раз модель снова попросила инструмент —
         // extractText сам подставит нейтральный fallback).
-        this.logger.warn(`Модель запросила ещё один раунд tool use сверх лимита (${MAX_TOOL_ROUNDS}) — беру текст как есть`);
+        this.logger.warn(`Модель запросила ещё один раунд tool use сверх лимита (${call.maxToolRounds}) — беру текст как есть`);
         return { text: this.extractText(response.content), toolCalls };
       }
 
@@ -361,7 +421,7 @@ export class AssistantReplyService {
       // с tool_use, и начинаем текст следующего раунда с чистого
       // накопителя (см. комментарий у ReplyStreamEvent выше).
       onEvent?.({ type: 'text-reset' });
-      response = await this.streamOnce(system, messages, tools, onEvent, signal);
+      response = await this.streamOnce(call, system, messages, tools, onEvent, signal);
     }
   }
 
@@ -377,7 +437,42 @@ export class AssistantReplyService {
     }
   }
 
+  private async loadTone(user: AuthenticatedUser): Promise<string | null> {
+    if (!this.skills) return null;
+    try {
+      return await this.skills.toneBlock(user);
+    } catch (err) {
+      this.logger.warn(`tone block failed: ${errorText(err)}`);
+      return null;
+    }
+  }
+
+  // Роутер (ARMS 3) — только по флагу ASSISTANT_ROUTER=on; любой сбой —
+  // обычный путь на Haiku.
+  private async route(text: string): Promise<ReplyCallConfig> {
+    if (this.config.get<string>('ASSISTANT_ROUTER') !== 'on') return DEFAULT_CALL;
+    try {
+      const response = await trackedCreate(this.aiUsage, 'router', this.getClient(), {
+        model: ROUTER_MODEL,
+        max_tokens: 1024,
+        output_config: { effort: 'low' },
+        system: ROUTER_SYSTEM,
+        tools: [buildRouterTool()],
+        tool_choice: { type: 'tool', name: 'route' },
+        messages: [{ role: 'user', content: buildRouterInput(text) }],
+      });
+      const block = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+      const route = parseRoute(block?.input);
+      if (route.tier === 'fast') return DEFAULT_CALL;
+      return { model: DEEP_MODEL, effort: 'medium', maxTokens: 16000, maxToolRounds: SKILL_MAX_TOOL_ROUNDS, feature: 'assistant.reply', meta: { tier: 'deep', reason: route.reason } };
+    } catch (err) {
+      this.logger.warn(`router failed: ${errorText(err)}`);
+      return DEFAULT_CALL;
+    }
+  }
+
   private async streamOnce(
+    call: ReplyCallConfig,
     system: Anthropic.TextBlockParam[],
     messages: Anthropic.MessageParam[],
     tools: Anthropic.Tool[],
@@ -386,17 +481,17 @@ export class AssistantReplyService {
   ): Promise<Anthropic.Message> {
     const stream = this.getClient().messages.stream(
       {
-        model: REPLY_MODEL,
+        model: call.model,
         // Размышления модели тоже входят в max_tokens.
-        max_tokens: 4096,
-        output_config: { effort: 'low' },
+        max_tokens: call.maxTokens,
+        output_config: { effort: call.effort },
         // Кэш: метки на system покрывают tools + system (+ индекс памяти),
         // верхнеуровневая — весь префикс, который повторяется в следующих
         // раундах с инструментами.
         system,
         cache_control: { type: 'ephemeral' },
-        tools,
-        tool_choice: { type: 'auto' },
+        // Навык без инструментов — без tools вовсе.
+        ...(tools.length ? { tools, tool_choice: { type: 'auto' as const } } : {}),
         messages,
       },
       { signal },
@@ -411,10 +506,10 @@ export class AssistantReplyService {
     });
     try {
       const message = await stream.finalMessage();
-      this.aiUsage?.record({ feature: 'assistant.reply', model: REPLY_MODEL, latencyMs: Date.now() - started, firstTokenMs, ok: true, usage: message.usage });
+      this.aiUsage?.record({ feature: call.feature, model: call.model, latencyMs: Date.now() - started, firstTokenMs, ok: true, usage: message.usage, meta: call.meta });
       return message;
     } catch (err) {
-      this.aiUsage?.record({ feature: 'assistant.reply', model: REPLY_MODEL, latencyMs: Date.now() - started, ok: false, error: errorText(err) });
+      this.aiUsage?.record({ feature: call.feature, model: call.model, latencyMs: Date.now() - started, ok: false, error: errorText(err), meta: call.meta });
       throw err;
     }
   }

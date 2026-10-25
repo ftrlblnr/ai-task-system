@@ -1,4 +1,5 @@
 import { Conversation, Message, MessagePart, MessagePartType, MessageRole, MessageStatus } from '@prisma/client';
+import type { SkillRunView } from '../skills/skills.service';
 import type { MarkdownPartData, ErrorPartData, TaskCardData, EventCardData, ToolActivityData, FilePartData, MailPlanCardData, MailDraftCardData } from './dto/message-part-data.dto';
 
 // Публичный HTTP-контракт (packages/shared-types) объявляет role/status/
@@ -48,6 +49,8 @@ export interface ResponseMessage {
   createdAt: string;
   updatedAt: string;
   parts: ResponseMessagePart[];
+  // ARMS 3 — ответ навыка: под ним 👍/👎.
+  skillRun?: SkillRunView | null;
 }
 
 export interface ResponseConversation {
@@ -70,7 +73,7 @@ export function toResponseMessagePart(part: MessagePart): ResponseMessagePart {
   };
 }
 
-export function toResponseMessage(message: Message & { parts: MessagePart[] }): ResponseMessage {
+export function toResponseMessage(message: Message & { parts: MessagePart[]; skillRun?: SkillRunView | null }): ResponseMessage {
   return {
     id: message.id,
     conversationId: message.conversationId,
@@ -80,6 +83,7 @@ export function toResponseMessage(message: Message & { parts: MessagePart[] }): 
     createdAt: message.createdAt.toISOString(),
     updatedAt: message.updatedAt.toISOString(),
     parts: message.parts.map(toResponseMessagePart),
+    ...(message.skillRun ? { skillRun: message.skillRun } : {}),
   };
 }
 

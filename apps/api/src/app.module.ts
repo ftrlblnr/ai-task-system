@@ -26,6 +26,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { TripsModule } from './trips/trips.module';
 import { AiUsageModule } from './ai-usage/ai-usage.module';
 import { MemoryModule } from './memory/memory.module';
+import { SkillsModule } from './skills/skills.module';
 import { LegalModule } from './legal/legal.module';
 import { McpModule } from './mcp/mcp.module';
 import { RealtimeModule } from './realtime/realtime.module';
@@ -37,6 +38,7 @@ import { RealtimeModule } from './realtime/realtime.module';
     PrismaModule,
     AiUsageModule,
     MemoryModule,
+    SkillsModule,
     RealtimeModule,
     CryptoModule,
     AuditModule,

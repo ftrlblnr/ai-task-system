@@ -5,6 +5,7 @@ import type { ConversationMessage, FilePartData } from '@ai-task-system/shared-t
 import { Alert, AgentMessage, Button, UserMessage } from '@/components/ui';
 import { FilePartView, MessagePartsList } from '../assistant-message-part';
 import type { VoiceUndoEntry } from './voice-controls';
+import { SkillRating } from './skills';
 
 // Лента переписки с ассистентом: пустое приглашение, сообщения, «Повторить»
 // и кнопка «↓ Новые сообщения». Вынесено из assistant-screen.tsx (редизайн
@@ -100,6 +101,7 @@ export function MessageList({
         return (
           <AgentMessage key={m.id} state={m.status === 'completed' ? 'done' : m.status === 'failed' ? 'error' : m.status} actions={false}>
             {m.status === 'pending' ? null : <MessagePartsList parts={m.parts} fresh={fresh} streamingPartId={streamingPartId} />}
+            {m.skillRun && m.status === 'completed' && <SkillRating run={m.skillRun} />}
             {m.parts.map((part) => {
               const undo = voiceUndos.find((u) => u.messageId === m.id && u.partId === part.id);
               if (!undo) return null;

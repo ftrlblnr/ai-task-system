@@ -55,7 +55,7 @@ export class AiUsageService {
   }
 
   // Обёртка для messages.create(): время и usage пишутся и при успехе, и при сбое.
-  async track(feature: string, model: string, call: () => Promise<Anthropic.Message>): Promise<Anthropic.Message> {
+  async track(feature: string, model: string, call: () => Promise<Anthropic.Message>, meta?: Record<string, unknown>): Promise<Anthropic.Message> {
     const started = Date.now();
     try {
       const response = await call();
@@ -65,6 +65,7 @@ export class AiUsageService {
         latencyMs: Date.now() - started,
         ok: true,
         usage: response.usage,
+        meta,
       });
       return response;
     } catch (err) {
@@ -74,6 +75,7 @@ export class AiUsageService {
         latencyMs: Date.now() - started,
         ok: false,
         error: errorText(err),
+        meta,
       });
       throw err;
     }
@@ -136,7 +138,8 @@ export function trackedCreate(
   feature: string,
   client: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
+  meta?: Record<string, unknown>,
 ): Promise<Anthropic.Message> {
   const call = () => client.messages.create(params);
-  return aiUsage ? aiUsage.track(feature, params.model, call) : call();
+  return aiUsage ? aiUsage.track(feature, params.model, call, meta) : call();
 }

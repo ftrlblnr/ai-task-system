@@ -7,12 +7,15 @@ import { MeetingsModule } from '../meetings/meetings.module';
 import { EmployeesModule } from '../employees/employees.module';
 import { LegalModule } from '../legal/legal.module';
 import { MemoryModule } from '../memory/memory.module';
+import { SkillsModule } from '../skills/skills.module';
+import { TelegramModule } from '../telegram/telegram.module';
 import { AssistantChatController } from './assistant-chat.controller';
 import { AssistantChatService } from './assistant-chat.service';
 import { AssistantReplyService } from './assistant-reply.service';
 import { AssistantToolsService } from './assistant-tools.service';
 import { LegalReviewNotifier } from './legal-review-notifier.service';
 import { ConversationCompactionService } from './conversation-compaction.service';
+import { SkillRunExecutionService } from './skill-run-execution.service';
 
 @Module({
   // TasksModule/CalendarModule — AssistantToolsService читает через
@@ -31,9 +34,11 @@ import { ConversationCompactionService } from './conversation-compaction.service
   // MailQueryService/MailStore, экспортированные MailModule для этого же.
   // LegalModule — инструмент legal_ask (агент-юрист). MemoryModule — память
   // ассистента (ARMS, фаза 1): инструменты remember/recall/forget и индекс.
-  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule],
+  // SkillsModule (ARMS, фаза 3) — «/slug» в чате, тон писем; TelegramModule —
+  // результат запуска навыка кнопкой уходит и в Telegram.
+  imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule, SkillsModule, TelegramModule],
   controllers: [AssistantChatController],
-  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService],
+  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.

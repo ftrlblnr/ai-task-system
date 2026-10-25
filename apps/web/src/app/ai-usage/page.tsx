@@ -28,6 +28,9 @@ const FEATURE_LABELS: Record<string, string> = {
   'trips.extraction': 'Поездки — разбор документов',
   'legal.ask': 'Юрист — вопрос по НПА',
   'legal.review': 'Юрист — разбор договора',
+  'memory.suggest': 'Память — предложения за день',
+  'conversation.compact': 'Ассистент — сжатие разговора',
+  router: 'Ассистент — выбор модели',
 };
 
 const MODEL_LABELS: Record<string, string> = {
@@ -43,7 +46,11 @@ const CACHE_WARN_MIN_INPUT_PER_CALL = 2000;
 const CACHE_WARN_SHARE = 0.1;
 
 function label(groupBy: AiUsageGroupBy, key: string): string {
-  return (groupBy === 'model' ? MODEL_LABELS : FEATURE_LABELS)[key] ?? key;
+  if (groupBy === 'model') return MODEL_LABELS[key] ?? key;
+  // Навыки (ARMS 3): skill.run:<slug> — запуск, skill.train:<slug> — правка инструкции.
+  if (key.startsWith('skill.run:')) return `Навык /${key.slice('skill.run:'.length)}`;
+  if (key.startsWith('skill.train:')) return `Навык /${key.slice('skill.train:'.length)} — обучение`;
+  return FEATURE_LABELS[key] ?? key;
 }
 
 function usd(value: number): string {

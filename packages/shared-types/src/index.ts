@@ -610,6 +610,8 @@ export interface ConversationMessage {
   createdAt: string;
   updatedAt: string;
   parts: MessagePart[];
+  // ARMS, фаза 3 — ответ навыка: под ним 👍/👎.
+  skillRun?: SkillRunRef | null;
 }
 
 export interface ConversationSummary {
@@ -1723,3 +1725,96 @@ export interface UpdateMemoryInput {
   pinned?: boolean;
   status?: 'ACTIVE' | 'ARCHIVED';
 }
+
+// ─── Навыки (ARMS, фаза 3) ───────────────────────────────────────────────
+export type SkillKind = 'PLAYBOOK' | 'KNOWLEDGE' | 'ACTION';
+export type SkillModel = 'HAIKU' | 'SONNET' | 'OPUS';
+export type SkillEffort = 'LOW' | 'MEDIUM' | 'HIGH';
+export type SkillOutput = 'CHAT' | 'DOCX' | 'TELEGRAM';
+export type SkillFeedbackValue = 'UP' | 'DOWN';
+export type SkillRevisionStatus = 'GENERATING' | 'PROPOSED' | 'APPLIED' | 'REJECTED' | 'FAILED';
+export type SkillRevisionSource = 'MANUAL' | 'FEEDBACK' | 'SENT_MAIL';
+export type SkillRunStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+
+export const SKILL_KIND_LABELS: Record<SkillKind, string> = { PLAYBOOK: 'Порядок действий', KNOWLEDGE: 'Знание', ACTION: 'Кнопка' };
+export const SKILL_MODEL_LABELS: Record<SkillModel, string> = { HAIKU: 'Haiku', SONNET: 'Sonnet', OPUS: 'Opus' };
+export const SKILL_EFFORT_LABELS: Record<SkillEffort, string> = { LOW: 'быстро', MEDIUM: 'обычно', HIGH: 'глубоко' };
+export const SKILL_OUTPUT_LABELS: Record<SkillOutput, string> = { CHAT: 'В чат', DOCX: 'Word', TELEGRAM: 'Telegram' };
+export const SKILL_SLUG_PATTERN = '^[a-zа-яё0-9]+(-[a-zа-яё0-9]+)*$';
+
+export interface SkillView {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  kind: SkillKind;
+  instructions: string;
+  model: SkillModel;
+  effort: SkillEffort;
+  allowedTools: string[];
+  output: SkillOutput;
+  enabled: boolean;
+  version: number;
+  shared: boolean;
+  own: boolean;
+  updatedAt: string;
+}
+
+export interface SkillListItem extends SkillView {
+  runs30d: number;
+  pendingRevisions: number;
+}
+
+export interface SkillRevisionView {
+  id: string;
+  source: SkillRevisionSource;
+  status: SkillRevisionStatus;
+  baseVersion: number;
+  instructions: string | null;
+  reason: string | null;
+  error: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface SkillFeedbackItem {
+  id: string;
+  feedback: SkillFeedbackValue;
+  feedbackText: string | null;
+  feedbackAt: string | null;
+  inputText: string;
+  conversationId: string | null;
+}
+
+export interface SkillDetail {
+  skill: SkillView;
+  revisions: SkillRevisionView[];
+  feedback: SkillFeedbackItem[];
+  stats: { runs30d: number; calls30d: number; costUsd30d: number };
+}
+
+export interface SkillToolOption {
+  name: string;
+  label: string;
+}
+
+export interface SkillRunState {
+  id: string;
+  status: SkillRunStatus;
+  conversationId: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface SkillRunRef {
+  id: string;
+  skillId: string;
+  slug: string;
+  title: string;
+  feedback: SkillFeedbackValue | null;
+}
+
+export type CreateSkillInput = Pick<SkillView, 'slug' | 'title' | 'description' | 'kind' | 'instructions' | 'model' | 'effort'> &
+  Partial<Pick<SkillView, 'allowedTools' | 'output'>>;
+export type UpdateSkillInput = Partial<Omit<SkillView, 'id' | 'slug' | 'version' | 'shared' | 'own' | 'updatedAt'>>;
+

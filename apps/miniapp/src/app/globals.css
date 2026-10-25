@@ -2108,3 +2108,53 @@ select {
 .memory-overlay > .ds-field-hint {
   margin-top: 14px;
 }
+
+/* Навыки (ARMS, фаза 3): команды «/» над полем ввода и 👍/👎 под ответом. */
+.skill-suggest {
+  margin-bottom: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.skill-suggest-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  border-top: 1px solid var(--line);
+  font: inherit;
+  color: inherit;
+}
+.skill-suggest-row:first-child {
+  border-top: 0;
+}
+.skill-suggest-slug {
+  font-size: 15px;
+  font-weight: 600;
+}
+.skill-suggest-desc {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-2);
+}
+.skill-rate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+}
+.skill-rate-label {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin-right: 4px;
+}
+.skill-rate .is-chosen {
+  color: var(--accent);
+}
+.skill-rate-form {
+  width: 100%;
+  margin-top: 4px;
+}

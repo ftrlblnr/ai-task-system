@@ -310,6 +310,7 @@ describe('AssistantChatService.streamMessage (Stage 2 Phase E/F.1)', () => {
       expect.any(Function),
       abortController.signal,
       null,
+      undefined,
     );
   });
 });
@@ -694,5 +695,56 @@ describe('serializeCurrentUserTurn — liveContext только для моде�
 
   it('пустой liveContext игнорируется', () => {
     expect(serializeCurrentUserTurn('Привет', [], '   ')).toBe('Привет');
+  });
+});
+
+// ARMS, фаза 3 — «/slug» в чате: модель получает текст без команды и сам
+// навык; DOCX-навык добавляет файл в ту же реплику; запуск записывается.
+describe('AssistantChatService — навыки (ARMS 3)', () => {
+  function setup(output: 'CHAT' | 'DOCX') {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const userMessage = { id: 'm1', role: 'USER', createdAt: new Date(), parts: [{ id: 'p1', type: 'MARKDOWN', order: 0, data: { content: '/итоги-недели кратко' } }] };
+    const replySpy = jest.fn().mockResolvedValue({ text: '# Итоги недели', toolCalls: [] });
+    const skill = { id: 's1', slug: 'итоги-недели', title: 'Итоги недели', instructions: 'i', model: 'SONNET', effort: 'MEDIUM', allowedTools: [], output };
+    const skills = {
+      resolveInvocation: jest.fn().mockResolvedValue({ skill, text: 'кратко', rest: 'кратко' }),
+      renderDocx: jest.fn().mockResolvedValue({ fileId: 'f9', name: 'Итоги недели.docx', mimeType: 'application/docx', size: 10 }),
+      recordRun: jest.fn().mockResolvedValue({ id: 'run1', skillId: 's1', slug: 'итоги-недели', title: 'Итоги недели', feedback: null }),
+    };
+    const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest
+          .fn()
+          .mockResolvedValueOnce(userMessage)
+          .mockImplementationOnce(({ data }: any) => Promise.resolve({ id: 'm2', status: data.status, createdAt: new Date(), parts: data.parts.create })),
+      },
+      fileArtifact: { updateMany: jest.fn() },
+    };
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any, undefined, skills as any);
+    return { service, replySpy, skills, prisma };
+  }
+
+  it('модель получает текст без команды и навык; запуск записан, skillRun в ответе', async () => {
+    const { service, replySpy, skills } = setup('CHAT');
+    const { assistantMessage } = await service.sendMessage(user({ role: Role.OWNER }), 'c1', { text: '/итоги-недели кратко' });
+    expect(replySpy.mock.calls[0][0]).toBe('кратко');
+    expect(replySpy.mock.calls[0][6]).toMatchObject({ id: 's1' });
+    expect(skills.renderDocx).not.toHaveBeenCalled();
+    expect(skills.recordRun).toHaveBeenCalledWith(expect.objectContaining({ ok: true, outputMessageId: 'm2', inputText: 'кратко', runId: undefined }));
+    expect(assistantMessage.skillRun?.id).toBe('run1');
+  });
+
+  it('DOCX-навык — файл Word в той же реплике', async () => {
+    const { service, skills, prisma } = setup('DOCX');
+    const { assistantMessage } = await service.sendMessage(user({ role: Role.OWNER }), 'c1', { text: '/итоги-недели кратко' }, { skillRunId: 'run0' });
+    expect(skills.renderDocx).toHaveBeenCalledWith('u1', expect.objectContaining({ id: 's1' }), '# Итоги недели');
+    expect(assistantMessage.parts.at(-1)).toMatchObject({ type: 'FILE', data: { fileId: 'f9' } });
+    expect(prisma.fileArtifact.updateMany).toHaveBeenCalledWith({ where: { id: { in: ['f9'] } }, data: { conversationId: 'c1', messageId: 'm2' } });
+    expect(skills.recordRun).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run0' }));
   });
 });

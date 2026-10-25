@@ -104,6 +104,8 @@ model Employee {
   mailboxes                  Mailbox[]
   conversations              Conversation[]
   memoryItems                MemoryItem[]
+  skills                     Skill[]
+  skillRuns                  SkillRun[]
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
   meetingSegmentsSpoken      MeetingSegment[]
@@ -2512,22 +2514,22 @@ model TripRevision {
 // Журнал вызовов ИИ (ai-usage/ai-usage.service.ts): время, токены, кэш —
 // основа для решений о моделях и промптах. Хранится 90 дней.
 model AiCall {
-  id               String   @id @default(cuid())
-  feature          String
-  model            String
-  latencyMs        Int
-  firstTokenMs     Int?
-  inputTokens      Int?
-  outputTokens     Int?
-  cacheReadTokens  Int?
-  cacheWriteTokens Int?
+  id                 String   @id @default(cuid())
+  feature            String
+  model              String
+  latencyMs          Int
+  firstTokenMs       Int?
+  inputTokens        Int?
+  outputTokens       Int?
+  cacheReadTokens    Int?
+  cacheWriteTokens   Int?
   // Из cacheWriteTokens — запись кэша с TTL 1 час (дороже: ×2 к входу, не ×1.25).
   cacheWrite1hTokens Int?
-  audioMs          Int?
-  ok               Boolean
-  error            String?
-  meta             Json?
-  createdAt        DateTime @default(now())
+  audioMs            Int?
+  ok                 Boolean
+  error              String?
+  meta               Json?
+  createdAt          DateTime @default(now())
 
   @@index([feature, createdAt])
   @@index([createdAt])
@@ -2734,4 +2736,142 @@ model MemoryScanState {
   ownerId     String   @id
   scannedUpTo DateTime
   updatedAt   DateTime @updatedAt
+}
+
+// ARMS, фаза 3 — навыки: инструкция + модель + разрешённые инструменты +
+// формат результата. Данные, не код: руководство правит их на странице
+// «Навыки». ownerId = null — общий (системный) навык из seed, уникальность
+// slug среди общих — в коде (Postgres считает NULL разными).
+enum SkillKind {
+  PLAYBOOK
+  KNOWLEDGE
+  ACTION
+}
+
+enum SkillModel {
+  HAIKU
+  SONNET
+  OPUS
+}
+
+enum SkillEffort {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum SkillOutput {
+  CHAT
+  DOCX
+  TELEGRAM
+}
+
+enum SkillRevisionSource {
+  MANUAL
+  FEEDBACK
+  SENT_MAIL
+}
+
+enum SkillRevisionStatus {
+  GENERATING
+  PROPOSED
+  APPLIED
+  REJECTED
+  FAILED
+}
+
+enum SkillRunTrigger {
+  CHAT
+  BUTTON
+}
+
+enum SkillRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum SkillFeedback {
+  UP
+  DOWN
+}
+
+model Skill {
+  id           String      @id @default(cuid())
+  ownerId      String?
+  owner        Employee?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  slug         String
+  title        String
+  // Одна строка: когда вызывать.
+  description  String
+  kind         SkillKind
+  instructions String
+  model        SkillModel
+  effort       SkillEffort
+  // Подмножество инструментов ассистента; пустой список — без инструментов.
+  allowedTools String[]
+  output       SkillOutput @default(CHAT)
+  // false — в архиве: не вызывается и не подсказывается.
+  enabled      Boolean     @default(true)
+  version      Int         @default(1)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  revisions SkillRevision[]
+  runs      SkillRun[]
+
+  @@unique([ownerId, slug])
+}
+
+// История инструкций навыка: ручные правки (APPLIED сразу) и предложения ИИ
+// по отзывам или по отправленным письмам (GENERATING → PROPOSED; применяет
+// только человек). Генерация — фоновая задача (claim SKIP LOCKED).
+model SkillRevision {
+  id           String              @id @default(cuid())
+  skillId      String
+  skill        Skill               @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  source       SkillRevisionSource
+  status       SkillRevisionStatus
+  // Версия навыка, от которой сделана правка: изменилась — предложение устарело.
+  baseVersion  Int
+  instructions String?
+  reason       String?
+  error        String?
+  createdById  String?
+  lockedAt     DateTime?
+  attempts     Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  decidedAt    DateTime?
+
+  @@index([skillId, createdAt])
+  @@index([status, lockedAt])
+}
+
+// Запуск навыка: из чата (/slug) или кнопкой ▶ (фоновая задача, результат —
+// отдельным разговором и в Telegram). Отзыв 👍/👎 — по ответу навыка.
+model SkillRun {
+  id              String          @id @default(cuid())
+  skillId         String
+  skill           Skill           @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  ownerId         String
+  owner           Employee        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  trigger         SkillRunTrigger
+  status          SkillRunStatus
+  inputText       String          @default("")
+  conversationId  String?
+  outputMessageId String?         @unique
+  error           String?
+  feedback        SkillFeedback?
+  feedbackText    String?
+  feedbackAt      DateTime?
+  idempotencyKey  String?         @unique
+  lockedAt        DateTime?
+  attempts        Int             @default(0)
+  createdAt       DateTime        @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  @@index([skillId, createdAt])
+  @@index([status, lockedAt])
 }

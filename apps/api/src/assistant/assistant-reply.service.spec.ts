@@ -29,7 +29,7 @@ function makeService(streamResponses: any[], toolResults: unknown[] = []) {
     buildTools: jest.fn().mockReturnValue([]),
     execute: jest.fn().mockImplementation(() => Promise.resolve(toolResults.shift() ?? { tool: 'get_tasks', items: [], totalCount: 0 })),
   };
-  const service = new AssistantReplyService({} as any, tools as any) as any;
+  const service = new AssistantReplyService({ get: () => undefined } as any, tools as any) as any;
   const streamOnce = jest.spyOn(service, 'streamOnce');
   for (const response of streamResponses) {
     streamOnce.mockImplementationOnce(() => Promise.resolve(response));
@@ -211,7 +211,7 @@ describe('buildDateContext (Stage 2, Phase O)', () => {
 // ANTHROPIC_API_KEY).
 describe('AssistantReplyService.streamOnce — system-промпт и кэш (21.10.2026)', () => {
   function makeStreamingService() {
-    const service = new AssistantReplyService({} as any, { buildTools: jest.fn().mockResolvedValue([]) } as any) as any;
+    const service = new AssistantReplyService({ get: () => undefined } as any, { buildTools: jest.fn().mockResolvedValue([]) } as any) as any;
     const streamSpy = jest
       .fn()
       .mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], usage: {} }) });
@@ -237,7 +237,7 @@ describe('AssistantReplyService.streamOnce — system-промпт и кэш (21
   it('индекс памяти — второй блок system у руководителя, у сотрудника его нет', async () => {
     const memory = { buildIndex: jest.fn().mockResolvedValue('[memory]\n- [PREFERENCE] xlsx (m1)\n[/memory]') };
     const make = () => {
-      const service = new AssistantReplyService({} as any, { buildTools: jest.fn().mockResolvedValue([]) } as any, undefined, memory as any) as any;
+      const service = new AssistantReplyService({ get: () => undefined } as any, { buildTools: jest.fn().mockResolvedValue([]) } as any, undefined, memory as any) as any;
       const streamSpy = jest.fn().mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], usage: {} }) });
       service.client = { messages: { stream: streamSpy } };
       return { service, streamSpy };
@@ -327,5 +327,83 @@ describe('AssistantReplyService — несколько инструментов 
 
     expect(maxRunning).toBe(1);
     expect(tools.execute.mock.calls.map((c: unknown[]) => c[5])).toEqual([0, 1]);
+  });
+});
+
+// ARMS, фаза 3 — навык: своя модель/effort, только разрешённые инструменты,
+// блок [skill] последним (без своей метки кэша), журнал skill.run:<slug>.
+describe('AssistantReplyService — навыки и роутер (ARMS 3)', () => {
+  const skill = {
+    id: 's1',
+    slug: 'к-встрече',
+    title: 'Подготовка к встрече',
+    instructions: 'Найди встречу и участников.',
+    model: 'OPUS' as const,
+    effort: 'MEDIUM' as const,
+    allowedTools: ['get_events'],
+    output: 'CHAT' as const,
+  };
+  const tool = (name: string) => ({ name, description: name, input_schema: { type: 'object', properties: {} } });
+
+  function make(opts: { config?: Record<string, string>; skills?: unknown; create?: jest.Mock } = {}) {
+    const aiUsage = { record: jest.fn(), track: jest.fn((_f: string, _m: string, call: () => Promise<unknown>) => call()) };
+    const service = new AssistantReplyService(
+      { get: (k: string) => opts.config?.[k] } as any,
+      { buildTools: jest.fn().mockResolvedValue([tool('get_tasks'), tool('get_events')]) } as any,
+      aiUsage as any,
+      undefined,
+      opts.skills as any,
+    ) as any;
+    const streamSpy = jest.fn().mockReturnValue({ on: jest.fn(), finalMessage: () => Promise.resolve({ content: [{ type: 'text', text: 'ok' }], usage: {} }) });
+    service.client = { messages: { stream: streamSpy, create: opts.create } };
+    return { service, streamSpy, aiUsage };
+  }
+
+  it('навык: модель Opus, effort medium, только разрешённые инструменты, блок навыка третьим без метки кэша', async () => {
+    const skills = { toneBlock: jest.fn().mockResolvedValue('[tone]\nкоротко\n[/tone]') };
+    const { service, streamSpy, aiUsage } = make({ skills });
+    await service.reply('к встрече с Ахметовым', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1', null, skill);
+    const [payload] = streamSpy.mock.calls[0];
+    expect(payload.model).toBe('claude-opus-5-5');
+    expect(payload.output_config).toEqual({ effort: 'medium' });
+    expect(payload.max_tokens).toBe(16000);
+    expect(payload.tools.map((t: { name: string }) => t.name)).toEqual(['get_events']);
+    expect(payload.system).toHaveLength(3);
+    expect(payload.system[1].text).toContain('[tone]');
+    expect(payload.system[2].text).toContain('[skill /к-встрече — Подготовка к встрече]');
+    expect(payload.system[2].cache_control).toBeUndefined();
+    expect(aiUsage.record).toHaveBeenCalledWith(expect.objectContaining({ feature: 'skill.run:к-встрече', model: 'claude-opus-5-5', meta: { skillId: 's1' } }));
+  });
+
+  it('навык без инструментов — запрос без tools и tool_choice', async () => {
+    const { service, streamSpy } = make();
+    await service.reply('x', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1', null, { ...skill, allowedTools: [] });
+    const [payload] = streamSpy.mock.calls[0];
+    expect(payload.tools).toBeUndefined();
+    expect(payload.tool_choice).toBeUndefined();
+  });
+
+  it('роутер выключен — обычный Haiku, роутер не вызывается', async () => {
+    const create = jest.fn();
+    const { service, streamSpy } = make({ create });
+    await service.reply('сравни три последние встречи', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1');
+    expect(create).not.toHaveBeenCalled();
+    expect(streamSpy.mock.calls[0][0].model).toBe('claude-haiku-5-5');
+  });
+
+  it('роутер включён и сказал deep — ответ на Opus, решение в meta', async () => {
+    const create = jest.fn().mockResolvedValue({ content: [{ type: 'tool_use', id: 't', name: 'route', input: { tier: 'deep', reason: 'сравнение встреч' } }], usage: {} });
+    const { service, streamSpy, aiUsage } = make({ create, config: { ASSISTANT_ROUTER: 'on' } });
+    await service.reply('сравни три последние встречи', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1');
+    expect(create.mock.calls[0][0].tool_choice).toEqual({ type: 'tool', name: 'route' });
+    expect(streamSpy.mock.calls[0][0].model).toBe('claude-opus-5-5');
+    expect(aiUsage.record).toHaveBeenCalledWith(expect.objectContaining({ feature: 'assistant.reply', meta: { tier: 'deep', reason: 'сравнение встреч' } }));
+  });
+
+  it('роутер упал — обычный Haiku', async () => {
+    const create = jest.fn().mockRejectedValue(new Error('overloaded'));
+    const { service, streamSpy } = make({ create, config: { ASSISTANT_ROUTER: 'on' } });
+    await service.reply('привет', [], { id: 'u1', role: 'OWNER' }, 'c1', 'm1');
+    expect(streamSpy.mock.calls[0][0].model).toBe('claude-haiku-5-5');
   });
 });

@@ -10,6 +10,7 @@ import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from '.
 import { SendMessageDto } from './dto/send-message.dto';
 import { ConversationCompactionService } from './conversation-compaction.service';
 import { COMPACT_MIN_BATCH } from './conversation-summary';
+import { SkillsService, type ReplySkill, type SkillRunView } from '../skills/skills.service';
 import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
 
 // Сколько предыдущих сообщений разговора отдавать модели как историю — тот
@@ -23,7 +24,16 @@ import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailD
 // HISTORY_LIMIT + COMPACT_MIN_BATCH, пока фоновое сжатие не догонит.
 const HISTORY_LIMIT = 20;
 
-export type MessageWithParts = Message & { parts: MessagePart[] };
+// skillRun — ответ навыка (ARMS 3): под ним 👍/👎.
+export type MessageWithParts = Message & { parts: MessagePart[]; skillRun?: SkillRunView | null };
+
+type SkillInvocation = { skill: ReplySkill; text: string; rest: string };
+
+// Запуск навыка кнопкой (SkillRunExecutionService) идёт тем же путём, что
+// обычное сообщение, но обновляет уже созданный SkillRun.
+export interface SendMessageOptions {
+  skillRunId?: string;
+}
 
 // Внутренний (Prisma-представление) событийный контракт стриминга —
 // AssistantChatController переводит его в публичный StreamEvent
@@ -150,6 +160,7 @@ export class AssistantChatService {
     private readonly files: FilesService,
     // ARMS 1.2 — без неё (юнит-тесты) история просто не сворачивается.
     @Optional() private readonly compaction?: ConversationCompactionService,
+    @Optional() private readonly skills?: SkillsService,
   ) {}
 
   // MVP (Stage 2 §4.1): у каждого сотрудника должен быть хотя бы один
@@ -260,11 +271,65 @@ export class AssistantChatService {
 
   async getMessages(user: AuthenticatedUser, conversationId: string): Promise<MessageWithParts[]> {
     await this.findOwnedConversation(user, conversationId);
-    return this.prisma.message.findMany({
+    const messages: MessageWithParts[] = await this.prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: 'asc' },
       include: { parts: { orderBy: { order: 'asc' } } },
     });
+    const runs = await this.skills?.runViewsForMessages(messages.filter((m) => m.role === MessageRole.ASSISTANT).map((m) => m.id));
+    return runs?.size ? messages.map((m) => ({ ...m, skillRun: runs.get(m.id) ?? null })) : messages;
+  }
+
+  // ARMS 3 — «/slug …» в начале сообщения. Сбой поиска навыка не должен
+  // ронять ответ: тогда это обычное сообщение.
+  private async resolveSkill(user: AuthenticatedUser, text: string): Promise<SkillInvocation | null> {
+    if (!this.skills) return null;
+    try {
+      return await this.skills.resolveInvocation(user, text);
+    } catch (err) {
+      this.logger.warn(`skill resolve failed: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  // output=DOCX: ответ навыка ещё и файлом Word в той же реплике.
+  private async skillArtifacts(user: AuthenticatedUser, invocation: SkillInvocation | null, result: AssistantReplyResult, firstOrder: number): Promise<{ parts: MessagePartInput[]; fileIds: string[] }> {
+    if (!this.skills || invocation?.skill.output !== 'DOCX') return { parts: [], fileIds: [] };
+    const file = await this.skills.renderDocx(user.id, invocation.skill, result.text);
+    return { parts: [{ type: MessagePartType.FILE, order: firstOrder, data: { ...file } }], fileIds: [file.fileId] };
+  }
+
+  private async finishSkillRun(
+    invocation: SkillInvocation | null,
+    user: AuthenticatedUser,
+    conversationId: string,
+    message: MessageWithParts,
+    opts: SendMessageOptions,
+    error?: string,
+  ): Promise<MessageWithParts> {
+    if (!this.skills || (!invocation && !opts.skillRunId)) return message;
+    try {
+      if (!invocation) {
+        // Кнопкой, но навык успели выключить — запуск не состоялся.
+        await this.skills.failRun(opts.skillRunId as string, 'Навык недоступен', conversationId, message.id);
+        return message;
+      }
+      const ok = message.status === MessageStatus.COMPLETED;
+      const skillRun = await this.skills.recordRun({
+        skill: invocation.skill,
+        ownerId: user.id,
+        runId: opts.skillRunId,
+        inputText: invocation.rest,
+        conversationId,
+        outputMessageId: message.id,
+        ok,
+        error: ok ? undefined : error ?? 'Не удалось получить ответ',
+      });
+      return { ...message, skillRun };
+    } catch (err) {
+      this.logger.warn(`skill run record failed: ${err instanceof Error ? err.message : err}`);
+      return message;
+    }
   }
 
   // Идемпотентность (Stage 2 §29) — тот же clientRequestId в этом же
@@ -580,6 +645,7 @@ export class AssistantChatService {
     user: AuthenticatedUser,
     conversationId: string,
     dto: SendMessageDto,
+    opts: SendMessageOptions = {},
   ): Promise<{ userMessage: MessageWithParts; assistantMessage: MessageWithParts }> {
     await this.findOwnedConversation(user, conversationId);
 
@@ -601,7 +667,7 @@ export class AssistantChatService {
     // же userMessage, присоединяемся к его результату вместо повторного
     // вызова Anthropic/tools.
     const { result } = this.claimOrJoin(userMessage, () =>
-      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto),
+      this.runNonStreamingReply(user, conversationId, userMessage, existing?.assistantMessage ?? undefined, dto, opts),
     );
     const assistantMessage = await result;
 
@@ -617,22 +683,27 @@ export class AssistantChatService {
     userMessage: MessageWithParts,
     existingAssistantMessage: MessageWithParts | undefined,
     dto: SendMessageDto,
+    opts: SendMessageOptions = {},
   ): Promise<MessageWithParts> {
     const requestId = randomUUID();
     const t0 = Date.now();
 
     const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
-    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
+    const invocation = await this.resolveSkill(user, dto.text);
+    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts));
+    let failure: string | undefined;
 
     let assistantMessage: MessageWithParts;
     let toolNames: string[] = [];
     let toolExecutionMs = 0;
     try {
-      const result = await this.reply.reply(currentTurnText, history, user, conversationId, userMessage.id, summary);
+      const result = await this.reply.reply(currentTurnText, history, user, conversationId, userMessage.id, summary, invocation?.skill);
       toolNames = result.toolCalls.map((c) => c.name);
       toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
-      const partsInput = buildAssistantParts(result);
-      const generatedFileIds = this.generatedFileIdsFrom(result.toolCalls);
+      const baseParts = buildAssistantParts(result);
+      const artifacts = await this.skillArtifacts(user, invocation, result, baseParts.length);
+      const partsInput = [...baseParts, ...artifacts.parts];
+      const generatedFileIds = [...this.generatedFileIdsFrom(result.toolCalls), ...artifacts.fileIds];
       assistantMessage = existingAssistantMessage
         ? await this.updateAssistantMessageWithAttachments(
             existingAssistantMessage.id,
@@ -657,6 +728,7 @@ export class AssistantChatService {
       // Техническая ошибка — только в логи (Stage 2 §5.6/§32); пользователю
       // уходит безопасный текст через ErrorPart.
       this.logger.error(`assistant reply reqId=${requestId} failed: ${err instanceof Error ? err.message : err}`);
+      failure = err instanceof Error ? err.message : String(err);
       const errorPart = [{ type: MessagePartType.ERROR, order: 0, data: { message: GENERIC_FAILURE_MESSAGE } }];
       assistantMessage = existingAssistantMessage
         ? await this.prisma.message.update({
@@ -675,6 +747,7 @@ export class AssistantChatService {
     }
 
     await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
+    assistantMessage = await this.finishSkillRun(invocation, user, conversationId, assistantMessage, opts, failure);
 
     this.logger.log(
       `assistant chat reqId=${requestId} conversationId=${conversationId} status=${assistantMessage.status} ` +
@@ -771,7 +844,8 @@ export class AssistantChatService {
     const t0 = Date.now();
 
     const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
-    const currentTurnText = serializeCurrentUserTurn(dto.text, attachmentPartsOf(userMessage.parts));
+    const invocation = await this.resolveSkill(user, dto.text);
+    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts));
 
     let assistantMessage: MessageWithParts;
     try {
@@ -841,16 +915,19 @@ export class AssistantChatService {
         },
         abortSignal,
         summary,
+        invocation?.skill,
       );
 
       const toolExecutionMs = this.sumToolExecutionMs(result.toolCalls);
-      const partsInput = buildAssistantParts(result);
-      const updated = await this.updateAssistantMessageWithAttachments(
+      const baseParts = buildAssistantParts(result);
+      const artifacts = await this.skillArtifacts(user, invocation, result, baseParts.length);
+      const saved = await this.updateAssistantMessageWithAttachments(
         assistantMessage.id,
-        { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: partsInput } },
+        { status: MessageStatus.COMPLETED, requestId, parts: { deleteMany: {}, create: [...baseParts, ...artifacts.parts] } },
         conversationId,
-        this.generatedFileIdsFrom(result.toolCalls),
+        [...this.generatedFileIdsFrom(result.toolCalls), ...artifacts.fileIds],
       );
+      const updated = await this.finishSkillRun(invocation, user, conversationId, saved, {});
       for (const part of updated.parts) {
         emit({ event: 'part.completed', messageId: assistantMessage.id, partId: part.id, part });
       }
@@ -875,6 +952,7 @@ export class AssistantChatService {
         },
         include: { parts: { orderBy: { order: 'asc' } } },
       });
+      await this.finishSkillRun(invocation, user, conversationId, failed, {}, err instanceof Error ? err.message : String(err));
       emit({ event: 'message.failed', messageId: assistantMessage.id, error: GENERIC_FAILURE_MESSAGE });
       await this.prisma.conversation.update({ where: { id: conversationId }, data: { updatedAt: new Date() } });
       this.logger.log(

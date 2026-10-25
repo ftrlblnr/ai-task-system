@@ -20,6 +20,9 @@ import { LiveTranscriber, prefetchLiveTranscription } from '@/lib/live-transcrip
 import { useRealtime } from '@/lib/use-realtime';
 import { Protected } from '@/components/protected';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
+import { matchSkills, SkillRating, SkillSuggest, useSkillOptions, type SkillOption } from '@/components/skill-chat';
+import { useAuth } from '@/lib/auth-context';
+import { isManagerRole } from '@ai-task-system/shared-types';
 import { Alert, Button, IconButton, FileChip, UserMessage, AgentMessage, LiveVoiceBar, cx } from '@/components/ui';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -213,6 +216,19 @@ function AssistantView() {
   const liveActive = livePhase !== 'idle';
   const conversationIdRef = useRef<string | null>(null);
   conversationIdRef.current = conversationId;
+
+  // Навыки (ARMS, фаза 3): «/» в начале сообщения — подсказки команд.
+  const { user } = useAuth();
+  const skillOptions = useSkillOptions(!!user && isManagerRole(user.role));
+  const [skillActive, setSkillActive] = useState(0);
+  const [skillDismissed, setSkillDismissed] = useState(false);
+  const skillMatches = skillDismissed ? [] : matchSkills(text, skillOptions);
+
+  function pickSkill(s: SkillOption) {
+    setText(`/${s.slug} `);
+    setSkillActive(0);
+    textareaRef.current?.focus();
+  }
 
   useEffect(() => {
     api
@@ -443,7 +459,9 @@ function AssistantView() {
       .then((list) => {
         setConversations(list);
         setConversationsError(null);
-        const targetId = list[0]?.id ?? null;
+        // ?c=<id> — ссылка «открыть ответ» навыка (запуск ▶ создаёт разговор).
+        const wanted = new URLSearchParams(window.location.search).get('c');
+        const targetId = (wanted && list.some((c) => c.id === wanted) ? wanted : list[0]?.id) ?? null;
         if (targetId) {
           setConversationId(targetId);
           loadMessages(targetId);
@@ -688,6 +706,22 @@ function AssistantView() {
   }
 
   function onComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (skillMatches.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSkillActive((i) => (i + (e.key === 'ArrowDown' ? 1 : skillMatches.length - 1)) % skillMatches.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        pickSkill(skillMatches[Math.min(skillActive, skillMatches.length - 1)]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        setSkillDismissed(true);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
@@ -804,6 +838,12 @@ function AssistantView() {
                     {m.status === 'pending' ? null : (
                       <MessagePartsList parts={m.parts} fresh={fresh} streamingPartId={streamingPartId} />
                     )}
+                    {m.skillRun && m.status === 'completed' && (
+                      <SkillRating
+                        run={m.skillRun}
+                        onRated={(run) => setMessages((prev) => prev?.map((x) => (x.id === m.id ? { ...x, skillRun: run } : x)) ?? prev)}
+                      />
+                    )}
                     {m.parts.map((part) => {
                       const undo = voiceUndos.find((u) => u.messageId === m.id && u.partId === part.id);
                       if (!undo) return null;
@@ -868,6 +908,7 @@ function AssistantView() {
               {liveTranscript || (voicePhase === 'recording' ? 'Говорите…' : 'Распознаю…')}
             </p>
           )}
+          {voicePhase === 'idle' && <SkillSuggest options={skillMatches} active={Math.min(skillActive, Math.max(skillMatches.length - 1, 0))} onPick={pickSkill} />}
           <textarea
             ref={textareaRef}
             rows={1}
@@ -877,7 +918,11 @@ function AssistantView() {
             value={text}
             disabled={sending || composerDisabled}
             maxLength={MAX_TEXT_LENGTH}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              setSkillDismissed(false);
+              setSkillActive(0);
+            }}
             onInput={onTextareaInput}
             onKeyDown={onComposerKeyDown}
           />

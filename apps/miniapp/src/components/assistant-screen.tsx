@@ -12,6 +12,7 @@ import { MessageList } from './assistant/message-list';
 import { useAssistantStream } from './assistant/use-assistant-stream';
 import { useLiveVoice, useVoiceRecorder } from './assistant/voice-controls';
 import { MemoryOverlay, memoryCountLabel, useMemoryCount } from './assistant/memory-overlay';
+import { useSkillOptions } from './assistant/skills';
 
 // Текстовый AI-чат поверх /assistant/* (Stage 2, Phase D — базовый чат;
 // Phase E — streaming; Phase F/F.2 — вложения; Phase H — голос объединён в
@@ -34,6 +35,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
   const memoryEnabled = !!user && isManagerRole(user.role);
   const [memoryCount, refreshMemoryCount] = useMemoryCount(memoryEnabled, active);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const skillOptions = useSkillOptions(memoryEnabled);
   const wasSending = useRef(false);
   useEffect(() => {
     if (wasSending.current && !stream.sending) refreshMemoryCount();
@@ -127,6 +129,7 @@ export function AssistantScreen({ active = true }: { active?: boolean }) {
         attachments={attachments}
         voice={voice}
         live={live}
+        skills={skillOptions}
       />
     </div>
   );

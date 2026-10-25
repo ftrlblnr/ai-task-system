@@ -1992,3 +1992,53 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
 .memory-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .memory-add select { flex: 0 0 170px; }
 .memory-add input { flex: 1 1 260px; }
+
+/* Навыки (ARMS, фаза 3): колода карточек, страница навыка, дифф правки. */
+.skills-page { display: flex; flex-direction: column; gap: 16px; }
+.skill-deck { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.skill-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-1); }
+.skill-card.is-archived { opacity: .65; }
+.skill-card-head { display: flex; align-items: center; gap: 8px; }
+.skill-card-icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); background: var(--agent-soft); color: var(--agent); }
+.skill-slug { font-size: 13px; color: var(--ink-2); }
+.skill-card-head .ds-badge { margin-left: auto; }
+.skill-card-title { font-size: 17px; line-height: 22px; font-weight: 600; color: var(--ink); text-decoration: none; }
+.skill-card-title:hover { text-decoration: underline; }
+.skill-card-desc { margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-2); flex: 1 1 auto; }
+.skill-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.skill-card-foot { display: flex; align-items: center; gap: 2px; margin-top: 4px; }
+.skill-card-foot .ds-field-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.skill-card-result { font-size: 14px; color: var(--link); }
+.skill-back { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); text-decoration: none; }
+.skill-title-slug { color: var(--ink-2); font-weight: 500; }
+.skill-form { display: flex; flex-direction: column; gap: 12px; }
+.skill-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.skill-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.skill-instructions { font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; line-height: 20px; }
+.skill-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px 12px; }
+.skill-tools .ds-check { flex-direction: row; margin: 0; font-weight: 500; }
+.skill-diff { margin: 0 0 12px; padding: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+.skill-diff-add { background: var(--ok-soft); display: block; }
+.skill-diff-del { background: var(--danger-soft); color: var(--ink-2); text-decoration: line-through; display: block; }
+.skill-diff-same { display: block; color: var(--ink-2); }
+.skill-feedback, .skill-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.skill-feedback li { display: flex; gap: 10px; align-items: flex-start; }
+.skill-feedback li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.skill-feedback .is-up { color: var(--ok); flex: none; margin-top: 3px; }
+.skill-feedback .is-down { color: var(--danger); flex: none; margin-top: 3px; }
+.skill-history li { display: flex; gap: 8px; align-items: baseline; font-size: 14px; }
+@media (max-width: 640px) {
+  .skill-deck { grid-template-columns: 1fr; }
+}
+
+/* Чат: подсказки «/команда» над полем ввода и отзыв под ответом навыка. */
+.skill-suggest { list-style: none; margin: 0 0 6px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: var(--shadow-2); max-height: 260px; overflow: auto; }
+.skill-suggest button { display: flex; gap: 10px; align-items: baseline; width: 100%; padding: 8px 10px; border-radius: var(--radius-sm); text-align: left; font: inherit; color: var(--ink); background: none; }
+.skill-suggest button:hover, .skill-suggest button.is-active { background: var(--surface-2); }
+.skill-suggest .mono { font-size: 13px; flex: none; }
+.skill-suggest .ds-field-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-rate { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.skill-rate .ds-field-hint { margin-right: 4px; }
+.skill-rate .is-chosen { color: var(--agent); }
+.skill-rate-form { display: flex; gap: 6px; width: 100%; margin-top: 4px; }
+.skill-rate-form input { flex: 1 1 auto; }

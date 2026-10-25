@@ -6,6 +6,7 @@ import { QUICK_PROMPTS } from '@/lib/labels';
 import { LiveVoiceBar, cx } from '@/components/ui';
 import { AttachButton, PendingAttachmentsRow, type PendingAttachments } from './attachments';
 import { formatElapsed, type useLiveVoice, type useVoiceRecorder } from './voice-controls';
+import { matchSkills, SkillSuggest, type SkillOption } from './skills';
 
 // Поле ввода ассистента (редизайн M5, MINIAPP_REDESIGN.md §4.6): над ним —
 // чипы-подсказки (те же, что на «Сегодня») и «Живой голос»; поле 44px и
@@ -29,6 +30,7 @@ export function Composer({
   attachments,
   voice,
   live,
+  skills = [],
 }: {
   text: string;
   onTextChange: (text: string) => void;
@@ -41,7 +43,10 @@ export function Composer({
   attachments: PendingAttachments;
   voice: ReturnType<typeof useVoiceRecorder>;
   live: ReturnType<typeof useLiveVoice>;
+  // ARMS 3 — навыки руководства: «/» в начале показывает команды.
+  skills?: SkillOption[];
 }) {
+  const skillMatches = voice.phase === 'idle' ? matchSkills(text, skills) : [];
   const composerDisabled = live.active || voice.phase !== 'idle';
   const hasText = text.trim().length > 0;
   // Подсказки мешают, только когда человек уже пишет или говорит.
@@ -50,7 +55,8 @@ export function Composer({
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      onSend();
+      if (skillMatches.length > 0) onTextChange(`/${skillMatches[0].slug} `);
+      else onSend();
     }
   }
 
@@ -81,6 +87,7 @@ export function Composer({
         />
       )}
       <PendingAttachmentsRow attachments={attachments} />
+      <SkillSuggest options={skillMatches} onPick={(s) => onTextChange(`/${s.slug} `)} />
       {showPrompts && (
         <div className="filter-chips asst-prompts" aria-label="Подсказки">
           {live.enabled && (
