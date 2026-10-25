@@ -10,22 +10,22 @@ function fakePrisma() {
   const matches = (row: MemoryItem, where: Record<string, unknown>) =>
     Object.entries(where).every(([k, v]) => (row as unknown as Record<string, unknown>)[k] === v);
   const memoryItem = {
-    findUnique: jest.fn(async ({ where }: { where: { id?: string; sourceKey?: string } }) => rows.find((r) => (where.id ? r.id === where.id : r.sourceKey === where.sourceKey)) ?? null),
-    findMany: jest.fn(async ({ where }: { where: Record<string, unknown> }) => rows.filter((r) => matches(r, where))),
-    create: jest.fn(async ({ data }: { data: Partial<MemoryItem> }) => {
-      if (data.sourceKey && rows.some((r) => r.sourceKey === data.sourceKey)) throw new Error('dup');
+    findUnique: jest.fn(({ where }: { where: { id?: string; sourceKey?: string } }) => Promise.resolve(rows.find((r) => (where.id ? r.id === where.id : r.sourceKey === where.sourceKey)) ?? null)),
+    findMany: jest.fn(({ where }: { where: Record<string, unknown> }) => Promise.resolve(rows.filter((r) => matches(r, where)))),
+    create: jest.fn(({ data }: { data: Partial<MemoryItem> }) => {
+      if (data.sourceKey && rows.some((r) => r.sourceKey === data.sourceKey)) return Promise.reject(new Error('dup'));
       const row = { id: `m${++seq}`, details: null, pinned: false, useCount: 0, lastUsedAt: null, sourceKey: null, createdAt: new Date(), updatedAt: new Date(), ...data } as MemoryItem;
       rows.push(row);
-      return row;
+      return Promise.resolve(row);
     }),
-    update: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<MemoryItem> }) => {
+    update: jest.fn(({ where, data }: { where: { id: string }; data: Partial<MemoryItem> }) => {
       const row = rows.find((r) => r.id === where.id)!;
       Object.assign(row, data);
-      return row;
+      return Promise.resolve(row);
     }),
-    delete: jest.fn(async ({ where }: { where: { id: string } }) => rows.splice(rows.findIndex((r) => r.id === where.id), 1)[0]),
+    delete: jest.fn(({ where }: { where: { id: string } }) => Promise.resolve(rows.splice(rows.findIndex((r) => r.id === where.id), 1)[0])),
   };
-  const prisma = { memoryItem, $transaction: async <T>(cb: (tx: unknown) => Promise<T>) => cb({ memoryItem }) };
+  const prisma = { memoryItem, $transaction: <T>(cb: (tx: unknown) => Promise<T>) => cb({ memoryItem }) };
   return { prisma, rows };
 }
 
