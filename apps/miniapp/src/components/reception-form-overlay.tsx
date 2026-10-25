@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import type {
   CreateReceptionRequestInput,
@@ -11,7 +11,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { OverlayPortal } from './overlay-portal';
-import { haptic } from '@/lib/telegram';
+import { notificationHaptic, useBackButton, useMainButton } from '@/lib/telegram';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
@@ -41,6 +41,9 @@ export function ReceptionFormOverlay({
   const [attachments, setAttachments] = useState<ReceptionAttachmentItem[]>(() => editing?.attachments ?? []);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const nativeBack = useBackButton(onClose);
+  const nativeMain = useMainButton({ text: editing ? 'Сохранить' : 'Подать вопрос', onClick: () => formRef.current?.requestSubmit(), loading: submitting });
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -67,10 +70,11 @@ export function ReceptionFormOverlay({
       } else {
         await api.post('/reception/requests', payload, headers);
       }
-      haptic('medium');
+      notificationHaptic('success');
       onSaved();
       onClose();
     } catch (err) {
+      notificationHaptic('error');
       setError(err instanceof ApiError ? err.message : 'Не удалось сохранить обращение');
       setSubmitting(false);
     }
@@ -80,13 +84,15 @@ export function ReceptionFormOverlay({
     <OverlayPortal>
       <div className="overlay">
         <div className="overlay-header">
-          <button className="back-btn" onClick={onClose} aria-label="Назад">
-            <ArrowLeft size={17} strokeWidth={2.25} />
-          </button>
+          {!nativeBack && (
+            <button className="back-btn" onClick={onClose} aria-label="Назад">
+              <ArrowLeft size={17} strokeWidth={2.25} />
+            </button>
+          )}
           <strong>{editing ? 'Изменить обращение' : 'Подать вопрос'}</strong>
         </div>
         <div className="overlay-body">
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <form ref={formRef} onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <Field label="Тема">
               <Input value={title} onChange={(e) => setTitle(e.target.value)} minLength={5} maxLength={150} required />
             </Field>
@@ -132,9 +138,11 @@ export function ReceptionFormOverlay({
 
             {error && <Alert tone="danger">{error}</Alert>}
 
-            <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
-              {editing ? 'Сохранить' : 'Подать вопрос'}
-            </Button>
+            {!nativeMain && (
+              <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+                {editing ? 'Сохранить' : 'Подать вопрос'}
+              </Button>
+            )}
           </form>
         </div>
       </div>

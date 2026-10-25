@@ -10,7 +10,7 @@ import type {
 } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { addDays, companyDayKey, companyDayStart } from '@/lib/company-time';
-import { notificationHaptic } from '@/lib/telegram';
+import { notificationHaptic, useMainButton } from '@/lib/telegram';
 import { useDictation } from '@/lib/use-dictation';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { Alert, Button, Checkbox, Dialog, IconButton, Input, Select, Textarea } from '@/components/ui';
@@ -118,6 +118,8 @@ export function ReceptionSheet({
     }
   }
 
+  const nativeMain = useMainButton({ text: SUBMIT[mode], onClick: () => void submit(), disabled: locked || !ready, loading: busy });
+
   const assignees = employees.some((e) => e.id === item.author.id) ? employees : [{ id: item.author.id, fullName: item.author.fullName } as EmployeeSummary, ...employees];
 
   return (
@@ -128,9 +130,11 @@ export function ReceptionSheet({
         description={`${item.author.fullName} · ${item.title}`}
         onClose={onClose}
         footer={
+          !nativeMain && (
           <Button variant="primary" block onClick={() => void submit()} disabled={locked || !ready} loading={busy}>
             {SUBMIT[mode]}
           </Button>
+          )
         }
       >
         <div className="rcp-sheet">

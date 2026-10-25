@@ -5,7 +5,7 @@ import { Archive, ArrowLeft, Flag, FolderInput, Mail, MailOpen, Paperclip, Reply
 import type { EmailDetail, MailFolderItem, MailMessageAction, MailMessageActionResult } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { companyDate, companyTime } from '@/lib/company-time';
-import { notificationHaptic } from '@/lib/telegram';
+import { notificationHaptic, useBackButton } from '@/lib/telegram';
 import { Alert, Button, IconButton, Select, useAppToast } from '@/components/ui';
 import { OverlayPortal } from '../overlay-portal';
 import { useAskAssistant } from '../app-shell';
@@ -34,6 +34,7 @@ export function MailMessageOverlay({ id, mailboxId, folders, onChanged, onClose 
   const askAssistant = useAskAssistant();
   const [toast, showToast] = useAppToast();
   const [detail, setDetail] = useState<EmailDetail | null>(null);
+  const nativeBack = useBackButton(onClose);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const headers = { 'X-Mailbox-Id': mailboxId };
@@ -102,7 +103,7 @@ export function MailMessageOverlay({ id, mailboxId, folders, onChanged, onClose 
     <OverlayPortal>
       <div className="overlay">
         <div className="overlay-header">
-          <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={onClose} />
+          {!nativeBack && <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={onClose} />}
           <strong className="mail-overlay-title">{detail?.subject || (detail ? '(без темы)' : 'Письмо')}</strong>
         </div>
         <div className="overlay-body">

@@ -2,11 +2,13 @@
 
 import { useEffect, type MouseEvent, type ReactNode } from 'react';
 import { X } from 'lucide-react';
+import { useBackButton } from '@/lib/telegram';
 import { IconButton, cx } from './button';
 
 // Порт Dialog — модалка на scrim; в Mini App sheet=true (bottom-sheet).
 // Закрытие — крестик, Esc, клик по затемнению (Dialog/README.md,
 // project/agent-motion.md «Фокус и доступность»: role=dialog, aria-modal).
+// В Telegram крестик заменяет системная «Назад» (редизайн M6, §5).
 
 interface DialogProps {
   open?: boolean;
@@ -20,6 +22,7 @@ interface DialogProps {
 }
 
 export function Dialog({ open = true, title, description, onClose, footer, children, inline, sheet }: DialogProps) {
+  const nativeBack = useBackButton(open && !inline ? onClose : undefined);
   useEffect(() => {
     if (!open || !onClose) return;
     function onKey(e: KeyboardEvent) {
@@ -45,7 +48,7 @@ export function Dialog({ open = true, title, description, onClose, footer, child
               <h2 style={{ margin: 0, fontSize: 17, lineHeight: '24px', fontWeight: 600 }}>{title}</h2>
               {description && <p>{description}</p>}
             </div>
-            <IconButton icon={X} label="Закрыть" size="sm" onClick={onClose} />
+            {!nativeBack && <IconButton icon={X} label="Закрыть" size="sm" onClick={onClose} />}
           </div>
           <div className="ds-dialog-body">{children}</div>
           {footer && <div className="ds-dialog-foot">{footer}</div>}
@@ -62,7 +65,7 @@ export function Dialog({ open = true, title, description, onClose, footer, child
             <h2>{title}</h2>
             {description && <p>{description}</p>}
           </div>
-          <IconButton icon={X} label="Закрыть" size="sm" onClick={onClose} />
+          {!nativeBack && <IconButton icon={X} label="Закрыть" size="sm" onClick={onClose} />}
         </div>
         <div className="ds-dialog-body">{children}</div>
         {footer && <div className="ds-dialog-foot">{footer}</div>}

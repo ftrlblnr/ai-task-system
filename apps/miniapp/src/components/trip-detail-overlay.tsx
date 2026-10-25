@@ -6,7 +6,7 @@ import type { ProposedChangeItem, TripDetail, TripRevisionItem } from '@ai-task-
 import { buildTripTimeline, describeProposedChange, formatDayKey, formatZoneTime, zoneDayKey, zoneShortName } from '@ai-task-system/shared-types';
 import { TripProgram, type TripProgramEntry } from './trip-program';
 import { api, ApiError } from '@/lib/api';
-import { haptic } from '@/lib/telegram';
+import { notificationHaptic, useBackButton } from '@/lib/telegram';
 import { OverlayPortal } from './overlay-portal';
 import { IconButton, Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
@@ -80,6 +80,7 @@ function ChangeSummary({ change }: { change: ProposedChangeItem }) {
 
 export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: string; onClose: () => void; onChanged: () => void }) {
   const [trip, setTrip] = useState<TripDetail | null>(null);
+  const nativeBack = useBackButton(onClose);
   const [changes, setChanges] = useState<ProposedChangeItem[] | null>(null);
   const [revisions, setRevisions] = useState<TripRevisionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,10 +106,11 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
     setBusyChangeId(changeId);
     try {
       await api.post(`/trips/${tripId}/changes/${changeId}/${action}`);
-      haptic('medium');
+      notificationHaptic('success');
       load();
       onChanged();
     } catch {
+      notificationHaptic('error');
       setError('Не удалось применить решение');
     } finally {
       setBusyChangeId(null);
@@ -179,7 +181,7 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
     <OverlayPortal>
       <div className="overlay">
         <div className="overlay-header">
-          <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={onClose} />
+          {!nativeBack && <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={onClose} />}
           <strong style={{ flex: 1 }}>{trip?.title ?? 'Поездка'}</strong>
         </div>
         <div className="overlay-body">

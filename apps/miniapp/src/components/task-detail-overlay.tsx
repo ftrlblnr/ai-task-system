@@ -8,7 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Avatar } from './avatar';
 import { OverlayPortal } from './overlay-portal';
 import { STATUS_LABELS, STATUS_DOT_COLOR, EMPLOYEE_SETTABLE_STATUSES, PRIORITY_LABELS } from '@/lib/labels';
-import { haptic } from '@/lib/telegram';
+import { haptic, notificationHaptic, useBackButton } from '@/lib/telegram';
 import { Card } from '@/components/ui/card';
 import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
@@ -63,6 +63,8 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
     api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
   }, []);
 
+  const nativeBack = useBackButton(goBack);
+
   function openSubtask(id: string) {
     setStack((s) => [...s, id]);
   }
@@ -73,11 +75,12 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
 
   async function changeStatus(status: TaskStatus) {
     setBusy(true);
-    haptic('medium');
     try {
       const updated = await api.patch<TaskDetail>(`/tasks/${currentId}/status`, { status });
       setTask(updated);
+      notificationHaptic('success');
     } catch (err) {
+      notificationHaptic('error');
       setError(err instanceof ApiError ? err.message : 'Не удалось изменить статус');
     } finally {
       setBusy(false);
@@ -134,7 +137,6 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
   async function saveEdit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
-    haptic('medium');
     try {
       // null, а не undefined — иначе снять исполнителя/срок было бы
       // невозможно (Prisma игнорирует undefined-поля в update()).
@@ -147,7 +149,9 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
       });
       setTask(updated);
       setEditing(false);
+      notificationHaptic('success');
     } catch (err) {
+      notificationHaptic('error');
       setError(err instanceof ApiError ? err.message : 'Не удалось сохранить изменения');
     } finally {
       setBusy(false);
@@ -219,14 +223,15 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
     if (!task) return;
     if (!window.confirm(`Удалить задачу «${task.title}»? Это действие необратимо.`)) return;
     setBusy(true);
-    haptic('medium');
     try {
       await api.delete(`/tasks/${currentId}`);
+      notificationHaptic('success');
       // onClose у вызывающей стороны (tasks-screen.tsx) уже перезагружает
       // список — отдельного refresh-колбэка здесь не нужно.
       if (stack.length > 1) setStack((s) => s.slice(0, -1));
       else onClose();
     } catch (err) {
+      notificationHaptic('error');
       setError(err instanceof ApiError ? err.message : 'Не удалось удалить задачу');
       setBusy(false);
     }
@@ -236,7 +241,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
     <OverlayPortal>
     <div className="overlay">
       <div className="overlay-header">
-        <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={goBack} />
+        {!nativeBack && <IconButton icon={ArrowLeft} label="Назад" variant="ghost" onClick={goBack} />}
         <strong style={{ flex: 1 }}>{task?.title ?? 'Задача'}</strong>
         {canDelete && !editing && <IconButton icon={Pencil} label="Редактировать задачу" variant="ghost" onClick={startEdit} disabled={busy} />}
         {canDelete && (

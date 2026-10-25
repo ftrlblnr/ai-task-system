@@ -2,6 +2,7 @@
 
 import { ArrowLeft } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { useBackButton } from '@/lib/telegram';
 import { OverlayPortal } from './overlay-portal';
 import { AvatarEditor } from './avatar-editor';
 
@@ -9,14 +10,17 @@ import { AvatarEditor } from './avatar-editor';
 // открывается тапом по своему аватару в шапке «Задач».
 export function ProfileOverlay({ onClose }: { onClose: () => void }) {
   const { user } = useAuth();
+  const nativeBack = useBackButton(onClose);
   if (!user) return null;
   return (
     <OverlayPortal>
       <div className="overlay">
         <div className="overlay-header">
-          <button className="back-btn" onClick={onClose} aria-label="Назад">
-            <ArrowLeft size={17} strokeWidth={2.25} />
-          </button>
+          {!nativeBack && (
+            <button className="back-btn" onClick={onClose} aria-label="Назад">
+              <ArrowLeft size={17} strokeWidth={2.25} />
+            </button>
+          )}
           <strong>Профиль</strong>
         </div>
         <div className="overlay-body" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

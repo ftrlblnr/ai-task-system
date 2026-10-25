@@ -1,3 +1,5 @@
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+
 // Тонкая обёртка над window.Telegram.WebApp (раздел 14.2 ТЗ). Официальный
 // способ подключения — script-тег telegram-web-app.js (см. layout.tsx), а
 // не npm-пакет: это тот же скрипт, который сам Telegram обновляет на своей
@@ -12,6 +14,21 @@ interface TelegramWebApp {
   themeParams: Record<string, string>;
   setHeaderColor: (color: string) => void;
   setBackgroundColor: (color: string) => void;
+  // Bot API 6.1+ (BackButton), 7.7+ (disableVerticalSwipes) — всегда через
+  // isVersionAtLeast: старые клиенты пишут ошибку в консоль вместо вызова.
+  BackButton?: {
+    show: () => void;
+    hide: () => void;
+    onClick: (cb: () => void) => void;
+  };
+  MainButton?: {
+    setParams: (params: { text?: string; color?: string; text_color?: string; is_active?: boolean; is_visible?: boolean }) => void;
+    showProgress: (leaveActive?: boolean) => void;
+    hideProgress: () => void;
+    hide: () => void;
+    onClick: (cb: () => void) => void;
+  };
+  disableVerticalSwipes?: () => void;
   HapticFeedback?: {
     impactOccurred: (style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft') => void;
     notificationOccurred: (type: 'error' | 'success' | 'warning') => void;
@@ -61,9 +78,12 @@ export function initTelegramChrome() {
   app.expand();
   syncTheme(app);
   applyChromeColor(app);
+  // Редизайн M6 (§5): свайп вниз по ленте не должен сворачивать Mini App.
+  if (app.initData && app.isVersionAtLeast?.('7.7')) app.disableVerticalSwipes?.();
   app.onEvent('themeChanged', () => {
     syncTheme(app);
     applyChromeColor(app);
+    applyMainButton();
   });
 }
 
@@ -134,4 +154,114 @@ export function haptic(style: 'light' | 'medium' | 'heavy' = 'light') {
 // для голосового режима: подтверждение черновика / сбой транскрибации.
 export function notificationHaptic(type: 'error' | 'success' | 'warning') {
   getTelegramWebApp()?.HapticFeedback?.notificationOccurred(type);
+}
+
+// Редизайн M6 (MINIAPP_REDESIGN.md §5): системные «Назад» и главная кнопка
+// Telegram вместо своих — только внутри Telegram и в клиентах, где они есть;
+// в браузере (вход по паролю) экраны рисуют свои кнопки как раньше.
+// Оверлеи могут лежать друг на друге (задача из ленты ассистента поверх
+// «Сегодня»), поэтому обработчики — стек: срабатывает верхний.
+function nativeApp(version: string): TelegramWebApp | null {
+  const app = getTelegramWebApp();
+  return app?.initData && app.isVersionAtLeast?.(version) ? app : null;
+}
+
+const subscribeNever = () => () => undefined;
+function useNative(check: () => boolean): boolean {
+  return useSyncExternalStore(subscribeNever, check, () => false);
+}
+
+const backStack: { current: () => void }[] = [];
+let backBound = false;
+
+// Возвращает true, если работает системная «Назад» — тогда свою стрелку/
+// крестик экран не рисует.
+export function useBackButton(onBack: (() => void) | undefined): boolean {
+  const native = useNative(() => !!nativeApp('6.1')?.BackButton);
+  const ref = useRef(onBack);
+  useEffect(() => {
+    ref.current = onBack;
+  });
+  const active = native && !!onBack;
+  useEffect(() => {
+    const button = nativeApp('6.1')?.BackButton;
+    if (!active || !button) return;
+    const entry = { current: () => ref.current?.() };
+    backStack.push(entry);
+    if (!backBound) {
+      button.onClick(() => backStack[backStack.length - 1]?.current());
+      backBound = true;
+    }
+    button.show();
+    return () => {
+      backStack.splice(backStack.indexOf(entry), 1);
+      if (backStack.length === 0) button.hide();
+    };
+  }, [active]);
+  return native;
+}
+
+interface MainButtonParams {
+  text: string;
+  onClick: () => void;
+  disabled?: boolean;
+  loading?: boolean;
+}
+const mainStack: { current: MainButtonParams }[] = [];
+let mainBound = false;
+
+function cssColor(name: string): string | undefined {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+}
+
+function applyMainButton() {
+  const button = nativeApp('6.0')?.MainButton;
+  if (!button) return;
+  const top = mainStack[mainStack.length - 1]?.current;
+  if (!top) {
+    button.hideProgress();
+    button.hide();
+    return;
+  }
+  button.setParams({
+    text: top.text,
+    color: cssColor('--accent'),
+    text_color: cssColor('--accent-contrast'),
+    is_active: !top.disabled && !top.loading,
+    is_visible: true,
+  });
+  if (top.loading) button.showProgress(false);
+  else button.hideProgress();
+}
+
+// Главное действие формы в оверлее. Возвращает true, если его показывает
+// Telegram — тогда своя кнопка внизу формы не рисуется.
+export function useMainButton(params: MainButtonParams): boolean {
+  const native = useNative(() => !!nativeApp('6.0')?.MainButton);
+  const entryRef = useRef({ current: params });
+  useEffect(() => {
+    entryRef.current.current = params;
+  });
+  useEffect(() => {
+    const button = nativeApp('6.0')?.MainButton;
+    if (!native || !button) return;
+    const entry = entryRef.current;
+    mainStack.push(entry);
+    if (!mainBound) {
+      button.onClick(() => {
+        const top = mainStack[mainStack.length - 1]?.current;
+        if (top && !top.disabled && !top.loading) top.onClick();
+      });
+      mainBound = true;
+    }
+    return () => {
+      mainStack.splice(mainStack.indexOf(entry), 1);
+      applyMainButton();
+    };
+  }, [native]);
+  useEffect(() => {
+    if (native) applyMainButton();
+  }, [native, params.text, params.disabled, params.loading]);
+  return native;
 }

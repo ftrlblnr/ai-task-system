@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import type { CreateTaskInput, EmployeeSummary, TaskDetail, TaskPriority } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { OverlayPortal } from './overlay-portal';
 import { PRIORITY_LABELS } from '@/lib/labels';
-import { haptic } from '@/lib/telegram';
+import { notificationHaptic, useBackButton, useMainButton } from '@/lib/telegram';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
@@ -25,6 +25,10 @@ export function TaskCreateOverlay({ onClose, onCreated }: { onClose: () => void;
   const [assigneeId, setAssigneeId] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('MEDIUM');
   const [dueDate, setDueDate] = useState('');
+  const formRef = useRef<HTMLFormElement>(null);
+  // requestSubmit — та же проверка required, что и у своей кнопки.
+  const nativeBack = useBackButton(onClose);
+  const nativeMain = useMainButton({ text: 'Создать задачу', onClick: () => formRef.current?.requestSubmit(), disabled: !title.trim(), loading: submitting });
 
   useEffect(() => {
     api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
@@ -43,10 +47,11 @@ export function TaskCreateOverlay({ onClose, onCreated }: { onClose: () => void;
         dueDate: dueDate ? new Date(dueDate).toISOString() : undefined,
       };
       await api.post<TaskDetail>('/tasks', payload);
-      haptic('medium');
+      notificationHaptic('success');
       onCreated();
       onClose();
     } catch (err) {
+      notificationHaptic('error');
       setError(err instanceof ApiError ? err.message : 'Не удалось создать задачу');
       setSubmitting(false);
     }
@@ -56,13 +61,15 @@ export function TaskCreateOverlay({ onClose, onCreated }: { onClose: () => void;
     <OverlayPortal>
     <div className="overlay">
       <div className="overlay-header">
-        <button className="back-btn" onClick={onClose} aria-label="Назад">
-          <ArrowLeft size={17} strokeWidth={2.25} />
-        </button>
+        {!nativeBack && (
+          <button className="back-btn" onClick={onClose} aria-label="Назад">
+            <ArrowLeft size={17} strokeWidth={2.25} />
+          </button>
+        )}
         <strong>Новая задача</strong>
       </div>
       <div className="overlay-body">
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <form ref={formRef} onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Field label="Название">
             <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
           </Field>
@@ -93,9 +100,11 @@ export function TaskCreateOverlay({ onClose, onCreated }: { onClose: () => void;
 
           {error && <Alert tone="danger">{error}</Alert>}
 
-          <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
-            Создать задачу
-          </Button>
+          {!nativeMain && (
+            <Button type="submit" variant="primary" block disabled={submitting} loading={submitting}>
+              Создать задачу
+            </Button>
+          )}
         </form>
       </div>
     </div>
