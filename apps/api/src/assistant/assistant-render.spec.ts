@@ -200,7 +200,7 @@ describe('buildAssistantParts (Stage 2 Phase C — бэкенд-рендерер
     const parts = buildAssistantParts(result);
 
     expect(parts.map((p) => p.type)).toEqual([MessagePartType.TOOL_ACTIVITY, MessagePartType.MARKDOWN]);
-    expect(parts[0].data).toEqual({ label: 'Не удалось проверить задачи' });
+    expect(parts[0].data).toEqual({ label: 'Не удалось поставить задачу' });
   });
 });
 

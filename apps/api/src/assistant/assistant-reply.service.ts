@@ -215,7 +215,7 @@ export function toolsForSkill(tools: Anthropic.Tool[], skill: ReplySkill | null 
 export function buildDateContext(): string {
   return `Текущие дата и время — уже по местному времени пользователя (Казахстан, UTC+5), используй как есть для разрешения относительных выражений вроде "завтра", "в пятницу", "через час": ${nowInLocalTimezone()}
 
-Поле dueDate инструмента create_task_from_meeting заполняй ТОЖЕ по этому же местному времени, БЕЗ суффикса Z и без смещения часового пояса (просто "2026-09-02T13:00:00") — часовой пояс сервер подставит сам.`;
+Поле dueDate инструментов create_task и create_task_from_meeting заполняй ТОЖЕ по этому же местному времени, БЕЗ суффикса Z и без смещения часового пояса (просто "2026-09-02T13:00:00") — часовой пояс сервер подставит сам.`;
 }
 
 export interface ReplyHistoryItem {

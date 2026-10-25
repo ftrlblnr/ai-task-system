@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, MemoryKind, Prisma, RoutineChannel, RoutineMode, TaskFromMeetingStatus, type MemoryItem } from '@prisma/client';
+import { EventStatus, MemoryKind, Prisma, RoutineChannel, RoutineMode, TaskFromMeetingStatus, TaskPriority, type MemoryItem } from '@prisma/client';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -119,6 +119,7 @@ type KnownToolName =
   | 'search_meetings'
   | 'get_meeting'
   | 'search_meeting_transcript'
+  | 'create_task'
   | 'create_task_from_meeting'
   | 'find_employee_by_competency'
   | 'search_emails'
@@ -140,6 +141,7 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'search_meetings') return 'search_meetings';
   if (name === 'get_meeting') return 'get_meeting';
   if (name === 'search_meeting_transcript') return 'search_meeting_transcript';
+  if (name === 'create_task') return 'create_task';
   if (name === 'create_task_from_meeting') return 'create_task_from_meeting';
   if (name === 'find_employee_by_competency') return 'find_employee_by_competency';
   if (name === 'search_emails') return 'search_emails';
@@ -170,7 +172,7 @@ function resolveToolName(name: string): KnownToolName {
 // Память (ARMS, фаза 1): remember создаёт пункт — ключ идемпотентности из
 // writeToolCallIndex; forget_memory меняет данные — порядок важен.
 // Регламенты (ARMS, фаза 4): propose_routine создаёт черновик — ключ из writeToolCallIndex.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory', 'propose_routine']);
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task', 'create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory', 'propose_routine']);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -190,6 +192,7 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   search_meetings: 'MEETING_LOOKUP_FAILED: не удалось найти встречи',
   get_meeting: 'MEETING_LOOKUP_FAILED: не удалось получить встречу',
   search_meeting_transcript: 'MEETING_LOOKUP_FAILED: не удалось найти в транскриптах',
+  create_task: 'TASK_CREATE_FAILED: не удалось создать задачу',
   create_task_from_meeting: 'TASK_CREATE_FAILED: не удалось создать задачу',
   find_employee_by_competency: 'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
   search_emails: 'MAIL_LOOKUP_FAILED: не удалось найти письма',
@@ -281,6 +284,7 @@ export type ToolExecutionResult =
   | { tool: 'search_meetings'; items: MeetingSummaryData[]; totalCount: number }
   | { tool: 'get_meeting'; meeting: MeetingDetailData }
   | { tool: 'search_meeting_transcript'; items: MeetingTranscriptMatchData[]; totalCount: number }
+  | { tool: 'create_task'; task: TaskCardData }
   | { tool: 'create_task_from_meeting'; task: TaskCardData }
   | { tool: 'find_employee_by_competency'; competencyId: string; employees: { id: string; fullName: string }[] }
   | { tool: 'search_emails'; items: MailToolEmailSummary[]; totalCount: number }
@@ -492,6 +496,25 @@ export class AssistantToolsService {
             meetingId: { type: 'string' },
           },
           required: ['query'],
+        },
+      });
+      // 25.10.2026: обычная задача без встречи — раньше в чате (и в голосе,
+      // если разбор принял команду за вопрос) её поставить было нечем, и
+      // модель отвечала, что задачи создаются только из протоколов.
+      tools.push({
+        name: 'create_task',
+        description:
+          'Поставить НОВУЮ задачу, когда пользователь прямо просит поставить/создать/поручить задачу ("поставь Рустему задачу...", "создай задачу...", "поручи Асель..."). Если задача — пункт конкретной встречи, используй create_task_from_meeting. assigneeRawText — имя исполнителя КАК оно прозвучало ("Рустему", "на Рустема"), без приведения к именительному падежу; пусто — задача на самого пользователя. Если исполнитель назван по роли ("юристу") — сначала find_employee_by_competency. dueDate — местное время без смещения; если назван только день ("завтра"), ставь 18:00 этого дня. Просьба в форме вопроса с конкретным исполнителем и делом («как поставить задачу на Рустема, чтобы он завтра сходил в магазин», «можешь поручить Асель…») — тоже просьба поставить: ставь. Не вызывай только на общий вопрос, как пользоваться задачами, без конкретного дела.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Коротко, в повелительной форме: «Сходить в магазин»' },
+            description: { type: 'string' },
+            assigneeRawText: { type: 'string' },
+            dueDate: { type: 'string', description: 'ISO-дата/время, местное время пользователя без смещения' },
+            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'], description: 'Только если назван' },
+          },
+          required: ['title'],
         },
       });
       tools.push({
@@ -749,6 +772,25 @@ export class AssistantToolsService {
         const query = typeof typedInput?.query === 'string' ? typedInput.query : '';
         const meetingId = typeof typedInput?.meetingId === 'string' ? typedInput.meetingId : undefined;
         return await this.searchMeetingTranscript(query, meetingId, user);
+      }
+      if (name === 'create_task') {
+        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+          throw new Error('create_task: отсутствует conversationId/userMessageId/writeToolCallIndex');
+        }
+        const typedInput = (input ?? {}) as { title?: unknown; description?: unknown; assigneeRawText?: unknown; dueDate?: unknown; priority?: unknown };
+        return await this.createTask(
+          {
+            title: typeof typedInput.title === 'string' ? typedInput.title : '',
+            description: typeof typedInput.description === 'string' ? typedInput.description : undefined,
+            assigneeRawText: typeof typedInput.assigneeRawText === 'string' ? typedInput.assigneeRawText : undefined,
+            dueDate: typeof typedInput.dueDate === 'string' ? typedInput.dueDate : undefined,
+            priority: typedInput.priority === 'LOW' || typedInput.priority === 'MEDIUM' || typedInput.priority === 'HIGH' ? TaskPriority[typedInput.priority] : undefined,
+          },
+          user,
+          conversationId,
+          userMessageId,
+          writeToolCallIndex,
+        );
       }
       if (name === 'create_task_from_meeting') {
         if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
@@ -1219,71 +1261,22 @@ export class AssistantToolsService {
     // части уже безопасны как строка (userMessageId — cuid,
     // writeToolCallIndex — число, разделитель ':' не может встретиться ни
     // в одной из частей).
-    const dedupeKey = `${userMessageId}:${writeToolCallIndex}`;
-
-    let executionId: string;
-    try {
-      const created = await this.prisma.taskFromMeetingExecution.create({ data: { conversationId, dedupeKey } });
-      executionId = created.id;
-    } catch (err) {
-      if (!isUniqueConstraintError(err)) throw err;
-      const existing = await this.prisma.taskFromMeetingExecution.findUnique({ where: { conversationId_dedupeKey: { conversationId, dedupeKey } } });
-      if (!existing) throw err;
-
-      // Hardening-раунд (22.09.2026, P0 "crash-safe idempotency") —
-      // проверяем САМУ Task через Task.sourceExecutionId (@unique — DB-
-      // гарантия "максимум одна Task на execution"), не только
-      // existing.status: если процесс упал МЕЖДУ prisma.task.create()
-      // (ниже) и обновлением execution в COMPLETED, execution мог остаться
-      // CLAIMED — но Task уже реально существует. Task-таблица надёжнее
-      // как источник истины, чем execution.status, который мог не успеть
-      // записаться до крэша.
-      const existingTask = await this.prisma.task.findUnique({
-        where: { sourceExecutionId: existing.id },
-        select: { id: true, title: true, status: true, dueDate: true, assignee: { select: { id: true, fullName: true } } },
-      });
-      if (existingTask) {
-        if (existing.status !== TaskFromMeetingStatus.COMPLETED || existing.taskId !== existingTask.id) {
-          // Самоисцеление — execution не успел обновиться до крэша,
-          // подтягиваем его в консистентное состояние заодно.
-          await this.prisma.taskFromMeetingExecution.update({
-            where: { id: existing.id },
-            data: { status: TaskFromMeetingStatus.COMPLETED, taskId: existingTask.id, errorMessage: null },
-          });
-        }
-        return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(existingTask, meeting, segment, input.sourceContext) };
-      }
-
-      // Task ещё нет — прежняя status-based reclaim-логика: FAILED или
-      // устаревший (брошенный процесс) CLAIMED можно повторить, свежий
-      // CLAIMED (реально конкурентный вызов) — безопасный отказ.
-      const isStale = Date.now() - existing.updatedAt.getTime() > STALE_TASK_FROM_MEETING_MS;
-      const safeToReclaim = existing.status === TaskFromMeetingStatus.FAILED || (existing.status === TaskFromMeetingStatus.CLAIMED && isStale);
-      if (!safeToReclaim) {
-        return { tool: 'create_task_from_meeting', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся или недавно была создана — подождите немного' };
-      }
-      await this.prisma.taskFromMeetingExecution.update({ where: { id: existing.id }, data: { status: TaskFromMeetingStatus.CLAIMED, errorMessage: null, taskId: null } });
-      executionId = existing.id;
+    // Ключ — `${userMessageId}:${writeToolCallIndex}` (claimTaskExecution).
+    const claim = await this.claimTaskExecution(conversationId, `${userMessageId}:${writeToolCallIndex}`);
+    if ('busy' in claim) {
+      return { tool: 'create_task_from_meeting', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся или недавно была создана — подождите немного' };
     }
+    if ('existingTask' in claim) {
+      return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(claim.existingTask, meeting, segment, input.sourceContext) };
+    }
+    const executionId = claim.executionId;
 
     // Раздел 9 спеки Phase L: assigneeMentioned + resolver !== RESOLVED →
     // задача НЕ создаётся, никакого fallback в assigneeId: null — тот же
     // принцип, что уже применяется в voice/updateSpeakers.
-    let assigneeId: string | null = null;
-    const assigneeRawText = input.assigneeRawText?.trim();
-    if (assigneeRawText) {
-      const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
-      const resolution = await this.employeeResolver.resolve(assigneeRawText, employees);
-      if (resolution.status !== 'RESOLVED') {
-        const message =
-          resolution.status === 'AMBIGUOUS'
-            ? 'ASSIGNEE_AMBIGUOUS: не удалось однозначно определить исполнителя — уточните у пользователя, кого из сотрудников с похожим именем он имел в виду'
-            : 'ASSIGNEE_NOT_FOUND: не удалось найти сотрудника с таким именем — уточните у пользователя';
-        await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: message } });
-        return { tool: 'create_task_from_meeting', error: true, message };
-      }
-      assigneeId = resolution.employeeId;
-    }
+    const assignee = await this.resolveAssigneeForExecution(input.assigneeRawText, executionId);
+    if ('message' in assignee) return { tool: 'create_task_from_meeting', error: true, message: assignee.message };
+    const assigneeId = assignee.assigneeId;
 
     const sourceTimestamp = segment ? formatSegmentTimestamp(segment.startMs) : undefined;
     const sourceContext = input.sourceContext?.trim().slice(0, 800) || undefined;
@@ -1317,6 +1310,118 @@ export class AssistantToolsService {
     await this.audit.log(user.id, 'AI_MEETING_TASK_CREATE', 'Task', task.id, { meetingId, segmentId: segment?.id ?? null, assigneeId, dueDate: input.dueDate ?? null });
 
     return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(task, meeting, segment, input.sourceContext) };
+  }
+
+  // Обычная задача из чата (25.10.2026) — та же идемпотентность и тот же
+  // подбор исполнителя, что у create_task_from_meeting, без source-полей
+  // встречи. Только руководство (инструмент выдаётся в buildTools).
+  private async createTask(
+    input: { title: string; description?: string; assigneeRawText?: string; dueDate?: string; priority?: TaskPriority },
+    user: AuthenticatedUser,
+    conversationId: string,
+    userMessageId: string,
+    writeToolCallIndex: number,
+  ): Promise<ToolExecutionResult> {
+    const title = input.title.trim();
+    if (!title) return { tool: 'create_task', error: true, message: 'INVALID_INPUT: не указан заголовок задачи' };
+    if (!isManager(user.role)) return { tool: 'create_task', error: true, message: 'TASK_CREATE_FORBIDDEN: ставить задачи из чата может только руководство' };
+
+    const claim = await this.claimTaskExecution(conversationId, `${userMessageId}:${writeToolCallIndex}`);
+    if ('busy' in claim) return { tool: 'create_task', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся — подождите немного' };
+    if ('existingTask' in claim) return { tool: 'create_task', task: toTaskCardData(claim.existingTask) };
+    const executionId = claim.executionId;
+
+    const assignee = await this.resolveAssigneeForExecution(input.assigneeRawText, executionId);
+    if ('message' in assignee) return { tool: 'create_task', error: true, message: assignee.message };
+
+    let task: Awaited<ReturnType<TasksService['create']>>;
+    try {
+      task = await this.tasks.create(
+        {
+          title,
+          description: input.description?.trim() || undefined,
+          assigneeId: assignee.assigneeId ?? undefined,
+          dueDate: input.dueDate ? (withLocalOffset(input.dueDate) ?? undefined) : undefined,
+          priority: input.priority,
+          sourceExecutionId: executionId,
+        },
+        user,
+      );
+    } catch (err) {
+      const err2 = err instanceof Error ? err : new Error(String(err));
+      this.logger.error(`create_task: не удалось создать задачу: ${err2.message}`, err2.stack);
+      await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: err2.message } });
+      return { tool: 'create_task', error: true, message: TOOL_ERROR_MESSAGES.create_task };
+    }
+    await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id } });
+    await this.audit.log(user.id, 'AI_TASK_CREATE', 'Task', task.id, { assigneeId: assignee.assigneeId, dueDate: input.dueDate ?? null });
+    return { tool: 'create_task', task: toTaskCardData(task) };
+  }
+
+  // Durable claim одного write-вызова «поставить задачу» (идемпотентность
+  // по conversationId + dedupeKey). Таблица названа по первому
+  // пользователю — create_task_from_meeting; create_task делит её же.
+  private async claimTaskExecution(
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<{ executionId: string } | { existingTask: { id: string; title: string; status: string; dueDate: Date | null; assignee: { id: string; fullName: string } | null } } | { busy: true }> {
+    try {
+      const created = await this.prisma.taskFromMeetingExecution.create({ data: { conversationId, dedupeKey } });
+      return { executionId: created.id };
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+      const existing = await this.prisma.taskFromMeetingExecution.findUnique({ where: { conversationId_dedupeKey: { conversationId, dedupeKey } } });
+      if (!existing) throw err;
+
+      // Hardening-раунд (22.09.2026, P0 "crash-safe idempotency") —
+      // проверяем САМУ Task через Task.sourceExecutionId (@unique — DB-
+      // гарантия "максимум одна Task на execution"), не только
+      // existing.status: если процесс упал МЕЖДУ prisma.task.create()
+      // (ниже) и обновлением execution в COMPLETED, execution мог остаться
+      // CLAIMED — но Task уже реально существует. Task-таблица надёжнее
+      // как источник истины, чем execution.status, который мог не успеть
+      // записаться до крэша.
+      const existingTask = await this.prisma.task.findUnique({
+        where: { sourceExecutionId: existing.id },
+        select: { id: true, title: true, status: true, dueDate: true, assignee: { select: { id: true, fullName: true } } },
+      });
+      if (existingTask) {
+        if (existing.status !== TaskFromMeetingStatus.COMPLETED || existing.taskId !== existingTask.id) {
+          // Самоисцеление — execution не успел обновиться до крэша,
+          // подтягиваем его в консистентное состояние заодно.
+          await this.prisma.taskFromMeetingExecution.update({
+            where: { id: existing.id },
+            data: { status: TaskFromMeetingStatus.COMPLETED, taskId: existingTask.id, errorMessage: null },
+          });
+        }
+        return { existingTask };
+      }
+
+      // Task ещё нет — прежняя status-based reclaim-логика: FAILED или
+      // устаревший (брошенный процесс) CLAIMED можно повторить, свежий
+      // CLAIMED (реально конкурентный вызов) — безопасный отказ.
+      const isStale = Date.now() - existing.updatedAt.getTime() > STALE_TASK_FROM_MEETING_MS;
+      const safeToReclaim = existing.status === TaskFromMeetingStatus.FAILED || (existing.status === TaskFromMeetingStatus.CLAIMED && isStale);
+      if (!safeToReclaim) return { busy: true };
+      await this.prisma.taskFromMeetingExecution.update({ where: { id: existing.id }, data: { status: TaskFromMeetingStatus.CLAIMED, errorMessage: null, taskId: null } });
+      return { executionId: existing.id };
+    }
+  }
+
+  // Исполнитель по тексту из реплики; не нашли однозначно — execution FAILED
+  // и понятная модели ошибка (задача без исполнителя не создаётся).
+  private async resolveAssigneeForExecution(rawText: string | undefined, executionId: string): Promise<{ assigneeId: string | null } | { message: string }> {
+    const assigneeRawText = rawText?.trim();
+    if (!assigneeRawText) return { assigneeId: null };
+    const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
+    const resolution = await this.employeeResolver.resolve(assigneeRawText, employees);
+    if (resolution.status === 'RESOLVED') return { assigneeId: resolution.employeeId };
+    const message =
+      resolution.status === 'AMBIGUOUS'
+        ? 'ASSIGNEE_AMBIGUOUS: не удалось однозначно определить исполнителя — уточните у пользователя, кого из сотрудников с похожим именем он имел в виду'
+        : 'ASSIGNEE_NOT_FOUND: не удалось найти сотрудника с таким именем — уточните у пользователя';
+    await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: message } });
+    return { message };
   }
 
   // Общий конструктор TaskCardData.source и для только что созданной

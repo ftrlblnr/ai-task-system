@@ -52,6 +52,7 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'recall_memory') return { label: 'Не удалось проверить память' };
     if (result.tool === 'forget_memory') return { label: 'Не удалось убрать из памяти' };
     if (result.tool === 'propose_routine') return { label: 'Не удалось подготовить регламент' };
+    if (result.tool === 'create_task' || result.tool === 'create_task_from_meeting') return { label: 'Не удалось поставить задачу' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -128,6 +129,8 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
     // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
     // и скачать без каких-либо изменений.
     parts.push({ type: MessagePartType.FILE, order: 0, data: toJson(result.file) });
+  } else if (result.tool === 'create_task') {
+    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
   } else if (result.tool === 'create_task_from_meeting') {
     // Stage 2, Phase O — та же карточка, что у get_tasks (TaskCardData),
     // но с заполненным source (Task.sourceMeetingId/sourceSegmentId/
@@ -159,7 +162,7 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
 // действий терять нельзя: без карточки плана/письма нечем подтвердить
 // (инцидент 23.10.2026 — «перенеси в архив» голосом, план создан, кнопки нет).
 // Списки get_tasks/get_events и ответ юриста голос по-прежнему пересказывает.
-const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>(['propose_mail_actions', 'draft_mail_reply', 'create_task_from_meeting', 'export_tasks_xlsx']);
+const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>(['propose_mail_actions', 'draft_mail_reply', 'create_task', 'create_task_from_meeting', 'export_tasks_xlsx']);
 
 export function voiceActionCardParts(result: AssistantReplyResult): MessagePartInput[] {
   return result.toolCalls.filter((call) => VOICE_CARD_TOOLS.has(call.result.tool)).flatMap((call) => toolCardParts(call.result));

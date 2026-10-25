@@ -37,6 +37,7 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       'search_meetings',
       'get_meeting',
       'search_meeting_transcript',
+      'create_task',
       'create_task_from_meeting',
       'search_emails',
       'get_email',
@@ -814,6 +815,73 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 // (0/1/много), ничего не выбирает сам — раздел 7 спеки: LLM не security
 // boundary, поэтому финальный assigneeId всегда идёт через отдельный,
 // уже захардененный create_task_from_meeting → EmployeeResolverService.
+// 25.10.2026: обычная задача из чата/голоса без встречи — та же идемпотентность
+// и подбор исполнителя, что у create_task_from_meeting.
+describe('AssistantToolsService.execute create_task', () => {
+  const owner = user({ id: 'owner1', role: Role.OWNER });
+  const createdTask = { id: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: new Date('2026-10-26T13:00:00Z'), assignee: { id: 'e1', fullName: 'Рустем Сапаров' } };
+
+  function makeDeps(overrides: { resolve?: jest.Mock; executionCreate?: jest.Mock; executionFindUnique?: jest.Mock; taskFindUnique?: jest.Mock } = {}) {
+    const tasksStub = { create: jest.fn().mockResolvedValue(createdTask) };
+    const auditStub = { log: jest.fn() };
+    const employeeResolverStub = { resolve: overrides.resolve ?? jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) };
+    const prisma = {
+      employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Рустем Сапаров' }]) },
+      task: { findUnique: overrides.taskFindUnique ?? jest.fn().mockResolvedValue(null) },
+      taskFromMeetingExecution: {
+        create: overrides.executionCreate ?? jest.fn().mockResolvedValue({ id: 'exec1' }),
+        findUnique: overrides.executionFindUnique ?? jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any, {} as any, prisma as any, auditStub as any, employeeResolverStub as any);
+    return { service, tasksStub, auditStub };
+  }
+  const call = (service: any, input: unknown, u = owner) => service.execute('create_task', input, u, 'c1', 'msg1', 0);
+
+  it('ставит задачу исполнителю со сроком по Алматы, карточка без source', async () => {
+    const { service, tasksStub, auditStub } = makeDeps();
+    const result = await call(service, { title: 'Сходить в магазин', assigneeRawText: 'на Рустема', dueDate: '2026-10-26T18:00:00', priority: 'HIGH' });
+    expect(tasksStub.create).toHaveBeenCalledWith(
+      { title: 'Сходить в магазин', description: undefined, assigneeId: 'e1', dueDate: '2026-10-26T18:00:00+05:00', priority: 'HIGH', sourceExecutionId: 'exec1' },
+      owner,
+    );
+    expect(result).toEqual({ tool: 'create_task', task: { taskId: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: '2026-10-26T13:00:00.000Z', assignee: { id: 'e1', name: 'Рустем Сапаров' } } });
+    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TASK_CREATE', 'Task', 't1', expect.any(Object));
+  });
+
+  it('исполнитель неоднозначен — задача не создаётся', async () => {
+    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }) });
+    const result = await call(service, { title: 'Сходить в магазин', assigneeRawText: 'Рустему' });
+    expect('message' in result && result.message).toContain('ASSIGNEE_AMBIGUOUS');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('повтор того же вызова (ретрай ответа) — та же задача, без дубля', async () => {
+    const { service, tasksStub } = makeDeps({
+      executionCreate: jest.fn().mockRejectedValue(p2002()),
+      executionFindUnique: jest.fn().mockResolvedValue({ id: 'exec1', status: 'COMPLETED', taskId: 't1', updatedAt: new Date() }),
+      taskFindUnique: jest.fn().mockResolvedValue(createdTask),
+    });
+    const result = await call(service, { title: 'Сходить в магазин' });
+    expect(result).toMatchObject({ tool: 'create_task', task: { taskId: 't1' } });
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('сотрудник — отказ, задача не создаётся', async () => {
+    const { service, tasksStub } = makeDeps();
+    const result = await call(service, { title: 'Сходить в магазин' }, user({ id: 'e2', role: Role.EMPLOYEE }));
+    expect('message' in result && result.message).toContain('TASK_CREATE_FORBIDDEN');
+    expect(tasksStub.create).not.toHaveBeenCalled();
+  });
+
+  it('пустой заголовок — INVALID_INPUT', async () => {
+    const { service } = makeDeps();
+    const result = await call(service, { title: '  ' });
+    expect('message' in result && result.message).toContain('INVALID_INPUT');
+  });
+});
+
 describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Phase P)', () => {
   const owner = user({ id: 'owner1', role: Role.OWNER });
 
