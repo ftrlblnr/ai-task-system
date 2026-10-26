@@ -70,7 +70,6 @@ export class DashboardService {
       skills,
       files,
       usage,
-      apps,
     ] = await Promise.all([
       safe('tasks', () => this.getTasksSection()),
       safe('reception', () => this.getReceptionSection()),
@@ -80,7 +79,6 @@ export class DashboardService {
       safe('skills', () => this.panels.skills(user.id)),
       safe('files', () => this.panels.files(user.id)),
       safe('usage', () => this.panels.usage()),
-      safe('apps', () => this.panels.apps(user.id)),
     ]);
     return {
       generatedAt: new Date().toISOString(),
@@ -93,7 +91,6 @@ export class DashboardService {
       skills,
       files,
       usage,
-      apps,
     };
   }
 

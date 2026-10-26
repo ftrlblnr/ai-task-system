@@ -1084,7 +1084,6 @@ export interface DashboardOverview {
   skills: DashboardSkillsSection | DashboardSectionError;
   files: DashboardFilesSection | DashboardSectionError;
   usage: DashboardUsageSection | DashboardSectionError;
-  apps: DashboardAppsSection | DashboardSectionError;
 }
 
 export type EmailCategory =
@@ -1195,13 +1194,6 @@ export interface DashboardUsageSection extends DashboardSectionOk {
   today: DashboardUsageTotals;
   week: DashboardUsageTotals;
   daily: { date: string; costUsd: number; calls: number }[];
-}
-
-export interface DashboardAppsSection extends DashboardSectionOk {
-  meetings7d: number;
-  trips: number;
-  memoryPending: number;
-  recommendations: number;
 }
 
 

@@ -63,7 +63,6 @@ function okPanels(overrides: Record<string, () => Promise<unknown>> = {}) {
     skills: ok,
     files: ok,
     usage: ok,
-    apps: ok,
     ...overrides,
   };
 }
@@ -257,7 +256,6 @@ describe('DashboardService.getOverview («Стол руководителя», �
       'skills',
       'files',
       'usage',
-      'apps',
     ] as const)
       expect(result[key].status).toBe('ok');
   });

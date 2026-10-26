@@ -6,7 +6,7 @@ import { Plus, RefreshCw } from 'lucide-react';
 import { OverviewStats } from './overview-stats';
 import { AttentionTasks } from './attention-tasks';
 import { ReceptionPreview } from './reception-preview';
-import { AppsPanel, AskAgent, CalendarPanel, FilesStrip, MailPanel, RoutinesPanel, SkillsPanel, type AppCounts } from './console-panels';
+import { AskAgent, CalendarPanel, FilesStrip, MailPanel, RoutinesPanel, SkillsPanel } from './console-panels';
 import { useDashboardOverview, isStale, formatFetchedAt } from './use-dashboard-overview';
 import { IconButton, StatBar } from '@/components/ui';
 import { useAgentContext } from '@/components/agent-panel/agent-context';
@@ -36,20 +36,6 @@ export function DashboardPage() {
   // Дата — один раз при показе (не в каждом рендере).
   const [today] = useState(() => new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' }));
 
-  const counts: AppCounts = {
-    tasks: tasks.data?.counts.active ?? null,
-    reception: reception.data?.waitingCount ?? null,
-    mail: panels.mail.data?.connected ? panels.mail.data.needsYou.length : null,
-    calendar: calendar.data?.items.length ?? null,
-    meetings: panels.apps.data?.meetings7d ?? null,
-    trips: panels.apps.data?.trips ?? null,
-    memory: panels.apps.data?.memoryPending ?? null,
-    skills: panels.skills.data?.total ?? null,
-    routines: panels.routines.data?.activeCount ?? null,
-    recommendations: panels.apps.data?.recommendations ?? null,
-    files: panels.files.data?.total ?? null,
-    usage: usage ? usd(usage.today.costUsd) : null,
-  };
 
   const sources: { label: string; fetchedAt: string | null; error: string | null }[] = [
     { label: 'задач', fetchedAt: tasks.fetchedAt, error: tasks.error },
@@ -102,14 +88,12 @@ export function DashboardPage() {
           <AttentionTasks items={tasks.data?.items ?? null} loading={loading && !tasks.data} errored={Boolean(tasks.error)} />
           <ReceptionPreview current={reception.data?.current} items={reception.data?.items ?? null} loading={loading && !reception.data} errored={Boolean(reception.error)} />
         </div>
+        {/* Списка «Приложения» больше нет — он повторял меню (владелец 26.10.2026). */}
         <div className="console-col console-right">
+          <CalendarPanel state={calendar} loading={loading} />
           <MailPanel state={panels.mail} loading={loading} />
           <RoutinesPanel state={panels.routines} loading={loading} />
           <SkillsPanel state={panels.skills} loading={loading} />
-        </div>
-        <div className="console-col console-left">
-          <AppsPanel counts={counts} />
-          <CalendarPanel state={calendar} loading={loading} />
         </div>
       </div>
 

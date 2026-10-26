@@ -4,22 +4,14 @@ import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  Brain,
   CalendarDays,
-  DoorOpen,
-  FileAudio,
   FileText,
   Files,
-  Gauge,
-  LayoutGrid,
-  Lightbulb,
   Mail,
-  Plane,
   Plus,
   Repeat,
   Search,
   Sparkles,
-  SquareKanban,
 } from 'lucide-react';
 import type {
   DashboardEventItem,
@@ -33,7 +25,7 @@ import type {
 import { EMAIL_CATEGORY_LABELS, ROUTINE_RUN_STATUS_LABELS } from '@ai-task-system/shared-types';
 import { api } from '@/lib/api';
 import { useSkillRun } from '@/app/skills/skill-ui';
-import { Alert, ModelChip, Panel, RunButton, Skeleton, StatusTag, type IconComponent, type StatusTone } from '@/components/ui';
+import { Alert, ModelChip, Panel, RunButton, Skeleton, StatusTag, type StatusTone } from '@/components/ui';
 import type { SectionState } from './use-dashboard-overview';
 
 // Панели пульта руководителя (ARMS, фаза 6). Всё — данные из
@@ -57,61 +49,6 @@ function PanelBody<T>({ state, loading, children }: { state: SectionState<T>; lo
   if (state.data) return <>{children(state.data)}</>;
   if (state.error) return <Alert tone="danger">{state.error}</Alert>;
   return loading ? <Skeleton height={72} /> : null;
-}
-
-// --- Приложения ---------------------------------------------------------------
-
-export interface AppCounts {
-  tasks: number | null;
-  reception: number | null;
-  mail: number | null;
-  calendar: number | null;
-  meetings: number | null;
-  trips: number | null;
-  memory: number | null;
-  skills: number | null;
-  routines: number | null;
-  recommendations: number | null;
-  files: number | null;
-  usage: string | null;
-}
-
-const APPS: { key: keyof AppCounts; href: string; icon: IconComponent; title: string; hint: string }[] = [
-  { key: 'tasks', href: '/tasks', icon: SquareKanban, title: 'Задачи', hint: 'активные' },
-  { key: 'reception', href: '/reception', icon: DoorOpen, title: 'Приёмная', hint: 'ждут' },
-  { key: 'mail', href: '/mail', icon: Mail, title: 'Почта', hint: 'требуют вас' },
-  { key: 'calendar', href: '/calendar', icon: CalendarDays, title: 'Календарь', hint: 'ближайшие' },
-  { key: 'meetings', href: '/meetings', icon: FileAudio, title: 'Встречи', hint: 'за неделю' },
-  { key: 'trips', href: '/trips', icon: Plane, title: 'Поездки', hint: 'впереди' },
-  { key: 'memory', href: '/memory', icon: Brain, title: 'Память', hint: 'ждут решения' },
-  { key: 'skills', href: '/skills', icon: Sparkles, title: 'Навыки', hint: 'включены' },
-  { key: 'routines', href: '/routines', icon: Repeat, title: 'Регламенты', hint: 'активны' },
-  { key: 'recommendations', href: '/recommendations', icon: Lightbulb, title: 'Рекомендации', hint: 'новые' },
-  { key: 'files', href: '#files', icon: Files, title: 'Файлы', hint: 'от ассистента' },
-  { key: 'usage', href: '/ai-usage', icon: Gauge, title: 'Расход ИИ', hint: 'сегодня' },
-];
-
-export function AppsPanel({ counts }: { counts: AppCounts }) {
-  return (
-    <Panel icon={LayoutGrid} title="Приложения">
-      <ul className="console-apps">
-        {APPS.map((a) => {
-          const value = counts[a.key];
-          return (
-            <li key={a.key}>
-              <Link href={a.href} className="console-app">
-                <a.icon size={16} strokeWidth={1.75} />
-                <span className="console-app-title">{a.title}</span>
-                <span className="console-app-count ds-num" title={value !== null && value !== 0 ? a.hint : undefined}>
-                  {value === null || value === 0 ? '' : value}
-                </span>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-    </Panel>
-  );
 }
 
 // --- Календарь ----------------------------------------------------------------

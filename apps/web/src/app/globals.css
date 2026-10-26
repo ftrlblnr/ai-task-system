@@ -2128,9 +2128,8 @@ a.routine-run-text:hover { color: var(--link); }
 
 /* ============ Пульт руководителя (ARMS, фаза 6) ============
    Одна акцентная краска (--accent из tokens.css) — «следующее» и «сейчас».
-   Колонки: ≥1360px — три (приложения · фокус · почта/регламенты/навыки),
-   900–1359px — две (левая колонка уходит под правую), ниже — одна, фокус
-   первым. */
+   Колонки: фокус · календарь/почта/регламенты/навыки, уже 900px — одна,
+   фокус первым. */
 
 .ds-panel { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); min-width: 0; }
 .ds-panel-head { display: flex; align-items: center; gap: 8px; color: var(--ink-3); min-height: 24px; }
@@ -2166,11 +2165,10 @@ a.routine-run-text:hover { color: var(--link); }
 .console-usage { margin-left: auto; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); text-decoration: none; color: inherit; }
 .console-usage:hover { border-color: var(--line-control); }
 .console-head-actions { display: flex; gap: 8px; align-items: center; }
-.console-grid { display: grid; gap: 16px; align-items: start; grid-template-columns: minmax(220px, 250px) minmax(0, 1fr) minmax(280px, 330px); }
+.console-grid { display: grid; gap: 16px; align-items: start; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
 .console-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.console-left { grid-column: 1; grid-row: 1; }
-.console-center { grid-column: 2; grid-row: 1; }
-.console-right { grid-column: 3; grid-row: 1; }
+.console-center { grid-column: 1; grid-row: 1; }
+.console-right { grid-column: 2; grid-row: 1; }
 .console-center { container-type: inline-size; }
 .console-center .dashboard-stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 12px !important; }
 @container (max-width: 639px) { .console-center .dashboard-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
@@ -2191,12 +2189,6 @@ a.routine-run-text:hover { color: var(--link); }
 .console-row-2 .console-row-title { display: flex; flex-direction: column; white-space: normal; }
 .console-row-2 .console-row-title > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.console-apps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
-.console-app { display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0 -8px; border-radius: var(--radius-md); color: var(--ink-2); text-decoration: none; font-size: 14px; }
-.console-app:hover { background: var(--surface-2); color: var(--ink); }
-.console-app:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.console-app-title { flex: 1; }
-.console-app-count { font-size: 12px; color: var(--ink-3); }
 
 .console-mix { display: flex; flex-direction: column; gap: 6px; }
 .console-mix-bar { display: flex; gap: 2px; height: 6px; border-radius: var(--radius-pill); overflow: hidden; }
@@ -2240,15 +2232,9 @@ a.routine-run-text:hover { color: var(--link); }
 .console-ask-menu button { display: flex; gap: 10px; width: 100%; padding: 7px 10px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--ink); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
 .console-ask-menu [aria-selected="true"] button, .console-ask-menu button:hover { background: var(--surface-2); }
 
-@media (max-width: 1359px) {
-  .console-grid { grid-template-columns: minmax(0, 1fr) minmax(280px, 320px); }
-  .console-center { grid-column: 1; grid-row: 1 / span 2; }
-  .console-right { grid-column: 2; grid-row: 1; }
-  .console-left { grid-column: 2; grid-row: 2; }
-}
 @media (max-width: 899px) {
   .console-grid { grid-template-columns: minmax(0, 1fr); }
-  .console-center, .console-right, .console-left { grid-column: 1; grid-row: auto; }
+  .console-center, .console-right { grid-column: 1; grid-row: auto; }
   .console-usage { margin-left: 0; order: 3; width: 100%; }
   .ds-statbar { justify-content: space-between; gap: 12px; }
   .console-kbd { display: none; }

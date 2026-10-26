@@ -3,9 +3,7 @@ import {
   EmailFolderRole,
   EmailImportance,
   FileArtifactSource,
-  MemoryStatus,
   Prisma,
-  RecommendationStatus,
   RoutineState,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -271,47 +269,5 @@ export class DashboardPanelsService {
       week: totals(week.total),
       daily: week.daily,
     };
-  }
-
-  // Счётчики для списка «Приложения», которых нет в других панелях.
-  async apps(employeeId: string) {
-    const now = new Date();
-    const [meetings7d, trips, memoryPending, recommendations] =
-      await Promise.all([
-        this.prisma.meeting.count({
-          where: {
-            meetingDate: { gte: new Date(now.getTime() - 7 * 86_400_000) },
-          },
-        }),
-        this.prisma.trip.count({
-          where: {
-            cancelledAt: null,
-            OR: [
-              { periodEnd: { gte: now } },
-              { periodEnd: null, periodStart: { gte: now } },
-            ],
-            AND: [
-              {
-                OR: [
-                  { organizerId: employeeId },
-                  { members: { some: { employeeId } } },
-                ],
-              },
-            ],
-          },
-        }),
-        this.prisma.memoryItem.count({
-          where: { ownerId: employeeId, status: MemoryStatus.PENDING },
-        }),
-        this.prisma.recommendation.count({
-          where: {
-            ownerId: employeeId,
-            status: {
-              in: [RecommendationStatus.NEW, RecommendationStatus.IN_CART],
-            },
-          },
-        }),
-      ]);
-    return { ...ok(), meetings7d, trips, memoryPending, recommendations };
   }
 }

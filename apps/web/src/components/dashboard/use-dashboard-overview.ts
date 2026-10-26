@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
-  DashboardAppsSection,
   DashboardCalendarSection,
   DashboardFilesSection,
   DashboardMailSection,
@@ -33,9 +32,8 @@ export interface PanelSections {
   skills: DashboardSkillsSection;
   files: DashboardFilesSection;
   usage: DashboardUsageSection;
-  apps: DashboardAppsSection;
 }
-const PANEL_KEYS = ['mail', 'routines', 'skills', 'files', 'usage', 'apps'] as const;
+const PANEL_KEYS = ['mail', 'routines', 'skills', 'files', 'usage'] as const;
 type PanelStates = { [K in keyof PanelSections]: SectionState<PanelSections[K]> };
 
 export interface SectionState<T> {
@@ -58,7 +56,6 @@ export function useDashboardOverview() {
     skills: initialSection(),
     files: initialSection(),
     usage: initialSection(),
-    apps: initialSection(),
   }));
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
