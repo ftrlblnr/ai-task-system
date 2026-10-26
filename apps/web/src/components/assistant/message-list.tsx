@@ -40,6 +40,9 @@ interface Props {
   onVoiceUndo: (entry: VoiceUndoEntry) => void;
   onSkillRated: (messageId: string, run: SkillRunRef) => void;
   onSuggestion: (text: string) => void;
+  // Голосовая команда записана и разбирается сервером: её текст — сразу в
+  // ленту, под ним ассистент «думает» (как при отправке текста).
+  voicePending?: string | null;
   // Своё пустое состояние вместо «Чем помочь?» (узкая панель агента).
   emptyState?: ReactNode;
 }
@@ -55,6 +58,7 @@ export function MessageList({
   onVoiceUndo,
   onSkillRated,
   onSuggestion,
+  voicePending = null,
   emptyState,
 }: Props) {
   const chatRef = useRef<HTMLDivElement>(null);
@@ -78,7 +82,7 @@ export function MessageList({
   useEffect(() => {
     if (!isNearBottomRef.current) return;
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, voicePending]);
 
   function scrollToBottom() {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' });
@@ -92,8 +96,8 @@ export function MessageList({
         <p className="ds-field-hint">Загрузка…</p>
       ) : (
         <>
-          {messages.length === 0 && emptyState}
-          {messages.length === 0 && !emptyState && (
+          {messages.length === 0 && voicePending === null && emptyState}
+          {messages.length === 0 && voicePending === null && !emptyState && (
             <div style={{ textAlign: 'center', padding: '48px 16px' }}>
               {/* "display" — типографика только для этого места и экрана
                   входа (project/README.md); отдельного CSS-класса под
@@ -146,6 +150,12 @@ export function MessageList({
               </AgentMessage>
             );
           })}
+          {voicePending !== null && (
+            <>
+              <UserMessage>{voicePending || 'Голосовое сообщение'}</UserMessage>
+              <AgentMessage state="pending" actions={false} />
+            </>
+          )}
           {loadError && <Alert tone="danger">{loadError}</Alert>}
         </>
       )}

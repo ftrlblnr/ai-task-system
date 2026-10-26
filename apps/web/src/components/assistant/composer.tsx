@@ -80,7 +80,7 @@ export function Composer({ text, onTextChange, textareaRef, hasConversation, sen
       {voice.error && <Alert tone="danger">{voice.error}</Alert>}
       {live.error && <Alert tone="danger">{live.error}</Alert>}
 
-      <div className={cx('ds-composer', sending && 'is-busy')}>
+      <div className={cx('ds-composer', (sending || isVoiceProcessing) && 'is-busy')}>
         {live.active && (
           <LiveVoiceBar
             status={live.phase === 'connecting' ? 'Подключаюсь…' : live.phase === 'closing' ? 'Завершаю…' : 'Идёт разговор'}
@@ -100,9 +100,10 @@ export function Composer({ text, onTextChange, textareaRef, hasConversation, sen
           </div>
         )}
         <input ref={fileInputRef} type="file" hidden accept={ACCEPTED_UPLOAD_MIME_TYPES} onChange={attachments.onFileSelected} />
-        {voice.phase !== 'idle' && (
+        {/* После «стоп» текст уходит в ленту (MessageList voicePending). */}
+        {voice.phase === 'recording' && (
           <p className={cx('live-transcript', !voice.liveTranscript && 'is-empty')} aria-live="polite">
-            {voice.liveTranscript || (voice.phase === 'recording' ? 'Говорите…' : 'Распознаю…')}
+            {voice.liveTranscript || 'Говорите…'}
           </p>
         )}
         {voice.phase === 'idle' && (
@@ -111,8 +112,8 @@ export function Composer({ text, onTextChange, textareaRef, hasConversation, sen
         <textarea
           ref={textareaRef}
           rows={1}
-          hidden={voice.phase !== 'idle'}
-          placeholder="Напишите задачу, вопрос или поручение…"
+          hidden={voice.phase === 'recording'}
+          placeholder={isVoiceProcessing ? 'Ассистент выполняет голосовую команду…' : 'Напишите задачу, вопрос или поручение…'}
           aria-label="Сообщение ассистенту"
           value={text}
           disabled={sending || disabled}

@@ -88,6 +88,7 @@ function AssistantView() {
           onVoiceUndo={(entry) => void session.voice.undo(entry)}
           onSkillRated={(messageId, run) => stream.setMessages((prev) => prev?.map((x) => (x.id === messageId ? { ...x, skillRun: run } : x)) ?? prev)}
           onSuggestion={session.setText}
+          voicePending={session.voice.phase === 'processing' ? session.voice.liveTranscript : null}
         />
         <Composer
           text={session.text}
