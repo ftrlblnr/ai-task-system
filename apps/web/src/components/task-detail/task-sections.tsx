@@ -306,6 +306,7 @@ const HISTORY_FIELD_LABELS: Record<string, string> = {
   dueDate: 'Срок',
   description: 'Описание',
   taskProfileId: 'Профиль задачи',
+  remind: 'Напоминание исполнителю',
 };
 
 export function TaskHistory({ task, employees }: { task: TaskDetail; employees: EmployeeSummary[] }) {
@@ -330,7 +331,9 @@ export function TaskHistory({ task, employees }: { task: TaskDetail; employees: 
               {h.changedBy?.fullName ?? 'Система'} · {new Date(h.createdAt).toLocaleString('ru-RU')}
             </span>
             <span className="body-sm" style={{ color: 'var(--ink-2)' }}>
-              {HISTORY_FIELD_LABELS[h.field] ?? h.field}: {formatValue(h.field, h.oldValue)} → {formatValue(h.field, h.newValue)}
+              {h.field === 'remind'
+                ? `${HISTORY_FIELD_LABELS.remind}: ${formatValue('assigneeId', h.newValue)}`
+                : `${HISTORY_FIELD_LABELS[h.field] ?? h.field}: ${formatValue(h.field, h.oldValue)} → ${formatValue(h.field, h.newValue)}`}
             </span>
           </li>
         ))}

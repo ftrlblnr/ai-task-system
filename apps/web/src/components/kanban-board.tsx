@@ -1,81 +1,30 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import type { TaskListItem, TaskStatus } from '@ai-task-system/shared-types';
 import { isManagerRole } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { Alert, KanbanColumn, SearchInput, Select } from '@/components/ui';
+import { KanbanColumn } from '@/components/ui';
 import { TaskCard } from '@/components/task-card';
 import { BOARD_COLUMNS, BOARD_SIDE_COLUMNS, EMPLOYEE_SETTABLE_STATUSES } from '@/lib/labels';
 
-export function KanbanBoard() {
-  const router = useRouter();
+interface KanbanBoardProps {
+  // Уже отфильтрованные задачи (фильтры и поиск — у страницы, W3).
+  tasks: TaskListItem[];
+  setTasks: Dispatch<SetStateAction<TaskListItem[] | null>>;
+  selectedId: string | null;
+  onOpen: (taskId: string) => void;
+  onMove: (taskId: string, status: TaskStatus) => void;
+  onError: (message: string) => void;
+  onReload: () => void;
+}
+
+export function KanbanBoard({ tasks: visibleTasks, setTasks, selectedId, onOpen, onMove, onError, onReload }: KanbanBoardProps) {
   const { user } = useAuth();
-  const searchParams = useSearchParams();
-  const [tasks, setTasks] = useState<TaskListItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
   const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
-  // Поиск/фильтр (аудит 10.09.2026, п. 4.2): раньше в списке задач не было
-  // вообще никакого способа найти нужную, кроме скролла — с сотней задач
-  // это ломается быстрее всего остального в приложении.
-  const [searchQuery, setSearchQuery] = useState('');
-  const [assigneeFilter, setAssigneeFilter] = useState(() => searchParams.get('assignee') ?? '');
-  // Фильтр по направлению (владелец 30.09.2026) — тот же принцип, что
-  // assigneeFilter: из уже загруженных задач, без отдельного запроса.
-  const [directionFilter, setDirectionFilter] = useState('');
-  // «Стол руководителя» (ТЗ v1.0, 05.10.2026, раздел 7) — переход со
-  // счётчика: ?filter=active|overdue|review. Инициализируется из URL один
-  // раз при монтировании, дальше обычный клиентский фильтр, тот же принцип,
-  // что searchQuery/assigneeFilter (без отдельного запроса).
-  const [quickFilter, setQuickFilter] = useState<'active' | 'overdue' | 'review' | ''>(() => {
-    const value = searchParams.get('filter');
-    return value === 'active' || value === 'overdue' || value === 'review' ? value : '';
-  });
-
-  useEffect(() => {
-    api
-      .get<TaskListItem[]>('/tasks')
-      .then(setTasks)
-      .catch(() => setError('Не удалось загрузить задачи'));
-  }, []);
-
-  // Список исполнителей для фильтра — из уже загруженных задач, без
-  // отдельного запроса к /employees (доска и так знает всех, кто назначен
-  // хоть на одну задачу).
-  const assigneeOptions = useMemo(() => {
-    if (!tasks) return [];
-    const byId = new Map<string, string>();
-    for (const t of tasks) if (t.assignee) byId.set(t.assignee.id, t.assignee.fullName);
-    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
-  }, [tasks]);
-
-  const directionOptions = useMemo(() => {
-    if (!tasks) return [];
-    const byId = new Map<string, string>();
-    for (const t of tasks) if (t.assignee?.direction) byId.set(t.assignee.direction.id, t.assignee.direction.title);
-    return [...byId.entries()].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
-  }, [tasks]);
-
-  // Фильтруем ДО построения колонок/drag-состояния — доска целиком (поиск
-  // по названию/имени исполнителя, счётчики в шапках колонок, drag-and-drop
-  // reorder) работает уже с видимым подмножеством, не с полным списком.
-  const visibleTasks = useMemo(() => {
-    if (!tasks) return null;
-    const q = searchQuery.trim().toLowerCase();
-    return tasks.filter((t) => {
-      if (quickFilter === 'active' && (t.status === 'DONE' || t.status === 'CANCELLED')) return false;
-      if (quickFilter === 'overdue' && !t.isOverdue) return false;
-      if (quickFilter === 'review' && t.status !== 'IN_REVIEW') return false;
-      if (assigneeFilter && t.assignee?.id !== assigneeFilter) return false;
-      if (directionFilter && t.assignee?.direction?.id !== directionFilter) return false;
-      if (!q) return true;
-      return t.title.toLowerCase().includes(q) || (t.assignee?.fullName.toLowerCase().includes(q) ?? false);
-    });
-  }, [tasks, searchQuery, assigneeFilter, directionFilter, quickFilter]);
 
   const draggedTask = useMemo(
     () => visibleTasks?.find((t) => t.id === draggedId) ?? null,
@@ -95,21 +44,6 @@ export function KanbanBoard() {
     if (!canManageStatus(draggedTask)) return false;
     if (isManagerRole(user?.role)) return true;
     return EMPLOYEE_SETTABLE_STATUSES.includes(status);
-  }
-
-  async function moveTask(taskId: string, status: TaskStatus) {
-    const task = tasks?.find((t) => t.id === taskId);
-    if (!task || task.status === status) return;
-
-    const previousStatus = task.status;
-    setTasks((prev) => prev!.map((t) => (t.id === taskId ? { ...t, status } : t)));
-
-    try {
-      await api.patch(`/tasks/${taskId}/status`, { status });
-    } catch (err) {
-      setTasks((prev) => prev!.map((t) => (t.id === taskId ? { ...t, status: previousStatus } : t)));
-      setError(err instanceof ApiError ? err.message : 'Не удалось изменить статус');
-    }
   }
 
   // Перестановка внутри одной колонки (владелец 08.09.2026) — не пара
@@ -144,15 +78,12 @@ export function KanbanBoard() {
     try {
       await api.patch('/tasks/reorder', { taskIds: orderedIds });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось переставить задачу');
+      onError(err instanceof ApiError ? err.message : 'Не удалось переставить задачу');
       // Откат — проще перезагрузить с сервера, чем распутывать частичный
       // оптимистичный сдвиг обратно вручную.
-      api.get<TaskListItem[]>('/tasks').then(setTasks).catch(() => {});
+      onReload();
     }
   }
-
-  if (error && !tasks) return <Alert tone="danger">{error}</Alert>;
-  if (!tasks || !visibleTasks) return <p className="ds-field-hint">Загрузка…</p>;
 
   const byStatus = (status: TaskStatus) => visibleTasks.filter((t) => t.status === status);
 
@@ -179,7 +110,7 @@ export function KanbanBoard() {
           setDragOverStatus(null);
           setDragOverCardId(null);
           if (!dropAllowed || !draggedId) return;
-          moveTask(draggedId, status);
+          onMove(draggedId, status);
         }}
       >
         {columnTasks.map((task) => (
@@ -188,7 +119,8 @@ export function KanbanBoard() {
             task={task}
             draggable={canManageStatus(task)}
             dropBefore={dragOverCardId === task.id}
-            onClick={() => router.push(`/tasks/${task.id}`)}
+            selected={task.id === selectedId}
+            onClick={() => onOpen(task.id)}
             onDragStart={(e) => {
               setDraggedId(task.id);
               e.dataTransfer.effectAllowed = 'move';
@@ -222,38 +154,11 @@ export function KanbanBoard() {
   };
 
   return (
-    <div>
-      {error && <Alert tone="danger">{error}</Alert>}
-
-      <div className="board-filters">
-        {quickFilter && (
-          <button type="button" className="ds-chip" onClick={() => setQuickFilter('')}>
-            {quickFilter === 'active' ? 'Активные' : quickFilter === 'overdue' ? 'Просрочены' : 'На проверке'} ×
-          </button>
-        )}
-        <SearchInput value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Поиск по названию или исполнителю…" />
-        {assigneeOptions.length > 0 && (
-          <Select
-            value={assigneeFilter}
-            onChange={(e) => setAssigneeFilter(e.target.value)}
-            options={[{ value: '', label: 'Все исполнители' }, ...assigneeOptions.map(([id, fullName]) => ({ value: id, label: fullName }))]}
-          />
-        )}
-        {directionOptions.length > 0 && (
-          <Select
-            value={directionFilter}
-            onChange={(e) => setDirectionFilter(e.target.value)}
-            options={[{ value: '', label: 'Все направления' }, ...directionOptions.map(([id, title]) => ({ value: id, label: title }))]}
-          />
-        )}
-      </div>
-
-      <div className="board-scroll">
-        <div className="board">
-          {BOARD_COLUMNS.map(renderColumn)}
-          <div className="board-side-divider" />
-          {BOARD_SIDE_COLUMNS.map(renderColumn)}
-        </div>
+    <div className="board-scroll">
+      <div className="board">
+        {BOARD_COLUMNS.map(renderColumn)}
+        <div className="board-side-divider" />
+        {BOARD_SIDE_COLUMNS.map(renderColumn)}
       </div>
     </div>
   );

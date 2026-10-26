@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { IdempotencyService } from '../common/idempotency.service';
 import { TasksService } from './tasks.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
@@ -14,7 +15,10 @@ import { ReorderTasksDto } from './dto/reorder-tasks.dto';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('tasks')
 export class TasksController {
-  constructor(private readonly tasksService: TasksService) {}
+  constructor(
+    private readonly tasksService: TasksService,
+    private readonly idempotency: IdempotencyService,
+  ) {}
 
   @Get()
   findAll() {
@@ -58,6 +62,16 @@ export class TasksController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.tasksService.updateStatus(id, dto.status, user);
+  }
+
+  // Напоминание исполнителю уходит в Telegram — повтор запроса (сеть,
+  // двойной клик) не должен слать второе сообщение: Idempotency-Key
+  // обязателен, тот же приём, что у приёмной.
+  @Post(':id/remind')
+  async remind(@Param('id') id: string, @CurrentUser() user: AuthenticatedUser, @Headers('idempotency-key') idemKey?: string) {
+    if (!idemKey) throw new BadRequestException('Заголовок Idempotency-Key обязателен для этого действия');
+    const { body } = await this.idempotency.run(user.id, idemKey, 'tasks.remind', { id }, () => this.tasksService.remind(id, user));
+    return body;
   }
 
   @Post(':id/comments')

@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Role, TaskStatus } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { EMPLOYEE_ALLOWED_STATUSES, isTaskOverdue, TasksService } from './tasks.service';
@@ -157,5 +157,64 @@ describe('TasksService.create — source integrity (hardening 22.09.2026, P1)', 
     await expect(service.create({ title: 'T', sourceExecutionId: 'exec1' } as any, employee)).rejects.toThrow(
       'Задачи из встречи может ставить только руководитель',
     );
+  });
+});
+
+// Редизайн web W3: «Напомнить исполнителю» — права, лимит раз в час,
+// синхронная отправка и отметка в истории.
+describe('TasksService.remind', () => {
+  const task = { id: 't1', title: 'Смета', creatorId: 'u1', assigneeId: 'a1', status: TaskStatus.IN_PROGRESS, dueDate: null };
+
+  function makeDeps(overrides: { task?: object; recent?: object | null; telegramId?: string | null; sent?: boolean } = {}) {
+    const prisma = {
+      task: { findUnique: jest.fn().mockResolvedValue({ ...task, ...overrides.task }) },
+      taskHistory: { findFirst: jest.fn().mockResolvedValue(overrides.recent ?? null), create: jest.fn().mockResolvedValue({}) },
+      employee: {
+        findUnique: jest.fn(({ where }: { where: { id: string } }) =>
+          Promise.resolve(where.id === 'a1' ? { telegramId: overrides.telegramId === undefined ? '777' : overrides.telegramId } : { fullName: 'Жанна' }),
+        ),
+      },
+    };
+    const bot = { sendMessageWithResult: jest.fn().mockResolvedValue(overrides.sent === false ? { ok: false } : { ok: true, messageId: 1 }) };
+    const service = new TasksService(prisma as any, bot as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 't1' } as any);
+    return { service, prisma, bot };
+  }
+
+  it('постановщик напоминает: сообщение исполнителю и строка истории remind', async () => {
+    const { service, prisma, bot } = makeDeps();
+    await service.remind('t1', user());
+    expect(bot.sendMessageWithResult).toHaveBeenCalledWith('777', 'Жанна напоминает о задаче «Смета»');
+    expect(prisma.taskHistory.create).toHaveBeenCalledWith({ data: { taskId: 't1', changedById: 'u1', field: 'remind', newValue: 'a1' } });
+  });
+
+  it('посторонний сотрудник — Forbidden, ничего не отправляется', async () => {
+    const { service, bot } = makeDeps({ task: { creatorId: 'x' } });
+    await expect(service.remind('t1', user())).rejects.toBeInstanceOf(ForbiddenException);
+    expect(bot.sendMessageWithResult).not.toHaveBeenCalled();
+  });
+
+  it('руководитель может напомнить по чужой задаче', async () => {
+    const { service, bot } = makeDeps({ task: { creatorId: 'x' } });
+    await service.remind('t1', user({ id: 'boss', role: Role.ADMIN }));
+    expect(bot.sendMessageWithResult).toHaveBeenCalled();
+  });
+
+  it('повтор в течение часа — 429, без отправки', async () => {
+    const { service, bot } = makeDeps({ recent: { id: 'h1' } });
+    await expect(service.remind('t1', user())).rejects.toMatchObject({ status: 429 });
+    expect(bot.sendMessageWithResult).not.toHaveBeenCalled();
+  });
+
+  it('без исполнителя, закрытая задача, нет Telegram — 400', async () => {
+    await expect(makeDeps({ task: { assigneeId: null } }).service.remind('t1', user())).rejects.toBeInstanceOf(BadRequestException);
+    await expect(makeDeps({ task: { status: TaskStatus.DONE } }).service.remind('t1', user())).rejects.toBeInstanceOf(BadRequestException);
+    await expect(makeDeps({ telegramId: null }).service.remind('t1', user())).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('Telegram не принял — 503 и без отметки в истории (можно повторить)', async () => {
+    const { service, prisma } = makeDeps({ sent: false });
+    await expect(service.remind('t1', user())).rejects.toMatchObject({ status: 503 });
+    expect(prisma.taskHistory.create).not.toHaveBeenCalled();
   });
 });

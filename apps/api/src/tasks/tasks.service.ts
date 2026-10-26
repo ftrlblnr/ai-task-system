@@ -1,6 +1,15 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { TaskStatus } from '@prisma/client';
 import { isManager } from '../auth/roles';
+import { formatLocalDateTime } from '../common/timezone';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramBotService } from '../telegram/telegram-bot.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -130,6 +139,9 @@ export function isTaskOverdue(task: { dueDate: Date | null; status: TaskStatus }
   return task.dueDate < new Date();
 }
 
+// Не чаще раза в час на задачу — см. TasksService.remind.
+export const REMIND_INTERVAL_MS = 60 * 60 * 1000;
+
 @Injectable()
 export class TasksService {
   constructor(
@@ -190,11 +202,13 @@ export class TasksService {
     // проходит TASK_DETAIL_SELECT) теперь выбирает его для toListItem/
     // fromAgent, но сырой внутренний id исполнения ассистента в детальный
     // ответ наружу не нужен (в списке он тоже не выводится — только
-    // производное fromAgent, см. toListItem).
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- sourceExecutionId выбирается только чтобы не попасть в ...rest, см. комментарий выше
+    // производное fromAgent, см. toListItem). fromAgent/source — как в
+    // списке: TaskDetail расширяет TaskListItem (боковая карточка W3).
     const { subtasks, watchers, sourceExecutionId, ...rest } = task;
     return {
       ...rest,
+      fromAgent: sourceExecutionId != null,
+      source: rest.sourceMeeting?.title ?? null,
       subtasks,
       subtaskCount: subtasks.length,
       subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
@@ -355,6 +369,48 @@ export class TasksService {
     if (task.creatorId !== actor.id) this.notifyEmployee(task.creatorId, text);
     void this.notifyWatchers(id, actor.id, text);
 
+    return this.findOne(id);
+  }
+
+  // «Напомнить исполнителю» (редизайн web W3, docs/WEB_REDESIGN.md §4.4) —
+  // одно сообщение в Telegram исполнителю. Может постановщик или
+  // руководство; не чаще раза в час на задачу (отметка — строка истории
+  // field 'remind', она же видна в карточке). В отличие от прочих
+  // уведомлений отправка синхронная: пользователь нажал кнопку и должен
+  // знать, дошло ли напоминание.
+  async remind(id: string, actor: AuthenticatedUser) {
+    const task = await this.getOrThrow(id);
+    if (!isManager(actor.role) && task.creatorId !== actor.id) {
+      throw new ForbiddenException('Напомнить может постановщик задачи или руководитель');
+    }
+    if (!task.assigneeId) throw new BadRequestException('У задачи нет исполнителя');
+    if (task.assigneeId === actor.id) throw new BadRequestException('Это ваша задача');
+    if (task.status === TaskStatus.DONE || task.status === TaskStatus.CANCELLED) {
+      throw new BadRequestException('Задача уже закрыта');
+    }
+
+    const last = await this.prisma.taskHistory.findFirst({
+      where: { taskId: id, field: 'remind', createdAt: { gt: new Date(Date.now() - REMIND_INTERVAL_MS) } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (last) {
+      throw new HttpException('Напоминание уже отправлено в течение последнего часа', HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    const [assignee, author] = await Promise.all([
+      this.prisma.employee.findUnique({ where: { id: task.assigneeId }, select: { telegramId: true } }),
+      this.prisma.employee.findUnique({ where: { id: actor.id }, select: { fullName: true } }),
+    ]);
+    if (!assignee?.telegramId) throw new BadRequestException('У исполнителя не привязан Telegram');
+
+    const due = task.dueDate ? `, срок — ${formatLocalDateTime(task.dueDate)}` : '';
+    const from = author?.fullName ? `${author.fullName} напоминает` : 'Напоминание';
+    const sent = await this.bot.sendMessageWithResult(assignee.telegramId, `${from} о задаче «${task.title}»${due}`);
+    if (!sent.ok) throw new ServiceUnavailableException('Не удалось отправить напоминание в Telegram');
+
+    await this.prisma.taskHistory.create({
+      data: { taskId: id, changedById: actor.id, field: 'remind', newValue: task.assigneeId },
+    });
     return this.findOne(id);
   }
 

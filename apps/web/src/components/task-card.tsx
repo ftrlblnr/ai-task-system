@@ -16,6 +16,7 @@ export function TaskCard({
   draggable,
   dragging,
   dropBefore,
+  selected,
   onClick,
   onDragStart,
   onDragEnd,
@@ -26,6 +27,8 @@ export function TaskCard({
   draggable?: boolean;
   dragging?: boolean;
   dropBefore?: boolean;
+  // Открыта в боковой карточке (W3).
+  selected?: boolean;
   onClick: () => void;
   onDragStart?: (e: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
@@ -34,11 +37,15 @@ export function TaskCard({
 }) {
   return (
     <article
-      className={cx('ds-task', dragging && 'is-dragging', dropBefore && 'is-drop-before')}
+      className={cx('ds-task', dragging && 'is-dragging', dropBefore && 'is-drop-before', selected && 'is-selected')}
+      aria-current={selected || undefined}
       tabIndex={0}
       role="button"
       draggable={draggable}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) onClick();
+      }}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onDragOver={onCardDragOver}

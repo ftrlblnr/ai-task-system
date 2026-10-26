@@ -105,7 +105,21 @@ export function useTaskDetail(id: string) {
       load();
     }, 'Не удалось убрать наблюдателя');
 
-  return { task, error, busy, employees, changeStatus, addComment, remove, addSubtask, saveEdit, toggleWatch, addWatcher, removeWatcher };
+  // «Напомнить исполнителю» (W3): ключ один на попытку — повтор той же
+  // попытки не пришлёт второе сообщение; после ответа 4xx/успеха ключ
+  // сбрасывается (см. useIdempotencyKey).
+  const remind = (idem: { key: () => string; reset: () => void }) =>
+    mutate(async () => {
+      try {
+        setTask(await api.post<TaskDetail>(`/tasks/${id}/remind`, undefined, { 'Idempotency-Key': idem.key() }));
+        idem.reset();
+      } catch (err) {
+        if (err instanceof ApiError && err.status < 500) idem.reset();
+        throw err;
+      }
+    }, 'Не удалось отправить напоминание');
+
+  return { task, error, busy, employees, changeStatus, remind, addComment, remove, addSubtask, saveEdit, toggleWatch, addWatcher, removeWatcher };
 }
 
 // Кто что может с задачей — только для показа кнопок; реальная граница —

@@ -36,15 +36,18 @@ export function Card({ title, subtitle, actions, tone, children, className, styl
 }
 
 interface PageHeaderProps {
+  // Моно-строка над заголовком (редизайн web: «Фильтр · N задач», дата).
+  kicker?: ReactNode;
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
 }
 
-export function PageHeader({ title, description, actions }: PageHeaderProps) {
+export function PageHeader({ kicker, title, description, actions }: PageHeaderProps) {
   return (
     <header className="ds-pagehead">
       <div>
+        {kicker && <span className="page-kicker">{kicker}</span>}
         <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
