@@ -8,15 +8,20 @@ import { TripProgram, type TripProgramEntry } from './trip-program';
 import { api, ApiError } from '@/lib/api';
 import { notificationHaptic, useBackButton } from '@/lib/telegram';
 import { OverlayPortal } from './overlay-portal';
-import { IconButton, Button } from '@/components/ui/button';
+import { IconButton, Button, cx } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
-import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Card } from '@/components/ui/card';
 
 type Tab = 'now' | 'program' | 'changes' | 'history';
+const TRIP_TABS: { key: Tab; label: string }[] = [
+  { key: 'program', label: 'Программа' },
+  { key: 'now', label: 'Сейчас' },
+  { key: 'changes', label: 'Изменения' },
+  { key: 'history', label: 'История' },
+];
 
 const BOOKING_LABELS: Record<string, string> = { BOOKED: 'Забронировано', PROPOSED: 'Предложено', UNCONFIRMED: 'Подтверждения не найдено' };
 const BOOKING_TONE: Record<string, BadgeTone> = { BOOKED: 'ok', PROPOSED: 'info', UNCONFIRMED: 'warn' };
@@ -194,17 +199,13 @@ export function TripDetailOverlay({ tripId, onClose, onChanged }: { tripId: stri
                 {trip.purposeSummary && <p style={{ margin: '6px 0 0' }}>{trip.purposeSummary}</p>}
               </div>
 
-              <div style={{ margin: '0 0 12px' }}>
-                <SegmentedControl
-                  options={[
-                    { value: 'program', label: 'Программа' },
-                    { value: 'now', label: 'Сейчас' },
-                    { value: 'changes', label: `Изменения${pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}` },
-                    { value: 'history', label: 'История' },
-                  ]}
-                  value={tab}
-                  onChange={(v) => setTab(v as Tab)}
-                />
+              <div className="filter-chips trip-tabs" role="tablist" aria-label="Разделы поездки">
+                {TRIP_TABS.map((t) => (
+                  <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={cx('filter-chip', tab === t.key && 'is-active')} onClick={() => setTab(t.key)}>
+                    {t.label}
+                    {t.key === 'changes' && pendingChanges.length > 0 && <span className="filter-chip-count">{pendingChanges.length}</span>}
+                  </button>
+                ))}
               </div>
 
               {tab === 'now' && (

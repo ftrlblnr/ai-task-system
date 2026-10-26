@@ -5,7 +5,6 @@ export * from './badge';
 export * from './priority-mark';
 export * from './chip';
 export * from './card';
-export * from './segmented-control';
 export * from './empty-state';
 export * from './dialog';
 export * from './alert';

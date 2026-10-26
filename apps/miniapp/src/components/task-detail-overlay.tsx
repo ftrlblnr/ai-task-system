@@ -10,11 +10,10 @@ import { OverlayPortal } from './overlay-portal';
 import { STATUS_LABELS, STATUS_DOT_COLOR, EMPLOYEE_SETTABLE_STATUSES, PRIORITY_LABELS } from '@/lib/labels';
 import { haptic, notificationHaptic, useBackButton } from '@/lib/telegram';
 import { Card } from '@/components/ui/card';
-import { Button, IconButton } from '@/components/ui/button';
+import { Button, IconButton, cx } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
-import { SegmentedControl } from '@/components/ui/segmented-control';
 import { isManagerRole } from '@ai-task-system/shared-types';
 
 // История изменений (аудит 10.09.2026, п. 2.3) — та же логика, что в
@@ -355,11 +354,20 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
 
             <Card title="Статус">
               {canChangeStatus ? (
-                <SegmentedControl
-                  options={availableStatuses.map((status) => ({ value: status, label: STATUS_LABELS[status], disabled: busy }))}
-                  value={task.status}
-                  onChange={(v) => changeStatus(v as TaskStatus)}
-                />
+                <div className="status-chips" role="group" aria-label="Статус">
+                  {availableStatuses.map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      className={cx('filter-chip', task.status === status && 'is-active')}
+                      aria-pressed={task.status === status}
+                      disabled={busy}
+                      onClick={() => changeStatus(status)}
+                    >
+                      {STATUS_LABELS[status]}
+                    </button>
+                  ))}
+                </div>
               ) : (
                 <p className="ds-field-hint">Статус меняет исполнитель задачи или руководитель.</p>
               )}
