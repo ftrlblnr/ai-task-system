@@ -2490,3 +2490,24 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   гидратации (без вспышки).
 - Удалено: `upcoming-events.tsx` (заменён панелью календаря), неиспользуемые
   `.dashboard-two-col`, `.dashboard-hero-orb`.
+
+## Редизайн web — docs/WEB_REDESIGN.md (с 26.10.2026)
+
+Задание и план ARMS лежат в `docs/`. Этапы W0–W6, после каждого — стоп и
+«ок» владельца. Макет `docs/web-mockup/web-mockup.dc.html` в репозиторий и
+на Google Drive не выложен — визуальные этапы опираются на таблицу токенов
+и описания из задания.
+
+- **W0 (26.10.2026) — рефакторинг без изменения поведения**, три коммита:
+  - `app/assistant/page.tsx` → `components/assistant/`: `use-assistant-stream`
+    (история и SSE), `voice-controls` (запись, живая расшифровка, GPT-Live),
+    `attachments`, `message-list`, `composer`, `conversation-list`.
+  - `app/tasks/[id]/page.tsx` → `components/task-detail/`: `useTaskDetail`
+    (данные и действия), `taskPermissions` (что показывать), разделы в
+    `task-sections` — для будущей боковой карточки (W3).
+  - `app/mail/page.tsx` → `components/mail/`: `messages-tab`,
+    `message-detail`, `message-actions`, `digests-tab`,
+    `mailbox-status-bar`, `mail-labels`.
+  - Известное до W1: глобальное правило `button:hover` в `globals.css`
+    красит любую кнопку под курсором (в т.ч. вкладку SegmentedControl) —
+    убирается вместе со старыми стилями в W1.
