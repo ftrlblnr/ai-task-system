@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { CalendarDays, ExternalLink, Link2, Link2Off, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ExternalLink, Link2, Link2Off, Plus, RefreshCw, Settings, Trash2 } from 'lucide-react';
 import type {
   CalendarEvent,
   CreateEventInput,
@@ -15,13 +15,13 @@ import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { DataOwnerScope, useActingAsLeader } from '@/components/data-owner-scope';
 import { Avatar } from '@/components/avatar';
-import { Card, PageHeader } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/card';
 import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
-import { SegmentedControl } from '@/components/ui/segmented-control';
+import { ConnectionBar, PageTabs, cx, type PageTab } from '@/components/ui';
 import { CalendarAgent, type CalendarAgentTab } from '@/components/calendar-agent';
 import { useAgentContext } from '@/components/agent-panel/agent-context';
 
@@ -32,6 +32,7 @@ function GoogleConnectionCard() {
   const [error, setError] = useState<string | null>(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [setupOpen, setSetupOpen] = useState(false);
   const actingAsLeader = useActingAsLeader();
 
   function load() {
@@ -102,125 +103,132 @@ function GoogleConnectionCard() {
   // Подключение Google — личное действие руководителя (вход в её аккаунт),
   // администратору в её режиме — только статус и синхронизация.
   if (actingAsLeader && !status.connected) {
-    return (
-      <div style={{ marginBottom: 20 }}>
-        <Alert tone="info">Google Calendar руководителя не подключён — подключить его может только она сама.</Alert>
-      </div>
-    );
+    return <ConnectionBar on={false} title="Google Calendar руководителя не подключён" meta="Подключить его может только она сама" />;
   }
 
   // configured=false — на сервере нет GOOGLE_CLIENT_ID/SECRET (см. комментарий
   // в CalendarController.status): кнопка «Подключить» в этом состоянии всегда
   // упадёт с невнятной ошибкой, поэтому вместо неё — инструкция по настройке
   // OAuth-клиента в Google Cloud Console, которую больше никто, кроме
-  // владельца проекта, выполнить не может.
+  // владельца проекта, выполнить не может. Инструкция — по кнопке «Настроить».
   if (!status.configured) {
     const redirectUri = `${process.env.NEXT_PUBLIC_API_URL}/calendar/google/callback`;
     return (
-      <Card style={{ marginBottom: 20 }}>
-        <h2 style={{ marginBottom: 8 }}>Google Calendar не настроен</h2>
-        <p className="ds-field-hint" style={{ marginBottom: 14 }}>
-          Чтобы подключить синхронизацию, нужен OAuth-клиент в Google Cloud Console — разово, один раз:
-        </p>
-        <ol className="setup-steps">
-          <li>
-            Открыть{' '}
-            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
-              Google Cloud Console <ExternalLink size={12} strokeWidth={1.75} style={{ verticalAlign: -1 }} />
-            </a>{' '}
-            — создать проект (или выбрать существующий).
-          </li>
-          <li>
-            <strong>APIs &amp; Services → OAuth consent screen</strong> — тип <strong>External</strong>; если
-            приложение не проходит верификацию Google, добавить свой email в <strong>Test users</strong>.
-          </li>
-          <li>
-            <strong>APIs &amp; Services → Library</strong> — найти <strong>Google Calendar API</strong> и включить.
-          </li>
-          <li>
-            <strong>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</strong>, тип{' '}
-            <strong>Web application</strong>.
-          </li>
-          <li>
-            В <strong>Authorized redirect URIs</strong> добавить ровно это значение:
-            <br />
-            <code className="mono chip" style={{ display: 'inline-block', marginTop: 4, wordBreak: 'break-all' }}>
-              {redirectUri}
-            </code>
-          </li>
-          <li>Скопировать <strong>Client ID</strong> и <strong>Client Secret</strong> и вставить их в форму ниже.</li>
-        </ol>
+      <ConnectionBar
+        on={false}
+        title="Google Calendar не настроен"
+        meta="Нужен OAuth-клиент в Google Cloud Console — один раз"
+        actions={
+          !setupOpen && (
+            <Button variant="secondary" size="sm" icon={Settings} onClick={() => setSetupOpen(true)}>
+              Настроить
+            </Button>
+          )
+        }
+      >
+        {setupOpen && (
+          <div className="conn-bar-setup">
+            <ol className="setup-steps">
+              <li>
+                Открыть{' '}
+                <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
+                  Google Cloud Console <ExternalLink size={12} strokeWidth={1.75} />
+                </a>{' '}
+                — создать проект (или выбрать существующий).
+              </li>
+              <li>
+                <strong>APIs &amp; Services → OAuth consent screen</strong> — тип <strong>External</strong>; если
+                приложение не проходит верификацию Google, добавить свой email в <strong>Test users</strong>.
+              </li>
+              <li>
+                <strong>APIs &amp; Services → Library</strong> — найти <strong>Google Calendar API</strong> и включить.
+              </li>
+              <li>
+                <strong>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</strong>, тип{' '}
+                <strong>Web application</strong>.
+              </li>
+              <li>
+                В <strong>Authorized redirect URIs</strong> добавить ровно это значение: <code className="mono chip">{redirectUri}</code>
+              </li>
+              <li>Скопировать <strong>Client ID</strong> и <strong>Client Secret</strong> и вставить их в форму ниже.</li>
+            </ol>
 
-        <form onSubmit={saveOAuthConfig} style={{ marginTop: 18, paddingTop: 18, borderTop: '1px solid var(--line)', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Field label="Client ID">
-            <Input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder={status.clientId ?? '...apps.googleusercontent.com'} required />
-          </Field>
-          <Field label="Client Secret">
-            <Input
-              type="password"
-              value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
-              placeholder={status.clientId ? 'уже сохранён — введите заново, чтобы заменить' : 'GOCSPX-...'}
-              required
-            />
-          </Field>
-          {status.clientId && (
-            <p className="ds-field-hint">
-              Сейчас сохранён Client ID <code className="mono">{status.clientId}</code>. Заполните оба поля, чтобы заменить.
-            </p>
-          )}
-          {error && <Alert tone="danger">{error}</Alert>}
-          <Button type="submit" variant="primary" disabled={busy} loading={busy}>
-            Сохранить
-          </Button>
-        </form>
-      </Card>
+            <form onSubmit={saveOAuthConfig}>
+              <Field label="Client ID">
+                <Input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder={status.clientId ?? '...apps.googleusercontent.com'} required />
+              </Field>
+              <Field label="Client Secret">
+                <Input
+                  type="password"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  placeholder={status.clientId ? 'уже сохранён — введите заново, чтобы заменить' : 'GOCSPX-...'}
+                  required
+                />
+              </Field>
+              {status.clientId && (
+                <p className="panel-hint">
+                  Сейчас сохранён Client ID <code className="mono">{status.clientId}</code>. Заполните оба поля, чтобы заменить.
+                </p>
+              )}
+              {error && <Alert tone="danger">{error}</Alert>}
+              <div className="panel-actions">
+                <Button type="submit" variant="primary" disabled={busy} loading={busy}>
+                  Сохранить
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => setSetupOpen(false)} disabled={busy}>
+                  Отмена
+                </Button>
+              </div>
+            </form>
+          </div>
+        )}
+      </ConnectionBar>
     );
   }
 
   return (
-    <Card style={{ marginBottom: 20 }}>
-      {justConnected === '1' && (
-        <p className="ds-field-hint" style={{ color: 'var(--ok)', marginBottom: 10 }}>
-          Google Calendar подключён.
-        </p>
-      )}
-      {justConnected === '0' && (
-        <div style={{ marginBottom: 10 }}>
-          <Alert tone="danger">Подключение не удалось — попробуйте ещё раз.</Alert>
-        </div>
-      )}
-
-      {status.connected ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Link2 size={16} strokeWidth={1.75} style={{ color: 'var(--ok)' }} />
-          <span>
+    <ConnectionBar
+      on={status.connected}
+      title={
+        status.connected ? (
+          <>
             Синхронизировано с <strong>{status.googleAccountEmail}</strong>
-          </span>
-          <Badge>{status.lastSyncAt ? `Обновлено: ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}` : 'Ещё не синхронизировано'}</Badge>
-          <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy}>
-            Синхронизировать
-          </Button>
-          {!actingAsLeader && (
-            <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
-              Отключить
+          </>
+        ) : (
+          'Google Calendar не подключён'
+        )
+      }
+      meta={
+        status.connected
+          ? status.lastSyncAt
+            ? `Обновлено ${new Date(status.lastSyncAt).toLocaleString('ru-RU')}`
+            : 'Ещё не синхронизировано'
+          : 'События хранятся только внутри системы'
+      }
+      actions={
+        status.connected ? (
+          <>
+            <Button variant="secondary" size="sm" icon={RefreshCw} onClick={syncNow} disabled={busy}>
+              Синхронизировать
             </Button>
-          )}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span className="ds-field-hint">Google Calendar не подключён — события хранятся только внутри системы.</span>
+            {!actingAsLeader && (
+              <Button variant="secondary" size="sm" icon={Link2Off} onClick={disconnect} disabled={busy}>
+                Отключить
+              </Button>
+            )}
+          </>
+        ) : (
           <Button variant="secondary" size="sm" icon={Link2} onClick={connect} disabled={busy}>
-            Подключить Google Calendar
+            Подключить
           </Button>
-        </div>
-      )}
-      {error && (
-        <div style={{ marginTop: 8 }}>
-          <Alert tone="danger">{error}</Alert>
-        </div>
-      )}
-    </Card>
+        )
+      }
+    >
+      {justConnected === '1' && <Alert tone="ok">Google Calendar подключён.</Alert>}
+      {justConnected === '0' && <Alert tone="danger">Подключение не удалось — попробуйте ещё раз.</Alert>}
+      {error && <Alert tone="danger">{error}</Alert>}
+    </ConnectionBar>
   );
 }
 
@@ -241,8 +249,7 @@ function useIdempotencyKey(): { key: () => string; reset: () => void } {
   };
 }
 
-function NewEventForm({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
+function NewEventForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [title, setTitle] = useState('');
   const [location, setLocation] = useState('');
   const [description, setDescription] = useState('');
@@ -271,7 +278,6 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
       setDescription('');
       setStart('');
       setEnd('');
-      setOpen(false);
       onCreated();
     } catch (err) {
       if (err instanceof ApiError && err.status < 500) idem.reset();
@@ -281,16 +287,9 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  if (!open) {
-    return (
-      <Button variant="primary" icon={Plus} onClick={() => setOpen(true)} style={{ marginBottom: 20 }}>
-        Новое событие
-      </Button>
-    );
-  }
-
   return (
-    <form onSubmit={handleSubmit} className="ds-card" style={{ marginBottom: 20, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <form onSubmit={handleSubmit} className="ds-card form-panel">
+      <h2>Новое событие</h2>
       <Field label="Название">
         <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
       </Field>
@@ -307,11 +306,11 @@ function NewEventForm({ onCreated }: { onCreated: () => void }) {
         <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
       </Field>
       {error && <Alert tone="danger">{error}</Alert>}
-      <div style={{ display: 'flex', gap: 10 }}>
+      <div className="panel-actions">
         <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
           Создать событие
         </Button>
-        <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
+        <Button type="button" variant="secondary" onClick={onClose}>
           Отмена
         </Button>
       </div>
@@ -406,106 +405,126 @@ function EventsAgenda() {
   }
 
   return (
-    <div>
-      {eventMissing && (
-        <div style={{ marginBottom: 16 }}>
-          <Alert tone="info">Это событие больше недоступно</Alert>
-        </div>
-      )}
-      {[...byDay.entries()].map(([day, dayEvents]) => (
-        <div key={day} style={{ marginBottom: 20 }}>
-          <h3 style={{ fontSize: '0.85rem', color: 'var(--ink-3)', textTransform: 'capitalize', marginBottom: 8 }}>{day}</h3>
-          <div className="ds-table-wrap">
-            <table className="ds-table">
-              <tbody>
-                {dayEvents.map((ev) => (
-                  <tr key={ev.id} id={`calendar-event-${ev.id}`} style={{ background: focusEventId === ev.id ? 'var(--surface-2)' : undefined }}>
-                    <td style={{ whiteSpace: 'nowrap', width: 120 }}>
-                      {ev.allDay
-                        ? 'Весь день'
-                        : `${new Date(ev.startAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}–${new Date(ev.endAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`}
-                    </td>
-                    <td>
-                      <strong>{ev.title}</strong>
-                      {ev.location && <span className="ds-field-hint" style={{ marginLeft: 8 }}>{ev.location}</span>}
-                      <div className="watchers-row" style={{ marginTop: 6 }}>
-                        {ev.participants.length > 0 && (
-                          <div className="watchers-avatars">
-                            {ev.participants.map((p) => (
-                              <span key={p.id} className="watcher-chip" title={p.fullName}>
-                                <Avatar id={p.id} name={p.fullName} size={18} />
-                                <button
-                                  type="button"
-                                  className="watcher-remove"
-                                  onClick={() => removeParticipant(ev.id, p.id)}
-                                  aria-label={`Убрать ${p.fullName} из участников`}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).length > 0 && (
-                          <div className="watcher-add-form" style={{ display: 'flex', gap: 6 }}>
-                            <Select
-                              value={addParticipantSel[ev.id] ?? ''}
-                              onChange={(e) => setAddParticipantSel((prev) => ({ ...prev, [ev.id]: e.target.value }))}
-                              options={[
-                                { value: '', label: '+ Участник…' },
-                                ...employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).map((e) => ({ value: e.id, label: e.fullName })),
-                              ]}
-                            />
-                            <Button type="button" variant="secondary" size="sm" disabled={!addParticipantSel[ev.id]} onClick={() => addParticipant(ev.id)}>
-                              Добавить
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {ev.status === 'DRAFT' && <Badge>Черновик</Badge>}
-                      {ev.googleEventId && <Badge>Google</Badge>}
-                    </td>
-                    <td style={{ width: 1, whiteSpace: 'nowrap' }}>
-                      <IconButton icon={Trash2} label="Удалить" variant="outline" size="sm" onClick={() => remove(ev.id)} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
+    <div className="page-stack">
+      {eventMissing && <Alert tone="info">Это событие больше недоступно</Alert>}
+      <div>
+        {[...byDay.entries()].map(([day, dayEvents]) => (
+          <section key={day} className="cal-day">
+            <h3 className="section-kicker">{day}</h3>
+            <div className="ds-table-wrap">
+              <table className="ds-table">
+                <tbody>
+                  {dayEvents.map((ev) => (
+                    <tr key={ev.id} id={`calendar-event-${ev.id}`} className={cx('cal-event', focusEventId === ev.id && 'is-focused')}>
+                      <td className="cal-event-time">
+                        {ev.allDay
+                          ? 'Весь день'
+                          : `${new Date(ev.startAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}–${new Date(ev.endAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`}
+                      </td>
+                      <td>
+                        <strong>{ev.title}</strong>
+                        {ev.location && <span className="cal-event-place">{ev.location}</span>}
+                        <div className="watchers-row">
+                          {ev.participants.length > 0 && (
+                            <div className="watchers-avatars">
+                              {ev.participants.map((p) => (
+                                <span key={p.id} className="watcher-chip" title={p.fullName}>
+                                  <Avatar id={p.id} name={p.fullName} size={18} />
+                                  <button
+                                    type="button"
+                                    className="watcher-remove"
+                                    onClick={() => removeParticipant(ev.id, p.id)}
+                                    aria-label={`Убрать ${p.fullName} из участников`}
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).length > 0 && (
+                            <div className="watcher-add-form">
+                              <Select
+                                value={addParticipantSel[ev.id] ?? ''}
+                                onChange={(e) => setAddParticipantSel((prev) => ({ ...prev, [ev.id]: e.target.value }))}
+                                options={[
+                                  { value: '', label: '+ Участник…' },
+                                  ...employees.filter((e) => !ev.participants.some((p) => p.id === e.id)).map((e) => ({ value: e.id, label: e.fullName })),
+                                ]}
+                              />
+                              <Button type="button" variant="secondary" size="sm" disabled={!addParticipantSel[ev.id]} onClick={() => addParticipant(ev.id)}>
+                                Добавить
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="cal-event-tags">
+                        {ev.status === 'DRAFT' && <Badge>Черновик</Badge>}
+                        {ev.googleEventId && <Badge>Google</Badge>}
+                      </td>
+                      <td className="cal-event-actions">
+                        <IconButton icon={Trash2} label="Удалить" variant="outline" size="sm" onClick={() => remove(ev.id)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
 
 type CalendarTab = 'events' | CalendarAgentTab;
 
+const CALENDAR_TABS: PageTab<CalendarTab>[] = [
+  { value: 'events', label: 'События' },
+  { value: 'availability', label: 'Свободное время' },
+  { value: 'plans', label: 'Планы агента' },
+  { value: 'policy', label: 'Рабочие часы' },
+];
+
 function CalendarBody() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [tab, setTab] = useState<CalendarTab>('events');
+  const [creating, setCreating] = useState(false);
   return (
     <>
+      <PageHeader
+        title="Календарь"
+        actions={
+          !(tab === 'events' && creating) && (
+            <Button
+              variant="primary"
+              icon={Plus}
+              onClick={() => {
+                setTab('events');
+                setCreating(true);
+              }}
+            >
+              Новое событие
+            </Button>
+          )
+        }
+      />
       <GoogleConnectionCard />
-      <div style={{ marginBottom: 16 }}>
-        <SegmentedControl
-          options={[
-            { value: 'events', label: 'События' },
-            { value: 'availability', label: 'Свободное время' },
-            { value: 'plans', label: 'Планы агента' },
-            { value: 'policy', label: 'Рабочие часы' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as CalendarTab)}
-        />
-      </div>
+      <PageTabs tabs={CALENDAR_TABS} value={tab} onChange={setTab} label="Разделы календаря" />
       {tab === 'events' ? (
-        <>
-          <NewEventForm onCreated={() => setRefreshKey((k) => k + 1)} />
+        <div className="page-stack">
+          {creating && (
+            <NewEventForm
+              onClose={() => setCreating(false)}
+              onCreated={() => {
+                setCreating(false);
+                setRefreshKey((k) => k + 1);
+              }}
+            />
+          )}
           <EventsAgenda key={refreshKey} />
-        </>
+        </div>
       ) : (
         <CalendarAgent tab={tab} onTabChange={setTab} />
       )}
@@ -516,15 +535,6 @@ function CalendarBody() {
 export default function CalendarPage() {
   return (
     <Protected requireRole={MANAGER_ROLES}>
-      <PageHeader
-        title={
-          <>
-            <CalendarDays size={22} strokeWidth={1.75} style={{ verticalAlign: -3, marginRight: 8 }} />
-            Календарь
-          </>
-        }
-        description="Личный календарь, двусторонне синхронизированный с Google Calendar."
-      />
       <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
         <DataOwnerScope>
           <CalendarBody />

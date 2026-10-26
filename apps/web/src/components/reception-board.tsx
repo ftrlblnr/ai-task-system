@@ -1141,27 +1141,24 @@ export function ReceptionBoard() {
 
         <section className="rcp-center" aria-label="Очередь">
           <div className="rcp-center-head">
-            <div>
-              <h1>Приёмная</h1>
-              <p className="ds-field-hint">
-                {data.totalWaiting === 0 ? 'никто не ждёт' : `ждут ${data.totalWaiting}`}
-                {current && ' · идёт приём'}
-              </p>
-            </div>
+            <span className="section-kicker">
+              Очередь · {data.totalWaiting === 0 ? 'никто не ждёт' : `ждут ${data.totalWaiting}`}
+              {current && ' · идёт приём'}
+            </span>
             <IconButton icon={RefreshCw} label="Обновить" variant="outline" size="sm" onClick={() => void load()} />
           </div>
           {(data.totalWaiting > 5 || query) && (
-            <div style={{ marginBottom: 12 }}>
+            <div className="rcp-center-note">
               <SearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск по теме или сотруднику" />
             </div>
           )}
           {focusMissing && (
-            <div style={{ marginBottom: 12 }}>
+            <div className="rcp-center-note">
               <Alert tone="info">Статус вопроса изменился</Alert>
             </div>
           )}
           {error && (
-            <div style={{ marginBottom: 12 }}>
+            <div className="rcp-center-note">
               <Alert tone="danger">{error}</Alert>
             </div>
           )}

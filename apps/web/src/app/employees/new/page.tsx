@@ -12,6 +12,7 @@ import { Protected } from '@/components/protected';
 import { generatePassword } from '@/lib/generate-password';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/ui/card';
 import { Alert } from '@/components/ui/alert';
 
 const NEW_POSITION_VALUE = '__new__';
@@ -75,7 +76,7 @@ function NewEmployeeForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="ds-card" style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <form onSubmit={handleSubmit} className="ds-card form-panel">
       <Field label="ФИО">
         <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
       </Field>
@@ -84,8 +85,8 @@ function NewEmployeeForm() {
         <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
       </Field>
 
-      <Field label="Пароль" hint="Сообщите сотруднику лично — сменить его пока нельзя из интерфейса">
-        <div style={{ display: 'flex', gap: 8 }}>
+      <Field label="Пароль" hint="Сообщите сотруднику лично">
+        <div className="input-row">
           <Input value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} required />
           <Button type="button" variant="secondary" onClick={() => setPassword(generatePassword())}>
             Сгенерировать
@@ -145,9 +146,11 @@ function NewEmployeeForm() {
 
       {error && <Alert tone="danger">{error}</Alert>}
 
-      <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
-        Создать сотрудника
-      </Button>
+      <div className="panel-actions">
+        <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+          Создать сотрудника
+        </Button>
+      </div>
     </form>
   );
 }
@@ -159,8 +162,7 @@ export default function NewEmployeePage() {
         <ArrowLeft size={14} strokeWidth={1.75} />
         Сотрудники
       </Link>
-      <h1>Новый сотрудник</h1>
-      <p className="ds-field-hint">Заведите профиль — компетенции добавите на карточке сотрудника.</p>
+      <PageHeader title="Новый сотрудник" description="Компетенции добавите потом на карточке сотрудника." />
       <NewEmployeeForm />
     </Protected>
   );

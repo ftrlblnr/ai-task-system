@@ -41,7 +41,7 @@ function NewMeetingForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="ds-card form-wide" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <form onSubmit={handleSubmit} className="ds-card form-panel form-wide">
       <Field label="Название встречи">
         <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Например: Синк по проекту, 28.08" required />
       </Field>
@@ -50,15 +50,17 @@ function NewMeetingForm() {
         <Input type="date" value={meetingDate} onChange={(e) => setMeetingDate(e.target.value)} required />
       </Field>
 
-      <Field label="Саммари (как есть из Plaud, включая метки Speaker N — заменить их на имена сможет AI на Этапе 4)">
-        <Textarea value={rawSummary} onChange={(e) => setRawSummary(e.target.value)} rows={14} required />
+      <Field label="Саммари">
+        <Textarea value={rawSummary} onChange={(e) => setRawSummary(e.target.value)} rows={14} placeholder="Текст из Plaud как есть, с метками Speaker N" required />
       </Field>
 
       {error && <Alert tone="danger">{error}</Alert>}
 
-      <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
-        Сохранить встречу
-      </Button>
+      <div className="panel-actions">
+        <Button type="submit" variant="primary" disabled={submitting} loading={submitting}>
+          Сохранить встречу
+        </Button>
+      </div>
     </form>
   );
 }
@@ -72,7 +74,7 @@ export default function NewMeetingPage() {
       </Link>
       <PageHeader
         title="Новая встреча"
-        description="Ручная загрузка (Этап 3 ТЗ) — вставьте текст саммари как есть, без правок. Оригинал сохраняется без изменений. Транскрипт не хранится — Plaud уже делает саммари сам."
+        description="Вставьте текст саммари без правок — оригинал сохраняется как есть."
       />
       <NewMeetingForm />
     </Protected>

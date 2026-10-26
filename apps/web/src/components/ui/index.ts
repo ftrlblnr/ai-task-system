@@ -22,3 +22,5 @@ export * from './user-message';
 export * from './live-voice-bar';
 export * from './agent-suggestion';
 export * from './panel';
+export * from './page-tabs';
+export * from './connection-bar';

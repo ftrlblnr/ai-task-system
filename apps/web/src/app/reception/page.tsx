@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Inbox, MessageSquarePlus } from 'lucide-react';
 import type {
   CreateReceptionRequestInput,
   EditReceptionRequestInput,
@@ -25,6 +26,8 @@ import type { BadgeTone } from '@/components/ui/badge';
 import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
+import { PageHeader } from '@/components/ui/card';
+import { PageTabs, Panel, type PageTab } from '@/components/ui';
 
 // ТЗ «Приёмная руководителя» v1.0 (02.10.2026). Свежесть "вас вызывают" —
 // мгновенный сигнал сервера (useRealtime, 21.10.2026); опрос раз в минуту
@@ -177,8 +180,8 @@ function RequestForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="ds-card" style={{ marginBottom: 16, maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <h2 style={{ marginBottom: 8 }}>{editing ? 'Изменить обращение' : 'Подать вопрос'}</h2>
+    <form onSubmit={handleSubmit} className="ds-card form-panel">
+      <h2>{editing ? 'Изменить обращение' : 'Подать вопрос'}</h2>
       <Field label="Тема">
         <Input value={value.title} onChange={(e) => setValue({ ...value, title: e.target.value })} minLength={5} maxLength={150} required />
       </Field>
@@ -229,7 +232,7 @@ function RequestForm({
         />
       </Field>
       {error && <Alert tone="danger">{error}</Alert>}
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div className="panel-actions">
         <Button type="submit" variant="primary" disabled={busy} loading={busy}>
           {editing ? 'Сохранить' : 'Подать вопрос'}
         </Button>
@@ -243,11 +246,12 @@ function RequestForm({
 
 // --- вкладка сотрудника: свои обращения ---
 
-function MineView() {
+type FormState = 'create' | ReceptionRequestItem | null;
+
+function MineView({ formOpen, setFormOpen }: { formOpen: FormState; setFormOpen: (v: FormState) => void }) {
   const [scope, setScope] = useState<'active' | 'history'>('active');
   const [data, setData] = useState<ReceptionListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState<'create' | ReceptionRequestItem | null>(null);
   const requestIdRef = useRef(0);
 
   const load = useCallback(() => {
@@ -283,12 +287,7 @@ function MineView() {
   }
 
   return (
-    <>
-      {!formOpen && (
-        <Button variant="primary" onClick={() => setFormOpen('create')} style={{ marginBottom: 16 }}>
-          Подать вопрос
-        </Button>
-      )}
+    <div className="page-stack">
       {formOpen && (
         <RequestForm
           editing={formOpen === 'create' ? null : formOpen}
@@ -301,62 +300,67 @@ function MineView() {
         />
       )}
 
-      <div style={{ marginBottom: 12 }}>
-        <SegmentedControl
-          options={[
-            { value: 'active', label: 'Активные' },
-            { value: 'history', label: 'История' },
-          ]}
-          value={scope}
-          onChange={(v) => setScope(v as 'active' | 'history')}
-        />
-      </div>
-
-      {error && <Alert tone="danger">{error}</Alert>}
-      {!data && !error && <p className="ds-field-hint">Загрузка…</p>}
-      {data && data.items.length === 0 && (
-        <EmptyState title={scope === 'active' ? 'Активных обращений нет' : 'История пуста'} />
-      )}
-      {data && data.items.length > 0 && (
-        <ul className="plain-list">
-          {data.items.map((item) => (
-            <li key={item.id} className="plain-list-row" style={{ alignItems: 'flex-start' }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <strong>{item.title}</strong>
-                  <Badge tone={STATUS_BADGE_TONE[item.status]}>{item.status === 'CALLED' ? 'Вас вызывают' : STATUS_LABELS[item.status]}</Badge>
-                  {isExpired(item.desiredBy) && item.status === 'WAITING' && <Badge tone="warn">Запрошенный срок истёк</Badge>}
+      <Panel
+        icon={Inbox}
+        title="Мои обращения"
+        aside={
+          <SegmentedControl
+            label="Обращения"
+            options={[
+              { value: 'active', label: 'Активные' },
+              { value: 'history', label: 'История' },
+            ]}
+            value={scope}
+            onChange={(v) => setScope(v as 'active' | 'history')}
+          />
+        }
+      >
+        {error && <Alert tone="danger">{error}</Alert>}
+        {!data && !error && <p className="panel-hint">Загрузка…</p>}
+        {data && data.items.length === 0 && (
+          <EmptyState title={scope === 'active' ? 'Активных обращений нет' : 'История пуста'} />
+        )}
+        {data && data.items.length > 0 && (
+          <ul className="row-list">
+            {data.items.map((item) => (
+              <li key={item.id} className="row-item">
+                <div className="row-item-main">
+                  <div className="row-item-title">
+                    {item.title}
+                    <Badge tone={STATUS_BADGE_TONE[item.status]}>{item.status === 'CALLED' ? 'Вас вызывают' : STATUS_LABELS[item.status]}</Badge>
+                    {isExpired(item.desiredBy) && item.status === 'WAITING' && <Badge tone="warn">Запрошенный срок истёк</Badge>}
+                  </div>
+                  <p className="row-item-meta">
+                    {REQUEST_TYPE_LABELS[item.requestType]} · подано {formatDateTime(item.createdAt)}
+                    {item.desiredBy && <> · нужен ответ до {formatDateTime(item.desiredBy)}</>}
+                  </p>
+                  {item.attachments.length > 0 && (
+                    <div className="row-item-text">
+                      <ReceptionAttachmentList requestId={item.id} attachments={item.attachments} />
+                    </div>
+                  )}
+                  {item.status === 'REJECTED' && item.rejectionReason && <p className="row-item-meta">Причина: {item.rejectionReason}</p>}
+                  {item.status === 'COMPLETED' && item.resolution && <p className="row-item-meta">Результат: {item.resolution}</p>}
+                  {item.status === 'ANSWERED' && item.resolution && <p className="row-item-text">Ответ: {item.resolution}</p>}
+                  {item.status === 'DELEGATED' && item.resolution && <p className="row-item-meta">Комментарий: {item.resolution}</p>}
+                  {item.task && <p className="row-item-meta">Задача: {item.task.title}{item.task.dueDate && ` · до ${new Date(item.task.dueDate).toLocaleDateString('ru-RU')}`}</p>}
                 </div>
-                <p className="ds-field-hint" style={{ marginTop: 4 }}>
-                  {REQUEST_TYPE_LABELS[item.requestType]} · подано {formatDateTime(item.createdAt)}
-                  {item.desiredBy && <> · нужен ответ до {formatDateTime(item.desiredBy)}</>}
-                </p>
-                {item.attachments.length > 0 && (
-                  <div style={{ marginTop: 6 }}>
-                    <ReceptionAttachmentList requestId={item.id} attachments={item.attachments} />
+                {item.status === 'WAITING' && (
+                  <div className="row-item-side">
+                    <Button variant="secondary" size="sm" onClick={() => setFormOpen(item)}>
+                      Изменить
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => withdraw(item)}>
+                      Отозвать
+                    </Button>
                   </div>
                 )}
-                {item.status === 'REJECTED' && item.rejectionReason && <p className="ds-field-hint">Причина: {item.rejectionReason}</p>}
-                {item.status === 'COMPLETED' && item.resolution && <p className="ds-field-hint">Результат: {item.resolution}</p>}
-                {item.status === 'ANSWERED' && item.resolution && <p style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>Ответ: {item.resolution}</p>}
-                {item.status === 'DELEGATED' && item.resolution && <p className="ds-field-hint">Комментарий: {item.resolution}</p>}
-                {item.task && <p className="ds-field-hint">Задача: {item.task.title}{item.task.dueDate && ` · до ${new Date(item.task.dueDate).toLocaleDateString('ru-RU')}`}</p>}
-              </div>
-              {item.status === 'WAITING' && (
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                  <Button variant="secondary" size="sm" onClick={() => setFormOpen(item)}>
-                    Изменить
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={() => withdraw(item)}>
-                    Отозвать
-                  </Button>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
   );
 }
 
@@ -390,7 +394,7 @@ function HistoryView() {
 
   return (
     <>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+      <div className="panel-actions">
         <Select
           value={authorId}
           onChange={(e) => setAuthorId(e.target.value)}
@@ -445,36 +449,37 @@ function HistoryView() {
 
 type OwnerTab = 'queue' | 'history' | 'mine';
 
+const OWNER_TABS: PageTab<OwnerTab>[] = [
+  { value: 'queue', label: 'Доска' },
+  { value: 'history', label: 'История' },
+  { value: 'mine', label: 'Мои обращения' },
+];
+
 function ReceptionView() {
   const { user } = useAuth();
   const isManager = isManagerRole(user?.role);
   const [tab, setTab] = useState<OwnerTab>('queue');
-
-  if (!isManager) {
-    return (
-      <>
-        <h1 style={{ marginBottom: 16 }}>Приёмная</h1>
-        <MineView />
-      </>
-    );
-  }
+  // Форма обращения открывается кнопкой в шапке (одна primary на странице).
+  const [formOpen, setFormOpen] = useState<FormState>(null);
+  const showMine = !isManager || tab === 'mine';
 
   return (
     <>
-      <div style={{ marginBottom: 16 }}>
-        <SegmentedControl
-          options={[
-            { value: 'queue', label: 'Доска' },
-            { value: 'history', label: 'История' },
-            { value: 'mine', label: 'Мои обращения' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as OwnerTab)}
-        />
-      </div>
-      {tab === 'queue' && <ReceptionBoard />}
-      {tab === 'history' && <HistoryView />}
-      {tab === 'mine' && <MineView />}
+      <PageHeader
+        title="Приёмная"
+        actions={
+          showMine &&
+          !formOpen && (
+            <Button variant="primary" icon={MessageSquarePlus} onClick={() => setFormOpen('create')}>
+              Подать вопрос
+            </Button>
+          )
+        }
+      />
+      {isManager && <PageTabs tabs={OWNER_TABS} value={tab} onChange={setTab} label="Разделы приёмной" />}
+      {isManager && tab === 'queue' && <ReceptionBoard />}
+      {isManager && tab === 'history' && <HistoryView />}
+      {showMine && <MineView formOpen={formOpen} setFormOpen={setFormOpen} />}
     </>
   );
 }

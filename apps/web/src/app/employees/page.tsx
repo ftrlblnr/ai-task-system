@@ -9,6 +9,7 @@ import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
 import { PageHeader } from '@/components/ui/card';
+import { ConnectionBar } from '@/components/ui/connection-bar';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -47,36 +48,38 @@ function RegistrationWindowToggle() {
   if (!status) return null;
 
   return (
-    <div className="ds-card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-      <div>
-        <strong>Самостоятельная регистрация</strong>
-        <p className="ds-field-hint" style={{ margin: 0 }}>
-          {status.isOpen
-            ? `Открыта${status.closesAt ? ` до ${new Date(status.closesAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''} — любой человек может завести логин/пароль на /register`
-            : 'Закрыта — новые учётки заводит только руководитель'}
-        </p>
-        {error && <Alert tone="danger">{error}</Alert>}
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        {!status.isOpen && (
-          <Select
-            value={days}
-            onChange={(e) => setDays(e.target.value)}
-            aria-label="Срок регистрации"
-            options={[
-              { value: '3', label: 'на 3 дня' },
-              { value: '7', label: 'на 7 дней' },
-              { value: '10', label: 'на 10 дней' },
-              { value: '30', label: 'на 30 дней' },
-              { value: '', label: 'без срока' },
-            ]}
-          />
-        )}
-        <Button variant={status.isOpen ? 'secondary' : 'primary'} onClick={toggle} disabled={busy}>
-          {status.isOpen ? 'Закрыть' : 'Открыть'}
-        </Button>
-      </div>
-    </div>
+    <ConnectionBar
+      on={status.isOpen}
+      title={
+        status.isOpen
+          ? `Самостоятельная регистрация открыта${status.closesAt ? ` до ${new Date(status.closesAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}`
+          : 'Самостоятельная регистрация закрыта'
+      }
+      meta={status.isOpen ? 'Любой человек может завести логин и пароль на /register' : 'Новые учётки заводит только руководитель'}
+      actions={
+        <>
+          {!status.isOpen && (
+            <Select
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+              aria-label="Срок регистрации"
+              options={[
+                { value: '3', label: 'на 3 дня' },
+                { value: '7', label: 'на 7 дней' },
+                { value: '10', label: 'на 10 дней' },
+                { value: '30', label: 'на 30 дней' },
+                { value: '', label: 'без срока' },
+              ]}
+            />
+          )}
+          <Button variant="secondary" size="sm" onClick={toggle} disabled={busy}>
+            {status.isOpen ? 'Закрыть' : 'Открыть'}
+          </Button>
+        </>
+      }
+    >
+      {error && <Alert tone="danger">{error}</Alert>}
+    </ConnectionBar>
   );
 }
 

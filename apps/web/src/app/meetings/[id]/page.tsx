@@ -5,16 +5,17 @@ import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { ArrowLeft, ListTodo, Mic } from 'lucide-react';
+import { ArrowLeft, FileText, ListTodo, Mic, Users } from 'lucide-react';
 import type { MeetingDetail } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { TaskExtractionModal } from '@/components/task-extraction-modal';
-import { Card, PageHeader } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/card';
+import { Panel, StatusTag } from '@/components/ui/panel';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
-import { Badge, StatusBadge } from '@/components/ui/badge';
+import { StatusBadge } from '@/components/ui/badge';
 import { Chip } from '@/components/ui/chip';
 import { Input } from '@/components/ui/field';
 import { useAgentContext } from '@/components/agent-panel/agent-context';
@@ -60,14 +61,11 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
   }
 
   return (
-    <Card title="Спикеры">
-      <p className="ds-field-hint" style={{ marginBottom: 14 }}>
-        Саммари ссылается на спикеров по номеру — впишите реальные имена, чтобы саммари стало понятнее
-        и AI точнее определял исполнителя при постановке задач.
-      </p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
+    <Panel icon={Users} title="Спикеры">
+      <p className="panel-hint">Впишите имена вместо номеров — саммари станет понятнее, а исполнители точнее.</p>
+      <div className="meeting-speakers">
         {labels.map((label) => (
-          <label key={label} style={{ minWidth: 200 }} className="ds-field-label">
+          <label key={label} className="ds-field-label">
             {label}
             <Input
               value={names[label] ?? ''}
@@ -78,10 +76,12 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
         ))}
       </div>
       {error && <Alert tone="danger">{error}</Alert>}
-      <Button variant="secondary" size="sm" onClick={save} disabled={busy} loading={busy}>
-        Сохранить имена
-      </Button>
-    </Card>
+      <div className="panel-actions">
+        <Button variant="secondary" size="sm" onClick={save} disabled={busy} loading={busy}>
+          Сохранить имена
+        </Button>
+      </div>
+    </Panel>
   );
 }
 
@@ -110,9 +110,10 @@ function MeetingDetailView({ id }: { id: string }) {
         Встречи
       </Link>
       <PageHeader
+        kicker={`${new Date(meeting.meetingDate).toLocaleDateString('ru-RU')} · загрузил ${meeting.createdBy.fullName}`}
         title={meeting.title}
         actions={
-          <div style={{ display: 'flex', gap: 8 }}>
+          <>
             <Link href={`/voice?meetingId=${meeting.id}`} className="ds-btn ds-btn-secondary">
               <Mic size={18} strokeWidth={1.75} />
               Голосом
@@ -120,48 +121,45 @@ function MeetingDetailView({ id }: { id: string }) {
             <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
               Поставить задачи
             </Button>
-          </div>
+          </>
         }
       />
-      <div className="task-meta">
-        <Badge>{new Date(meeting.meetingDate).toLocaleDateString('ru-RU')}</Badge>
-        <Badge>Загрузил: {meeting.createdBy.fullName}</Badge>
-      </div>
 
-      <Card title="Саммари">
-        {!meeting.enhancedSummary && (
-          <p className="ds-field-hint" style={{ marginBottom: 12 }}>
-            Показана исходная версия из Plaud. Впишите имена спикеров ниже, если они есть в тексте.
-          </p>
-        )}
-        <div className="ds-md">
-          {/* remark-gfm — чек-листы/таблицы из GFM-разметки Plaud; rehype-raw —
-              встроенный HTML вроде <mark> в разделе "Задачи" саммари (владелец
-              09.09.2026, источник — реальный сэмпл вывода Plaud). */}
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-            {meeting.enhancedSummary ?? meeting.rawSummary}
-          </ReactMarkdown>
+      <div className="detail-grid">
+        <Panel icon={FileText} title="Саммари" aside={!meeting.enhancedSummary && <StatusTag tone="muted">исходная версия</StatusTag>}>
+          <div className="ds-md">
+            {/* remark-gfm — чек-листы/таблицы из GFM-разметки Plaud; rehype-raw —
+                встроенный HTML вроде <mark> в разделе "Задачи" саммари (владелец
+                09.09.2026, источник — реальный сэмпл вывода Plaud). */}
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+              {meeting.enhancedSummary ?? meeting.rawSummary}
+            </ReactMarkdown>
+          </div>
+        </Panel>
+
+        <div className="detail-col">
+          <Panel icon={ListTodo} title="Задачи из встречи" aside={meeting.tasks.length > 0 && <StatusTag tone="muted">{meeting.tasks.length}</StatusTag>}>
+            {meeting.tasks.length === 0 ? (
+              <p className="panel-hint">Пока ни одной — «Поставить задачи» разберёт саммари.</p>
+            ) : (
+              <ul className="row-list">
+                {meeting.tasks.map((t) => (
+                  <li key={t.id} className="row-item">
+                    <Link href={`/tasks/${t.id}`} className="row-item-title">
+                      {t.title}
+                    </Link>
+                    <span className="row-item-side">
+                      {t.sourceTimestamp && <Chip>{t.sourceTimestamp}</Chip>}
+                      <StatusBadge status={t.status} />
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+          <SpeakerNamesSection meeting={meeting} onSaved={load} />
         </div>
-      </Card>
-
-      <SpeakerNamesSection meeting={meeting} onSaved={load} />
-
-      <Card title="Задачи из этой встречи">
-        {meeting.tasks.length === 0 && (
-          <p className="ds-field-hint">Пока не привязано ни одной задачи — нажмите «Поставить задачи» выше или создайте задачу вручную и укажите эту встречу источником.</p>
-        )}
-        <ul className="plain-list">
-          {meeting.tasks.map((t) => (
-            <li key={t.id} className="plain-list-row">
-              <Link href={`/tasks/${t.id}`}>{t.title}</Link>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {t.sourceTimestamp && <Chip>{t.sourceTimestamp}</Chip>}
-                <StatusBadge status={t.status} />
-              </div>
-            </li>
-          ))}
-        </ul>
-      </Card>
+      </div>
 
       {showExtraction && (
         <TaskExtractionModal

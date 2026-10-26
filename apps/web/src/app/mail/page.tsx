@@ -18,7 +18,7 @@ import { MailboxStatusBar } from '@/components/mail/mailbox-status-bar';
 import { MessagesPane } from '@/components/mail/messages-tab';
 import { DigestList } from '@/components/mail/digests-tab';
 import { TriagePane } from '@/components/mail/triage-tab';
-import { cx } from '@/components/ui';
+import { PageTabs, type PageTab } from '@/components/ui';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -33,7 +33,7 @@ const SELECTED_MAILBOX_KEY = 'mail.selectedMailbox';
 // «Разбор» — первая вкладка (редизайн web W4); вкладка — в ?tab=, чтобы
 // ссылки с пульта и из агента открывали нужную, письмо разбора — ?message=.
 type MailTab = 'triage' | 'messages' | 'digests' | 'agent';
-const MAIL_TABS: { value: MailTab; label: string }[] = [
+const MAIL_TABS: PageTab<MailTab>[] = [
   { value: 'triage', label: 'Разбор' },
   { value: 'messages', label: 'Все письма' },
   { value: 'digests', label: 'Дайджесты' },
@@ -85,13 +85,7 @@ function MailboxView({ mailbox, onChange }: { mailbox: MailboxStatus; onChange: 
   return (
     <>
       <MailboxStatusBar status={mailbox} onChange={onChange} />
-      <div className="mail-tabs" role="tablist" aria-label="Разделы почты">
-        {MAIL_TABS.map((t) => (
-          <button key={t.value} type="button" role="tab" aria-selected={tab === t.value} className={cx('mail-tab', tab === t.value && 'is-active')} onClick={() => setTab(t.value)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <PageTabs tabs={MAIL_TABS} value={tab} onChange={setTab} label="Разделы почты" />
       {tab === 'triage' && <TriagePane initialMessageId={searchParams.get('message')} />}
       {tab === 'messages' && <MessagesPane />}
       {tab === 'digests' && <DigestList />}

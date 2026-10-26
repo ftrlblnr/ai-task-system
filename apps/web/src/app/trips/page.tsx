@@ -2,15 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plane, Upload, Plus } from 'lucide-react';
+import { ChevronRight, Plane, Upload, Plus } from 'lucide-react';
 import type { AgentRunDetail, CreateTripInput, TripSummary, TripTimeStatus } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
-import { Card, PageHeader } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import type { BadgeTone } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Textarea } from '@/components/ui/field';
@@ -26,13 +25,6 @@ const SECTION_LABELS: Record<TripTimeStatus, string> = {
   NO_CONFIRMED_DATES: 'Без подтверждённых дат',
   COMPLETED: 'Завершённые',
   CANCELLED: 'Отменённые',
-};
-const STATUS_BADGE_TONE: Record<TripTimeStatus, BadgeTone> = {
-  ONGOING: 'warn',
-  UPCOMING: 'info',
-  NO_CONFIRMED_DATES: 'neutral',
-  COMPLETED: 'ok',
-  CANCELLED: 'danger',
 };
 
 function formatDate(value: string | null): string {
@@ -252,18 +244,18 @@ function CreateTripManualDialog({ onClose, onCreated }: { onClose: () => void; o
 
 function TripRow({ trip, onOpen }: { trip: TripSummary; onOpen: () => void }) {
   return (
-    <button type="button" onClick={onOpen} className="ds-card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', cursor: 'pointer', gap: 12 }}>
-      <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <strong>{trip.title}</strong>
+    <button type="button" onClick={onOpen} className="trip-row">
+      <div className="row-item-main">
+        <div className="row-item-title">
+          {trip.title}
           <Badge tone="outline">{trip.humanCode}</Badge>
         </div>
-        <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
+        <p className="row-item-meta">
           {formatPeriod(trip)}
           {trip.purposeSummary ? ` · ${trip.purposeSummary}` : ''}
         </p>
       </div>
-      <Badge tone={STATUS_BADGE_TONE[trip.timeStatus]}>{SECTION_LABELS[trip.timeStatus]}</Badge>
+      <ChevronRight size={16} strokeWidth={1.75} className="trip-row-chevron" />
     </button>
   );
 }
@@ -293,10 +285,10 @@ function TripsView() {
     <>
       <PageHeader
         title="Поездки"
-        description="Соберите поездку из материалов — билетов, программы, приглашения, скриншотов"
+        description="Соберите поездку из билетов, программы, приглашения или скриншотов."
         actions={
           <>
-            <Button variant="ghost" icon={Plus} onClick={() => setCreatingManual(true)}>
+            <Button variant="secondary" icon={Plus} onClick={() => setCreatingManual(true)}>
               Создать вручную
             </Button>
             <Button variant="primary" icon={Plane} onClick={() => setCreating(true)}>
@@ -310,15 +302,20 @@ function TripsView() {
       {trips && trips.length === 0 && (
         <EmptyState icon={Plane} title="Пока нет ни одной поездки" description="Нажмите «Собрать из материалов» и прикрепите билет, программу или приглашение." />
       )}
-      {sections.map(({ status, items }) => (
-        <Card key={status} title={SECTION_LABELS[status]} style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {items.map((trip) => (
-              <TripRow key={trip.id} trip={trip} onOpen={() => router.push(`/trips/${trip.id}`)} />
-            ))}
-          </div>
-        </Card>
-      ))}
+      <div className="page-stack">
+        {sections.map(({ status, items }) => (
+          <section key={status} className="trip-group">
+            <h2 className="section-kicker">
+              {SECTION_LABELS[status]} · {items.length}
+            </h2>
+            <div className="trip-rows">
+              {items.map((trip) => (
+                <TripRow key={trip.id} trip={trip} onOpen={() => router.push(`/trips/${trip.id}`)} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
       {creating && (
         <CreateTripDialog
           onClose={() => setCreating(false)}

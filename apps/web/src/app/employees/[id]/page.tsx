@@ -2,17 +2,17 @@
 
 import { use, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Compass, KeyRound, Plus, Send, Shield, Award, Trash2 } from 'lucide-react';
 import type { Direction, EmployeeDetail, PasswordResetLink, Role, TelegramInvite } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES, ROLE_LABELS } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
 import { Avatar } from '@/components/avatar';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/ui/card';
+import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
+import { Panel, StatusTag } from '@/components/ui/panel';
 import { Input, Textarea, Select } from '@/components/ui/field';
 
 const NEW_ITEM_VALUE = '__new__';
@@ -90,7 +90,7 @@ function AttachCatalogItemForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="attach-form" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <form onSubmit={handleSubmit} className="attach-form">
       <Select
         value={itemId}
         onChange={(e) => setItemId(e.target.value)}
@@ -105,7 +105,7 @@ function AttachCatalogItemForm({
         <>
           <Input placeholder="Название" value={newName} onChange={(e) => setNewName(e.target.value)} />
           <Textarea
-            placeholder="Развёрнутое описание (не тег — раздел 6.4 ТЗ: точность зависит от содержательности)"
+            placeholder="Развёрнутое описание — по нему агент подбирает исполнителя"
             value={newDescription}
             onChange={(e) => setNewDescription(e.target.value)}
             rows={2}
@@ -124,7 +124,7 @@ function AttachCatalogItemForm({
 
       {error && <Alert tone="danger">{error}</Alert>}
 
-      <Button type="submit" disabled={busy} loading={busy}>
+      <Button type="submit" variant="secondary" size="sm" icon={Plus} disabled={busy} loading={busy}>
         Добавить
       </Button>
     </form>
@@ -171,30 +171,28 @@ function TelegramSection({ employee, onChange }: { employee: EmployeeDetail; onC
 
   if (employee.telegramId) {
     return (
-      <Card title="Telegram">
-        <p>
-          Привязан <Badge tone="ok">аккаунт подтверждён</Badge>
-        </p>
+      <Panel icon={Send} title="Telegram" aside={<StatusTag tone="ok">привязан</StatusTag>}>
+        <p className="panel-hint">Аккаунт подтверждён — задачи и напоминания приходят в Telegram.</p>
         {error && <Alert tone="danger">{error}</Alert>}
-        <Button variant="secondary" onClick={unlink} disabled={busy}>
-          Отвязать
-        </Button>
-      </Card>
+        <div className="panel-actions">
+          <Button variant="secondary" size="sm" onClick={unlink} disabled={busy}>
+            Отвязать
+          </Button>
+        </div>
+      </Panel>
     );
   }
 
   return (
-    <Card title="Telegram">
-      <p className="ds-field-hint">
-        Не привязан. Руководитель не знает Telegram-id сотрудника заранее — сгенерируйте одноразовую
-        ссылку и передайте её сотруднику лично (в личном сообщении, не публично). Ссылка открывает
-        Telegram Mini App, и аккаунт привяжется сам — без ручного ввода id.
-      </p>
+    <Panel icon={Send} title="Telegram" aside={<StatusTag tone="muted">не привязан</StatusTag>}>
+      <p className="panel-hint">Одноразовая ссылка привяжет аккаунт сама — передайте её сотруднику лично.</p>
 
       {!invite && (
-        <Button onClick={createInvite} disabled={busy} loading={busy}>
-          Сгенерировать приглашение
-        </Button>
+        <div className="panel-actions">
+          <Button variant="secondary" size="sm" onClick={createInvite} disabled={busy} loading={busy}>
+            Создать приглашение
+          </Button>
+        </div>
       )}
 
       {invite && (
@@ -228,7 +226,7 @@ function TelegramSection({ employee, onChange }: { employee: EmployeeDetail; onC
         </div>
       )}
       {error && <Alert tone="danger">{error}</Alert>}
-    </Card>
+    </Panel>
   );
 }
 
@@ -261,16 +259,15 @@ function PasswordResetSection({ employeeId }: { employeeId: string }) {
   }
 
   return (
-    <Card title="Пароль">
-      <p className="ds-field-hint">
-        Сотрудник забыл пароль — сгенерируйте одноразовую ссылку и передайте её лично (в личном
-        сообщении, не публично). По ссылке сотрудник сам задаст новый пароль.
-      </p>
+    <Panel icon={KeyRound} title="Пароль">
+      <p className="panel-hint">Забыл пароль — одноразовая ссылка, по ней сотрудник задаст новый. Передайте лично.</p>
 
       {!reset && (
-        <Button variant="secondary" onClick={createReset} disabled={busy} loading={busy}>
-          Сбросить пароль
-        </Button>
+        <div className="panel-actions">
+          <Button variant="secondary" size="sm" onClick={createReset} disabled={busy} loading={busy}>
+            Сбросить пароль
+          </Button>
+        </div>
       )}
 
       {reset && (
@@ -285,7 +282,7 @@ function PasswordResetSection({ employeeId }: { employeeId: string }) {
         </div>
       )}
       {error && <Alert tone="danger">{error}</Alert>}
-    </Card>
+    </Panel>
   );
 }
 
@@ -341,7 +338,7 @@ function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; on
   }
 
   return (
-    <Card title="Направление">
+    <Panel icon={Compass} title="Направление">
       <Select
         value={directionId}
         onChange={(e) => handleSelect(e.target.value)}
@@ -349,7 +346,7 @@ function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; on
         options={[{ value: '', label: '—' }, ...directions.map((d) => ({ value: d.id, label: d.title })), { value: NEW_ITEM_VALUE, label: '+ Новое направление…' }]}
       />
       {directionId === NEW_ITEM_VALUE && (
-        <form onSubmit={createAndSave} className="input-row" style={{ marginTop: 8 }}>
+        <form onSubmit={createAndSave} className="input-row">
           <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Название направления" required />
           <Button type="submit" variant="secondary" disabled={busy} loading={busy}>
             Создать
@@ -357,7 +354,7 @@ function DirectionSection({ employee, onChange }: { employee: EmployeeDetail; on
         </form>
       )}
       {error && <Alert tone="danger">{error}</Alert>}
-    </Card>
+    </Panel>
   );
 }
 
@@ -381,7 +378,7 @@ function RoleSection({ employee, onChange }: { employee: EmployeeDetail; onChang
   }
 
   return (
-    <Card title="Роль">
+    <Panel icon={Shield} title="Роль">
       <Select
         value={employee.role}
         onChange={(e) => save(e.target.value as Role)}
@@ -392,7 +389,7 @@ function RoleSection({ employee, onChange }: { employee: EmployeeDetail; onChang
         ]}
       />
       {error && <Alert tone="danger">{error}</Alert>}
-    </Card>
+    </Panel>
   );
 }
 
@@ -430,54 +427,56 @@ function EmployeeDetailView({ id }: { id: string }) {
         <ArrowLeft size={14} strokeWidth={1.75} />
         Сотрудники
       </Link>
-      <div className="profile-head">
-        <Avatar id={employee.id} name={employee.fullName} size={52} />
-        <div>
-          <h1>{employee.fullName}</h1>
-          <div className="task-meta">
-            <Badge>{employee.position?.title ?? 'Должность не указана'}</Badge>
-            <Badge>{ROLE_LABELS[employee.role]}</Badge>
-            <Badge>{employee.email}</Badge>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        kicker={`${employee.position?.title ?? 'Должность не указана'} · ${ROLE_LABELS[employee.role]}`}
+        title={
+          <span className="pagehead-person">
+            <Avatar id={employee.id} name={employee.fullName} size={40} />
+            {employee.fullName}
+          </span>
+        }
+        description={employee.email}
+      />
 
       {actionError && <Alert tone="danger">{actionError}</Alert>}
 
-      <Card title="Компетенции">
-        {employee.competencies.length === 0 && <p className="ds-field-hint">Пока не заведены.</p>}
-        <ul className="plain-list">
-          {employee.competencies.map((c) => (
-            <li key={c.competency.id} className="plain-list-row">
-              <div>
-                <strong>{c.competency.name}</strong>
-                {c.description && <p className="ds-field-hint">{c.description}</p>}
-              </div>
-              <Button variant="secondary" size="sm" onClick={() => removeCompetency(c.competency.id)}>
-                Удалить
-              </Button>
-            </li>
-          ))}
-        </ul>
-        <AttachCatalogItemForm
-          catalogEndpoint="/competencies"
-          attachPath={`/employees/${employee.id}/competencies`}
-          itemIdField="competencyId"
-          itemLabel="компетенцию"
-          onAdded={load}
-        />
-      </Card>
+      <div className="detail-grid">
+        <Panel icon={Award} title="Компетенции">
+          {employee.competencies.length === 0 ? (
+            <p className="panel-hint">Пока не заведены — по ним агент подбирает исполнителя.</p>
+          ) : (
+            <ul className="row-list">
+              {employee.competencies.map((c) => (
+                <li key={c.competency.id} className="row-item">
+                  <div className="row-item-main">
+                    <div className="row-item-title">{c.competency.name}</div>
+                    {c.description && <p className="row-item-meta">{c.description}</p>}
+                  </div>
+                  <IconButton icon={Trash2} label={`Удалить «${c.competency.name}»`} size="sm" variant="ghost" onClick={() => removeCompetency(c.competency.id)} />
+                </li>
+              ))}
+            </ul>
+          )}
+          <AttachCatalogItemForm
+            catalogEndpoint="/competencies"
+            attachPath={`/employees/${employee.id}/competencies`}
+            itemIdField="competencyId"
+            itemLabel="компетенцию"
+            onAdded={load}
+          />
+        </Panel>
 
-      {/* Учётку руководителя (направление, Telegram, пароль) администратор
-          не меняет — API ответит 403, поэтому разделы просто не показываем. */}
-      {(employee.role !== 'OWNER' || user?.role === 'OWNER') && (
-        <>
-          {user?.role === 'OWNER' && employee.role !== 'OWNER' && <RoleSection employee={employee} onChange={load} />}
-          <DirectionSection employee={employee} onChange={load} />
-          <TelegramSection employee={employee} onChange={load} />
-          <PasswordResetSection employeeId={employee.id} />
-        </>
-      )}
+        {/* Учётку руководителя (направление, Telegram, пароль) администратор
+            не меняет — API ответит 403, поэтому разделы просто не показываем. */}
+        {(employee.role !== 'OWNER' || user?.role === 'OWNER') && (
+          <div className="detail-col">
+            {user?.role === 'OWNER' && employee.role !== 'OWNER' && <RoleSection employee={employee} onChange={load} />}
+            <DirectionSection employee={employee} onChange={load} />
+            <TelegramSection employee={employee} onChange={load} />
+            <PasswordResetSection employeeId={employee.id} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

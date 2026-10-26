@@ -1516,13 +1516,11 @@ select {
 }
 .rcp-center-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
 }
-.rcp-center-head h1 { margin: 0 0 2px; }
-.rcp-center-head p { margin: 0; }
 .rcp-list { position: relative; display: flex; flex-direction: column; gap: 10px; }
 /* Перестановка внутри очереди: карточки ниже места вставки расступаются,
    в щели светится линия. */
@@ -1939,7 +1937,6 @@ body.rcp-dragging, body.rcp-dragging * { cursor: grabbing !important; user-selec
   .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
-  .usage-page .ds-pagehead { flex-wrap: wrap; align-items: flex-start; padding-left: 0; padding-right: 0; }
   .usage-page .ds-card-head { flex-wrap: wrap; }
   .usage-controls { width: 100%; }
   .usage-controls .ds-seg { display: grid; width: 100%; }
@@ -2071,9 +2068,6 @@ a.routine-run-text:hover { color: var(--link); }
   .reco-areas { position: static; flex-direction: row; flex-wrap: wrap; }
   .reco-area-btn { flex: none; padding: 6px 10px; }
   .reco-cart { left: 16px; right: 16px; transform: none; justify-content: space-between; }
-}
-@media (max-width: 640px) {
-  .reco-page .ds-pagehead, .routines-page .ds-pagehead { flex-wrap: wrap; align-items: flex-start; padding-left: 0; padding-right: 0; }
 }
 .routine-form { display: flex; flex-direction: column; gap: 12px; }
 .routine-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
@@ -2685,11 +2679,6 @@ a.routine-run-text:hover { color: var(--link); }
   }
 }
 @media (max-width: 759px) {
-  .tasks-page .ds-pagehead,
-  .tasks-page .ds-pagehead-actions {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
   .task-side {
     width: 100vw;
     border-left: 0;
@@ -2721,14 +2710,14 @@ a.routine-run-text:hover { color: var(--link); }
 }
 
 /* ============ Почта: вкладки и «Разбор» (W4) ============ */
-.mail-tabs {
+.page-tabs {
   display: flex;
   gap: 4px;
   border-bottom: 1px solid var(--line);
   margin-bottom: 16px;
   overflow-x: auto;
 }
-.mail-tab {
+.page-tab {
   height: 38px;
   padding: 0 14px;
   border: 0;
@@ -2741,12 +2730,12 @@ a.routine-run-text:hover { color: var(--link); }
   font-weight: 600;
   white-space: nowrap;
 }
-.mail-tab:hover:not(:disabled) {
+.page-tab:hover:not(:disabled) {
   background: transparent;
   color: var(--ink);
 }
-.mail-tab.is-active,
-.mail-tab.is-active:hover:not(:disabled) {
+.page-tab.is-active,
+.page-tab.is-active:hover:not(:disabled) {
   color: var(--ink);
   font-weight: 700;
   border-bottom-color: var(--accent);
@@ -3074,3 +3063,109 @@ a.routine-run-text:hover { color: var(--link); }
     flex: none;
   }
 }
+
+/* ============ Редизайн web W6 — общие части остальных страниц ============ */
+/* Шапка страницы — вровень с содержимым, как на пульте; на узком экране
+   действия переносятся под заголовок. */
+.ds-pagehead { padding: 0 0 20px; flex-wrap: wrap; }
+.ds-pagehead > div:first-child { min-width: 0; }
+.ds-pagehead h1 { overflow-wrap: anywhere; }
+.ds-pagehead-actions { flex-wrap: wrap; align-items: center; }
+@media (max-width: 759px) {
+  .ds-pagehead { align-items: flex-start; }
+}
+.pagehead-person { display: inline-flex; align-items: center; gap: 12px; }
+
+.page-tab { display: inline-flex; align-items: center; gap: 6px; }
+.page-tab .ds-nav-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--tone-orange-ink); font-family: var(--font-mono), ui-monospace, monospace; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
+.page-tabs-aside { margin-left: auto; display: inline-flex; align-items: center; padding-left: 12px; }
+
+.page-stack { display: flex; flex-direction: column; gap: 16px; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 16px; align-items: start; }
+.detail-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (max-width: 1100px) {
+  .detail-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.panel-hint { margin: 0; font-size: 13px; line-height: 18px; color: var(--ink-3); }
+.panel-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.form-panel { max-width: 560px; display: flex; flex-direction: column; gap: 16px; }
+.form-panel > h2 { margin: 0; }
+.link-btn { border: 0; background: none; box-shadow: none; padding: 0; font: inherit; color: inherit; text-decoration: underline; cursor: pointer; height: auto; }
+.link-btn:hover:not(:disabled) { background: none; color: var(--ink); }
+.link-btn:disabled { cursor: default; text-decoration: none; }
+
+/* Строки списков в панелях: заголовок, мета, действия справа. */
+.row-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.row-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.row-item:first-child { border-top: 0; padding-top: 2px; }
+.row-item:last-child { padding-bottom: 0; }
+.row-item-main { flex: 1 1 auto; min-width: 0; }
+.row-item-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.row-item-meta { margin: 2px 0 0; font-size: 13px; line-height: 18px; color: var(--ink-3); overflow-wrap: anywhere; }
+.row-item-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.row-item-side { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+a.row-item-title { text-decoration: none; }
+a.row-item-title:hover { text-decoration: underline; }
+.row-item-link { color: inherit; text-decoration: none; }
+.row-item-link:hover { background: var(--surface-2); }
+@media (max-width: 640px) {
+  .row-item { flex-wrap: wrap; }
+  .row-item-side { justify-content: flex-start; }
+}
+
+/* Строка подключения (Google Calendar, Plaud, регистрация). */
+.conn-bar { display: flex; flex-direction: column; gap: 14px; padding: 12px 16px; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+.conn-bar-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.conn-bar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); opacity: .5; flex: none; }
+.conn-bar-dot.is-on { background: var(--ok); opacity: 1; }
+.conn-bar-text { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; }
+.conn-bar-title { font-size: 14px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.conn-bar-meta { font-size: 12.5px; color: var(--ink-3); }
+.conn-bar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.conn-bar-setup { border-top: 1px solid var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.conn-bar-setup .setup-steps { margin: 0; }
+.conn-bar-setup form { max-width: 520px; display: flex; flex-direction: column; gap: 12px; }
+.conn-bar-setup code { word-break: break-all; }
+.conn-bar-actions .ds-input { width: auto; }
+
+/* Календарь: день — моно-кикер, события — строки. */
+.cal-day + .cal-day { margin-top: 20px; }
+.cal-day .section-kicker { margin-bottom: 8px; }
+.cal-event.is-focused { background: var(--surface-2); }
+.cal-event-time { width: 120px; white-space: nowrap; font-family: var(--font-mono), ui-monospace, monospace; font-size: 13px; color: var(--ink-2); }
+.cal-event-place { margin-left: 8px; font-size: 13px; color: var(--ink-3); }
+.cal-event .watchers-row { margin-top: 6px; }
+.cal-event-tags { white-space: nowrap; }
+.cal-event-actions { width: 1px; white-space: nowrap; }
+
+/* Поездки: группы по статусу времени — кикер и строки. */
+.trip-group .section-kicker { margin-bottom: 8px; }
+.trip-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 16px; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: none; cursor: pointer; height: auto; }
+.trip-row:hover:not(:disabled) { background: var(--surface); border-color: var(--line-control); }
+.trip-rows { display: flex; flex-direction: column; gap: 8px; }
+.trip-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-md); }
+.trip-item-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+.trip-item .row-item-title svg { flex: none; color: var(--ink-3); }
+.trip-material { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; box-shadow: none; padding: 0; height: auto; font: inherit; color: var(--ink); text-decoration: underline; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.trip-material:hover:not(:disabled) { background: none; }
+.trip-material:disabled { cursor: default; }
+.trip-fact-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.trip-fact-form .ds-input { flex: 1 1 160px; width: auto; min-width: 0; }
+@media (max-width: 640px) {
+  .trip-item { flex-wrap: wrap; }
+  .trip-item-side { flex-direction: row; align-items: center; }
+}
+
+/* Встреча: саммари слева, задачи и спикеры справа. */
+.meeting-speakers { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.meeting-speakers .ds-field-label { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.detail-grid .ds-md { overflow-wrap: anywhere; }
+.detail-grid .ds-md table { display: block; max-width: 100%; overflow-x: auto; }
+.trip-row-chevron { flex: none; color: var(--ink-3); }
+.form-panel.form-wide { max-width: 760px; }
+.rcp-center-note { margin-bottom: 12px; }
+/* Легаси-правило `label` выше (колонка, отступ 15px) не для подписей полей
+   и кнопок-выбора файла дизайн-системы. */
+label.ds-field-label { display: block; margin: 0; }
+label.ds-btn { flex-direction: row; margin: 0; }
+.ds-panel-head .ds-spacer { flex: 1; }

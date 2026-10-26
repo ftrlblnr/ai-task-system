@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText, Plus, Trash2, Download } from 'lucide-react';
+import Link from 'next/link';
+import { ArrowLeft, Upload, Plane, Hotel, Calendar as CalendarIcon, Users as UsersIcon, History as HistoryIcon, FileText, Plus, Trash2, Download, ListChecks, ListTodo, Settings, Contact } from 'lucide-react';
 import type {
   AddTripMemberInput,
   AgentRunDetail,
@@ -25,12 +26,12 @@ import { describeProposedChange, isManagerRole, type ProposedChangeView } from '
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Protected } from '@/components/protected';
-import { Card, PageHeader } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/card';
+import { PageTabs, Panel, type PageTab } from '@/components/ui';
 import { Button, IconButton } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import type { BadgeTone } from '@/components/ui/badge';
-import { SegmentedControl } from '@/components/ui/segmented-control';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select } from '@/components/ui/field';
@@ -100,29 +101,24 @@ function LegRow({ leg, when, canEdit, onDeleted }: { leg: TripLegItem; when: str
     }
   }
   return (
-    <Card tone="sunken">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Plane size={16} strokeWidth={1.75} />
-            <strong>{LEG_MODE_LABELS[leg.mode]}</strong>
-            <span>
-              {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
-            </span>
-          </div>
-          <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
-            {leg.departAt ? when : 'Время вылета/отправления не подтверждено'}
-            {leg.carrier ? ` · ${leg.carrier}` : ''}
-            {leg.referenceCode ? ` · ${leg.referenceCode}` : ''}
-          </p>
-          {error && <Alert tone="danger">{error}</Alert>}
+    <div className="trip-item">
+      <div className="row-item-main">
+        <div className="row-item-title">
+          <Plane size={16} strokeWidth={1.75} />
+          {LEG_MODE_LABELS[leg.mode]} {leg.fromLocation ?? '?'} → {leg.toLocation ?? '?'}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-          <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
-          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить этот перелёт/переезд из программы?" />}
-        </div>
+        <p className="row-item-meta">
+          {leg.departAt ? when : 'Время вылета/отправления не подтверждено'}
+          {leg.carrier ? ` · ${leg.carrier}` : ''}
+          {leg.referenceCode ? ` · ${leg.referenceCode}` : ''}
+        </p>
+        {error && <Alert tone="danger">{error}</Alert>}
       </div>
-    </Card>
+      <div className="trip-item-side">
+        <Badge tone={BOOKING_TONE[leg.bookingStatus]}>{BOOKING_LABELS[leg.bookingStatus]}</Badge>
+        {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить этот перелёт/переезд из программы?" />}
+      </div>
+    </div>
   );
 }
 
@@ -137,25 +133,23 @@ function StayRow({ stay, when, canEdit, onDeleted }: { stay: TripStayItem; when:
     }
   }
   return (
-    <Card tone="sunken">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Hotel size={16} strokeWidth={1.75} />
-            <strong>{stay.name ?? 'Проживание'}</strong>
-          </div>
-          <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
-            {stay.checkInAt ? `${when} · ` : ''}
-            {stay.address ?? 'Адрес не указан'}
-          </p>
-          {error && <Alert tone="danger">{error}</Alert>}
+    <div className="trip-item">
+      <div className="row-item-main">
+        <div className="row-item-title">
+          <Hotel size={16} strokeWidth={1.75} />
+          {stay.name ?? 'Проживание'}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-          <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
-          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это проживание из программы?" />}
-        </div>
+        <p className="row-item-meta">
+          {stay.checkInAt ? `${when} · ` : ''}
+          {stay.address ?? 'Адрес не указан'}
+        </p>
+        {error && <Alert tone="danger">{error}</Alert>}
       </div>
-    </Card>
+      <div className="trip-item-side">
+        <Badge tone={BOOKING_TONE[stay.bookingStatus]}>{BOOKING_LABELS[stay.bookingStatus]}</Badge>
+        {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это проживание из программы?" />}
+      </div>
+    </div>
   );
 }
 
@@ -200,30 +194,28 @@ function EventRow({
   }
 
   return (
-    <Card tone="sunken">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <CalendarIcon size={16} strokeWidth={1.75} />
-            <strong>{event.title}</strong>
-          </div>
-          <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>
-            {when}
-            {event.location ? ` · ${event.location}` : ''}
-          </p>
-          {event.notes && <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>{event.notes}</p>}
-          {error && <Alert tone="danger">{error}</Alert>}
+    <div className="trip-item">
+      <div className="row-item-main">
+        <div className="row-item-title">
+          <CalendarIcon size={16} strokeWidth={1.75} />
+          {event.title}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-          {canWriteCalendar && event.startAt && event.endAt && (
-            <Button size="sm" variant="ghost" onClick={addToCalendar} loading={busy}>
-              В календарь
-            </Button>
-          )}
-          {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это событие из программы?" />}
-        </div>
+        <p className="row-item-meta">
+          {when}
+          {event.location ? ` · ${event.location}` : ''}
+        </p>
+        {event.notes && <p className="row-item-meta">{event.notes}</p>}
+        {error && <Alert tone="danger">{error}</Alert>}
       </div>
-    </Card>
+      <div className="trip-item-side">
+        {canWriteCalendar && event.startAt && event.endAt && (
+          <Button size="sm" variant="ghost" onClick={addToCalendar} loading={busy}>
+            В календарь
+          </Button>
+        )}
+        {canEdit && <DeleteButton onConfirm={remove} confirmText="Удалить это событие из программы?" />}
+      </div>
+    </div>
   );
 }
 
@@ -265,28 +257,26 @@ function ChangeRow({ change, canApprove, onResolved }: { change: ProposedChangeI
   const view = describeProposedChange(change);
 
   return (
-    <Card tone="sunken">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 260px', minWidth: 0 }}>
-          <strong>{view.title}</strong>
-          {change.entityType === 'TRIP' && change.reason && <p style={{ margin: '4px 0 0' }}>{change.reason}</p>}
-          {change.consequences && <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>{change.consequences}</p>}
-          <ChangeRows view={view} />
-          {error && <Alert tone="danger">{error}</Alert>}
-        </div>
-        {canApprove && change.status === 'PENDING' && (
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <Button size="sm" variant="ghost" onClick={() => resolve('reject')} loading={busy}>
-              Отклонить
-            </Button>
-            <Button size="sm" variant="primary" onClick={() => resolve('approve')} loading={busy}>
-              Подтвердить
-            </Button>
-          </div>
-        )}
-        {change.status !== 'PENDING' && <Badge tone={change.status === 'APPLIED' ? 'ok' : 'neutral'}>{change.status === 'APPLIED' ? 'Применено' : 'Отклонено'}</Badge>}
+    <div className="trip-item">
+      <div className="row-item-main">
+        <div className="row-item-title">{view.title}</div>
+        {change.entityType === 'TRIP' && change.reason && <p className="row-item-text">{change.reason}</p>}
+        {change.consequences && <p className="row-item-meta">{change.consequences}</p>}
+        <ChangeRows view={view} />
+        {error && <Alert tone="danger">{error}</Alert>}
       </div>
-    </Card>
+      {canApprove && change.status === 'PENDING' && (
+        <div className="row-item-side">
+          <Button size="sm" variant="ghost" onClick={() => resolve('reject')} loading={busy}>
+            Отклонить
+          </Button>
+          <Button size="sm" variant="primary" onClick={() => resolve('approve')} loading={busy}>
+            Подтвердить
+          </Button>
+        </div>
+      )}
+      {change.status !== 'PENDING' && <Badge tone={change.status === 'APPLIED' ? 'ok' : 'neutral'}>{change.status === 'APPLIED' ? 'Применено' : 'Отклонено'}</Badge>}
+    </div>
   );
 }
 
@@ -822,7 +812,7 @@ function MaterialItem({ tripId, material }: { tripId: string; material: TripDeta
   const label = material.fileName ?? 'Файл недоступен';
 
   if (!material.downloadable) {
-    return <span className="ds-field-hint">{label}</span>;
+    return <span className="row-item-meta">{label}</span>;
   }
 
   async function download() {
@@ -847,7 +837,7 @@ function MaterialItem({ tripId, material }: { tripId: string; material: TripDeta
       type="button"
       onClick={download}
       disabled={downloading}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--ink)', textDecoration: 'underline', cursor: downloading ? 'default' : 'pointer' }}
+      className="trip-material"
     >
       {label}
       <Download size={12} strokeWidth={2} />
@@ -881,16 +871,16 @@ function AddFactInline({ tripId, onDone }: { tripId: string; onDone: () => void 
   }
 
   return (
-    <div style={{ marginTop: 8 }}>
+    <>
       {error && <Alert tone="danger">{error}</Alert>}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <Input placeholder="Например, виза" value={factKey} onChange={(e) => setFactKey(e.target.value)} style={{ maxWidth: 180 }} />
-        <Input placeholder="Например, нужна" value={factValue} onChange={(e) => setFactValue(e.target.value)} style={{ maxWidth: 220 }} />
-        <Button size="sm" icon={Plus} onClick={handleSubmit} loading={busy}>
+      <div className="trip-fact-form">
+        <Input placeholder="Например, виза" aria-label="Что" value={factKey} onChange={(e) => setFactKey(e.target.value)} />
+        <Input placeholder="Например, нужна" aria-label="Значение" value={factValue} onChange={(e) => setFactValue(e.target.value)} />
+        <Button size="sm" variant="secondary" icon={Plus} onClick={handleSubmit} loading={busy}>
           Добавить
         </Button>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -992,125 +982,137 @@ function TripDetailView({ tripId }: { tripId: string }) {
     }
   }
 
+  const tabs: PageTab<Tab>[] = [
+    { value: 'program', label: 'Программа' },
+    { value: 'overview', label: 'Обзор' },
+    { value: 'changes', label: 'Изменения', count: pendingChanges.length },
+    { value: 'people', label: 'Люди' },
+    { value: 'history', label: 'История' },
+  ];
+
   return (
     <>
-      <Button variant="ghost" icon={ArrowLeft} onClick={() => router.push('/trips')} style={{ marginBottom: 12 }}>
-        К списку поездок
-      </Button>
+      <Link href="/trips" className="back-link">
+        <ArrowLeft size={14} strokeWidth={1.75} />
+        Поездки
+      </Link>
       <PageHeader
-        title={
-          <>
-            {trip.title} <Badge tone="outline">{trip.humanCode}</Badge>
-          </>
-        }
+        kicker={trip.cancelledAt ? `${trip.humanCode} · отменена` : trip.humanCode}
+        title={trip.title}
         description={trip.purposeSummary ?? undefined}
+        actions={
+          canEdit && (
+            <Button variant="primary" icon={Upload} onClick={() => setShowAddMaterials(true)}>
+              Добавить материалы
+            </Button>
+          )
+        }
       />
 
-      {pendingChanges.length > 0 && (
+      {pendingChanges.length > 0 && tab !== 'changes' && (
         <Alert tone="info">
           {pendingChanges.length} {pendingChanges.length === 1 ? 'изменение ожидает' : 'изменений ожидает'} подтверждения —{' '}
-          <button type="button" onClick={() => setTab('changes')} style={{ textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}>
+          <button type="button" className="link-btn" onClick={() => setTab('changes')}>
             посмотреть
           </button>
         </Alert>
       )}
 
-      <div style={{ margin: '16px 0' }}>
-        <SegmentedControl
-          options={[
-            { value: 'program', label: 'Программа' },
-            { value: 'overview', label: 'Обзор' },
-            { value: 'changes', label: `Изменения${pendingChanges.length > 0 ? ` (${pendingChanges.length})` : ''}` },
-            { value: 'people', label: 'Люди' },
-            { value: 'history', label: 'История' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as Tab)}
-        />
-      </div>
+      <PageTabs tabs={tabs} value={tab} onChange={setTab} label="Разделы поездки" />
 
       {tab === 'overview' && (
-        <>
-          {canEdit && (
-            <Card tone={trip.cancelledAt ? undefined : 'sunken'} style={{ marginBottom: 16 }}>
-              {cancelError && <Alert tone="danger">{cancelError}</Alert>}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>{trip.cancelledAt ? `Поездка отменена ${fmtDateTime(trip.cancelledAt)}` : 'Поездка активна'}</span>
-                <Button size="sm" variant={trip.cancelledAt ? 'secondary' : 'danger'} onClick={toggleCancelled} loading={cancelling}>
-                  {trip.cancelledAt ? 'Снять отмену' : 'Отменить поездку'}
-                </Button>
-              </div>
-            </Card>
-          )}
-          {canManageAccess && (
-            <Card tone="sunken" style={{ marginBottom: 16 }}>
-              {deleteError && <Alert tone="danger">{deleteError}</Alert>}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="ds-field-hint">Удаление безвозвратно (в отличие от отмены выше)</span>
-                <Button size="sm" variant="danger" icon={Trash2} onClick={handleDeleteTrip} loading={deleting}>
-                  Удалить поездку
-                </Button>
-              </div>
-            </Card>
-          )}
-          <Card title="Материалы" actions={canEdit ? <Button size="sm" icon={Upload} onClick={() => setShowAddMaterials(true)}>Добавить материалы</Button> : undefined}>
-            {trip.materials.length === 0 ? (
-              <EmptyState icon={FileText} title="Материалов пока нет" />
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {trip.materials.map((m) => (
-                  <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <MaterialItem tripId={tripId} material={m} />
-                    <Badge tone={m.processingStatus === 'EXTRACTED' ? 'ok' : m.processingStatus === 'PENDING' ? 'neutral' : 'warn'}>{m.processingStatus}</Badge>
+        <div className="detail-grid">
+          <div className="detail-col">
+            <Panel icon={FileText} title="Материалы">
+              {trip.materials.length === 0 ? (
+                <p className="panel-hint">Материалов пока нет.</p>
+              ) : (
+                <ul className="row-list">
+                  {trip.materials.map((m) => (
+                    <li key={m.id} className="row-item">
+                      <span className="row-item-main">
+                        <MaterialItem tripId={tripId} material={m} />
+                      </span>
+                      <Badge tone={m.processingStatus === 'EXTRACTED' ? 'ok' : m.processingStatus === 'PENDING' ? 'neutral' : 'warn'}>{m.processingStatus}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+            <Panel icon={ListChecks} title="Прочие факты">
+              {trip.facts.length === 0 ? (
+                <p className="panel-hint">Виза, бюджет, особые требования и т.п.</p>
+              ) : (
+                <ul className="row-list">
+                  {trip.facts.map((f) => (
+                    <li key={f.id} className="row-item">
+                      <span className="row-item-main">
+                        <strong>{f.factKey}:</strong> {f.factValue}
+                      </span>
+                      {canEdit && (
+                        <IconButton
+                          icon={Trash2}
+                          label="Удалить факт"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => api.delete(`/trips/${tripId}/facts/${f.id}`).then(loadTrip)}
+                        />
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {canEdit && <AddFactInline tripId={tripId} onDone={loadTrip} />}
+            </Panel>
+          </div>
+          {(canEdit || canManageAccess) && (
+            <div className="detail-col">
+              {canEdit && (
+                <Panel icon={ListTodo} title="Задачи по поездке">
+                  <p className="panel-hint">С явным исполнителем и сроком.</p>
+                  <div className="panel-actions">
+                    <Button size="sm" variant="secondary" icon={Plus} onClick={() => setShowProposeTask(true)}>
+                      Создать задачу
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
-          </Card>
-          <Card title="Прочие факты" style={{ marginTop: 16 }}>
-            {trip.facts.length === 0 ? (
-              <p className="ds-field-hint">Фактов пока нет — виза, бюджет, особые требования и т.п.</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {trip.facts.map((f) => (
-                  <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>
-                      <strong>{f.factKey}:</strong> {f.factValue}
-                    </span>
-                    {canEdit && (
-                      <IconButton
-                        icon={Trash2}
-                        label="Удалить факт"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => api.delete(`/trips/${tripId}/facts/${f.id}`).then(loadTrip)}
-                      />
-                    )}
+                </Panel>
+              )}
+              <Panel icon={Settings} title="Поездка">
+                {canEdit && (
+                  <div className="row-item">
+                    <span className="row-item-main">{trip.cancelledAt ? `Отменена ${fmtDateTime(trip.cancelledAt)}` : 'Активна'}</span>
+                    <Button size="sm" variant={trip.cancelledAt ? 'secondary' : 'danger'} onClick={toggleCancelled} loading={cancelling}>
+                      {trip.cancelledAt ? 'Снять отмену' : 'Отменить поездку'}
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
-            {canEdit && <AddFactInline tripId={tripId} onDone={loadTrip} />}
-          </Card>
-          {canEdit && (
-            <Card title="Задачи по поездке" style={{ marginTop: 16 }} actions={<Button size="sm" onClick={() => setShowProposeTask(true)}>Создать задачу</Button>}>
-              <p className="ds-field-hint">Задача создаётся с явным исполнителем и сроком.</p>
-            </Card>
+                )}
+                {cancelError && <Alert tone="danger">{cancelError}</Alert>}
+                {canManageAccess && (
+                  <div className="row-item">
+                    <span className="row-item-main row-item-meta">Удаление безвозвратно, в отличие от отмены</span>
+                    <Button size="sm" variant="danger" icon={Trash2} onClick={handleDeleteTrip} loading={deleting}>
+                      Удалить
+                    </Button>
+                  </div>
+                )}
+                {deleteError && <Alert tone="danger">{deleteError}</Alert>}
+              </Panel>
+            </div>
           )}
-        </>
+        </div>
       )}
 
       {tab === 'program' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="page-stack">
           {canEdit && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              <Button size="sm" variant="ghost" icon={Plane} onClick={() => setShowCreateLeg(true)}>
+            <div className="panel-actions">
+              <Button size="sm" variant="secondary" icon={Plane} onClick={() => setShowCreateLeg(true)}>
                 Добавить перелёт
               </Button>
-              <Button size="sm" variant="ghost" icon={CalendarIcon} onClick={() => setShowCreateEvent(true)}>
+              <Button size="sm" variant="secondary" icon={CalendarIcon} onClick={() => setShowCreateEvent(true)}>
                 Добавить событие
               </Button>
-              <Button size="sm" variant="ghost" icon={Hotel} onClick={() => setShowCreateStay(true)}>
+              <Button size="sm" variant="secondary" icon={Hotel} onClick={() => setShowCreateStay(true)}>
                 Добавить проживание
               </Button>
             </div>
@@ -1120,7 +1122,7 @@ function TripDetailView({ tripId }: { tripId: string }) {
       )}
 
       {tab === 'changes' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="trip-rows">
           {!changes || changes.length === 0 ? (
             <EmptyState title="Нет предложенных изменений" />
           ) : (
@@ -1130,57 +1132,60 @@ function TripDetailView({ tripId }: { tripId: string }) {
       )}
 
       {tab === 'people' && (
-        <>
-          <Card title="Участники (доступ)" actions={canManageAccess ? <Button size="sm" icon={UsersIcon} onClick={() => setShowAddMember(true)}>Добавить</Button> : undefined}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {trip.members.map((m) => (
-                <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>{m.employeeId}</span>
-                  <Badge tone="info">{ACCESS_ROLE_LABELS[m.accessRole]}</Badge>
-                </div>
-              ))}
-            </div>
-          </Card>
-          <Card
+        <div className="detail-grid">
+          <Panel
+            icon={Contact}
             title="Контакты поездки"
-            style={{ marginTop: 16 }}
-            actions={canEdit ? <Button size="sm" icon={Plus} onClick={() => setShowCreateContact(true)}>Добавить контакт</Button> : undefined}
+            aside={canEdit && <Button size="sm" variant="secondary" icon={Plus} onClick={() => setShowCreateContact(true)}>Добавить</Button>}
           >
             {trip.contacts.length === 0 ? (
-              <EmptyState title="Контактов пока нет" description="Появятся из материалов или добавятся вручную позже." />
+              <p className="panel-hint">Появятся из материалов или добавляются вручную.</p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <ul className="row-list">
                 {trip.contacts.map((c) => (
-                  <div key={c.id}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <strong>{c.name}</strong>
-                      <Badge tone="outline">{CONTACT_ROLE_LABELS[c.role]}</Badge>
+                  <li key={c.id} className="row-item">
+                    <div className="row-item-main">
+                      <div className="row-item-title">{c.name}</div>
+                      <p className="row-item-meta">{[c.organization, c.phone, c.email].filter(Boolean).join(' · ') || 'Нет дополнительных данных'}</p>
                     </div>
-                    <p className="ds-field-hint" style={{ margin: '2px 0 0' }}>
-                      {[c.organization, c.phone, c.email].filter(Boolean).join(' · ') || 'Нет дополнительных данных'}
-                    </p>
-                  </div>
+                    <Badge tone="outline">{CONTACT_ROLE_LABELS[c.role]}</Badge>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
-          </Card>
-        </>
-      )}
-
-      {tab === 'history' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {!revisions || revisions.length === 0 ? (
-            <EmptyState icon={HistoryIcon} title="История пуста" />
-          ) : (
-            revisions.map((r) => (
-              <Card key={r.id} tone="sunken">
-                <p style={{ margin: 0 }}>{r.summary}</p>
-                <p className="ds-field-hint" style={{ margin: '4px 0 0' }}>{fmtDateTime(r.appliedAt)}</p>
-              </Card>
-            ))
-          )}
+          </Panel>
+          <Panel
+            icon={UsersIcon}
+            title="Участники (доступ)"
+            aside={canManageAccess && <Button size="sm" variant="secondary" icon={Plus} onClick={() => setShowAddMember(true)}>Добавить</Button>}
+          >
+            <ul className="row-list">
+              {trip.members.map((m) => (
+                <li key={m.id} className="row-item">
+                  <span className="row-item-main">{m.employeeId}</span>
+                  <Badge tone="info">{ACCESS_ROLE_LABELS[m.accessRole]}</Badge>
+                </li>
+              ))}
+            </ul>
+          </Panel>
         </div>
       )}
+
+      {tab === 'history' &&
+        (!revisions || revisions.length === 0 ? (
+          <EmptyState icon={HistoryIcon} title="История пуста" />
+        ) : (
+          <Panel icon={HistoryIcon} title="История изменений">
+            <ul className="row-list">
+              {revisions.map((r) => (
+                <li key={r.id} className="row-item">
+                  <span className="row-item-main">{r.summary}</span>
+                  <span className="row-item-meta">{fmtDateTime(r.appliedAt)}</span>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        ))}
 
       {showAddMaterials && <AddMaterialsDialog tripId={tripId} onClose={() => setShowAddMaterials(false)} onDone={() => { setShowAddMaterials(false); loadTrip(); loadChanges(); }} />}
       {showAddMember && <AddMemberDialog tripId={tripId} onClose={() => setShowAddMember(false)} onDone={() => { setShowAddMember(false); loadTrip(); }} />}
