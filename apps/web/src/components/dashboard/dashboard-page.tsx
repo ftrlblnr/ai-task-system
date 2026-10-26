@@ -1,41 +1,33 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Plus, RefreshCw } from 'lucide-react';
-import { OverviewStats } from './overview-stats';
-import { AttentionTasks } from './attention-tasks';
-import { ReceptionPreview } from './reception-preview';
-import { AskAgent, CalendarPanel, FilesStrip, MailPanel, RoutinesPanel, SkillsPanel } from './console-panels';
+import { FocusSection } from './focus-section';
+import { TodaySection } from './today-section';
+import { FilesPanel, MailPanel, RoutinesPanel, SkillsPanel } from './console-panels';
 import { useDashboardOverview, isStale, formatFetchedAt } from './use-dashboard-overview';
-import { IconButton, StatBar } from '@/components/ui';
+import { IconButton } from '@/components/ui';
 import { useAgentContext } from '@/components/agent-panel/agent-context';
 import { AgentButton } from '@/components/agent-panel/agent-panel';
 
-// Пульт руководителя (ARMS, фаза 6; было — «Стол руководителя», ТЗ v1.0
-// 05.10.2026). Всё на одном экране и без вызова модели: слева приложения и
-// календарь, в центре файлы и фокус дня, справа почта, регламенты и навыки,
-// в шапке — расход ИИ. На среднем экране левая колонка уходит под правую,
-// на телефоне — всё одной колонкой, фокус дня первым.
+// Пульт руководителя (ARMS, фаза 6; раскладка — редизайн web W5,
+// docs/WEB_REDESIGN.md §4.3). Всё на одном экране и без вызова модели:
+// секции-карточки в сетке auto-fit — фокус дня, сегодня, почта, регламенты,
+// навыки, готовые файлы с расходом ИИ. Спросить агента — панель (Ctrl K).
 
-function usd(value: number): string {
-  if (value === 0) return '$0';
-  return value < 0.01 ? '<$0.01' : `$${value.toFixed(2)}`;
-}
-
-function tokens(value: number): string {
-  if (value < 1000) return String(value);
-  if (value < 1_000_000) return `${Math.round(value / 1000)} тыс.`;
-  return `${(value / 1_000_000).toFixed(1)} млн`;
-}
+const CLOCK_MS = 60_000;
 
 export function DashboardPage() {
   const { tasks, reception, calendar, panels, loading, refreshing, allFreshAt, refresh } = useDashboardOverview();
-  const usage = panels.usage.data;
   useAgentContext({ kind: 'dashboard' });
-  // Дата — один раз при показе (не в каждом рендере).
-  const [today] = useState(() => new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' }));
-
+  // «Через 25 мин», «ждёт 40 мин» — от этих часов, раз в минуту.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_MS);
+    return () => clearInterval(timer);
+  }, []);
+  const today = new Date(now).toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' });
 
   const sources: { label: string; fetchedAt: string | null; error: string | null }[] = [
     { label: 'задач', fetchedAt: tasks.fetchedAt, error: tasks.error },
@@ -50,17 +42,6 @@ export function DashboardPage() {
           <span className="page-kicker">{today}</span>
           <h1>Пульт</h1>
         </div>
-        {usage && (
-          <Link href="/ai-usage" className="console-usage" title="Расход ИИ">
-            <StatBar
-              items={[
-                { label: 'Сегодня', value: `${usd(usage.today.costUsd)} · ${tokens(usage.today.tokens)} ток.` },
-                { label: 'Неделя', value: `${usd(usage.week.costUsd)} · ${tokens(usage.week.tokens)} ток.` },
-                { label: 'Кэш', value: usage.week.cacheShare === null ? '—' : `${Math.round(usage.week.cacheShare * 100)}%` },
-              ]}
-            />
-          </Link>
-        )}
         <div className="console-head-actions">
           <IconButton icon={RefreshCw} label="Обновить" variant="outline" onClick={refresh} disabled={refreshing} />
           <AgentButton />
@@ -71,30 +52,13 @@ export function DashboardPage() {
         </div>
       </header>
 
-      <div className="console-grid">
-        <div className="console-col console-center">
-          <section className="console-focus" aria-label="Фокус дня">
-            <AskAgent skills={panels.skills.data?.all ?? []} />
-            <OverviewStats
-              active={tasks.data?.counts.active ?? null}
-              overdue={tasks.data?.counts.overdue ?? null}
-              inReview={tasks.data?.counts.inReview ?? null}
-              waitingReception={reception.data?.waitingCount ?? null}
-              tasksErrored={Boolean(tasks.error)}
-              receptionErrored={Boolean(reception.error)}
-            />
-          </section>
-          <FilesStrip state={panels.files} loading={loading} />
-          <AttentionTasks items={tasks.data?.items ?? null} loading={loading && !tasks.data} errored={Boolean(tasks.error)} />
-          <ReceptionPreview current={reception.data?.current} items={reception.data?.items ?? null} loading={loading && !reception.data} errored={Boolean(reception.error)} />
-        </div>
-        {/* Списка «Приложения» больше нет — он повторял меню (владелец 26.10.2026). */}
-        <div className="console-col console-right">
-          <CalendarPanel state={calendar} loading={loading} />
-          <MailPanel state={panels.mail} loading={loading} />
-          <RoutinesPanel state={panels.routines} loading={loading} />
-          <SkillsPanel state={panels.skills} loading={loading} />
-        </div>
+      <div className="pult-grid">
+        <FocusSection tasks={tasks} reception={reception} mail={panels.mail} loading={loading} now={now} onChanged={refresh} />
+        <TodaySection state={calendar} loading={loading} now={now} />
+        <MailPanel state={panels.mail} loading={loading} now={now} />
+        <RoutinesPanel state={panels.routines} loading={loading} now={now} />
+        <SkillsPanel state={panels.skills} loading={loading} />
+        <FilesPanel state={panels.files} usage={panels.usage} loading={loading} now={now} />
       </div>
 
       <p className="ds-field-hint console-fresh">

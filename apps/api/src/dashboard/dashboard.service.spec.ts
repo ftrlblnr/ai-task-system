@@ -73,7 +73,19 @@ function buildService(
   events: any = { findUpcoming: jest.fn() },
   panels: any = okPanels(),
 ) {
-  return new DashboardService(prisma as any, reception, events, panels);
+  events.findBetween ??= jest.fn().mockResolvedValue([]);
+  // Просрочка — TasksService.overdueCount, тот же запрос, что у фильтра задач.
+  const tasks = {
+    overdueCount: () =>
+      prisma.task.count({
+        where: {
+          parentTaskId: null,
+          status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] },
+          dueDate: { lt: new Date() },
+        },
+      }),
+  };
+  return new DashboardService(prisma as any, reception, events, panels, tasks as any);
 }
 
 describe('DashboardService.getOverview («Стол руководителя», владелец 05.10.2026)', () => {
@@ -205,6 +217,20 @@ describe('DashboardService.getOverview («Стол руководителя», �
     });
     expect((result.reception as any).items).toHaveLength(2);
     expect(reception.getQueueView).toHaveBeenCalledWith({}, 3, 0);
+  });
+
+  it('calendar: today — события всего сегодняшнего дня по Алматы', async () => {
+    const prisma = new FakePrisma();
+    const reception = { getQueueView: jest.fn().mockResolvedValue({ current: null, items: [], totalCount: 0, totalWaiting: 0 }) };
+    const ev = { id: 'e1', title: 'Планёрка' };
+    const events = { findUpcoming: jest.fn().mockResolvedValue([]), findBetween: jest.fn().mockResolvedValue([ev]) };
+    const result = await buildService(prisma, reception, events).getOverview(user);
+    expect(result.calendar).toMatchObject({ status: 'ok', today: [ev] });
+    const [owner, from, to] = events.findBetween.mock.calls[0];
+    expect(owner).toBe('owner-1');
+    // Полночь по Алматы = 19:00 UTC предыдущего дня; окно — ровно сутки.
+    expect((from as Date).getUTCHours()).toBe(19);
+    expect((to as Date).getTime() - (from as Date).getTime()).toBe(86_400_000);
   });
 
   it('calendar вызывает findUpcoming с лимитом 3 для текущего пользователя', async () => {

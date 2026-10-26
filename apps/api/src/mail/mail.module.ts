@@ -62,7 +62,7 @@ import { AuditService } from '../audit/audit.service';
     MailActionSessionFactory,
     MailTriageService,
   ],
-  exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService],
+  exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService, MailTriageService],
 })
 export class MailModule implements OnModuleInit {
   constructor(

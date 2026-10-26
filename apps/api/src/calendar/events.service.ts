@@ -65,6 +65,16 @@ export class EventsService {
     return events.map(withParticipants);
   }
 
+  // «Сегодня» на пульте (W5): все события дня, и прошедшие тоже.
+  async findBetween(employeeId: string, from: Date, to: Date) {
+    const events = await this.prisma.event.findMany({
+      where: { createdById: employeeId, status: EventStatus.CONFIRMED, startAt: { lt: to }, endAt: { gt: from } },
+      orderBy: [{ startAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, title: true, startAt: true, endAt: true, allDay: true, location: true, ...PARTICIPANTS_INCLUDE },
+    });
+    return events.map(withParticipants);
+  }
+
   // ownerId обязателен (календарный агент ТЗ, раздел 4, C06) — модуль
   // закрыт на роль OWNER целиком, но это не заменяет проверку конкретного
   // объекта: при нескольких OWNER один не должен читать/менять событие

@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Mail, Send } from 'lucide-react';
 import type {
@@ -147,7 +148,9 @@ export function MailPlanCard({ data }: { data: MailPlanCardData }) {
         {declined && <Badge tone="neutral">Отменено</Badge>}
         {done && (failed === 0 ? <Badge tone="ok">Выполнено</Badge> : <Badge tone={succeeded > 0 ? 'warn' : 'danger'}>{succeeded > 0 ? 'Выполнено частично' : 'Не выполнено'}</Badge>)}
       </div>
-      <p className="ds-field-hint mail-card-sub">{data.mailboxAddress}</p>
+      <p className="ds-field-hint mail-card-sub">
+        {data.mailboxAddress} · <Link href={`/mail?tab=agent&plan=${data.planId}`}>Открыть в «Планах действий»</Link>
+      </p>
       {loadError && <Alert tone="danger">{loadError}</Alert>}
       {list.length > 0 && (
         <ul className="mail-card-items">

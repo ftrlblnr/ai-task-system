@@ -27,18 +27,21 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react';
-import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
+import { ROLE_LABELS, isManagerRole, type MenuBadges } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { applyTheme, readTheme, type ThemeChoice } from '@/lib/theme';
 import { IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
 import { useAgentPanel } from './agent-panel/agent-context';
+import { useMenuBadges } from './use-menu-badges';
+import { useRealtime } from '@/lib/use-realtime';
 
 // Меню по группам (редизайн web W1, docs/WEB_REDESIGN.md §4.1). Права —
 // как были: «Пульт» — только руководителю (OWNER, ролевая модель
 // 20.10.2026), manager-пункты — руководителю и администратору, остальное —
-// всем (видимость данных внутри разделов решает backend). Бейджи — W5.
+// всем (видимость данных внутри разделов решает backend). Бейджи (W5) —
+// GET /me/badges: просрочка — акцентом, остальное — тихим счётчиком.
 
 type Access = 'all' | 'manager' | 'owner' | 'legal';
 
@@ -47,6 +50,8 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   access: Access;
+  badge?: keyof MenuBadges;
+  hot?: boolean;
 }
 
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
@@ -54,10 +59,10 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     title: 'Работа',
     items: [
       { href: '/', label: 'Пульт', icon: LayoutGrid, access: 'owner' },
-      { href: '/tasks', label: 'Задачи', icon: CircleCheckBig, access: 'all' },
+      { href: '/tasks', label: 'Задачи', icon: CircleCheckBig, access: 'all', badge: 'tasksOverdue', hot: true },
       // Приёмная (02.10.2026) и поездки (08.10.2026) — всем: сотрудник подаёт
       // обращение / едет сам, видимость решает backend.
-      { href: '/reception', label: 'Приёмная', icon: DoorOpen, access: 'all' },
+      { href: '/reception', label: 'Приёмная', icon: DoorOpen, access: 'all', badge: 'receptionWaiting' },
       { href: '/trips', label: 'Поездки', icon: Plane, access: 'all' },
     ],
   },
@@ -66,7 +71,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { href: '/calendar', label: 'Календарь', icon: CalendarDays, access: 'manager' },
       { href: '/meetings', label: 'Встречи', icon: Mic, access: 'manager' },
-      { href: '/mail', label: 'Почта', icon: Mail, access: 'manager' },
+      { href: '/mail', label: 'Почта', icon: Mail, access: 'manager', badge: 'mailNeedsReply' },
     ],
   },
   {
@@ -75,7 +80,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: '/memory', label: 'Память', icon: BookOpen, access: 'manager' },
       { href: '/skills', label: 'Навыки', icon: Zap, access: 'manager' },
       { href: '/routines', label: 'Регламенты', icon: Clock, access: 'manager' },
-      { href: '/recommendations', label: 'Рекомендации', icon: Lightbulb, access: 'manager' },
+      { href: '/recommendations', label: 'Рекомендации', icon: Lightbulb, access: 'manager', badge: 'recommendationsNew' },
       { href: '/ai-usage', label: 'Расход ИИ', icon: BarChart3, access: 'manager' },
       // Агент-юрист — виден, только если бэкенд включил раздел для роли
       // (GET /legal/status: LEGAL_AGENT_ENABLED + LEGAL_AGENT_ROLES).
@@ -87,6 +92,19 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [{ href: '/employees', label: 'Сотрудники', icon: Users, access: 'manager' }],
   },
 ];
+
+const BADGE_LABELS: Record<keyof MenuBadges, (n: number) => string> = {
+  tasksOverdue: (n) => `просрочено: ${n}`,
+  receptionWaiting: (n) => `ожидают: ${n}`,
+  mailNeedsReply: (n) => `ждут ответа: ${n}`,
+  recommendationsNew: (n) => `новых: ${n}`,
+};
+
+// Очередь приёмной меняется мгновенно — бейдж следом, без ожидания опроса.
+function ReceptionLive({ onChange }: { onChange: () => void }) {
+  useRealtime('reception', onChange);
+  return null;
+}
 
 const THEME_NEXT: Record<ThemeChoice, ThemeChoice> = { system: 'light', light: 'dark', dark: 'system' };
 const THEME_LABEL: Record<ThemeChoice, string> = { system: 'как в системе', light: 'светлая', dark: 'тёмная' };
@@ -140,6 +158,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const { openAndFocus } = useAgentPanel();
   const legalEnabled = useLegalEnabled(user?.id);
+  const { badges, refresh: refreshBadges } = useMenuBadges(user?.id, user?.role === 'ADMIN');
   // Узкий экран (<760px): меню — выезжающая панель за кнопкой-бургером.
   const [open, setOpen] = useState(false);
 
@@ -207,10 +226,16 @@ export function Sidebar() {
                 {items.map((item) => {
                   const active = isActive(item.href);
                   const Icon = item.icon;
+                  const count = item.badge ? (badges?.[item.badge] ?? 0) : 0;
                   return (
                     <Link key={item.href} href={item.href} className={cx('ds-nav-item', active && 'is-active')} aria-current={active ? 'page' : undefined}>
                       <Icon size={17} strokeWidth={1.9} />
                       {item.label}
+                      {count > 0 && (
+                        <span className={cx('ds-nav-count', item.hot && 'is-hot')} title={BADGE_LABELS[item.badge!](count)}>
+                          {count > 99 ? '99+' : count}
+                        </span>
+                      )}
                     </Link>
                   );
                 })}
@@ -218,6 +243,8 @@ export function Sidebar() {
             );
           })}
         </nav>
+
+        {isManager && <ReceptionLive onChange={refreshBadges} />}
 
         <div className="ds-sidebar-foot">
           <Link href="/profile" className="ds-sidebar-profile" title="Мой профиль">

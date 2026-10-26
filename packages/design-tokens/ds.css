@@ -437,3 +437,5 @@ select.ds-input { appearance: none; padding-right: 34px; cursor: pointer; backgr
   .ds-think-label::after { content: "…"; }
   .ds-stream.is-streaming > :last-child::after, .ds-stream.is-streaming.is-flat::after { opacity: 1; }
 }
+/* Бейдж меню «срочно» (W5): просроченные задачи. */
+.ds-nav-item .ds-nav-count.is-hot { min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--tone-orange-ink); display: inline-flex; align-items: center; justify-content: center; }

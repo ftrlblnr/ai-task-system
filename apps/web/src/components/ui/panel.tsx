@@ -68,21 +68,3 @@ export function RunButton({ label, busy, onRun }: { label: string; busy?: boolea
     </button>
   );
 }
-
-export interface StatBarItem {
-  label: string;
-  value: ReactNode;
-}
-
-export function StatBar({ items, className }: { items: StatBarItem[]; className?: string }) {
-  return (
-    <dl className={cx('ds-statbar', className)}>
-      {items.map((i) => (
-        <div key={i.label}>
-          <dt>{i.label}</dt>
-          <dd className="ds-num">{i.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}

@@ -1069,7 +1069,9 @@ export interface DashboardEventItem {
 export interface DashboardCalendarSection {
   status: 'ok';
   fetchedAt: string;
+  // Ближайшие (Mini App) и весь сегодняшний день (web, «Сегодня»).
   items: DashboardEventItem[];
+  today: DashboardEventItem[];
 }
 
 export interface DashboardOverview {
@@ -1118,22 +1120,32 @@ interface DashboardSectionOk {
   fetchedAt: string;
 }
 
+// Первые письма очереди «Разбора» (W5): тег — как в разборе.
 export interface DashboardMailItem {
   id: string;
   subject: string | null;
   from: string;
   receivedAt: string | null;
   importance: EmailImportance | null;
-  needsReply: boolean;
-  summary: string | null;
+  tag: 'REPLY' | 'ACTION';
 }
 
 export interface DashboardMailSection extends DashboardSectionOk {
   connected: boolean;
   received24h: number;
-  needsYou: DashboardMailItem[];
+  // Ждут ответа — те же письма, что с тегом «Ответ» в «Разборе» и в бейдже меню.
+  needsReply: number;
+  top: DashboardMailItem[];
   mix: { category: EmailCategory; count: number }[];
   lastSyncedAt: string | null;
+}
+
+// GET /me/badges — счётчики меню (W5); null — раздел недоступен или нет данных.
+export interface MenuBadges {
+  tasksOverdue: number | null;
+  receptionWaiting: number | null;
+  mailNeedsReply: number | null;
+  recommendationsNew: number | null;
 }
 
 // status: статус сегодняшнего прогона (RoutineRunStatus) или NEXT — ближайший запуск.

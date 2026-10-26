@@ -57,6 +57,11 @@ export class RecommendationsService {
     private readonly tasks: TasksService,
   ) {}
 
+  // Бейдж «Рекомендации» в меню (W5): новые, ещё не разобранные.
+  newCount(userId: string): Promise<number> {
+    return this.prisma.recommendation.count({ where: { ownerId: userId, status: RecommendationStatus.NEW } });
+  }
+
   async overview(userId: string) {
     const since = new Date(Date.now() - HISTORY_DAYS * 86400_000);
     const [items, batch] = await Promise.all([

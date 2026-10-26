@@ -27,6 +27,16 @@ interface AgentPanelState {
   focusRequest: number;
   pageContext: PageContext | null;
   setPageContext: (context: PageContext | null) => void;
+  // Открыть панель и сразу задать вопрос («Подготовиться» на пульте) —
+  // контекст вопроса, если он не тот, что на экране.
+  ask: (text: string, context?: PageContext) => void;
+  pendingAsk: PendingAsk | null;
+  clearAsk: () => void;
+}
+
+export interface PendingAsk {
+  text: string;
+  context?: PageContext;
 }
 
 const AgentPanelContext = createContext<AgentPanelState | null>(null);
@@ -54,6 +64,7 @@ export function AgentPanelProvider({ children }: { children: ReactNode }) {
   const [open, setOpenState] = useState(readOpen);
   const [pageContext, setPageContext] = useState<PageContext | null>(null);
   const [focusRequest, setFocusRequest] = useState(0);
+  const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
   const pathname = usePathname();
 
   function setOpen(next: boolean) {
@@ -70,6 +81,11 @@ export function AgentPanelProvider({ children }: { children: ReactNode }) {
     if (pathname.startsWith('/assistant')) return focusAssistantPage();
     setOpen(true);
     setFocusRequest((n) => n + 1);
+  }
+
+  function ask(text: string, context?: PageContext) {
+    setPendingAsk({ text, context });
+    setOpen(true);
   }
 
   // Ctrl K / Cmd K: открыть панель и перейти в поле; если курсор уже в
@@ -91,7 +107,7 @@ export function AgentPanelProvider({ children }: { children: ReactNode }) {
   });
 
   return (
-    <AgentPanelContext.Provider value={{ open, setOpen, openAndFocus, focusRequest, pageContext, setPageContext }}>{children}</AgentPanelContext.Provider>
+    <AgentPanelContext.Provider value={{ open, setOpen, openAndFocus, focusRequest, pageContext, setPageContext, ask, pendingAsk, clearAsk: () => setPendingAsk(null) }}>{children}</AgentPanelContext.Provider>
   );
 }
 

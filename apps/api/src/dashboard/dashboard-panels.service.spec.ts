@@ -2,55 +2,37 @@ import { DashboardPanelsService } from './dashboard-panels.service';
 
 // Панели пульта — на заглушках Prisma, без БД.
 
-function service(prisma: Record<string, unknown>, aiUsage: unknown = {}) {
-  return new DashboardPanelsService(prisma as never, aiUsage as never);
+function service(
+  prisma: Record<string, unknown>,
+  aiUsage: unknown = {},
+  mail: { mailbox?: object | null; summary?: object } = {},
+) {
+  const store = { findOwnedMailbox: jest.fn().mockResolvedValue(mail.mailbox ?? null) };
+  const triage = { summary: jest.fn().mockResolvedValue(mail.summary ?? { total: 0, needsReply: 0, top: [] }) };
+  return { panels: new DashboardPanelsService(prisma as never, aiUsage as never, store as never, triage as never), store, triage };
 }
 
 describe('пульт: панели', () => {
   it('почта не подключена — пустая панель без запросов писем', async () => {
     const count = jest.fn();
-    const out = await service({
-      mailbox: { findMany: () => Promise.resolve([]) },
-      emailMessage: { count },
-    }).mail('u1');
+    const { panels, triage } = service({ emailMessage: { count } });
+    const out = await panels.mail('u1');
     expect(out).toMatchObject({
       status: 'ok',
       connected: false,
       received24h: 0,
-      needsYou: [],
+      needsReply: 0,
+      top: [],
       lastSyncedAt: null,
     });
     expect(count).not.toHaveBeenCalled();
+    expect(triage.summary).not.toHaveBeenCalled();
   });
 
-  it('почта: «требует вас» с отправителем и сводкой, микс по убыванию, последняя синхронизация', async () => {
+  it('почта: «ждут ответа» и первые письма — из очереди «Разбора», микс по убыванию, последняя синхронизация', async () => {
     const synced = new Date('2026-10-25T05:00:00Z');
     const prisma = {
-      mailbox: {
-        findMany: () =>
-          Promise.resolve([
-            { id: 'm1', lastSyncedAt: new Date('2026-10-24T05:00:00Z') },
-            { id: 'm2', lastSyncedAt: synced },
-          ]),
-      },
-      emailMessage: {
-        count: () => Promise.resolve(12),
-        findMany: () =>
-          Promise.resolve([
-            {
-              id: 'e1',
-              subject: 'Смета',
-              fromName: null,
-              fromAddress: 'a@b.kz',
-              receivedAt: synced,
-              analysis: {
-                importance: 'IMPORTANT',
-                needsReply: true,
-                summary: 'x'.repeat(300),
-              },
-            },
-          ]),
-      },
+      emailMessage: { count: () => Promise.resolve(12) },
       emailAnalysis: {
         groupBy: () =>
           Promise.resolve([
@@ -58,16 +40,15 @@ describe('пульт: панели', () => {
             { category: 'ACTION_REQUIRED', _count: { _all: 5 } },
           ]),
       },
+      mailbox: { aggregate: () => Promise.resolve({ _max: { lastSyncedAt: synced } }) },
     };
-    const out = await service(prisma).mail('u1');
+    const top = [{ id: 'e1', subject: 'Смета', fromName: null, fromAddress: 'a@b.kz', receivedAt: synced, importance: 'IMPORTANT', tag: 'REPLY' }];
+    const { panels, triage } = service(prisma, {}, { mailbox: { id: 'mb1' }, summary: { total: 4, needsReply: 2, top } });
+    const out = await panels.mail('u1');
+    expect(triage.summary).toHaveBeenCalledWith('mb1', 3);
     expect(out.received24h).toBe(12);
-    expect(out.needsYou[0]).toMatchObject({
-      id: 'e1',
-      from: 'a@b.kz',
-      importance: 'IMPORTANT',
-      needsReply: true,
-    });
-    expect(out.needsYou[0].summary).toHaveLength(160);
+    expect(out.needsReply).toBe(2);
+    expect(out.top).toEqual([{ id: 'e1', subject: 'Смета', from: 'a@b.kz', receivedAt: synced.toISOString(), importance: 'IMPORTANT', tag: 'REPLY' }]);
     expect(out.mix.map((m) => m.category)).toEqual([
       'ACTION_REQUIRED',
       'INFORMATION',
@@ -103,7 +84,7 @@ describe('пульт: панели', () => {
           ]),
       },
     };
-    const out = await service(prisma).routines('u1');
+    const out = await service(prisma).panels.routines('u1');
     expect(out.activeCount).toBe(3);
     expect(out.items.map((i) => [i.title, i.status])).toEqual([
       ['Просрочки', 'SILENT'],
@@ -128,7 +109,7 @@ describe('пульт: панели', () => {
           Promise.resolve([{ skillId: 's7', _count: { _all: 4 } }]),
       },
     };
-    const out = await service(prisma).skills('u1');
+    const out = await service(prisma).panels.skills('u1');
     expect(out.total).toBe(8);
     expect(out.items).toHaveLength(6);
     expect(out.items[0]).toMatchObject({ id: 's7', runs30d: 4 });
@@ -149,7 +130,7 @@ describe('пульт: панели', () => {
       summary: (days: number) =>
         Promise.resolve({ total: { ...total, calls: days }, daily: [] }),
     };
-    const out = await service({}, aiUsage).usage();
+    const out = await service({}, aiUsage).panels.usage();
     expect(out.today).toEqual({
       calls: 1,
       tokens: 1000,

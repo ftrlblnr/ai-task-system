@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
   EmailFolderRole,
-  EmailImportance,
   FileArtifactSource,
   Prisma,
   RoutineState,
@@ -9,21 +8,17 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { localDateString, TIMEZONE_OFFSET_HOURS } from '../common/timezone';
+import { MailStore } from '../mail/mail-store';
+import { MailTriageService } from '../mail/triage/mail-triage.service';
 
 // Пульт руководителя (ARMS, фаза 6): панели почты, регламентов, навыков,
 // файлов и расхода — обычные запросы к БД, без вызова модели. Каждая панель
 // — отдельная секция overview со своим status/fetchedAt.
 
-const MAIL_NEEDS_YOU_LIMIT = 5;
-const MAIL_NEEDS_YOU_WINDOW_MS = 3 * 86_400_000;
+const MAIL_TOP = 3;
 const ROUTINES_LIMIT = 5;
 const SKILLS_LIMIT = 6;
 const FILES_LIMIT = 24;
-const SUMMARY_MAX = 160;
-const IMPORTANT: EmailImportance[] = [
-  EmailImportance.CRITICAL,
-  EmailImportance.IMPORTANT,
-];
 
 const ok = () => ({
   status: 'ok' as const,
@@ -31,7 +26,7 @@ const ok = () => ({
 });
 
 // Полночь сегодняшнего дня по времени компании.
-function localDayStart(now: Date): Date {
+export function localDayStart(now: Date): Date {
   return new Date(
     new Date(`${localDateString(now)}T00:00:00.000Z`).getTime() -
       TIMEZONE_OFFSET_HOURS * 3_600_000,
@@ -43,57 +38,36 @@ export class DashboardPanelsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiUsage: AiUsageService,
+    private readonly mailStore: MailStore,
+    private readonly triage: MailTriageService,
   ) {}
 
+  // «Почта» (W5): ждут ответа и первые письма — из очереди «Разбора» того же
+  // ящика, что открывается на /mail; за сутки и микс — по всем ящикам.
   async mail(employeeId: string) {
-    const mailboxes = await this.prisma.mailbox.findMany({
-      where: { employeeId },
-      select: { id: true, lastSyncedAt: true },
-    });
-    if (mailboxes.length === 0)
+    const mailbox = await this.mailStore.findOwnedMailbox(employeeId);
+    if (!mailbox)
       return {
         ...ok(),
         connected: false,
         received24h: 0,
-        needsYou: [],
+        needsReply: 0,
+        top: [],
         mix: [],
         lastSyncedAt: null,
       };
-    const now = Date.now();
     const incoming: Prisma.EmailMessageWhereInput = {
       mailbox: { employeeId },
       isOutgoing: false,
       deletedAt: null,
       folder: { role: EmailFolderRole.INBOX },
     };
-    const since24h = new Date(now - 86_400_000);
-    const [received24h, needsYou, mix] = await Promise.all([
+    const since24h = new Date(Date.now() - 86_400_000);
+    const [received24h, triage, mix, synced] = await Promise.all([
       this.prisma.emailMessage.count({
         where: { ...incoming, receivedAt: { gte: since24h } },
       }),
-      this.prisma.emailMessage.findMany({
-        where: {
-          ...incoming,
-          isAnswered: false,
-          isAutomated: false,
-          receivedAt: { gte: new Date(now - MAIL_NEEDS_YOU_WINDOW_MS) },
-          analysis: {
-            OR: [{ needsReply: true }, { importance: { in: IMPORTANT } }],
-          },
-        },
-        orderBy: { receivedAt: 'desc' },
-        take: MAIL_NEEDS_YOU_LIMIT,
-        select: {
-          id: true,
-          subject: true,
-          fromName: true,
-          fromAddress: true,
-          receivedAt: true,
-          analysis: {
-            select: { importance: true, needsReply: true, summary: true },
-          },
-        },
-      }),
+      this.triage.summary(mailbox.id, MAIL_TOP),
       this.prisma.emailAnalysis.groupBy({
         by: ['category'],
         where: {
@@ -102,29 +76,28 @@ export class DashboardPanelsService {
         },
         _count: { _all: true },
       }),
+      this.prisma.mailbox.aggregate({
+        where: { employeeId },
+        _max: { lastSyncedAt: true },
+      }),
     ]);
-    const synced = mailboxes
-      .map((m) => m.lastSyncedAt?.getTime() ?? 0)
-      .filter((t) => t > 0);
     return {
       ...ok(),
       connected: true,
       received24h,
-      needsYou: needsYou.map((m) => ({
+      needsReply: triage.needsReply,
+      top: triage.top.map((m) => ({
         id: m.id,
         subject: m.subject,
         from: m.fromName || m.fromAddress,
         receivedAt: m.receivedAt?.toISOString() ?? null,
-        importance: m.analysis?.importance ?? null,
-        needsReply: m.analysis?.needsReply ?? false,
-        summary: m.analysis?.summary?.slice(0, SUMMARY_MAX) ?? null,
+        importance: m.importance,
+        tag: m.tag,
       })),
       mix: mix
         .map((g) => ({ category: g.category as string, count: g._count._all }))
         .sort((a, b) => b.count - a.count),
-      lastSyncedAt: synced.length
-        ? new Date(Math.max(...synced)).toISOString()
-        : null,
+      lastSyncedAt: synced._max.lastSyncedAt?.toISOString() ?? null,
     };
   }
 

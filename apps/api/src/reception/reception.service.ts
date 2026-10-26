@@ -595,6 +595,11 @@ export class ReceptionService {
   // Раздел 9.1 ТЗ — текущий вызов и totalWaiting возвращаются независимо от
   // фильтров/страницы очереди (owner должен видеть их всегда, даже при
   // активном поиске).
+  // Бейдж «Приёмная» в меню (W5) — те же ожидающие, что totalWaiting очереди.
+  waitingCount(): Promise<number> {
+    return this.prisma.receptionRequest.count({ where: { queueId: QUEUE_ID, status: 'WAITING' } });
+  }
+
   async getQueueView(filters: { search?: string; authorId?: string; expiredOnly?: boolean }, limit: number, offset: number) {
     const where: Prisma.ReceptionRequestWhereInput = { queueId: QUEUE_ID, status: 'WAITING' };
     const and: Prisma.ReceptionRequestWhereInput[] = [];
@@ -610,7 +615,7 @@ export class ReceptionService {
       this.prisma.receptionRequest.findFirst({ where: { queueId: QUEUE_ID, status: 'CALLED' }, select: DETAIL_SELECT }),
       this.prisma.receptionRequest.findMany({ where, select: DETAIL_SELECT, orderBy: [{ queueOrder: 'asc' }, { id: 'asc' }], take: limit, skip: offset }),
       this.prisma.receptionRequest.count({ where }),
-      this.prisma.receptionRequest.count({ where: { queueId: QUEUE_ID, status: 'WAITING' } }),
+      this.waitingCount(),
     ]);
     // Раздел 9.1 ТЗ — "состояние уведомления" в блоке текущего вызова:
     // статус последней CALLED-доставки этого обращения, не джойн в общую

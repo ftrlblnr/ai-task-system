@@ -153,6 +153,14 @@ export class TasksService {
   // поручений открыт всем). parentTaskId: null — подзадачи не попадают в общий список/канбан
   // независимо от роли, только внутри карточки родителя (владелец 08.09.2026,
   // по образцу Linear/Asana — не захламлять основную доску).
+  // Бейдж «Задачи» в меню и плитка «просрочено» на пульте (W5) — то же, что
+  // фильтр «Просрочено»: открытые задачи верхнего уровня со сроком в прошлом.
+  overdueCount(): Promise<number> {
+    return this.prisma.task.count({
+      where: { parentTaskId: null, status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] }, dueDate: { lt: new Date() } },
+    });
+  }
+
   async findAll() {
     const tasks = await this.prisma.task.findMany({
       where: {

@@ -12,5 +12,6 @@ import { RecommendationGenerationService } from './recommendation-generation.ser
   imports: [MemoryModule, RoutinesModule, SkillsModule, TasksModule],
   controllers: [RecommendationsController],
   providers: [RecommendationsService, RecommendationGenerationService],
+  exports: [RecommendationsService],
 })
 export class RecommendationsModule {}

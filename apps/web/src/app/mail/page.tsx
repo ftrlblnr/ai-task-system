@@ -95,7 +95,7 @@ function MailboxView({ mailbox, onChange }: { mailbox: MailboxStatus; onChange: 
       {tab === 'triage' && <TriagePane initialMessageId={searchParams.get('message')} />}
       {tab === 'messages' && <MessagesPane />}
       {tab === 'digests' && <DigestList />}
-      {tab === 'agent' && <MailAgentTab />}
+      {tab === 'agent' && <MailAgentTab initialPlanId={searchParams.get('plan')} />}
     </>
   );
 }

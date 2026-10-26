@@ -4,8 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { ReceptionService } from '../reception/reception.service';
 import { EventsService } from '../calendar/events.service';
-import { isTaskOverdue } from '../tasks/tasks.service';
-import { DashboardPanelsService } from './dashboard-panels.service';
+import { isTaskOverdue, TasksService } from '../tasks/tasks.service';
+import { DashboardPanelsService, localDayStart } from './dashboard-panels.service';
 
 // «Стол руководителя» (владелец 05.10.2026, ТЗ v1.0) — раздел 13.2:
 // рекомендованный агрегирующий контракт, три независимых раздела (tasks/
@@ -54,6 +54,7 @@ export class DashboardService {
     private readonly reception: ReceptionService,
     private readonly events: EventsService,
     private readonly panels: DashboardPanelsService,
+    private readonly tasks: TasksService,
   ) {}
 
   async getOverview(user: AuthenticatedUser) {
@@ -101,9 +102,7 @@ export class DashboardService {
     };
     const [active, overdue, inReview, candidates] = await Promise.all([
       this.prisma.task.count({ where: activeWhere }),
-      this.prisma.task.count({
-        where: { ...activeWhere, dueDate: { lt: new Date() } },
-      }),
+      this.tasks.overdueCount(),
       this.prisma.task.count({
         where: { parentTaskId: null, status: TaskStatus.IN_REVIEW },
       }),
@@ -169,15 +168,19 @@ export class DashboardService {
     };
   }
 
+  // items — ближайшие (Mini App), today — весь сегодняшний день (web W5:
+  // прошедшие зачёркнуты, следующее — крупно).
   private async getCalendarSection(employeeId: string) {
-    const items = await this.events.findUpcoming(
-      employeeId,
-      CALENDAR_PREVIEW_LIMIT,
-    );
+    const dayStart = localDayStart(new Date());
+    const [items, today] = await Promise.all([
+      this.events.findUpcoming(employeeId, CALENDAR_PREVIEW_LIMIT),
+      this.events.findBetween(employeeId, dayStart, new Date(dayStart.getTime() + 86_400_000)),
+    ]);
     return {
       status: 'ok' as const,
       fetchedAt: new Date().toISOString(),
       items,
+      today,
     };
   }
 }

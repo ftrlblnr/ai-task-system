@@ -2,48 +2,26 @@
 
 import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import {
-  CalendarDays,
-  FileText,
-  Files,
-  Mail,
-  Plus,
-  Repeat,
-  Search,
-  Sparkles,
-} from 'lucide-react';
+import { BarChart3, FileText, Files, Mail, Plus, Repeat, Search, Sparkles } from 'lucide-react';
 import type {
-  DashboardEventItem,
   DashboardFileItem,
   DashboardMailSection,
   DashboardRoutineItem,
   DashboardSkillItem,
   DashboardSkillsSection,
+  DashboardUsageSection,
   RoutineRunStatus,
 } from '@ai-task-system/shared-types';
 import { EMAIL_CATEGORY_LABELS, ROUTINE_RUN_STATUS_LABELS } from '@ai-task-system/shared-types';
 import { api } from '@/lib/api';
 import { useSkillRun } from '@/app/skills/skill-ui';
-import { Alert, ModelChip, Panel, RunButton, Skeleton, StatusTag, type StatusTone } from '@/components/ui';
+import { Alert, ModelChip, Panel, RunButton, Skeleton, StatusTag, cx, type StatusTone } from '@/components/ui';
 import type { SectionState } from './use-dashboard-overview';
+import { dayTime, span, tokens, usd } from './format';
 
-// Панели пульта руководителя (ARMS, фаза 6). Всё — данные из
-// GET /dashboard/overview, без вызова модели; ▶ навыка — единственное, что
-// тратит токены, и только по нажатию.
-
-const TZ = 'Asia/Almaty';
-
-export function time(iso: string): string {
-  return new Date(iso).toLocaleTimeString('ru-RU', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
-}
-
-function dayTime(iso: string): string {
-  const d = new Date(iso);
-  const today = new Date().toLocaleDateString('ru-RU', { timeZone: TZ });
-  const day = d.toLocaleDateString('ru-RU', { timeZone: TZ });
-  return day === today ? time(iso) : `${d.toLocaleDateString('ru-RU', { timeZone: TZ, day: '2-digit', month: '2-digit' })} ${time(iso)}`;
-}
+// Секции пульта (ARMS, фаза 6; раскладка — редизайн web W5, §4.3). Всё —
+// данные из GET /dashboard/overview, без вызова модели; ▶ навыка —
+// единственное, что тратит токены, и только по нажатию.
 
 function PanelBody<T>({ state, loading, children }: { state: SectionState<T>; loading: boolean; children: (data: T) => ReactNode }) {
   if (state.data) return <>{children(state.data)}</>;
@@ -51,44 +29,13 @@ function PanelBody<T>({ state, loading, children }: { state: SectionState<T>; lo
   return loading ? <Skeleton height={72} /> : null;
 }
 
-// --- Календарь ----------------------------------------------------------------
-
-function isOngoing(ev: DashboardEventItem): boolean {
-  const now = Date.now();
-  return new Date(ev.startAt).getTime() <= now && now <= new Date(ev.endAt).getTime();
-}
-
-export function CalendarPanel({ state, loading }: { state: SectionState<{ items: DashboardEventItem[] }>; loading: boolean }) {
-  return (
-    <Panel icon={CalendarDays} title="Календарь" href="/calendar">
-      <PanelBody state={state} loading={loading}>
-        {(data) =>
-          data.items.length === 0 ? (
-            <p className="console-empty">Встреч впереди нет</p>
-          ) : (
-            <ul className="console-list">
-              {data.items.map((ev) => (
-                <li key={ev.id}>
-                  <Link href={`/calendar?event=${ev.id}`} className="console-row">
-                    <span className="console-time ds-num">{ev.allDay ? 'весь день' : dayTime(ev.startAt)}</span>
-                    <span className="console-row-title">{ev.title}</span>
-                    {isOngoing(ev) && <StatusTag tone="next">сейчас</StatusTag>}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )
-        }
-      </PanelBody>
-    </Panel>
-  );
-}
-
 // --- Почта --------------------------------------------------------------------
 
-export function MailPanel({ state, loading }: { state: SectionState<DashboardMailSection>; loading: boolean }) {
+// «Ждут ответа» — те же письма, что с тегом «Ответ» в «Разборе»; строки —
+// первые письма очереди разбора, клик открывает письмо там.
+export function MailPanel({ state, loading, now }: { state: SectionState<DashboardMailSection>; loading: boolean; now: number }) {
   return (
-    <Panel icon={Mail} title="Почта" href="/mail">
+    <Panel icon={Mail} title="Почта" aside={state.data?.lastSyncedAt ? <span className="console-muted pult-meta">синхр. {dayTime(state.data.lastSyncedAt, now)}</span> : undefined}>
       <PanelBody state={state} loading={loading}>
         {(data) =>
           !data.connected ? (
@@ -97,31 +44,30 @@ export function MailPanel({ state, loading }: { state: SectionState<DashboardMai
             </p>
           ) : (
             <>
-              <p className="console-lead">
-                <span className="ds-num">{data.received24h}</span> за 24 часа
-                {data.lastSyncedAt && <span className="console-muted"> · синхр. {time(data.lastSyncedAt)}</span>}
+              <p className="pult-mail-lead">
+                <span className="pult-mail-count ds-num">{data.needsReply}</span>
+                <span>ждут вашего ответа · {data.received24h} за сутки</span>
               </p>
               {data.mix.length > 0 && <MailMix mix={data.mix} />}
-              {data.needsYou.length === 0 ? (
-                <p className="console-empty">Ничего не ждёт ответа</p>
-              ) : (
+              {data.top.length > 0 && (
                 <ul className="console-list">
-                  {data.needsYou.map((m) => (
+                  {data.top.map((m) => (
                     <li key={m.id}>
-                      <Link href="/mail" className="console-row console-row-2" title={m.summary ?? undefined}>
-                        <span className="console-time ds-num">{m.receivedAt ? dayTime(m.receivedAt) : ''}</span>
-                        <span className="console-row-title">
-                          <strong>{m.from}</strong>
-                          <span className="console-muted">{m.subject || '(без темы)'}</span>
+                      <Link href={`/mail?message=${m.id}`} className="pult-mail-row">
+                        <span className={cx('pult-mail-dot', (m.importance === 'CRITICAL' || m.importance === 'IMPORTANT') && 'is-hot')} aria-hidden="true" />
+                        <span className="pult-mail-text">
+                          <span className="pult-mail-subject">{m.subject || '(без темы)'}</span>
+                          <span className="console-muted pult-mail-from">{m.from}</span>
                         </span>
-                        <StatusTag tone={m.importance === 'CRITICAL' ? 'danger' : m.needsReply ? 'next' : 'warn'}>
-                          {m.importance === 'CRITICAL' ? 'срочно' : m.needsReply ? 'ответить' : 'важно'}
-                        </StatusTag>
+                        {m.receivedAt && <span className="console-muted pult-meta">{span(new Date(m.receivedAt).getTime(), now)}</span>}
                       </Link>
                     </li>
                   ))}
                 </ul>
               )}
+              <Link href="/mail" className="ds-btn ds-btn-secondary pult-mail-go">
+                {data.top.length > 0 ? 'Разобрать почту →' : 'Открыть почту →'}
+              </Link>
             </>
           )
         }
@@ -167,7 +113,7 @@ function routineLabel(item: DashboardRoutineItem): string {
   return item.status === 'NEXT' ? 'далее' : ROUTINE_RUN_STATUS_LABELS[item.status].toLowerCase();
 }
 
-export function RoutinesPanel({ state, loading }: { state: SectionState<{ items: DashboardRoutineItem[] }>; loading: boolean }) {
+export function RoutinesPanel({ state, loading, now }: { state: SectionState<{ items: DashboardRoutineItem[] }>; loading: boolean; now: number }) {
   return (
     <Panel icon={Repeat} title="Регламенты" href="/routines">
       <PanelBody state={state} loading={loading}>
@@ -181,7 +127,7 @@ export function RoutinesPanel({ state, loading }: { state: SectionState<{ items:
               {data.items.map((r) => (
                 <li key={r.id}>
                   <Link href={r.conversationId ? `/assistant?c=${r.conversationId}` : '/routines'} className="console-row">
-                    <span className="console-time ds-num">{dayTime(r.at)}</span>
+                    <span className="console-time ds-num">{dayTime(r.at, now)}</span>
                     <span className="console-row-title">{r.title}</span>
                     <StatusTag tone={ROUTINE_TONE[r.status]}>{routineLabel(r)}</StatusTag>
                   </Link>
@@ -252,7 +198,9 @@ export function SkillsPanel({ state, loading }: { state: SectionState<DashboardS
   );
 }
 
-// --- Входящие файлы -----------------------------------------------------------
+// --- Готовые файлы и расход ИИ ----------------------------------------------
+
+const FILES_SHOWN = 6;
 
 function sizeText(bytes: number): string {
   if (bytes < 1024) return `${bytes} Б`;
@@ -277,130 +225,88 @@ async function download(file: DashboardFileItem) {
   URL.revokeObjectURL(url);
 }
 
-export function FilesStrip({ state, loading }: { state: SectionState<{ items: DashboardFileItem[]; total: number }>; loading: boolean }) {
+// Последние файлы, подготовленные ассистентом; поиск по имени — на клиенте,
+// без модели, среди загруженных. Внизу — расход ИИ за сегодня.
+export function FilesPanel({
+  state,
+  usage,
+  loading,
+  now,
+}: {
+  state: SectionState<{ items: DashboardFileItem[]; total: number }>;
+  usage: SectionState<DashboardUsageSection>;
+  loading: boolean;
+  now: number;
+}) {
   const [query, setQuery] = useState('');
   const [failed, setFailed] = useState<string | null>(null);
   const q = query.trim().toLowerCase();
   return (
-    <Panel
-      icon={Files}
-      title="Входящие файлы"
-      className="console-files"
-      aside={
-        state.data && state.data.items.length > 0 ? (
-          <label className="console-files-search">
-            <Search size={14} strokeWidth={1.75} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти файл" aria-label="Найти файл" />
-          </label>
-        ) : undefined
-      }
-    >
-      <span id="files" className="console-anchor" />
+    <Panel icon={Files} title="Готовые файлы" className="pult-files">
       <PanelBody state={state} loading={loading}>
         {(data) => {
-          const shown = q ? data.items.filter((f) => f.name.toLowerCase().includes(q)) : data.items;
           if (data.items.length === 0) return <p className="console-empty">Здесь появятся файлы, которые подготовит ассистент: выгрузки, документы, отчёты</p>;
-          if (shown.length === 0) return <p className="console-empty">Ничего не найдено</p>;
+          const shown = (q ? data.items.filter((f) => f.name.toLowerCase().includes(q)) : data.items).slice(0, FILES_SHOWN);
           return (
             <>
+              <label className="pult-files-search">
+                <Search size={14} strokeWidth={1.75} />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти файл" aria-label="Найти файл" />
+              </label>
               {failed && <Alert tone="danger">{failed}</Alert>}
-              <ul className="console-file-strip">
-                {shown.map((f) => (
-                  <li key={f.id}>
-                    <button
-                      type="button"
-                      className="console-file"
-                      title={f.name}
-                      onClick={() => {
-                        setFailed(null);
-                        download(f).catch(() => setFailed(`Не удалось скачать «${f.name}»`));
-                      }}
-                    >
-                      <span className="console-file-ext">
-                        <FileText size={16} strokeWidth={1.75} />
-                        {extension(f.name)}
-                      </span>
-                      <span className="console-file-name">{f.name}</span>
-                      <span className="console-muted ds-num">
-                        {dayTime(f.createdAt)} · {sizeText(f.size)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {shown.length === 0 ? (
+                <p className="console-empty">Ничего не найдено</p>
+              ) : (
+                <ul className="pult-file-list">
+                  {shown.map((f) => (
+                    <li key={f.id}>
+                      <button
+                        type="button"
+                        className="pult-file"
+                        title={`${f.name} · ${sizeText(f.size)}`}
+                        onClick={() => {
+                          setFailed(null);
+                          download(f).catch(() => setFailed(`Не удалось скачать «${f.name}»`));
+                        }}
+                      >
+                        <span className="pult-file-ext">
+                          <FileText size={13} strokeWidth={1.9} />
+                          {extension(f.name)}
+                        </span>
+                        <span className="pult-file-name">{f.name}</span>
+                        <span className="console-muted pult-meta">{dayTime(f.createdAt, now)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </>
           );
         }}
       </PanelBody>
+      {usage.data && <UsageToday usage={usage.data} />}
     </Panel>
   );
 }
 
-// --- Спросить агента ----------------------------------------------------------
-
-export function AskAgent({ skills }: { skills: { id: string; slug: string; title: string }[] }) {
-  const router = useRouter();
-  const [text, setText] = useState('');
-  const [active, setActive] = useState(0);
-  const slash = /^\/(\S*)$/.exec(text);
-  const suggestions = slash ? skills.filter((s) => s.slug.startsWith(slash[1].toLowerCase())).slice(0, 6) : [];
-
-  function submit(value: string) {
-    const q = value.trim();
-    if (q) router.push(`/assistant?q=${encodeURIComponent(q)}`);
-  }
-
-  function pick(slug: string) {
-    setText(`/${slug} `);
-    setActive(0);
-  }
-
+function UsageToday({ usage }: { usage: DashboardUsageSection }) {
+  const cache = usage.week.cacheShare;
   return (
-    <form
-      className="console-ask"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (suggestions.length > 0) pick(suggestions[active]?.slug ?? suggestions[0].slug);
-        else submit(text);
-      }}
-    >
-      <Sparkles size={16} strokeWidth={1.75} />
-      <input
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          setActive(0);
-        }}
-        onKeyDown={(e) => {
-          if (suggestions.length === 0) return;
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            setActive((i) => (i + 1) % suggestions.length);
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            setActive((i) => (i - 1 + suggestions.length) % suggestions.length);
-          }
-        }}
-        placeholder="Спросить агента… «/» — навыки"
-        aria-label="Спросить агента"
-        role="combobox"
-        aria-expanded={suggestions.length > 0}
-        aria-controls="console-ask-skills"
-        aria-autocomplete="list"
-      />
-      <kbd className="console-kbd">Enter</kbd>
-      {suggestions.length > 0 && (
-        <ul className="console-ask-menu" id="console-ask-skills" role="listbox">
-          {suggestions.map((s, i) => (
-            <li key={s.id} role="option" aria-selected={i === active}>
-              <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(s.slug)}>
-                <span className="ds-num">/{s.slug}</span>
-                <span className="console-muted">{s.title}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+    <Link href="/ai-usage" className="pult-usage" title="Расход ИИ">
+      <span className="pult-usage-head">
+        <span className="section-kicker">
+          <BarChart3 size={12} strokeWidth={2} /> Расход ИИ · сегодня
+        </span>
+        <span className="ds-num pult-usage-cost">≈ {usd(usage.today.costUsd)}</span>
+      </span>
+      {cache !== null && (
+        <span className="pult-usage-bar" role="img" aria-label={`Кэш ${Math.round(cache * 100)}%`}>
+          <span style={{ width: `${Math.round(cache * 100)}%` }} />
+        </span>
       )}
-    </form>
+      <span className="console-muted pult-meta">
+        {tokens(usage.today.tokens)} ток.{cache !== null && ` · кэш ${Math.round(cache * 100)}%`} · неделя ≈ {usd(usage.week.costUsd)}
+      </span>
+    </Link>
   );
 }

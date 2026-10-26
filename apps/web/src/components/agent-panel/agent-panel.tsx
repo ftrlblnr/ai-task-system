@@ -77,7 +77,7 @@ export function AgentPanel() {
 }
 
 function AgentPanelBody({ visible }: { visible: boolean }) {
-  const { setOpen, pageContext, focusRequest } = useAgentPanel();
+  const { setOpen, pageContext, focusRequest, pendingAsk, clearAsk } = useAgentPanel();
   const pathname = usePathname();
   const session = useAssistantSession();
   const { convs, conversationId, stream } = session;
@@ -105,6 +105,16 @@ function AgentPanelBody({ visible }: { visible: boolean }) {
   useEffect(() => {
     if (visible && conversationId && focusRequest > 0) textareaRef.current?.focus();
   }, [visible, conversationId, focusRequest, textareaRef]);
+
+  // Вопрос со страницы (ask) — как только история разговора загружена (иначе
+  // её загрузка затрёт вопрос в ленте) и агент свободен.
+  const historyLoaded = stream.messages !== null;
+  useEffect(() => {
+    if (!pendingAsk || !conversationId || !historyLoaded || stream.sending) return;
+    clearAsk();
+    session.send(toPayload(pendingAsk.context ?? context), pendingAsk.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAsk, conversationId, historyLoaded, stream.sending]);
 
   function pickChip(chip: string) {
     if (chip.endsWith('…')) {

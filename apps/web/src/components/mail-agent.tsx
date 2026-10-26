@@ -556,10 +556,12 @@ function PlanView({ planId, onBack }: { planId: string; onBack: () => void }) {
   );
 }
 
-export function MailAgentTab() {
+// initialPlanId — ссылка «Открыть в «Планах действий»» из карточки плана в
+// панели агента (W5): /mail?tab=agent&plan=<id>.
+export function MailAgentTab({ initialPlanId = null }: { initialPlanId?: string | null }) {
   const [plans, setPlans] = useState<MailActionPlan[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialPlanId);
 
   const load = useCallback(() => {
     api

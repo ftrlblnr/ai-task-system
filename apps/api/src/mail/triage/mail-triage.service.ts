@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { MailActionType, Prisma } from '@prisma/client';
+import { EmailImportance, MailActionType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AiUsageService, trackedCreate } from '../../ai-usage/ai-usage.service';
 import { MailComposeService, type DraftView } from '../mail-compose.service';
@@ -54,6 +54,16 @@ const QUEUE_SELECT = {
   analysis: { select: { summary: true, importance: true, category: true, needsReply: true, needsAction: true, actionSummary: true, deadline: true } },
 } satisfies Prisma.EmailMessageSelect;
 
+const SUMMARY_SELECT = {
+  id: true,
+  subject: true,
+  fromName: true,
+  fromAddress: true,
+  receivedAt: true,
+  analysis: { select: { importance: true, needsReply: true } },
+} satisfies Prisma.EmailMessageSelect;
+const SUMMARY_TOP = 3;
+
 @Injectable()
 export class MailTriageService {
   private readonly logger = new Logger(MailTriageService.name);
@@ -103,22 +113,37 @@ export class MailTriageService {
     return new Set(items.flatMap((i) => i.stableObjectIds));
   }
 
-  async queue(mailboxId: string) {
+  // Кандидаты очереди: свежие сверху, с запасом на уже разобранные.
+  private candidates(mailboxId: string) {
     const since = new Date(Date.now() - QUEUE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-    const rows = await this.prisma.emailMessage.findMany({
-      where: this.openWhere(mailboxId, since),
-      select: QUEUE_SELECT,
-      orderBy: { receivedAt: 'desc' },
-      take: QUEUE_LIMIT * 2,
-    });
+    return { where: this.openWhere(mailboxId, since), orderBy: { receivedAt: 'desc' as const }, take: QUEUE_LIMIT * 2 };
+  }
+
+  // Без уже разобранных, по compareTriage, не длиннее очереди.
+  private async keepOpen<T extends { id: string; receivedAt: Date | null; analysis: { importance: EmailImportance | null } | null }>(mailboxId: string, rows: T[]): Promise<T[]> {
     const handled = await this.handledIds(
       mailboxId,
       rows.map((r) => r.id),
     );
-    const open = rows
+    return rows
       .filter((r) => !handled.has(r.id))
       .sort((a, b) => compareTriage({ importance: a.analysis?.importance ?? null, receivedAt: a.receivedAt }, { importance: b.analysis?.importance ?? null, receivedAt: b.receivedAt }))
       .slice(0, QUEUE_LIMIT);
+  }
+
+  // Пульт и бейдж «Почта» (W5): те же письма, что во вкладке «Разбор», —
+  // число ждущих ответа и первые в очереди, без тел и черновиков.
+  async summary(mailboxId: string, top = SUMMARY_TOP) {
+    const open = await this.keepOpen(mailboxId, await this.prisma.emailMessage.findMany({ ...this.candidates(mailboxId), select: SUMMARY_SELECT }));
+    return {
+      total: open.length,
+      needsReply: open.filter((r) => r.analysis?.needsReply).length,
+      top: open.slice(0, top).map(({ analysis, ...m }) => ({ ...m, importance: analysis?.importance ?? null, tag: analysis?.needsReply ? ('REPLY' as const) : ('ACTION' as const) })),
+    };
+  }
+
+  async queue(mailboxId: string) {
+    const open = await this.keepOpen(mailboxId, await this.prisma.emailMessage.findMany({ ...this.candidates(mailboxId), select: QUEUE_SELECT }));
 
     const drafts = await this.prisma.mailDraft.findMany({
       where: { mailboxId, sourceKey: { in: open.map((r) => triageDraftKey(r.id)) }, state: { in: ['DRAFT', 'SENDING'] } },
