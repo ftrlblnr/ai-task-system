@@ -9,6 +9,8 @@ import { ReceptionPreview } from './reception-preview';
 import { AppsPanel, AskAgent, CalendarPanel, FilesStrip, MailPanel, RoutinesPanel, SkillsPanel, type AppCounts } from './console-panels';
 import { useDashboardOverview, isStale, formatFetchedAt } from './use-dashboard-overview';
 import { IconButton, StatBar } from '@/components/ui';
+import { useAgentContext } from '@/components/agent-panel/agent-context';
+import { AgentButton } from '@/components/agent-panel/agent-panel';
 
 // Пульт руководителя (ARMS, фаза 6; было — «Стол руководителя», ТЗ v1.0
 // 05.10.2026). Всё на одном экране и без вызова модели: слева приложения и
@@ -30,6 +32,7 @@ function tokens(value: number): string {
 export function DashboardPage() {
   const { tasks, reception, calendar, panels, loading, refreshing, allFreshAt, refresh } = useDashboardOverview();
   const usage = panels.usage.data;
+  useAgentContext({ kind: 'dashboard' });
   // Дата — один раз при показе (не в каждом рендере).
   const [today] = useState(() => new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' }));
 
@@ -74,6 +77,7 @@ export function DashboardPage() {
         )}
         <div className="console-head-actions">
           <IconButton icon={RefreshCw} label="Обновить" variant="outline" onClick={refresh} disabled={refreshing} />
+          <AgentButton />
           <Link href="/tasks/new" className="ds-btn ds-btn-primary">
             <Plus size={16} strokeWidth={1.75} />
             Новая задача

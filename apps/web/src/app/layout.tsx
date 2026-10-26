@@ -6,6 +6,8 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { AvatarsProvider } from "@/lib/avatars";
 import { Sidebar } from "@/components/sidebar";
+import { AgentPanelProvider } from "@/components/agent-panel/agent-context";
+import { AgentPanel } from "@/components/agent-panel/agent-panel";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, внедрение по
@@ -38,10 +40,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body>
         <AuthProvider>
           <AvatarsProvider>
-            <div className="app-shell">
-              <Sidebar />
-              <main className="app-main">{children}</main>
-            </div>
+            <AgentPanelProvider>
+              <div className="app-shell">
+                <Sidebar />
+                <main className="app-main">{children}</main>
+                <AgentPanel />
+              </div>
+            </AgentPanelProvider>
           </AvatarsProvider>
         </AuthProvider>
       </body>

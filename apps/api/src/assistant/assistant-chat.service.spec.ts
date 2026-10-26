@@ -144,6 +144,29 @@ describe('AssistantChatService.sendMessage идемпотентность (Stage
     expect(replySpy).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ userMessage, assistantMessage });
   });
+
+  // Редизайн web W2 — контекст страницы уходит модели блоком [page_context],
+  // а в сохранённое сообщение пользователя не попадает.
+  it('context — сводка PageContextService уходит модели, сохранённый текст чистый', async () => {
+    const conversation = { id: 'c1', employeeId: 'u1' };
+    const userMessage = { id: 'm1', role: Role.EMPLOYEE, createdAt: new Date(), parts: [] };
+    const assistantMessage = { id: 'm2', createdAt: new Date(), parts: [] };
+    const replySpy = jest.fn().mockResolvedValue({ text: 'напомню', toolCalls: [] });
+    const create = jest.fn().mockResolvedValueOnce(userMessage).mockResolvedValueOnce(assistantMessage);
+    const prisma = {
+      $transaction: jest.fn((fn: any) => (typeof fn === 'function' ? fn(prisma) : Promise.all(fn))),
+      conversation: { findUnique: jest.fn().mockResolvedValue(conversation), update: jest.fn() },
+      message: { findUnique: jest.fn(), findFirst: jest.fn(), findMany: jest.fn().mockResolvedValue([]), create },
+    };
+    const describePage = jest.fn().mockResolvedValue('Пользователь смотрит задачу.\nid: t1');
+    const service = new AssistantChatService(prisma as any, { reply: replySpy } as any, {} as any, undefined, undefined, { describe: describePage } as any);
+
+    await service.sendMessage(user(), 'c1', { text: 'Напомни исполнителю', context: { kind: 'task', id: 't1' } });
+
+    expect(describePage).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }), { kind: 'task', id: 't1' });
+    expect(replySpy.mock.calls[0][0]).toBe('[page_context]\nПользователь смотрит задачу.\nid: t1\n[/page_context]\n\nНапомни исполнителю');
+    expect(JSON.stringify(create.mock.calls[0][0])).not.toContain('page_context');
+  });
 });
 
 // P2.2 (Phase F.1) — streamMessage — своя логика поверх reply.streamReply

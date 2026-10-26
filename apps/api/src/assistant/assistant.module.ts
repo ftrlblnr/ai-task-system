@@ -18,6 +18,7 @@ import { LegalReviewNotifier } from './legal-review-notifier.service';
 import { ConversationCompactionService } from './conversation-compaction.service';
 import { SkillRunExecutionService } from './skill-run-execution.service';
 import { RoutineRunExecutionService } from './routine-run-execution.service';
+import { PageContextService } from './page-context.service';
 
 @Module({
   // TasksModule/CalendarModule — AssistantToolsService читает через
@@ -41,7 +42,7 @@ import { RoutineRunExecutionService } from './routine-run-execution.service';
   // (ARMS, фаза 4) — propose_routine и прогон регламентов.
   imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule, SkillsModule, TelegramModule, RoutinesModule],
   controllers: [AssistantChatController],
-  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService, RoutineRunExecutionService],
+  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService, RoutineRunExecutionService, PageContextService],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.

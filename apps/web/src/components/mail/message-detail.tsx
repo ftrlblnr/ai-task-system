@@ -10,6 +10,7 @@ import { Alert } from '@/components/ui/alert';
 import { MessageBody } from './message-body';
 import { IMPORTANCE_LABELS, formatDate, senderLabel } from './mail-labels';
 import { createDraft, MoveSelect, runMessageAction, type MailPaneContext } from './message-actions';
+import { useAgentContext } from '@/components/agent-panel/agent-context';
 
 // Открытое письмо: действия, вложения, тело, переписка. Вынесено из
 // app/mail/page.tsx (редизайн web W0).
@@ -72,6 +73,7 @@ export function MessageDetail({ id, ctx, onClose }: { id: string; ctx: MailPaneC
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { onChanged } = ctx;
+  useAgentContext(detail ? { kind: 'mail', id: detail.id, label: detail.subject || '(без темы)' } : null);
 
   // Состояние сбрасывается сменой key у родителя (см. MessageList) — не setState в эффекте.
   useEffect(() => {

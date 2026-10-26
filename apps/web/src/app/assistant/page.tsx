@@ -1,16 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { isManagerRole } from '@ai-task-system/shared-types';
+import { useEffect, useRef } from 'react';
 import { Protected } from '@/components/protected';
-import { useSkillOptions } from '@/components/skill-chat';
-import { useAuth } from '@/lib/auth-context';
-import { useAssistantStream } from '@/components/assistant/use-assistant-stream';
-import { useLiveVoice, useVoiceRecorder } from '@/components/assistant/voice-controls';
-import { useAttachments } from '@/components/assistant/attachments';
+import { useAssistantSession } from '@/components/assistant/use-assistant-session';
 import { MessageList } from '@/components/assistant/message-list';
 import { Composer } from '@/components/assistant/composer';
-import { ConversationList, useConversations } from '@/components/assistant/conversation-list';
+import { ConversationList } from '@/components/assistant/conversation-list';
 
 // Stage 2, Phase M (Web Assistant parity, 22.09.2026) — desktop-порт
 // apps/miniapp/src/components/assistant-screen.tsx. Тот же backend-
@@ -24,7 +19,7 @@ import { ConversationList, useConversations } from '@/components/assistant/conve
 // 2. Никакой Telegram-хаптики/SwipeShell — обычный React-компонент,
 //    история грузится на монтирование и при смене conversationId.
 // Части — в components/assistant/* (редизайн W0), их же переиспользует
-// панель агента.
+// панель агента (W2): эта страница — её полноэкранный режим.
 
 export default function AssistantPage() {
   return (
@@ -35,39 +30,9 @@ export default function AssistantPage() {
 }
 
 function AssistantView() {
-  const convs = useConversations();
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [text, setText] = useState('');
+  const session = useAssistantSession();
+  const { convs, conversationId, stream } = session;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const stream = useAssistantStream({ conversationId, onTitlesChanged: convs.refreshTitles });
-  const attachments = useAttachments();
-  const voice = useVoiceRecorder({
-    conversationId,
-    onMessages: (userMessage, assistantMessage) => stream.setMessages((prev) => [...(prev ?? []), userMessage, assistantMessage]),
-    onConversationCreated: setConversationId,
-    onUndone: () => {
-      if (conversationId) stream.loadMessages(conversationId);
-    },
-  });
-  const live = useLiveVoice({ getConversationId: () => conversationId, refresh: stream.refreshMessagesSilently });
-
-  const { user } = useAuth();
-  const skillOptions = useSkillOptions(!!user && isManagerRole(user.role));
-
-  async function createConversation() {
-    const created = await convs.create();
-    if (!created) return;
-    setConversationId(created.id);
-    stream.setMessages([]);
-  }
-
-  function selectConversation(id: string) {
-    if (id === conversationId) return;
-    setConversationId(id);
-    stream.clearFailed();
-    stream.loadMessages(id);
-  }
 
   // Первая загрузка страницы — выбирает и грузит переписку выбранного/
   // первого разговора.
@@ -80,17 +45,18 @@ function AssistantView() {
       const question = params.get('q')?.trim();
       if (question) {
         window.history.replaceState(null, '', '/assistant');
-        void createConversation().then(() => {
-          setText(question);
+        void session.createConversation().then(() => {
+          session.setText(question);
           textareaRef.current?.focus();
         });
         return;
       }
-      // ?c=<id> — ссылка «открыть ответ» навыка (запуск ▶ создаёт разговор).
+      // ?c=<id> — ссылка «открыть ответ» навыка (запуск ▶ создаёт разговор)
+      // и «развернуть» из панели агента.
       const wanted = params.get('c');
       const targetId = (wanted && list.some((c) => c.id === wanted) ? wanted : list[0]?.id) ?? null;
       if (targetId) {
-        setConversationId(targetId);
+        session.setConversationId(targetId);
         stream.loadMessages(targetId);
       } else {
         stream.setMessages([]);
@@ -99,21 +65,14 @@ function AssistantView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function send() {
-    if (stream.send(text, attachments.pending)) {
-      setText('');
-      attachments.clear();
-    }
-  }
-
   return (
     <div className="assistant-layout">
       <ConversationList
         conversations={convs.conversations}
         error={convs.error}
         activeId={conversationId}
-        onSelect={selectConversation}
-        onCreate={() => void createConversation()}
+        onSelect={session.selectConversation}
+        onCreate={() => void session.createConversation()}
         onRename={(id, title) => void convs.rename(id, title)}
       />
 
@@ -125,23 +84,23 @@ function AssistantView() {
           freshMessageIds={stream.freshMessageIds}
           failedSend={stream.failedSend}
           onRetry={stream.retry}
-          voiceUndos={voice.undos}
-          onVoiceUndo={(entry) => void voice.undo(entry)}
+          voiceUndos={session.voice.undos}
+          onVoiceUndo={(entry) => void session.voice.undo(entry)}
           onSkillRated={(messageId, run) => stream.setMessages((prev) => prev?.map((x) => (x.id === messageId ? { ...x, skillRun: run } : x)) ?? prev)}
-          onSuggestion={setText}
+          onSuggestion={session.setText}
         />
         <Composer
-          text={text}
-          onTextChange={setText}
+          text={session.text}
+          onTextChange={session.setText}
           textareaRef={textareaRef}
           hasConversation={!!conversationId}
           sending={stream.sending}
-          onSend={send}
+          onSend={() => session.send()}
           onStop={stream.stop}
-          attachments={attachments}
-          voice={voice}
-          live={live}
-          skillOptions={skillOptions}
+          attachments={session.attachments}
+          voice={session.voice}
+          live={session.live}
+          skillOptions={session.skillOptions}
         />
       </div>
     </div>

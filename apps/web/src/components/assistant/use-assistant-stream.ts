@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { ConversationMessage, MessagePart, StreamEvent, UploadedFileInfo } from '@ai-task-system/shared-types';
+import type { AgentPageContext, ConversationMessage, MessagePart, StreamEvent, UploadedFileInfo } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useRealtime } from '@/lib/use-realtime';
 
@@ -14,6 +14,8 @@ export interface FailedSend {
   clientRequestId: string;
   text: string;
   attachments: UploadedFileInfo[];
+  // Контекст страницы на момент отправки — «Повторить» шлёт тот же.
+  context?: AgentPageContext;
 }
 
 export function newClientRequestId(): string {
@@ -152,14 +154,22 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
 
   // Возвращает false, если отправка не началась (пусто, уже идёт ответ, нет
   // разговора) — тогда вызывающий не очищает поле ввода.
-  function send(text: string, attachments: UploadedFileInfo[], retryClientRequestId?: string): boolean {
+  // context — на что смотрит пользователь (панель агента, W2): сервер сам
+  // проверит права и добавит сводку только для модели.
+  function send(text: string, attachments: UploadedFileInfo[], retryClientRequestId?: string, context?: AgentPageContext): boolean {
     const value = text.trim();
     if (!value || sending || !conversationId) return false;
-    void run(conversationId, value, attachments, retryClientRequestId);
+    void run(conversationId, value, attachments, retryClientRequestId, context);
     return true;
   }
 
-  async function run(conversationId: string, value: string, attachments: UploadedFileInfo[], retryClientRequestId?: string) {
+  async function run(
+    conversationId: string,
+    value: string,
+    attachments: UploadedFileInfo[],
+    retryClientRequestId?: string,
+    context?: AgentPageContext,
+  ) {
     const isRetry = Boolean(retryClientRequestId);
     const clientRequestId = retryClientRequestId ?? newClientRequestId();
     const assistantPlaceholderId = `optimistic-assistant-${clientRequestId}`;
@@ -224,7 +234,7 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
         case 'message.failed':
           terminal = true;
           setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-          setFailedSend({ clientRequestId, text: value, attachments });
+          setFailedSend({ clientRequestId, text: value, attachments, context });
           break;
         case 'message.started':
           setMessages((prev) => (prev ?? []).map((m) => (m.id === `optimistic-user-${clientRequestId}` ? event.userMessage : m)));
@@ -239,7 +249,7 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
     try {
       const response = await api.postStream(
         `/assistant/conversations/${conversationId}/messages/stream`,
-        { text: value, clientRequestId, attachmentIds: attachments.map((a) => a.fileId) },
+        { text: value, clientRequestId, attachmentIds: attachments.map((a) => a.fileId), context },
         controller.signal,
       );
       const reader = response.body?.getReader();
@@ -263,7 +273,7 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
 
       if (!terminal) {
         setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-        setFailedSend({ clientRequestId, text: value, attachments });
+        setFailedSend({ clientRequestId, text: value, attachments, context });
       }
     } catch (err) {
       // Остановлено самим пользователем (кнопка «Остановить ответ») — не
@@ -278,7 +288,7 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
         );
       } else if (!(err instanceof DOMException && err.name === 'AbortError')) {
         setMessages((prev) => (prev ?? []).filter((m) => m.id !== assistantPlaceholderId));
-        setFailedSend({ clientRequestId, text: value, attachments });
+        setFailedSend({ clientRequestId, text: value, attachments, context });
       }
     } finally {
       sendAbortRef.current = null;
@@ -287,7 +297,7 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
   }
 
   function retry() {
-    if (failedSend) send(failedSend.text, failedSend.attachments, failedSend.clientRequestId);
+    if (failedSend) send(failedSend.text, failedSend.attachments, failedSend.clientRequestId, failedSend.context);
   }
 
   function stop() {

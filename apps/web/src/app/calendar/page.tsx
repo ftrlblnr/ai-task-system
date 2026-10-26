@@ -23,6 +23,7 @@ import { Field, Input, Textarea, Select } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { CalendarAgent, type CalendarAgentTab } from '@/components/calendar-agent';
+import { useAgentContext } from '@/components/agent-panel/agent-context';
 
 function GoogleConnectionCard() {
   const params = useSearchParams();
@@ -347,6 +348,8 @@ function EventsAgenda() {
   // setState в эффекте: React-антипаттерн, лишний рендер), скролл к карточке
   // — настоящий DOM-эффект, остаётся в useEffect.
   const eventMissing = Boolean(focusEventId && events && !events.some((e) => e.id === focusEventId));
+  const focusedEvent = focusEventId ? events?.find((e) => e.id === focusEventId) : undefined;
+  useAgentContext(focusedEvent ? { kind: 'event', id: focusedEvent.id, label: focusedEvent.title } : null);
 
   useEffect(() => {
     if (!focusEventId || !events) return;

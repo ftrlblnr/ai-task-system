@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ConversationMessage, FilePartData, SkillRunRef } from '@ai-task-system/shared-types';
 import { MessagePartsList, FilePartView } from '@/components/assistant-message-part';
 import { SkillRating } from '@/components/skill-chat';
@@ -40,6 +40,8 @@ interface Props {
   onVoiceUndo: (entry: VoiceUndoEntry) => void;
   onSkillRated: (messageId: string, run: SkillRunRef) => void;
   onSuggestion: (text: string) => void;
+  // Своё пустое состояние вместо «Чем помочь?» (узкая панель агента).
+  emptyState?: ReactNode;
 }
 
 export function MessageList({
@@ -53,6 +55,7 @@ export function MessageList({
   onVoiceUndo,
   onSkillRated,
   onSuggestion,
+  emptyState,
 }: Props) {
   const chatRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
@@ -89,7 +92,8 @@ export function MessageList({
         <p className="ds-field-hint">Загрузка…</p>
       ) : (
         <>
-          {messages.length === 0 && (
+          {messages.length === 0 && emptyState}
+          {messages.length === 0 && !emptyState && (
             <div style={{ textAlign: 'center', padding: '48px 16px' }}>
               {/* "display" — типографика только для этого места и экрана
                   входа (project/README.md); отдельного CSS-класса под

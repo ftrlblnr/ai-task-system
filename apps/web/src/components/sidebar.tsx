@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import {
   BarChart3,
   BookOpen,
@@ -33,6 +33,7 @@ import { api } from '@/lib/api';
 import { applyTheme, readTheme, type ThemeChoice } from '@/lib/theme';
 import { IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
+import { useAgentPanel } from './agent-panel/agent-context';
 
 // Меню по группам (редизайн web W1, docs/WEB_REDESIGN.md §4.1). Права —
 // как были: «Пульт» — только руководителю (OWNER, ролевая модель
@@ -107,20 +108,13 @@ function useLegalEnabled(userId: string | undefined): boolean {
   return enabled;
 }
 
-// Ctrl+K / Cmd+K — «Спросить агента» с любой страницы. Пока ведёт на
-// /assistant; панель агента справа — W2.
-function useGlobalAssistantShortcut() {
-  const router = useRouter();
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        router.push('/assistant');
-      }
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [router]);
+// Подпись раздела по маршруту — для чипа «Контекст» панели агента.
+export function sectionLabel(route: string): string | null {
+  for (const group of NAV_GROUPS) {
+    const item = group.items.find((i) => i.href === route);
+    if (item) return item.label;
+  }
+  return null;
 }
 
 // Тема: один переключатель по кругу «как в системе → светлая → тёмная»,
@@ -144,7 +138,7 @@ function ThemeToggle() {
 export function Sidebar() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
-  useGlobalAssistantShortcut();
+  const { openAndFocus } = useAgentPanel();
   const legalEnabled = useLegalEnabled(user?.id);
   // Узкий экран (<760px): меню — выезжающая панель за кнопкой-бургером.
   const [open, setOpen] = useState(false);
@@ -190,11 +184,18 @@ export function Sidebar() {
           </span>
         </div>
 
-        <Link href="/assistant" className="ds-cmd">
+        <button
+          type="button"
+          className="ds-cmd"
+          onClick={() => {
+            setOpen(false);
+            openAndFocus();
+          }}
+        >
           <Sparkles size={16} strokeWidth={1.9} />
           <span>Спросить агента</span>
           <kbd className="ds-kbd">Ctrl K</kbd>
-        </Link>
+        </button>
 
         <nav className="ds-nav">
           {NAV_GROUPS.map((group) => {

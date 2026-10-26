@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { cx } from './button';
+import { AgentButton } from '@/components/agent-panel/agent-panel';
 
 // Порт Card/PageHeader. Card/README.md: tone="sunken" — вторичные блоки,
 // tone="agent" — контекст, подготовленный ИИ. Не вкладывать карточку в
@@ -47,7 +48,11 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
         <h1>{title}</h1>
         {description && <p>{description}</p>}
       </div>
-      {actions && <div className="ds-pagehead-actions">{actions}</div>}
+      {/* «Агент» — в шапке любой страницы (редизайн W2), открывает панель. */}
+      <div className="ds-pagehead-actions">
+        {actions}
+        <AgentButton />
+      </div>
     </header>
   );
 }

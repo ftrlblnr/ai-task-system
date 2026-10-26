@@ -630,6 +630,21 @@ export interface SendAssistantMessageInput {
   clientRequestId?: string;
   // Phase F — id уже загруженных через POST /files/upload FileArtifact.
   attachmentIds?: string[];
+  // Редизайн web W2 — на что смотрит пользователь (панель агента).
+  context?: AgentPageContext;
+}
+
+// Контекст страницы для панели агента. id — только подсказка: сервер сам
+// загружает сущность с проверкой прав и молча пропускает контекст, если
+// её нет или она чужая.
+export const AGENT_PAGE_CONTEXT_KINDS = ['dashboard', 'task', 'mail', 'event', 'meeting', 'list'] as const;
+export type AgentPageContextKind = (typeof AGENT_PAGE_CONTEXT_KINDS)[number];
+export interface AgentPageContext {
+  kind: AgentPageContextKind;
+  id?: string;
+  // kind: 'list' — раздел и фильтр, как их видит пользователь.
+  route?: string;
+  filter?: string;
 }
 
 // POST /files/upload — multipart, тело не описано здесь (сам файл, не

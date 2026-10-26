@@ -133,17 +133,6 @@ export function Composer({ text, onTextChange, textareaRef, hasConversation, sen
             disabled={sending || attachments.uploading || disabled || attachments.pending.length >= MAX_ATTACHMENTS}
             onClick={() => fileInputRef.current?.click()}
           />
-          {voice.phase === 'recording' ? (
-            <IconButton icon={Square} label="Остановить запись" size="sm" onClick={voice.stop} />
-          ) : (
-            <IconButton
-              icon={Mic}
-              label="Надиктовать"
-              size="sm"
-              disabled={sending || attachments.uploading || disabled || isVoiceProcessing}
-              onClick={voice.start}
-            />
-          )}
           {live.enabled && voice.phase === 'idle' && (
             <IconButton
               icon={Headphones}
@@ -164,10 +153,22 @@ export function Composer({ text, onTextChange, textareaRef, hasConversation, sen
               {text.length}/{MAX_TEXT_LENGTH}
             </span>
           )}
+          {/* Одна кнопка справа (W2): пустое поле — микрофон, иначе «Отправить». */}
           {sending ? (
             <IconButton icon={Square} label="Остановить ответ" variant="outline" size="sm" onClick={onStop} />
+          ) : voice.phase === 'recording' ? (
+            <IconButton icon={Square} label="Остановить запись" variant="outline" size="sm" onClick={voice.stop} />
+          ) : text.trim() ? (
+            <IconButton icon={Send} label="Отправить" variant="primary" size="sm" disabled={disabled} onClick={onSend} />
           ) : (
-            <IconButton icon={Send} label="Отправить" variant="primary" size="sm" disabled={!text.trim() || disabled} onClick={onSend} />
+            <IconButton
+              icon={Mic}
+              label="Надиктовать"
+              variant="primary"
+              size="sm"
+              disabled={attachments.uploading || disabled || isVoiceProcessing}
+              onClick={voice.start}
+            />
           )}
         </div>
       </div>

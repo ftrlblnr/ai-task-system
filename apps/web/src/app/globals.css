@@ -1351,6 +1351,7 @@ select {
   border-radius: 999px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
+  color: var(--ink);
   box-shadow: var(--shadow-sm);
   font-size: 0.8rem;
 }
@@ -2257,4 +2258,125 @@ a.routine-run-text:hover { color: var(--link); }
    шапок она не нужна. */
 .ds-iconbtn {
   box-shadow: none;
+}
+
+/* ============ Панель агента (редизайн W2, components/agent-panel) ============
+   Правая колонка 372px рядом с контентом; уже 1280px — выезжает поверх
+   контента, уже 760px — на весь экран. */
+.agent-panel {
+  width: 372px;
+  flex: none;
+  box-sizing: border-box;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+}
+.agent-panel[hidden] {
+  display: none;
+}
+.agent-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 12px 10px 18px;
+}
+.agent-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+}
+.agent-panel-context {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 18px 4px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.agent-panel-context .section-kicker {
+  flex: none;
+}
+.agent-panel-context-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-panel .ds-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  padding: 16px 18px;
+}
+.agent-panel-empty {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13.5px;
+}
+.agent-panel-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px 12px;
+}
+/* Чип-кнопка с переносом строк: подсказки панели агента, статусы задачи. */
+.pill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pill-chip {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: none;
+}
+.pill-chip:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.pill-chip.is-active,
+.pill-chip.is-active:hover:not(:disabled) {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+.agent-open-btn {
+  gap: 6px;
+}
+@media (max-width: 1279px) {
+  .agent-panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    height: auto;
+    z-index: var(--z-modal);
+    box-shadow: var(--shadow-3);
+  }
+}
+@media (max-width: 759px) {
+  .agent-panel {
+    width: 100vw;
+    border-left: 0;
+  }
 }

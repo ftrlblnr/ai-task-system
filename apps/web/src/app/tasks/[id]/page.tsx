@@ -8,6 +8,7 @@ import { Protected } from '@/components/protected';
 import { useAuth } from '@/lib/auth-context';
 import { Alert, Button, PageHeader } from '@/components/ui';
 import { taskPermissions, useTaskDetail } from '@/components/task-detail/use-task-detail';
+import { useAgentContext } from '@/components/agent-panel/agent-context';
 import {
   TaskComments,
   TaskEditForm,
@@ -28,6 +29,7 @@ function TaskDetailView({ id }: { id: string }) {
   const t = useTaskDetail(id);
   const [editing, setEditing] = useState(false);
   const { task } = t;
+  useAgentContext(task ? { kind: 'task', id: task.id, label: task.title } : null);
 
   async function removeTask() {
     if (!task) return;

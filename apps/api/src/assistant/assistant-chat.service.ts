@@ -10,6 +10,7 @@ import { buildAssistantParts, toolActivityLabel, type MessagePartInput } from '.
 import { SendMessageDto } from './dto/send-message.dto';
 import { ConversationCompactionService } from './conversation-compaction.service';
 import { COMPACT_MIN_BATCH } from './conversation-summary';
+import { PageContextService } from './page-context.service';
 import { SkillsService, type ReplySkill, type SkillRunView } from '../skills/skills.service';
 import type { MarkdownPartData, TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
 
@@ -129,10 +130,16 @@ export function serializeMessageForModelContext(parts: MessagePart[], mailState?
 // [attached_file]: сохранённый текст сообщения остаётся чистой командой, а
 // "из этого/ему/там" модель раскрывает по блоку. Приходит только из
 // внутреннего кода (VoiceService при делегации GPT-Live), не из HTTP DTO.
-export function serializeCurrentUserTurn(text: string, attachments: FilePartData[], liveContext?: string): string {
+//
+// Редизайн web W2 — pageContext: что открыто у пользователя рядом с панелью
+// агента (задача, письмо, событие, встреча, раздел), уже проверенное по
+// правам PageContextService. Тот же приём: только модели, отдельным блоком
+// [page_context], сохранённый текст сообщения не меняется.
+export function serializeCurrentUserTurn(text: string, attachments: FilePartData[], liveContext?: string, pageContext?: string | null): string {
   const blocks = attachments.map((a) => `[attached_file]\nid=${a.fileId}\nname=${a.name}\nmimeType=${a.mimeType}\nsize=${a.size}`);
+  const page = pageContext?.trim() ? [`[page_context]\n${pageContext.trim()}\n[/page_context]`] : [];
   const context = liveContext?.trim() ? [`[live_context]\n${liveContext.trim()}\n[/live_context]`] : [];
-  return [...context, text, ...blocks].join('\n\n');
+  return [...page, ...context, text, ...blocks].join('\n\n');
 }
 
 function attachmentPartsOf(parts: MessagePart[]): FilePartData[] {
@@ -161,6 +168,8 @@ export class AssistantChatService {
     // ARMS 1.2 — без неё (юнит-тесты) история просто не сворачивается.
     @Optional() private readonly compaction?: ConversationCompactionService,
     @Optional() private readonly skills?: SkillsService,
+    // Редизайн web W2 — без него (юнит-тесты) контекст страницы не добавляется.
+    @Optional() private readonly pageContext?: PageContextService,
   ) {}
 
   // MVP (Stage 2 §4.1): у каждого сотрудника должен быть хотя бы один
@@ -690,7 +699,8 @@ export class AssistantChatService {
 
     const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
     const invocation = await this.resolveSkill(user, dto.text);
-    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts));
+    const pageContext = await this.pageContext?.describe(user, dto.context);
+    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts), undefined, pageContext);
     let failure: string | undefined;
 
     let assistantMessage: MessageWithParts;
@@ -845,7 +855,8 @@ export class AssistantChatService {
 
     const { history, summary } = await this.loadHistory(conversationId, userMessage.id);
     const invocation = await this.resolveSkill(user, dto.text);
-    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts));
+    const pageContext = await this.pageContext?.describe(user, dto.context);
+    const currentTurnText = serializeCurrentUserTurn(invocation?.text ?? dto.text, attachmentPartsOf(userMessage.parts), undefined, pageContext);
 
     let assistantMessage: MessageWithParts;
     try {

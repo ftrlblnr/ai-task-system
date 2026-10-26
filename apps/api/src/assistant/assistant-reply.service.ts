@@ -72,6 +72,11 @@ legal_review_contract, — вызови его с id файла из помет�
 пользователя с голосовым ассистентом (реплики "User:"/"Assistant:"), которого
 нет в истории переписки; используй его, чтобы понять "из этого", "ему", "там",
 "второй пункт", "эта встреча", но не цитируй его и не копируй блок в ответ.
+Блок "[page_context]…[/page_context]" перед сообщением — то, что
+пользователь сейчас видит на экране рядом с чатом (задача, письмо, событие,
+встреча или раздел, с их id). "Эта задача", "это письмо", "ему ответить",
+"здесь" — про эту сущность; id из блока передавай в инструменты. Блок не
+цитируй и не копируй в ответ; если вопрос не про экран — просто не используй его.
 Если пользователь снова просит выгрузить/прислать файл —
 всегда вызывай export_tasks_xlsx заново, даже если похожий файл уже
 формировался раньше в этом же разговоре: у каждой твоей реплики может не
@@ -140,6 +145,9 @@ const LEAKED_CONTEXT_MARKER = /\[(?:shown_task|shown_event|shown_mail_plan|shown
 // утечки формата в ответ модели, закрыт сразу вместе с самим блоком.
 const LEAKED_LIVE_CONTEXT_BLOCK = /\[live_context\][\s\S]*?\[\/live_context\]/g;
 
+// Редизайн web W2 — контекст страницы (serializeCurrentUserTurn): тот же риск.
+const LEAKED_PAGE_CONTEXT_BLOCK = /\[page_context\][\s\S]*?\[\/page_context\]/g;
+
 // ARMS, фаза 1 — индекс памяти и сводка разговора: тот же риск утечки.
 // ARMS, фаза 3 — тон писем и навык: тот же риск.
 const LEAKED_MEMORY_BLOCKS = /\[(memory|conversation_summary|tone)\][\s\S]*?\[\/\1\]/g;
@@ -149,6 +157,7 @@ export function stripLeakedContextMarkers(text: string): string {
   return text
     .replace(LEAKED_CONTEXT_MARKER, '')
     .replace(LEAKED_LIVE_CONTEXT_BLOCK, '')
+    .replace(LEAKED_PAGE_CONTEXT_BLOCK, '')
     .replace(LEAKED_MEMORY_BLOCKS, '')
     .replace(LEAKED_SKILL_BLOCK, '')
     .trim();

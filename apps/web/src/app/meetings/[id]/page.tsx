@@ -17,6 +17,7 @@ import { Alert } from '@/components/ui/alert';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { Chip } from '@/components/ui/chip';
 import { Input } from '@/components/ui/field';
+import { useAgentContext } from '@/components/agent-panel/agent-context';
 
 // "Speaker 1", "Speaker 2" — метки Plaud до сопоставления с реальными
 // именами (владелец 09.09.2026). Дедуплицируем, сортируем по номеру.
@@ -97,6 +98,7 @@ function MeetingDetailView({ id }: { id: string }) {
   }
 
   useEffect(load, [id]);
+  useAgentContext(meeting ? { kind: 'meeting', id: meeting.id, label: meeting.title } : null);
 
   if (error) return <Alert tone="danger">{error}</Alert>;
   if (!meeting) return <p className="ds-field-hint">Загрузка…</p>;

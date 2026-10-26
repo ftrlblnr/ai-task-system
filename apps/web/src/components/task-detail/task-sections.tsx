@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, FileAudio } from 'lucide-react';
 import type { EmployeeSummary, TaskDetail, TaskPriority, TaskStatus } from '@ai-task-system/shared-types';
 import { Avatar } from '@/components/avatar';
-import { Badge, Button, Card, Chip, Field, Input, Select, SegmentedControl, Textarea } from '@/components/ui';
+import { Badge, Button, Card, Chip, Field, Input, Select, Textarea, cx } from '@/components/ui';
 import { STATUS_LABELS, STATUS_DOT_COLOR, CONFIDENCE_LABELS, PRIORITY_LABELS } from '@/lib/labels';
 import type { TaskEditFields } from './use-task-detail';
 
@@ -185,12 +185,22 @@ export function TaskStatusCard({ task, canChange, statuses, busy, onChange }: St
   return (
     <Card title="Статус">
       {canChange ? (
-        <SegmentedControl
-          label="Статус задачи"
-          value={task.status}
-          onChange={(status) => onChange(status as TaskStatus)}
-          options={statuses.map((status) => ({ value: status, label: STATUS_LABELS[status], disabled: busy }))}
-        />
+        // Чипы с переносом, а не SegmentedControl: 7 статусов в одну
+        // строку не помещались рядом с панелью агента (W2).
+        <div className="pill-chips" role="group" aria-label="Статус задачи">
+          {statuses.map((status) => (
+            <button
+              key={status}
+              type="button"
+              className={cx('pill-chip', task.status === status && 'is-active')}
+              aria-pressed={task.status === status}
+              disabled={busy}
+              onClick={() => status !== task.status && onChange(status)}
+            >
+              {STATUS_LABELS[status]}
+            </button>
+          ))}
+        </div>
       ) : (
         <p className="ds-field-hint">Статус меняет исполнитель задачи или руководитель.</p>
       )}
