@@ -50,10 +50,10 @@ export const BOARD_SIDE_COLUMNS: TaskStatus[] = ['CANCELLED'];
 // color separate from brand accent).
 export const STATUS_DOT_COLOR: Record<TaskStatus, string> = {
   DRAFT: 'var(--ink-faint)',
-  NEW: 'var(--accent)',
-  IN_PROGRESS: 'var(--warn)',
-  IN_REVIEW: 'var(--accent)',
-  DONE: 'var(--ok)',
+  NEW: 'var(--ink-2)',
+  IN_PROGRESS: 'var(--tone-blue-ink)',
+  IN_REVIEW: 'var(--tone-purple-ink)',
+  DONE: 'var(--tone-teal-ink)',
   RETURNED: 'var(--danger)',
   CANCELLED: 'var(--ink-faint)',
 };

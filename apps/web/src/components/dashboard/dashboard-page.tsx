@@ -58,8 +58,8 @@ export function DashboardPage() {
     <div className="console">
       <header className="console-head">
         <div>
-          <h1>Стол руководителя</h1>
-          <p className="console-muted console-date">{today}</p>
+          <span className="page-kicker">{today}</span>
+          <h1>Пульт</h1>
         </div>
         {usage && (
           <Link href="/ai-usage" className="console-usage" title="Расход ИИ">

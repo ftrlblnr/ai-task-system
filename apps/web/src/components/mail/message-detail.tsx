@@ -56,7 +56,7 @@ function AttachmentItem({ attachment }: { attachment: EmailDetail['attachments']
         border: 'none',
         padding: 0,
         font: 'inherit',
-        color: 'var(--accent, inherit)',
+        color: 'var(--ink)',
         textDecoration: 'underline',
         cursor: downloading ? 'default' : 'pointer',
       }}

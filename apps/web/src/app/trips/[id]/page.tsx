@@ -847,7 +847,7 @@ function MaterialItem({ tripId, material }: { tripId: string; material: TripDeta
       type="button"
       onClick={download}
       disabled={downloading}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--accent, inherit)', textDecoration: 'underline', cursor: downloading ? 'default' : 'pointer' }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'var(--ink)', textDecoration: 'underline', cursor: downloading ? 'default' : 'pointer' }}
     >
       {label}
       <Download size={12} strokeWidth={2} />

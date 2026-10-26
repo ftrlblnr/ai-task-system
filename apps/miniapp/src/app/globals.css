@@ -13,7 +13,6 @@
   --border-strong: var(--line-control);
   --ink-soft: var(--ink-2);
   --ink-faint: var(--ink-3);
-  --accent-hover: var(--accent);
   --accent-soft-border: var(--line);
   --shadow-sm: var(--shadow-1);
   --shadow-md: var(--shadow-2);
@@ -27,75 +26,9 @@
   --tg-safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* ============ Редизайн Mini App (владелец 23.10.2026, задание MINIAPP_REDESIGN.md, M1) ============
-   Тёплая палитра и оранжевый акцент — только для Mini App: общий пакет
-   design-tokens (на нём живёт web) не трогаем, а переопределяем его токены
-   здесь. :root[data-theme] — специфичнее, чем [data-theme] в tokens.css,
-   поэтому побеждает независимо от порядка подключения. Без data-theme
-   (первый кадр до telegram-web-app.js) — по теме устройства. */
-:root,
-:root[data-theme="light"] {
-  --bg: #f3f2ee;
-  --surface: #ffffff;
-  --surface-2: #eceae5;
-  --line: #e0ddd6;
-  --ink: #16161a;
-  --ink-2: #4f4c47;
-  --ink-3: #69665f;
-  --on-ink: #f3f2ee;
-  --accent: #c2470f;
-  --accent-contrast: #ffffff;
-  --accent-soft: #fbe7dc;
-  --tone-orange-ink: #a33a08;
-  --tone-blue-bg: #e4ecfa;
-  --tone-blue-ink: #1d4c99;
-  --tone-purple-bg: #eee7fb;
-  --tone-purple-ink: #5b34a8;
-  --tone-teal-bg: #dff3ef;
-  --tone-teal-ink: #0f6658;
-}
-:root[data-theme="dark"] {
-  --bg: #0e0e10;
-  --surface: #18181b;
-  --surface-2: #232327;
-  --line: #2e2e33;
-  --ink: #f3f1ec;
-  --ink-2: #b4b0a8;
-  --ink-3: #8e8a83;
-  --on-ink: #0e0e10;
-  --accent: #ff7a3d;
-  --accent-contrast: #1b0d05;
-  --accent-soft: rgba(255, 122, 61, 0.14);
-  --tone-orange-ink: #ffa272;
-  --tone-blue-bg: rgba(108, 160, 255, 0.15);
-  --tone-blue-ink: #a8c6ff;
-  --tone-purple-bg: rgba(176, 140, 255, 0.16);
-  --tone-purple-ink: #cdb8ff;
-  --tone-teal-bg: rgba(72, 200, 180, 0.15);
-  --tone-teal-ink: #86e0d1;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --bg: #0e0e10;
-    --surface: #18181b;
-    --surface-2: #232327;
-    --line: #2e2e33;
-    --ink: #f3f1ec;
-    --ink-2: #b4b0a8;
-    --ink-3: #8e8a83;
-    --on-ink: #0e0e10;
-    --accent: #ff7a3d;
-    --accent-contrast: #1b0d05;
-    --accent-soft: rgba(255, 122, 61, 0.14);
-    --tone-orange-ink: #ffa272;
-    --tone-blue-bg: rgba(108, 160, 255, 0.15);
-    --tone-blue-ink: #a8c6ff;
-    --tone-purple-bg: rgba(176, 140, 255, 0.16);
-    --tone-purple-ink: #cdb8ff;
-    --tone-teal-bg: rgba(72, 200, 180, 0.15);
-    --tone-teal-ink: #86e0d1;
-  }
-}
+/* Тёплая палитра и оранжевый акцент (MINIAPP_REDESIGN.md, M1) — с
+   26.10.2026 живут в общем packages/design-tokens/tokens.css (один источник
+   правды с web, WEB_REDESIGN.md §3). */
 
 *,
 *::before,

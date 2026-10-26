@@ -11,12 +11,9 @@
   --border-strong: var(--line-control);
   --ink-soft: var(--ink-2);
   --ink-faint: var(--ink-3);
-  /* Старый --accent был «кнопочным» акцентом — теперь это ink (раздел
-     «Главная идея» project/README.md: цвет принадлежит только агенту). */
-  --accent: var(--ink);
-  --accent-hover: var(--ink);
-  --accent-contrast: var(--on-ink);
-  --accent-soft: var(--surface-2);
+  /* --accent/-hover/-contrast/-soft — из tokens.css (редизайн 26.10.2026:
+     оранжевый акцент кнопок действия). До него --accent здесь был алиасом
+     ink и служил «тёмным текстом» — такие места переведены на --ink. */
   --accent-soft-border: var(--line);
   --shadow-sm: var(--shadow-1);
   --shadow-md: var(--shadow-2);
@@ -53,7 +50,7 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--ink);
   text-decoration: none;
 }
 a:hover {
@@ -69,10 +66,13 @@ textarea:focus-visible,
   outline-offset: 2px;
 }
 
+/* Типографика редизайна (WEB_REDESIGN.md §3): h1 32/800, kicker над ним и
+   заголовки секций — моноширинный капс 11px. */
 h1 {
-  font-size: 1.6rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-size: 32px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   margin: 0 0 4px;
   text-wrap: balance;
 }
@@ -83,6 +83,25 @@ h2 {
 }
 p {
   margin: 0 0 1em;
+}
+.ds-pagehead h1 {
+  font-size: 32px;
+  line-height: 1.1;
+  font-weight: 800;
+}
+.page-kicker,
+.section-kicker {
+  display: block;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.page-kicker {
+  margin-bottom: 4px;
 }
 .mono {
   font-family: var(--font-mono), ui-monospace, monospace;
@@ -99,10 +118,6 @@ p {
   min-width: 0;
   padding: var(--space-6) var(--space-8);
 }
-
-/* ============ Sidebar — project/implementation.md шаг 5: светлый .ds-sidebar
-   из ds.css вместо фиксированной тёмной темы, старые .sidebar* правила выше
-   полностью заменены, здесь не нужны. ============ */
 
 /* ============ Avatar ============ */
 .avatar {
@@ -128,7 +143,7 @@ p {
   margin-bottom: 14px;
 }
 .back-link:hover {
-  color: var(--accent) !important;
+  color: var(--ink) !important;
   text-decoration: none;
 }
 .page-subtitle {
@@ -169,8 +184,11 @@ button {
   box-shadow: var(--shadow-sm);
   transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease, opacity 0.12s ease;
 }
+/* :where — нулевая специфичность: раньше это правило (0,4,1) перебивало
+   :hover любых кнопок с собственным классом (ds-seg-btn, чипы) и красило их
+   в цвет кнопки действия. Теперь собственные правила класса побеждают. */
 .btn:hover,
-button:not(:disabled):not(.btn-secondary):not(.status-pill):hover {
+:where(button:not(:disabled):not(.btn-secondary):not(.status-pill):not([class*="ds-"])):hover {
   background: var(--accent-hover);
   text-decoration: none;
 }
@@ -190,8 +208,8 @@ button:disabled {
   box-shadow: none;
 }
 .btn-secondary:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--ink);
+  color: var(--ink);
   background: var(--surface);
 }
 .btn-small {
@@ -434,7 +452,7 @@ select {
   color: var(--ink) !important;
 }
 .table-person:hover {
-  color: var(--accent) !important;
+  color: var(--ink) !important;
   text-decoration: none;
 }
 
@@ -447,8 +465,8 @@ select {
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 20px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--surface-2);
+  color: var(--ink);
 }
 .badge-muted {
   background: var(--surface-2);
@@ -507,7 +525,7 @@ select {
   line-height: 1.5;
 }
 .setup-steps a {
-  color: var(--accent);
+  color: var(--ink);
   text-decoration: underline;
 }
 .chip-danger {
@@ -553,22 +571,22 @@ select {
   box-shadow: none;
 }
 .status-pill:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--ink);
+  color: var(--ink);
   background: var(--surface);
 }
 .status-pill.current {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-contrast);
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
   cursor: default;
 }
 .status-pill.current:hover {
-  background: var(--accent);
+  background: var(--ink);
 }
 
 .source-card {
-  background: var(--accent-soft);
+  background: var(--surface-2);
   border-color: var(--accent-soft-border);
 }
 .source-row {
@@ -577,7 +595,7 @@ select {
   align-items: flex-start;
 }
 .source-icon {
-  color: var(--accent);
+  color: var(--ink);
   margin-top: 2px;
   flex: none;
 }
@@ -951,9 +969,10 @@ select {
 
 
 /* ============ Responsive ============ */
-@media (max-width: 860px) {
-  .ds-sidebar {
-    display: none;
+@media (max-width: 759px) {
+  /* Меню — выезжающая панель за бургером (sidebar.tsx, ds.css). */
+  .app-shell {
+    flex-direction: column;
   }
   .app-main {
     padding: var(--space-4) var(--space-4) var(--space-6);
@@ -975,7 +994,7 @@ select {
 }
 .btn-link:hover {
   background: none;
-  color: var(--accent);
+  color: var(--ink);
 }
 .watchers-row {
   display: flex;
@@ -1024,7 +1043,7 @@ select {
   cursor: pointer;
 }
 .subtask-row:hover .subtask-title-group {
-  color: var(--accent);
+  color: var(--ink);
 }
 .subtask-title-group {
   display: flex;
@@ -1101,7 +1120,7 @@ select {
   background: var(--surface-2);
 }
 .assistant-conversation-item.active {
-  background: var(--accent-soft);
+  background: var(--surface-2);
   border: 1px solid var(--accent-soft-border);
   font-weight: 600;
 }
@@ -1133,8 +1152,8 @@ select {
 .assistant-user-bubble {
   align-self: flex-end;
   max-width: 72%;
-  background: var(--accent);
-  color: var(--accent-contrast);
+  background: var(--ink);
+  color: var(--on-ink);
   padding: 10px 14px;
   border-radius: var(--radius-md);
   border-bottom-right-radius: 4px;
@@ -1251,13 +1270,13 @@ select {
   margin-top: 2px;
   padding: 6px 12px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--accent);
-  color: var(--accent);
+  border: 1px solid var(--ink);
+  color: var(--ink);
   background: transparent;
   font-size: 0.82rem;
 }
 .assistant-card-open:hover {
-  background: var(--accent-soft);
+  background: var(--surface-2);
 }
 .assistant-chip-row {
   display: flex;
@@ -1270,8 +1289,8 @@ select {
   gap: 4px;
   padding: 3px 9px;
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--surface-2);
+  color: var(--ink);
   font-size: 0.76rem;
 }
 .assistant-pending-attachment button {
@@ -1296,7 +1315,7 @@ select {
   gap: 6px;
   padding: 5px 8px;
   border-radius: var(--radius-sm);
-  background: var(--accent-soft);
+  background: var(--surface-2);
   color: var(--ink-soft);
   font-size: 0.78rem;
 }
@@ -2107,15 +2126,10 @@ a.routine-run-text:hover { color: var(--link); }
 }
 
 /* ============ Пульт руководителя (ARMS, фаза 6) ============
-   Одна тёплая акцентная краска — «следующее» и «сейчас». Светлая тема как
-   была, тёмная — по токенам design-tokens. Колонки: ≥1360px — три
-   (приложения · фокус · почта/регламенты/навыки), 900–1359px — две (левая
-   колонка уходит под правую), ниже — одна, фокус первым. */
-:root { --accent-warm: #b4530f; --accent-warm-soft: #fbeadc; }
-[data-theme="dark"] { --accent-warm: #ff9a4d; --accent-warm-soft: #3a2414; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --accent-warm: #ff9a4d; --accent-warm-soft: #3a2414; }
-}
+   Одна акцентная краска (--accent из tokens.css) — «следующее» и «сейчас».
+   Колонки: ≥1360px — три (приложения · фокус · почта/регламенты/навыки),
+   900–1359px — две (левая колонка уходит под правую), ниже — одна, фокус
+   первым. */
 
 .ds-panel { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); min-width: 0; }
 .ds-panel-head { display: flex; align-items: center; gap: 8px; color: var(--ink-3); min-height: 24px; }
@@ -2124,7 +2138,7 @@ a.routine-run-text:hover { color: var(--link); }
 .ds-panel-link:hover { color: var(--ink); }
 .ds-panel-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .ds-status-tag { flex: none; font-size: 10px; line-height: 14px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
-.ds-status-tag.is-next { color: var(--accent-warm); }
+.ds-status-tag.is-next { color: var(--accent); }
 .ds-status-tag.is-ok { color: var(--ok); }
 .ds-status-tag.is-info { color: var(--info); }
 .ds-status-tag.is-warn { color: var(--warn); }
@@ -2136,7 +2150,7 @@ a.routine-run-text:hover { color: var(--link); }
 .ds-model-name.is-opus { background: var(--review-soft); color: var(--review); }
 .ds-model-effort { color: var(--ink-3); }
 .ds-run-btn { flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-control); background: var(--surface); color: var(--ink); cursor: pointer; }
-.ds-run-btn:hover:not(:disabled) { background: var(--accent-warm); border-color: var(--accent-warm); color: var(--surface); }
+.ds-run-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--surface); }
 .ds-run-btn:disabled { cursor: default; color: var(--ink-3); }
 .ds-run-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .ds-run-btn .ds-spinner { width: 12px; height: 12px; }
@@ -2148,8 +2162,6 @@ a.routine-run-text:hover { color: var(--link); }
 .console { display: flex; flex-direction: column; gap: 16px; }
 .console-head { display: flex; align-items: flex-end; gap: 16px 24px; flex-wrap: wrap; }
 .console-head h1 { margin: 0; }
-.console-date { margin: 2px 0 0; font-size: 14px; }
-.console-date::first-letter { text-transform: uppercase; }
 .console-usage { margin-left: auto; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); text-decoration: none; color: inherit; }
 .console-usage:hover { border-color: var(--line-control); }
 .console-head-actions { display: flex; gap: 8px; align-items: center; }
@@ -2191,7 +2203,7 @@ a.routine-run-text:hover { color: var(--link); }
 .console-mix-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink-2); }
 .console-mix-legend li { display: inline-flex; align-items: center; gap: 5px; }
 .console-mix-dot { width: 6px; height: 6px; border-radius: 50%; }
-.is-0.console-mix-seg, .is-0.console-mix-dot { background: var(--accent-warm); }
+.is-0.console-mix-seg, .is-0.console-mix-dot { background: var(--accent); }
 .is-1.console-mix-seg, .is-1.console-mix-dot { background: var(--agent); }
 .is-2.console-mix-seg, .is-2.console-mix-dot { background: var(--info); }
 .is-3.console-mix-seg, .is-3.console-mix-dot { background: var(--review); }
@@ -2215,7 +2227,7 @@ a.routine-run-text:hover { color: var(--link); }
 .console-file { display: flex; flex-direction: column; gap: 6px; width: 150px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-2); color: var(--ink); text-align: left; font: inherit; cursor: pointer; scroll-snap-align: start; }
 .console-file:hover { border-color: var(--line-control); }
 .console-file:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.console-file-ext { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--accent-warm); }
+.console-file-ext { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--accent); }
 .console-file-name { font-size: 13px; line-height: 17px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .console-file .console-muted { font-size: 11px; }
 
@@ -2239,4 +2251,10 @@ a.routine-run-text:hover { color: var(--link); }
   .console-usage { margin-left: 0; order: 3; width: 100%; }
   .ds-statbar { justify-content: space-between; gap: 12px; }
   .console-kbd { display: none; }
+}
+
+/* Легаси-правило `button` выше даёт тень всем кнопкам — иконкам меню и
+   шапок она не нужна. */
+.ds-iconbtn {
+  box-shadow: none;
 }

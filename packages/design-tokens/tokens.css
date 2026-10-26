@@ -7,20 +7,37 @@
 
    --font-sans/--font-mono НЕ объявляются здесь: их задаёт next/font через
    класс на <html> (см. layout.tsx обоих приложений) — тот же механизм, что
-   был у Plus Jakarta Sans/IBM Plex Mono до шага 1, просто другая гарнитура. */
+   был у Plus Jakarta Sans/IBM Plex Mono до шага 1, просто другая гарнитура.
+
+   Редизайн 26.10.2026 (docs/WEB_REDESIGN.md §3): тёплая палитра и оранжевый
+   акцент — общие для web и Mini App (раньше Mini App переопределял их у
+   себя). --accent — кнопки действия и выделение; --tone-* — статусы задач
+   (в работе / на проверке / готово); --agent пока прежний. */
 
 :root,
 [data-theme="light"] {
-  --bg: #f3f5f5;
+  --bg: #f3f2ee;
   --surface: #ffffff;
-  --surface-2: #eaeeef;
-  --surface-3: #dfe5e6;
-  --line: #dde3e4;
-  --line-control: #7c8990;
-  --ink: #0f1517;
-  --ink-2: #475358;
-  --ink-3: #5d6a70;
-  --on-ink: #ffffff;
+  --surface-2: #eceae5;
+  --surface-3: #e3e0d9;
+  --line: #e0ddd6;
+  --line-control: #8a867e;
+  --ink: #16161a;
+  --ink-2: #4f4c47;
+  --ink-3: #69665f;
+  --on-ink: #f3f2ee;
+
+  --accent: #c2470f;
+  --accent-hover: #a83d0c;
+  --accent-contrast: #ffffff;
+  --accent-soft: #fbe7dc;
+  --tone-orange-ink: #a33a08;
+  --tone-blue-bg: #e4ecfa;
+  --tone-blue-ink: #1d4c99;
+  --tone-purple-bg: #eee7fb;
+  --tone-purple-ink: #5b34a8;
+  --tone-teal-bg: #dff3ef;
+  --tone-teal-ink: #0f6658;
 
   --agent: #00727f;
   --agent-soft: #e0f3f5;
@@ -50,16 +67,28 @@
 }
 
 [data-theme="dark"] {
-  --bg: #0d1112;
-  --surface: #141a1c;
-  --surface-2: #1a2124;
-  --surface-3: #232b2e;
-  --line: #252d30;
-  --line-control: #5f6d73;
-  --ink: #edf3f4;
-  --ink-2: #a7b3b7;
-  --ink-3: #84919a;
-  --on-ink: #0d1112;
+  --bg: #0e0e10;
+  --surface: #16161a;
+  --surface-2: #232327;
+  --surface-3: #2a2a2f;
+  --line: #2c2c31;
+  --line-control: #6a6660;
+  --ink: #f3f1ec;
+  --ink-2: #b4b0a8;
+  --ink-3: #8e8a83;
+  --on-ink: #0e0e10;
+
+  --accent: #ff7a3d;
+  --accent-hover: #ff9160;
+  --accent-contrast: #1b0d05;
+  --accent-soft: rgba(255, 122, 61, 0.14);
+  --tone-orange-ink: #ffa272;
+  --tone-blue-bg: rgba(108, 160, 255, 0.15);
+  --tone-blue-ink: #a8c6ff;
+  --tone-purple-bg: rgba(176, 140, 255, 0.16);
+  --tone-purple-ink: #cdb8ff;
+  --tone-teal-bg: rgba(72, 200, 180, 0.15);
+  --tone-teal-ink: #86e0d1;
 
   --agent: #4fd6e5;
   --agent-soft: #0f2c31;
@@ -89,7 +118,7 @@
 }
 
 /* Web следует prefers-color-scheme, когда data-theme не выставлен явно
-   (сейчас так везде в web — он темы не переключает). Mini App всегда
+   (режим «как в системе», см. apps/web/src/lib/theme.ts). Mini App всегда
    выставляет data-theme сам, поэтому этот блок там эффективно не участвует
    (:not([data-theme="light"]) всё равно совпадёт с [data-theme="dark"], но
    правило [data-theme="dark"] выше имеет такую же специфичность и идёт
@@ -97,16 +126,28 @@
    см. ds.css подключается после этого файла). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0d1112;
-    --surface: #141a1c;
-    --surface-2: #1a2124;
-    --surface-3: #232b2e;
-    --line: #252d30;
-    --line-control: #5f6d73;
-    --ink: #edf3f4;
-    --ink-2: #a7b3b7;
-    --ink-3: #84919a;
-    --on-ink: #0d1112;
+    --bg: #0e0e10;
+    --surface: #16161a;
+    --surface-2: #232327;
+    --surface-3: #2a2a2f;
+    --line: #2c2c31;
+    --line-control: #6a6660;
+    --ink: #f3f1ec;
+    --ink-2: #b4b0a8;
+    --ink-3: #8e8a83;
+    --on-ink: #0e0e10;
+
+    --accent: #ff7a3d;
+    --accent-hover: #ff9160;
+    --accent-contrast: #1b0d05;
+    --accent-soft: rgba(255, 122, 61, 0.14);
+    --tone-orange-ink: #ffa272;
+    --tone-blue-bg: rgba(108, 160, 255, 0.15);
+    --tone-blue-ink: #a8c6ff;
+    --tone-purple-bg: rgba(176, 140, 255, 0.16);
+    --tone-purple-ink: #cdb8ff;
+    --tone-teal-bg: rgba(72, 200, 180, 0.15);
+    --tone-teal-ink: #86e0d1;
 
     --agent: #4fd6e5;
     --agent-soft: #0f2c31;

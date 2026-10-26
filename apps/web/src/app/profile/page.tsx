@@ -12,8 +12,6 @@ import { Card, PageHeader } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
-import { SegmentedControl } from '@/components/ui/segmented-control';
-import { applyTheme, readTheme, type ThemeChoice } from '@/lib/theme';
 
 const NEW_ITEM_VALUE = '__new__';
 
@@ -235,27 +233,6 @@ function ConnectionsCard() {
   );
 }
 
-function ThemeCard() {
-  const [theme, setTheme] = useState<ThemeChoice>(readTheme);
-  return (
-    <Card title="Оформление" style={{ maxWidth: 520, marginTop: 20 }}>
-      <SegmentedControl
-        label="Тема"
-        value={theme}
-        onChange={(v) => {
-          setTheme(v as ThemeChoice);
-          applyTheme(v as ThemeChoice);
-        }}
-        options={[
-          { value: 'system', label: 'Как в системе' },
-          { value: 'light', label: 'Светлая' },
-          { value: 'dark', label: 'Тёмная' },
-        ]}
-      />
-    </Card>
-  );
-}
-
 function ProfileView() {
   const [me, setMe] = useState<EmployeeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +262,6 @@ function ProfileView() {
       <ProfileForm me={me} onSaved={setMe} />
       <PasswordForm />
       <ConnectionsCard />
-      <ThemeCard />
     </>
   );
 }

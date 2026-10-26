@@ -3,38 +3,93 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { KanbanSquare, Users, FileAudio, CalendarDays, MessageSquare, Mail, DoorOpen, LogOut, LayoutDashboard, Plane, Scale, Gauge, Brain, Sparkles, Repeat, Lightbulb } from 'lucide-react';
+import {
+  BarChart3,
+  BookOpen,
+  CalendarDays,
+  CircleCheckBig,
+  Clock,
+  DoorOpen,
+  LayoutGrid,
+  Lightbulb,
+  LogOut,
+  Mail,
+  Menu,
+  Mic,
+  Monitor,
+  Moon,
+  Plane,
+  Scale,
+  Sparkles,
+  Sun,
+  Users,
+  X,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react';
 import { ROLE_LABELS, isManagerRole } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import { AgentMark, IconButton, cx } from '@/components/ui';
+import { applyTheme, readTheme, type ThemeChoice } from '@/lib/theme';
+import { IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
 
-// Голос — доступен всем, как задачи (раздел 5 ТЗ, скорректировано
-// 28.08.2026): черновик-событие для не-OWNER бэкенд сам превращает в
-// черновик задачи (см. VoiceService.enforceEventRbac), поэтому пункт меню
-// не требует условия на роль — та же логика, что в apps/miniapp/page.tsx.
-// «Стол руководителя» (ТЗ v1.0, 05.10.2026) — первый пункт меню, только
-// OWNER (раздел 4 ТЗ). Рендерится отдельно от generalItems/ownerItems ниже
-// (а не как обычный ownerOnly-пункт), чтобы быть визуально ПЕРВЫМ даже при
-// активной группировке «Руководитель» после разделителя — сам список
-// NAV_ITEMS начинается с "Задачи" и это не должно меняться для остальных.
-const DASHBOARD_ITEM = { href: '/', label: 'Стол руководителя', icon: LayoutDashboard, ownerOnly: true };
+// Меню по группам (редизайн web W1, docs/WEB_REDESIGN.md §4.1). Права —
+// как были: «Пульт» — только руководителю (OWNER, ролевая модель
+// 20.10.2026), manager-пункты — руководителю и администратору, остальное —
+// всем (видимость данных внутри разделов решает backend). Бейджи — W5.
 
-// Stage 2, Phase M (Web Assistant parity, 22.09.2026) — полноценный
-// AI-чат с историей на сервере (GET/POST /assistant/conversations[...]),
-// доступен всем, как задачи (видимость конкретных tools уже решает
-// backend через buildTools(user)). Отдельная страница /voice убрана
-// (владелец 05.10.2026) — голос и так доступен внутри Ассистента
-// (микрофон в композере, тот же VoiceService). Владелец 20.10.2026 —
-// стоит над меню на месте бывшей командной строки «Спросить или найти»,
-// отдельно от остальных пунктов.
-const ASSISTANT_ITEM = { href: '/assistant', label: 'Ассистент', icon: MessageSquare, ownerOnly: false };
+type Access = 'all' | 'manager' | 'owner' | 'legal';
 
-// Агент-юрист (этап 4 handoff) — пункт виден, только если бэкенд включил
-// раздел для роли пользователя (GET /legal/status: LEGAL_AGENT_ENABLED +
-// LEGAL_AGENT_ROLES), остальные /legal/* для них отвечают 404.
-const LEGAL_ITEM = { href: '/legal', label: 'Юрист', icon: Scale, ownerOnly: false };
+interface NavItem {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  access: Access;
+}
+
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+  {
+    title: 'Работа',
+    items: [
+      { href: '/', label: 'Пульт', icon: LayoutGrid, access: 'owner' },
+      { href: '/tasks', label: 'Задачи', icon: CircleCheckBig, access: 'all' },
+      // Приёмная (02.10.2026) и поездки (08.10.2026) — всем: сотрудник подаёт
+      // обращение / едет сам, видимость решает backend.
+      { href: '/reception', label: 'Приёмная', icon: DoorOpen, access: 'all' },
+      { href: '/trips', label: 'Поездки', icon: Plane, access: 'all' },
+    ],
+  },
+  {
+    title: 'Информация',
+    items: [
+      { href: '/calendar', label: 'Календарь', icon: CalendarDays, access: 'manager' },
+      { href: '/meetings', label: 'Встречи', icon: Mic, access: 'manager' },
+      { href: '/mail', label: 'Почта', icon: Mail, access: 'manager' },
+    ],
+  },
+  {
+    title: 'Агент',
+    items: [
+      { href: '/memory', label: 'Память', icon: BookOpen, access: 'manager' },
+      { href: '/skills', label: 'Навыки', icon: Zap, access: 'manager' },
+      { href: '/routines', label: 'Регламенты', icon: Clock, access: 'manager' },
+      { href: '/recommendations', label: 'Рекомендации', icon: Lightbulb, access: 'manager' },
+      { href: '/ai-usage', label: 'Расход ИИ', icon: BarChart3, access: 'manager' },
+      // Агент-юрист — виден, только если бэкенд включил раздел для роли
+      // (GET /legal/status: LEGAL_AGENT_ENABLED + LEGAL_AGENT_ROLES).
+      { href: '/legal', label: 'Юрист', icon: Scale, access: 'legal' },
+    ],
+  },
+  {
+    title: 'Команда',
+    items: [{ href: '/employees', label: 'Сотрудники', icon: Users, access: 'manager' }],
+  },
+];
+
+const THEME_NEXT: Record<ThemeChoice, ThemeChoice> = { system: 'light', light: 'dark', dark: 'system' };
+const THEME_LABEL: Record<ThemeChoice, string> = { system: 'как в системе', light: 'светлая', dark: 'тёмная' };
+const THEME_ICON: Record<ThemeChoice, LucideIcon> = { system: Monitor, light: Sun, dark: Moon };
 
 function useLegalEnabled(userId: string | undefined): boolean {
   const [enabled, setEnabled] = useState(false);
@@ -52,45 +107,8 @@ function useLegalEnabled(userId: string | undefined): boolean {
   return enabled;
 }
 
-const NAV_ITEMS = [
-  { href: '/tasks', label: 'Задачи', icon: KanbanSquare, ownerOnly: false },
-  // ТЗ «Приёмная руководителя» v1.0 (02.10.2026) — доступна всем (сотрудник
-  // подаёт обращение, руководитель управляет очередью), видимость действий
-  // внутри страницы решает backend по роли, не пункт меню.
-  { href: '/reception', label: 'Приёмная', icon: DoorOpen, ownerOnly: false },
-  // Агент поездок (ТЗ 08.10.2026) — доступен всем: создатель и путешествующий
-  // руководитель могут быть разными людьми (раздел 9 ТЗ), видимость конкретных
-  // поездок решает backend через TripMember, не пункт меню.
-  { href: '/trips', label: 'Поездки', icon: Plane, ownerOnly: false },
-  { href: '/calendar', label: 'Календарь', icon: CalendarDays, ownerOnly: true },
-  { href: '/meetings', label: 'Встречи', icon: FileAudio, ownerOnly: true },
-  // Stage 2, Phase R — почта Mail.ru (личная интеграция руководителя, как Plaud/календарь).
-  { href: '/mail', label: 'Почта', icon: Mail, ownerOnly: true },
-  { href: '/employees', label: 'Сотрудники', icon: Users, ownerOnly: true },
-  // ARMS, фаза 1 — что ассистент помнит о руководителе.
-  { href: '/memory', label: 'Память', icon: Brain, ownerOnly: true },
-  // ARMS, фаза 3 — навыки ассистента: «/команда» в чате или ▶.
-  { href: '/skills', label: 'Навыки', icon: Sparkles, ownerOnly: true },
-  { href: '/routines', label: 'Регламенты', icon: Repeat, ownerOnly: true },
-  // ARMS, фаза 5 — еженедельные рекомендации, применяются кнопкой.
-  { href: '/recommendations', label: 'Рекомендации', icon: Lightbulb, ownerOnly: true },
-  // ARMS, фаза 2 — сколько стоят функции ИИ и где не работает кэш.
-  { href: '/ai-usage', label: 'Расход ИИ', icon: Gauge, ownerOnly: true },
-];
-
-// Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 5)
-// — порт Sidebar из project/components/src/index.jsx: светлый сайдбар на
-// bg, бренд с AgentMark, «Ассистент» сразу под брендом (Ctrl+K/Cmd+K
-// открывает его глобально — см. useEffect ниже), группа «Руководитель»
-// перед ownerOnly-пунктами.
-//
-// «live»-индикатор у «Ассистента» (точка с AgentMark, пока где-то в фоне
-// стримится ответ) НЕ реализован — состояние стрима сейчас живёт целиком
-// внутри apps/web/src/app/assistant/page.tsx, нет глобального контекста,
-// который сайдбар мог бы читать с любой другой страницы. Поднимать его в
-// layout-контекст — отдельный, более крупный рефакторинг самой страницы
-// ассистента (она и так переписывается в шаге 7), поэтому сознательно
-// пропущено здесь, а не сделано наспех.
+// Ctrl+K / Cmd+K — «Спросить агента» с любой страницы. Пока ведёт на
+// /assistant; панель агента справа — W2.
 function useGlobalAssistantShortcut() {
   const router = useRouter();
   useEffect(() => {
@@ -105,65 +123,113 @@ function useGlobalAssistantShortcut() {
   }, [router]);
 }
 
+// Тема: один переключатель по кругу «как в системе → светлая → тёмная»,
+// выбор в localStorage (lib/theme.ts).
+function ThemeToggle() {
+  const [theme, setTheme] = useState<ThemeChoice>(readTheme);
+  const next = THEME_NEXT[theme];
+  return (
+    <IconButton
+      icon={THEME_ICON[theme]}
+      label={`Тема: ${THEME_LABEL[theme]}. Переключить на «${THEME_LABEL[next]}»`}
+      size="sm"
+      onClick={() => {
+        setTheme(next);
+        applyTheme(next);
+      }}
+    />
+  );
+}
+
 export function Sidebar() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
   useGlobalAssistantShortcut();
   const legalEnabled = useLegalEnabled(user?.id);
+  // Узкий экран (<760px): меню — выезжающая панель за кнопкой-бургером.
+  const [open, setOpen] = useState(false);
 
   if (!user) return null;
 
-  // Ролевая модель 20.10.2026: «Стол руководителя» — только руководителю,
-  // остальные разделы руководства (ownerOnly) — и администратору.
   const isOwner = user.role === 'OWNER';
-  const generalItems = NAV_ITEMS.filter((item) => !item.ownerOnly);
-  const ownerItems = isManagerRole(user.role) ? NAV_ITEMS.filter((item) => item.ownerOnly) : [];
+  const isManager = isManagerRole(user.role);
+  const allowed = (access: Access) =>
+    access === 'all' || (access === 'manager' && isManager) || (access === 'owner' && isOwner) || (access === 'legal' && legalEnabled);
 
-  function renderItem(item: (typeof NAV_ITEMS)[number]) {
-    const active = pathname === item.href || pathname.startsWith(item.href + '/');
-    const Icon = item.icon;
-    return (
-      <Link key={item.href} href={item.href} className={cx('ds-nav-item', active && 'is-active')} aria-current={active ? 'page' : undefined}>
-        <Icon size={18} strokeWidth={1.75} />
-        {item.label}
-      </Link>
-    );
+  function isActive(href: string) {
+    return href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(href + '/');
   }
 
   return (
-    <aside className="ds-sidebar">
-      <Link href="/" className="ds-brand">
-        <span className="ds-brand-mark">
-          <AgentMark size={16} state="idle" />
-        </span>
-        Адъютант
-      </Link>
-
-      <nav style={{ marginBottom: 'var(--space-4)' }}>{renderItem(ASSISTANT_ITEM)}</nav>
-
-      <nav>
-        {isOwner && renderItem(DASHBOARD_ITEM)}
-        {generalItems.map(renderItem)}
-        {legalEnabled && renderItem(LEGAL_ITEM)}
-        {ownerItems.length > 0 && (
-          <>
-            <div className="ds-nav-sep" />
-            <div className="ds-nav-group">Управление</div>
-            {ownerItems.map(renderItem)}
-          </>
-        )}
-      </nav>
-
-      <div className="ds-sidebar-foot">
-        <Link href="/profile" className="ds-sidebar-profile" title="Мой профиль">
-          <Avatar id={user.id} name={user.fullName} size={30} />
-          <div className="ds-sidebar-user">
-            <b>{user.fullName}</b>
-            <span>{ROLE_LABELS[user.role]}</span>
-          </div>
+    <>
+      <div className="ds-mobilebar">
+        <IconButton
+          icon={Menu}
+          label="Меню"
+          onClick={() => setOpen(true)}
+        />
+        <Link href="/" className="ds-brand ds-brand-compact">
+          <span className="ds-brand-mark">А</span>
+          Адъютант
         </Link>
-        <IconButton icon={LogOut} label="Выйти" size="sm" onClick={logout} />
       </div>
-    </aside>
+      {open && <div className="ds-sidebar-scrim" onClick={() => setOpen(false)} aria-hidden="true" />}
+
+      {/* Клик по любой ссылке меню закрывает выезжающую панель. */}
+      <aside className={cx('ds-sidebar', open && 'is-open')} onClick={(e) => (e.target as HTMLElement).closest('a') && setOpen(false)}>
+        <div className="ds-sidebar-top">
+          <Link href="/" className="ds-brand">
+            <span className="ds-brand-mark">А</span>
+            <span className="ds-brand-text">
+              Адъютант
+              <small>GLB ENGINEERING</small>
+            </span>
+          </Link>
+          <span className="ds-sidebar-close">
+            <IconButton icon={X} label="Закрыть меню" size="sm" onClick={() => setOpen(false)} />
+          </span>
+        </div>
+
+        <Link href="/assistant" className="ds-cmd">
+          <Sparkles size={16} strokeWidth={1.9} />
+          <span>Спросить агента</span>
+          <kbd className="ds-kbd">Ctrl K</kbd>
+        </Link>
+
+        <nav className="ds-nav">
+          {NAV_GROUPS.map((group) => {
+            const items = group.items.filter((item) => allowed(item.access));
+            if (items.length === 0) return null;
+            return (
+              <div key={group.title} className="ds-nav-section">
+                <div className="ds-nav-group">{group.title}</div>
+                {items.map((item) => {
+                  const active = isActive(item.href);
+                  const Icon = item.icon;
+                  return (
+                    <Link key={item.href} href={item.href} className={cx('ds-nav-item', active && 'is-active')} aria-current={active ? 'page' : undefined}>
+                      <Icon size={17} strokeWidth={1.9} />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="ds-sidebar-foot">
+          <Link href="/profile" className="ds-sidebar-profile" title="Мой профиль">
+            <Avatar id={user.id} name={user.fullName} size={34} />
+            <div className="ds-sidebar-user">
+              <b>{user.fullName}</b>
+              <span>{ROLE_LABELS[user.role]}</span>
+            </div>
+          </Link>
+          <ThemeToggle />
+          <IconButton icon={LogOut} label="Выйти" size="sm" onClick={logout} />
+        </div>
+      </aside>
+    </>
   );
 }
