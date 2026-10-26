@@ -2494,9 +2494,9 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
 ## Редизайн web — docs/WEB_REDESIGN.md (с 26.10.2026)
 
 Задание и план ARMS лежат в `docs/`. Этапы W0–W6, после каждого — стоп и
-«ок» владельца. Макет `docs/web-mockup/web-mockup.dc.html` в репозиторий и
-на Google Drive не выложен — визуальные этапы опираются на таблицу токенов
-и описания из задания.
+«ок» владельца. Макет — `docs/web-mockup/web-mockup.dc.html` (выгружен
+26.10.2026 из артефакта владельца claude.ai/artifact/TpoGx716yYRWvnWrU9YSmt,
+светлая тема там же — тот же компонент с `theme="light"`).
 
 - **W0 (26.10.2026) — рефакторинг без изменения поведения**, три коммита:
   - `app/assistant/page.tsx` → `components/assistant/`: `use-assistant-stream`
