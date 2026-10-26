@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { MailAnalysisService } from './mail-analysis.service';
 import { MailStore } from './mail-store';
 import { MailSyncService } from './mail-sync.service';
+import { MailTriageService } from './triage/mail-triage.service';
 
 // Опрос раз в 10 минут — для утренней сводки достаточно (IMAP IDLE не нужен).
 // Соединение короткоживущее на один синк — меньше риск лимитов Mail.ru на логины.
@@ -17,6 +18,7 @@ export class MailSyncCron {
     private readonly store: MailStore,
     private readonly sync: MailSyncService,
     private readonly analysis: MailAnalysisService,
+    private readonly triage: MailTriageService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
@@ -32,6 +34,12 @@ export class MailSyncCron {
         await this.analysis.analyzeBacklog(id);
       } catch (err) {
         this.logger.warn(`AI-анализ почты не удался mailbox=${id}: ${err instanceof Error ? err.name : 'unknown'}`);
+      }
+      // Черновики ответов для разбора почты (W4) — заранее, после анализа.
+      try {
+        await this.triage.prepareDrafts(id);
+      } catch (err) {
+        this.logger.warn(`Черновики разбора почты не подготовлены mailbox=${id}: ${err instanceof Error ? err.name : 'unknown'}`);
       }
     }
   }

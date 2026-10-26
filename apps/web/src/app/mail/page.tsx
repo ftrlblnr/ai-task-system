@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Plus } from 'lucide-react';
 import type { MailStatus, MailboxStatus } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
@@ -16,6 +17,8 @@ import { MailboxConnectCard } from '@/components/mail/mailbox-connect';
 import { MailboxStatusBar } from '@/components/mail/mailbox-status-bar';
 import { MessagesPane } from '@/components/mail/messages-tab';
 import { DigestList } from '@/components/mail/digests-tab';
+import { TriagePane } from '@/components/mail/triage-tab';
+import { cx } from '@/components/ui';
 
 // Stage 2, Phase R (Mail.ru Email Intelligence, 25.09.2026) — подключение ящика и
 // просмотр локально синхронизированной почты. Только OWNER (как Plaud/календарь).
@@ -27,7 +30,19 @@ const SYNC_POLL_MS = 5_000;
 // Выбранный ящик — удобство на этом устройстве (не общее состояние).
 const SELECTED_MAILBOX_KEY = 'mail.selectedMailbox';
 
-type MailTab = 'messages' | 'digests' | 'agent';
+// «Разбор» — первая вкладка (редизайн web W4); вкладка — в ?tab=, чтобы
+// ссылки с пульта и из агента открывали нужную, письмо разбора — ?message=.
+type MailTab = 'triage' | 'messages' | 'digests' | 'agent';
+const MAIL_TABS: { value: MailTab; label: string }[] = [
+  { value: 'triage', label: 'Разбор' },
+  { value: 'messages', label: 'Все письма' },
+  { value: 'digests', label: 'Дайджесты' },
+  { value: 'agent', label: 'Планы действий' },
+];
+
+function parseTab(value: string | null): MailTab {
+  return MAIL_TABS.some((t) => t.value === value) ? (value as MailTab) : 'triage';
+}
 
 function readSelectedMailbox(): string | null {
   try {
@@ -48,7 +63,9 @@ function rememberSelectedMailbox(id: string) {
 // Содержимое одного ящика. Заголовок X-Mailbox-Id (api.ts) ставится до
 // первого запроса детей — они рендерятся, только когда выбор применён.
 function MailboxView({ mailbox, onChange }: { mailbox: MailboxStatus; onChange: () => void }) {
-  const [tab, setTab] = useState<MailTab>('messages');
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tab = parseTab(searchParams.get('tab'));
   const [applied, setApplied] = useState<string | null>(null);
 
   useEffect(() => {
@@ -59,22 +76,23 @@ function MailboxView({ mailbox, onChange }: { mailbox: MailboxStatus; onChange: 
     return () => setMailboxId(null);
   }, [mailbox.id]);
 
+  function setTab(next: MailTab) {
+    router.replace(next === 'triage' ? '/mail' : `/mail?tab=${next}`, { scroll: false });
+  }
+
   if (applied !== mailbox.id) return <p className="ds-field-hint">Загрузка…</p>;
 
   return (
     <>
       <MailboxStatusBar status={mailbox} onChange={onChange} />
-      <div style={{ marginBottom: 16 }}>
-        <SegmentedControl
-          options={[
-            { value: 'messages', label: 'Письма' },
-            { value: 'digests', label: 'Дайджест' },
-            { value: 'agent', label: 'Разбор' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as MailTab)}
-        />
+      <div className="mail-tabs" role="tablist" aria-label="Разделы почты">
+        {MAIL_TABS.map((t) => (
+          <button key={t.value} type="button" role="tab" aria-selected={tab === t.value} className={cx('mail-tab', tab === t.value && 'is-active')} onClick={() => setTab(t.value)}>
+            {t.label}
+          </button>
+        ))}
       </div>
+      {tab === 'triage' && <TriagePane initialMessageId={searchParams.get('message')} />}
       {tab === 'messages' && <MessagesPane />}
       {tab === 'digests' && <DigestList />}
       {tab === 'agent' && <MailAgentTab />}
@@ -170,7 +188,9 @@ export default function MailPage() {
     <Protected requireRole={MANAGER_ROLES}>
       <PageHeader title="Почта" />
       <DataOwnerScope>
-        <MailView />
+        <Suspense fallback={<p className="ds-field-hint">Загрузка…</p>}>
+          <MailView />
+        </Suspense>
       </DataOwnerScope>
     </Protected>
   );

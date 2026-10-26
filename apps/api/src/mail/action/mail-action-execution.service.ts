@@ -145,7 +145,7 @@ export class MailActionExecutionService {
 
         finalStatusByItemId.set(
           item.id,
-          await this.runItem(item, { mailboxId, session }),
+          await this.runItem(item, { mailboxId, ownerId: execution.approval.plan.ownerId, session }),
         );
       }
     } finally {

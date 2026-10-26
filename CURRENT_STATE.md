@@ -2579,3 +2579,26 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
     400, не доставлено — 503 без отметки). `GET /tasks/:id` теперь отдаёт
     `fromAgent`/`source`, как список.
   - `PageHeader` принимает `kicker`.
+- **W4 (26.10.2026) — почта: вкладка «Разбор»:**
+  - Вкладки `/mail`: Разбор (по умолчанию) · Все письма · Дайджесты · Планы
+    действий (бывшая вкладка агента); выбор в `?tab=`, `?message=<id>` —
+    открыть письмо в разборе. `components/mail/triage-tab.tsx`,
+    `use-mail-triage.ts`.
+  - API `apps/api/src/mail/triage/`: `GET /mail/triage` — очередь (INBOX,
+    входящие без ответа за 14 дней, анализ needsReply/needsAction, не
+    отложенные, без уже согласованного действия; важность → дольше ждёт, до
+    50). `POST /mail/messages/:id/draft-reply[?regenerate=true]` — Haiku
+    (`mail.draft-reply`), черновик `MailDraft` с sourceKey `triage:<msgId>`,
+    повтор отдаёт тот же. Фон: cron синка после анализа готовит черновики
+    ответов за 3 дня, не больше 5 за тик на ящик.
+  - `POST /mail/messages/:id/actions` (Idempotency-Key обязателен)
+    `{type: SEND_REPLY|CREATE_TASK|ARCHIVE}` — план из одного пункта в
+    движке mail/action; UI спрашивает подтверждение и вызывает обычный
+    approve. «Отмена» — `POST .../actions/:planId/cancel` удаляет
+    несогласованный план разбора. `POST /mail/messages/:id/snooze` —
+    `EmailAnalysis.snoozedUntil` = следующий рабочий день 9:00 Алматы.
+  - В движок добавлены исполнители SEND_REPLY (согласие — на хэш текста:
+    черновик поправили после «Да» → SKIPPED_CHANGED `DRAFT_CHANGED`;
+    журнал `MAIL_SENT` source `mail_triage`) и CREATE_TASK (от имени
+    владельца плана). Раньше эти типы падали с NOT_IMPLEMENTED.
+  - Клавиши: J/K, Ctrl+Enter (отправить, с подтверждением), T, L, A.

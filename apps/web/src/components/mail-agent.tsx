@@ -24,7 +24,7 @@ import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Field, Select, Textarea } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 
-// Почтовый ИИ-агент v2.0 (ТЗ 05.10.2026) — вкладка «Разбор» на /mail:
+// Почтовый ИИ-агент v2.0 (ТЗ 05.10.2026) — вкладка «Планы действий» на /mail:
 // поручение → агент предлагает действия по уже синкнутым письмам → владелец
 // согласует по группам (раздел 7 ТЗ: у каждой группы своя кнопка, корзина —
 // отдельно) → исполнение в Mail.ru с журналом, остановкой и повтором.

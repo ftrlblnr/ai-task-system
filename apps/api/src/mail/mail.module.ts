@@ -23,6 +23,13 @@ import { MailActionExecutorRegistry } from './action/mail-action-executor';
 import { MailActionPlanService } from './action/mail-action-plan.service';
 import { MailActionSessionFactory } from './action/mail-action-session-factory';
 import { registerStage1MailActionExecutors } from './action/executors/stage1-executors';
+import { registerTriageMailActionExecutors } from './action/executors/triage-executors';
+import { MailTriageController } from './triage/mail-triage.controller';
+import { MailTriageService } from './triage/mail-triage.service';
+import { TasksModule } from '../tasks/tasks.module';
+import { TasksService } from '../tasks/tasks.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 
 // Stage 2, Phase R — Mail.ru Email Intelligence. PrismaModule/CryptoModule глобальные
 // (AppModule). Экспорты — для tools ассистента (MailQueryService/MailStore).
@@ -31,8 +38,8 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
 // 2) — MailSyncService сохраняет байты вложений через FilesService
 // (FileArtifact/FileStorage), тот же паттерн, что у чата/экспорта.
 @Module({
-  imports: [TelegramModule, FilesModule],
-  controllers: [MailController, MailActionController],
+  imports: [TelegramModule, FilesModule, TasksModule],
+  controllers: [MailController, MailActionController, MailTriageController],
   providers: [
     MailStore,
     ImapMailProvider,
@@ -53,11 +60,19 @@ import { registerStage1MailActionExecutors } from './action/executors/stage1-exe
     MailActionExecutionService,
     MailActionExecutorRegistry,
     MailActionSessionFactory,
+    MailTriageService,
   ],
   exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService],
 })
 export class MailModule implements OnModuleInit {
-  constructor(private readonly executors: MailActionExecutorRegistry) {}
+  constructor(
+    private readonly executors: MailActionExecutorRegistry,
+    private readonly prisma: PrismaService,
+    private readonly store: MailStore,
+    private readonly compose: MailComposeService,
+    private readonly audit: AuditService,
+    private readonly tasks: TasksService,
+  ) {}
 
   // Этап 1 (раздел 3 ТЗ) — архив/перемещение/папки/флаги/прочитанность/
   // корзина. Регистрация здесь, не в конструкторе исполнителей — реестр
@@ -65,5 +80,7 @@ export class MailModule implements OnModuleInit {
   // когда их подключать.
   onModuleInit(): void {
     registerStage1MailActionExecutors(this.executors);
+    // Разбор почты (W4) — ответ и задача из письма.
+    registerTriageMailActionExecutors(this.executors, { prisma: this.prisma, store: this.store, compose: this.compose, audit: this.audit, tasks: this.tasks });
   }
 }

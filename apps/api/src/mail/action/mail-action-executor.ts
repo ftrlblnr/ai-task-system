@@ -25,6 +25,9 @@ export interface MailActionExecutorResult {
 
 export interface MailActionExecutionContext {
   mailboxId: string;
+  // Владелец плана — от его имени исполнители вне почты (задача из письма,
+  // разбор почты W4) создают объекты.
+  ownerId: string;
   // Одна сессия на весь прогон исполнения (движок открывает её один раз
   // перед циклом пунктов и закрывает после — не на каждый пункт, это
   // реальное IMAP-соединение).

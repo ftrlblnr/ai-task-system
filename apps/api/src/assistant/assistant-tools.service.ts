@@ -1553,7 +1553,7 @@ export class AssistantToolsService {
 
   // Почта, этап 3 — план действий на каждый затронутый ящик; исполнение
   // только после «Подтвердить» в карточке (тот же движок согласования, что
-  // вкладка «Разбор» на /mail).
+  // вкладка «Планы действий» на /mail).
   private async proposeMailActions(input: unknown, user: AuthenticatedUser, key: string): Promise<ToolExecutionResult> {
     const mailboxIds = await this.requireMailboxId(user);
     if (!Array.isArray(mailboxIds)) return { tool: 'propose_mail_actions', ...mailboxIds };

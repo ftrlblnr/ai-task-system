@@ -20,7 +20,7 @@ import { useAgentContext } from '@/components/agent-panel/agent-context';
 // fetch → Blob → временный <a download>, обычная <a href> не отправит
 // Bearer-токен). Без сохранённых байт (downloadable=false — не удалось
 // сохранить при синке, или письмо ещё с релиза 1) — просто имя файла.
-function AttachmentItem({ attachment }: { attachment: EmailDetail['attachments'][number] }) {
+export function AttachmentItem({ attachment }: { attachment: Pick<EmailDetail['attachments'][number], 'id' | 'fileName' | 'downloadable'> }) {
   const [downloading, setDownloading] = useState(false);
 
   if (!attachment.downloadable) {

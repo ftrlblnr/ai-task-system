@@ -1546,6 +1546,14 @@ export const MAIL_ACTION_ERROR_LABELS: Record<string, string> = {
   LOCATOR_CHANGED: 'Письмо переместили или изменили после анализа.',
   NOT_IMPLEMENTED: 'Это действие агент пока не умеет выполнять.',
   EXECUTOR_ERROR: 'Почтовый сервер вернул ошибку.',
+  // Разбор почты (редизайн web W4): ответ и задача из письма.
+  MISSING_DRAFT: 'Не указан черновик ответа.',
+  DRAFT_MISSING: 'Черновик ответа удалён.',
+  DRAFT_CHANGED: 'Черновик изменили после подтверждения — ответ не отправлен.',
+  SEND_FAILED: 'Сервер отправки не принял письмо.',
+  MAILBOX_MISSING: 'Ящик отключён.',
+  MISSING_TITLE: 'Не указано название задачи.',
+  OWNER_MISSING: 'Владелец плана не найден.',
 };
 export type MailActionGroupType = 'MAILBOX_ORDER' | 'WORK_OBJECTS' | 'EXTERNAL_SEND' | 'TRASH';
 export type MailActionPlanStatus = 'ANALYZING' | 'READY' | 'EXECUTING' | 'DONE' | 'CANCELLED';
@@ -1720,6 +1728,35 @@ export interface CreateCalendarPlanInput {
 }
 
 // Почтовый клиент (владелец 23.10.2026): черновики, отправка, действия.
+// Разбор почты (редизайн web W4) — GET /mail/triage: письма, которые ждут
+// ответа (REPLY) или действия (ACTION), с готовым черновиком, если есть.
+export interface MailTriageItem {
+  id: string;
+  subject: string | null;
+  fromName: string | null;
+  fromAddress: string;
+  receivedAt: string | null;
+  hasAttachments: boolean;
+  bodyTruncated: boolean;
+  tag: 'REPLY' | 'ACTION';
+  analysis: EmailAnalysisSummary | null;
+  body: string | null;
+  attachments: { id: string; fileName: string; sizeBytes: number | null; downloadable: boolean }[];
+  draft: { id: string; body: string | null; version: number; state: 'DRAFT' | 'SENDING'; toAddresses: string[]; subject: string | null } | null;
+}
+
+export type MailTriageActionType = 'SEND_REPLY' | 'CREATE_TASK' | 'ARCHIVE';
+
+// POST /mail/messages/:id/actions — план из одного пункта, ждёт согласия
+// (POST /mail/action-plans/:planId/approve с groupType и itemIds: [itemId]).
+export interface MailTriageActionPlan {
+  planId: string;
+  planVersion: number;
+  itemId: string;
+  type: MailTriageActionType;
+  groupType: MailActionGroupType;
+}
+
 export type MailDraftMode = 'NEW' | 'REPLY' | 'REPLY_ALL' | 'FORWARD';
 
 export interface MailDraftView {

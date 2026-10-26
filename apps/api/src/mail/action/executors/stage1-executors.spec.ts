@@ -38,7 +38,7 @@ class FakeSession implements Pick<EmailSession, 'listAllFolders' | 'moveMessage'
 }
 
 function ctx(session: FakeSession): MailActionExecutionContext {
-  return { mailboxId: 'mbx-1', session: session as unknown as EmailSession };
+  return { mailboxId: 'mbx-1', ownerId: 'owner-1', session: session as unknown as EmailSession };
 }
 
 describe('Stage 1 executors (ТЗ разд. 3/9/14/15)', () => {
