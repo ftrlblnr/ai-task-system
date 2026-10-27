@@ -200,7 +200,6 @@ export function Sidebar() {
           </span>
             <span className="ds-brand-text">
               Адъютант
-              <small>GLB ENGINEERING</small>
             </span>
           </Link>
           <span className="ds-sidebar-close">
