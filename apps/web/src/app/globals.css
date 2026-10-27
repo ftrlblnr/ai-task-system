@@ -2965,6 +2965,19 @@ a.routine-run-text:hover { color: var(--link); }
 .triage-draft-head .section-kicker {
   color: var(--ink-2);
 }
+/* Стиль /тон у черновика: подпись между заголовком и «Написать заново». */
+.triage-tone {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.triage-tone.is-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+}
+.triage-tone.is-link:hover {
+  color: var(--ink);
+}
 .triage-link {
   padding: 0;
   border: 0;
