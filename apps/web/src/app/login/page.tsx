@@ -7,7 +7,7 @@ import { ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
-import { AgentMark } from '@/components/ui/agent-mark';
+import { AuthBrand } from '@/components/brand/logo';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -32,11 +32,7 @@ export default function LoginPage() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        {/* Единственное место в продукте, где метка агента показывается
-            крупно вне чата (project/implementation.md, шаг 10). */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-          <AgentMark size={40} state="idle" />
-        </div>
+        <AuthBrand />
         <form onSubmit={handleSubmit} className="ds-card">
           <h1 style={{ fontSize: 32, lineHeight: '38px', fontWeight: 650, letterSpacing: '-0.025em' }}>Вход</h1>
           <p className="auth-subtitle">Закрытая система задач — доступ только по приглашению</p>

@@ -6,6 +6,7 @@ import { api, ApiError } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
+import { AuthBrand } from '@/components/brand/logo';
 
 // Публичная страница — сотрудник переходит сюда по одноразовой ссылке от
 // руководителя (владелец 08.09.2026), без предварительного входа (у него
@@ -47,7 +48,7 @@ function ResetPasswordForm() {
     return (
       <div className="auth-screen">
         <div className="auth-card">
-          <div className="auth-mark">AI</div>
+          <AuthBrand />
           <div className="ds-card">
             <h1>Ссылка недействительна</h1>
             <p className="ds-field-hint">В ссылке нет токена — запросите новую у руководителя.</p>
@@ -61,7 +62,7 @@ function ResetPasswordForm() {
     return (
       <div className="auth-screen">
         <div className="auth-card">
-          <div className="auth-mark">AI</div>
+          <AuthBrand />
           <div className="ds-card">
             <h1>Пароль изменён</h1>
             <p className="ds-field-hint">Сейчас перенаправим на вход…</p>
@@ -74,7 +75,7 @@ function ResetPasswordForm() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-mark">AI</div>
+        <AuthBrand />
         <form onSubmit={handleSubmit} className="ds-card">
           <h1>Новый пароль</h1>
           <p className="auth-subtitle">Придумайте новый пароль для входа</p>

@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Alert } from '@/components/ui/alert';
+import { AuthBrand } from '@/components/brand/logo';
 
 // Самостоятельная регистрация (владелец 02.10.2026) — временное окно,
 // открывается/закрывается переключателем на странице «Сотрудники»
@@ -127,7 +128,7 @@ export default function RegisterPage() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-mark">AI</div>
+        <AuthBrand />
         <RegisterForm />
       </div>
     </div>

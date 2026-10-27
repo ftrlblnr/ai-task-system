@@ -35,6 +35,7 @@ import { IconButton, cx } from '@/components/ui';
 import { Avatar } from './avatar';
 import { useAgentPanel } from './agent-panel/agent-context';
 import { useMenuBadges } from './use-menu-badges';
+import { LogoGlyph } from './brand/logo';
 import { useRealtime } from '@/lib/use-realtime';
 
 // Меню по группам (редизайн web W1, docs/WEB_REDESIGN.md §4.1). Права —
@@ -182,7 +183,9 @@ export function Sidebar() {
           onClick={() => setOpen(true)}
         />
         <Link href="/" className="ds-brand ds-brand-compact">
-          <span className="ds-brand-mark">А</span>
+          <span className="ds-brand-mark">
+            <LogoGlyph />
+          </span>
           Адъютант
         </Link>
       </div>
@@ -192,7 +195,9 @@ export function Sidebar() {
       <aside className={cx('ds-sidebar', open && 'is-open')} onClick={(e) => (e.target as HTMLElement).closest('a') && setOpen(false)}>
         <div className="ds-sidebar-top">
           <Link href="/" className="ds-brand">
-            <span className="ds-brand-mark">А</span>
+            <span className="ds-brand-mark">
+            <LogoGlyph />
+          </span>
             <span className="ds-brand-text">
               Адъютант
               <small>GLB ENGINEERING</small>

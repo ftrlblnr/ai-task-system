@@ -26,7 +26,8 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Task System",
+  // Вкладка браузера: «Адъютант»; иконка — app/icon.svg, favicon.ico, apple-icon.png.
+  title: { default: "Адъютант", template: "%s · Адъютант" },
   description: "Закрытая система задач для руководителя и подчинённых",
 };
 

@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
 import { rememberAfterLogin, useAuth } from '@/lib/auth-context';
-import { AgentMark } from '@/components/ui/agent-mark';
+import { AuthBrand } from '@/components/brand/logo';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 
@@ -74,9 +74,7 @@ function ConnectView() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-          <AgentMark size={40} state="idle" />
-        </div>
+        <AuthBrand />
         <div className="ds-card">
           <h1 style={{ fontSize: 28, lineHeight: '34px', fontWeight: 650, letterSpacing: '-0.02em' }}>Подключение к Адъютанту</h1>
           {'error' in info ? (
