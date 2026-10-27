@@ -8,7 +8,8 @@ import { MailComposeService, type DraftView } from '../mail-compose.service';
 import { MailStore, type MailboxRecord } from '../mail-store';
 import { MailActionPlanService } from '../action/mail-action-plan.service';
 import { GROUP_BY_ACTION_TYPE } from '../action/mail-action-rules';
-import { REPLY_SYSTEM_PROMPT, buildReplyUserContent, compareTriage, draftBodyHash, nextWorkingMorning } from './mail-triage';
+import { SkillsService } from '../../skills/skills.service';
+import { buildReplySystemPrompt, buildReplyUserContent, compareTriage, draftBodyHash, draftToneState, nextWorkingMorning, type DraftToneState } from './mail-triage';
 
 // Разбор почты (редизайн web W4, docs/WEB_REDESIGN.md §4.5): очередь писем,
 // которые ждут ответа или действия, черновик ответа и действия над ОДНИМ
@@ -31,6 +32,21 @@ const HANDLED_ITEM_STATUSES = ['APPROVED', 'QUEUED', 'RUNNING', 'SUCCEEDED'] as 
 export function triageDraftKey(messageId: string): string {
   return `triage:${messageId}`;
 }
+
+// Стиль черновика для интерфейса: применён / устарел / не настроен, и куда
+// вести «собрать из писем» (навык /тон владельца ящика или общий).
+export interface TriageDraftTone {
+  state: DraftToneState;
+  skillId: string | null;
+}
+
+interface OwnerTone {
+  block: string | null;
+  version: number | null;
+  skillId: string | null;
+}
+
+const NO_TONE: OwnerTone = { block: null, version: null, skillId: null };
 
 export type TriageActionType = 'SEND_REPLY' | 'CREATE_TASK' | 'ARCHIVE';
 
@@ -76,11 +92,28 @@ export class MailTriageService {
     private readonly compose: MailComposeService,
     private readonly plans: MailActionPlanService,
     @Optional() private readonly aiUsage?: AiUsageService,
+    @Optional() private readonly skills?: SkillsService,
   ) {}
 
   private getClient(): Anthropic {
     if (!this.client) this.client = new Anthropic({ apiKey: this.config.getOrThrow<string>('ANTHROPIC_API_KEY') });
     return this.client;
+  }
+
+  // Стиль владельца ящика (навык /тон). Сбой чтения навыка не должен
+  // ломать черновик — тогда пишем без стиля, как раньше.
+  private async ownerTone(employeeId: string): Promise<OwnerTone> {
+    if (!this.skills) return NO_TONE;
+    try {
+      return await this.skills.toneFor(employeeId);
+    } catch (err) {
+      this.logger.warn(`tone lookup failed employee=${employeeId}: ${err instanceof Error ? err.message : 'unknown'}`);
+      return NO_TONE;
+    }
+  }
+
+  private toneView(draftToneVersion: number | null, tone: OwnerTone): TriageDraftTone {
+    return { state: draftToneState(draftToneVersion, tone.version), skillId: tone.skillId };
   }
 
   // Входящие за две недели с needsReply/needsAction, без ответа, не отложенные
@@ -147,9 +180,11 @@ export class MailTriageService {
 
     const drafts = await this.prisma.mailDraft.findMany({
       where: { mailboxId, sourceKey: { in: open.map((r) => triageDraftKey(r.id)) }, state: { in: ['DRAFT', 'SENDING'] } },
-      select: { id: true, sourceMessageId: true, body: true, version: true, state: true, toAddresses: true, subject: true },
+      select: { id: true, sourceMessageId: true, body: true, version: true, state: true, toAddresses: true, subject: true, toneVersion: true },
     });
-    const draftByMessage = new Map(drafts.map((d) => [d.sourceMessageId, d]));
+    const mailbox = drafts.length > 0 ? await this.prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { employeeId: true } }) : null;
+    const tone = mailbox ? await this.ownerTone(mailbox.employeeId) : NO_TONE;
+    const draftByMessage = new Map(drafts.map(({ toneVersion, ...d }) => [d.sourceMessageId, { ...d, tone: this.toneView(toneVersion, tone) }]));
 
     return open.map(({ textBody, attachments, analysis, ...m }) => ({
       ...m,
@@ -163,7 +198,10 @@ export class MailTriageService {
 
   // Черновик ответа из разбора: один на письмо (sourceKey triage:<id>),
   // повторный вызов возвращает сохранённый, regenerate — пишет заново.
-  async draftReply(mailbox: MailboxRecord, messageId: string, regenerate: boolean): Promise<DraftView> {
+  // Пишется в стиле владельца ящика (навык /тон): ADMIN в режиме X-Act-As
+  // получает черновик в стиле руководителя. toneVersion черновика — версия
+  // стиля на момент генерации, по ней интерфейс предлагает переписать.
+  async draftReply(mailbox: MailboxRecord, messageId: string, regenerate: boolean): Promise<DraftView & { tone: TriageDraftTone }> {
     const message = await this.prisma.emailMessage.findFirst({
       where: { id: messageId, mailboxId: mailbox.id, providerMissing: false, isOutgoing: false },
       select: { id: true, subject: true, fromName: true, fromAddress: true, textBody: true, analysis: { select: { summary: true, actionSummary: true } } },
@@ -172,37 +210,51 @@ export class MailTriageService {
 
     const existing = await this.prisma.mailDraft.findUnique({ where: { sourceKey: triageDraftKey(messageId) } });
     if (existing && existing.mailboxId !== mailbox.id) throw new NotFoundException('Письмо не найдено');
+    const tone = await this.ownerTone(mailbox.employeeId);
     if (existing && (!regenerate || existing.state !== 'DRAFT')) {
       if (regenerate) throw new ConflictException('Ответ уже отправляется или отправлен');
-      return this.compose.get(mailbox.id, existing.id);
+      return { ...(await this.compose.get(mailbox.id, existing.id)), tone: this.toneView(existing.toneVersion, tone) };
     }
 
     const owner = await this.prisma.employee.findUnique({ where: { id: mailbox.employeeId }, select: { fullName: true } });
-    const body = await this.generateReply({
-      ownerName: mailbox.displayName ?? owner?.fullName ?? null,
-      subject: message.subject,
-      fromName: message.fromName,
-      fromAddress: message.fromAddress,
-      summary: message.analysis?.summary ?? null,
-      actionSummary: message.analysis?.actionSummary ?? null,
-      textBody: message.textBody,
-    });
+    const body = await this.generateReply(
+      {
+        ownerName: mailbox.displayName ?? owner?.fullName ?? null,
+        subject: message.subject,
+        fromName: message.fromName,
+        fromAddress: message.fromAddress,
+        summary: message.analysis?.summary ?? null,
+        actionSummary: message.analysis?.actionSummary ?? null,
+        textBody: message.textBody,
+      },
+      tone,
+    );
 
     if (existing) {
-      const updated = await this.prisma.mailDraft.updateMany({ where: { id: existing.id, state: 'DRAFT' }, data: { body, version: { increment: 1 }, lastError: null } });
+      const updated = await this.prisma.mailDraft.updateMany({ where: { id: existing.id, state: 'DRAFT' }, data: { body, version: { increment: 1 }, lastError: null, toneVersion: tone.version } });
       if (updated.count === 0) throw new ConflictException('Ответ уже отправляется или отправлен');
-      return this.compose.get(mailbox.id, existing.id);
+      return { ...(await this.compose.get(mailbox.id, existing.id)), tone: this.toneView(tone.version, tone) };
     }
-    return this.compose.create(mailbox, 'REPLY', messageId, { body, sourceKey: triageDraftKey(messageId) });
+    const created = await this.compose.create(mailbox, 'REPLY', messageId, { body, sourceKey: triageDraftKey(messageId) });
+    // compose.create — общий для всей почты; версию стиля дописываем здесь,
+    // чтобы не тащить понятие «стиль» в ручные черновики.
+    if (tone.version !== null) await this.prisma.mailDraft.update({ where: { id: created.id }, data: { toneVersion: tone.version } });
+    return { ...created, tone: this.toneView(tone.version, tone) };
   }
 
-  private async generateReply(input: Parameters<typeof buildReplyUserContent>[0]): Promise<string> {
-    const response = await trackedCreate(this.aiUsage, 'mail.draft-reply', this.getClient(), {
-      model: MODEL,
-      max_tokens: 1024,
-      system: REPLY_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: buildReplyUserContent(input) }],
-    });
+  private async generateReply(input: Parameters<typeof buildReplyUserContent>[0], tone: OwnerTone): Promise<string> {
+    const response = await trackedCreate(
+      this.aiUsage,
+      'mail.draft-reply',
+      this.getClient(),
+      {
+        model: MODEL,
+        max_tokens: 1024,
+        system: buildReplySystemPrompt(tone.block),
+        messages: [{ role: 'user', content: buildReplyUserContent(input) }],
+      },
+      { toneVersion: tone.version },
+    );
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
       .map((b) => b.text)

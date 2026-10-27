@@ -27,6 +27,7 @@ import { registerTriageMailActionExecutors } from './action/executors/triage-exe
 import { MailTriageController } from './triage/mail-triage.controller';
 import { MailTriageService } from './triage/mail-triage.service';
 import { TasksModule } from '../tasks/tasks.module';
+import { SkillsModule } from '../skills/skills.module';
 import { TasksService } from '../tasks/tasks.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -38,7 +39,8 @@ import { AuditService } from '../audit/audit.service';
 // 2) — MailSyncService сохраняет байты вложений через FilesService
 // (FileArtifact/FileStorage), тот же паттерн, что у чата/экспорта.
 @Module({
-  imports: [TelegramModule, FilesModule, TasksModule],
+  // SkillsModule — стиль руководителя (/тон) для черновиков «Разбора».
+  imports: [TelegramModule, FilesModule, TasksModule, SkillsModule],
   controllers: [MailController, MailActionController, MailTriageController],
   providers: [
     MailStore,

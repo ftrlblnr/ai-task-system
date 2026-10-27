@@ -1754,8 +1754,19 @@ export interface MailTriageItem {
   analysis: EmailAnalysisSummary | null;
   body: string | null;
   attachments: { id: string; fileName: string; sizeBytes: number | null; downloadable: boolean }[];
-  draft: { id: string; body: string | null; version: number; state: 'DRAFT' | 'SENDING'; toAddresses: string[]; subject: string | null } | null;
+  draft: { id: string; body: string | null; version: number; state: 'DRAFT' | 'SENDING'; toAddresses: string[]; subject: string | null; tone: MailTriageDraftTone } | null;
 }
+
+// Стиль руководителя (навык /тон) у черновика разбора: applied — написан в
+// текущем стиле, outdated — стиль с тех пор обновили, none — стиль не
+// настроен. skillId — навык /тон владельца ящика (ссылка «собрать из писем»).
+export interface MailTriageDraftTone {
+  state: 'applied' | 'outdated' | 'none';
+  skillId: string | null;
+}
+
+// POST /mail/messages/:id/draft-reply — черновик и его стиль.
+export type MailTriageDraftView = MailDraftView & { tone: MailTriageDraftTone };
 
 export type MailTriageActionType = 'SEND_REPLY' | 'CREATE_TASK' | 'ARCHIVE';
 

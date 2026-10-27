@@ -59,6 +59,37 @@ describe('SkillsService', () => {
     expect(await service.resolveInvocation(owner, '/нет-такого')).toBeNull();
   });
 
+  describe('toneFor — стиль сотрудника для черновиков почты', () => {
+    const tone = { ...baseSkill, id: 'tone-sys', slug: 'тон', instructions: 'Коротко, на «вы».', version: 4 };
+
+    it('личный /тон важнее общего; блок и версия — личного', async () => {
+      const { service, prisma } = make();
+      prisma.skill.findMany.mockResolvedValue([tone, { ...tone, id: 'tone-own', ownerId: 'leader', instructions: 'Мой стиль', version: 2 }]);
+      const r = await service.toneFor('leader');
+      expect(r).toMatchObject({ version: 2, skillId: 'tone-own' });
+      expect(r.block).toContain('Мой стиль');
+      expect(prisma.skill.findMany.mock.calls[0][0].where).toMatchObject({ slug: 'тон', enabled: true, OR: [{ ownerId: null }, { ownerId: 'leader' }] });
+    });
+
+    it('чужой личный /тон не берётся — только общий', async () => {
+      const { service, prisma } = make();
+      prisma.skill.findMany.mockResolvedValue([{ ...tone, id: 'tone-other', ownerId: 'someone' }, tone]);
+      expect((await service.toneFor('leader')).skillId).toBe('tone-sys');
+    });
+
+    it('заглушка «пока пусто» — стиля нет: блок и версия null, ссылка на навык остаётся', async () => {
+      const { service, prisma } = make();
+      prisma.skill.findMany.mockResolvedValue([{ ...tone, instructions: 'Пока пусто. Соберите стиль из отправленных писем на странице навыка.' }]);
+      expect(await service.toneFor('leader')).toEqual({ block: null, version: null, skillId: 'tone-sys' });
+    });
+
+    it('навыка нет или он в архиве — всё null', async () => {
+      const { service, prisma } = make();
+      prisma.skill.findMany.mockResolvedValue([]);
+      expect(await service.toneFor('leader')).toEqual({ block: null, version: null, skillId: null });
+    });
+  });
+
   it('правка инструкции — новая версия и строка истории; без правки — без истории', async () => {
     const { service, tx } = make();
     await service.update('u1', 's1', { instructions: 'Новые шаги' });

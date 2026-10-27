@@ -226,9 +226,23 @@ export class SkillsService implements OnModuleInit {
 
   async toneBlock(user: AuthenticatedUser): Promise<string | null> {
     if (!isManager(user.role)) return null;
-    const candidates = await this.prisma.skill.findMany({ where: { slug: TONE_SLUG, enabled: true, ...this.visibleWhere(user.id) }, select: { ownerId: true, instructions: true } });
-    const tone = candidates.find((s) => s.ownerId === user.id) ?? candidates[0];
-    return tone ? buildToneBlock(tone.instructions) : null;
+    return (await this.toneFor(user.id)).block;
+  }
+
+  // Стиль конкретного сотрудника: личный /тон, иначе общий. Разбор почты
+  // зовёт это по владельцу ящика, а не по тому, кто нажал (ADMIN в режиме
+  // X-Act-As пишет черновик в стиле руководителя). Без роли: ящик подключают
+  // только руководитель и администратор, проверка — в почтовом модуле.
+  // block null (пусто, заглушка, архив) — version тоже null: «стиля нет».
+  async toneFor(employeeId: string): Promise<{ block: string | null; version: number | null; skillId: string | null }> {
+    const candidates = await this.prisma.skill.findMany({
+      where: { slug: TONE_SLUG, enabled: true, ...this.visibleWhere(employeeId) },
+      select: { id: true, ownerId: true, instructions: true, version: true },
+    });
+    const tone = candidates.find((s) => s.ownerId === employeeId) ?? candidates.find((s) => s.ownerId === null);
+    if (!tone) return { block: null, version: null, skillId: null };
+    const block = buildToneBlock(tone.instructions);
+    return { block, version: block ? tone.version : null, skillId: tone.id };
   }
 
   // Итог запуска: из чата — новая строка, кнопкой — обновление созданной
