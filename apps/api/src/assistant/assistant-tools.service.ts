@@ -1,7 +1,22 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, MemoryKind, Prisma, RoutineChannel, RoutineMode, TaskFromMeetingStatus, TaskPriority, type MemoryItem } from '@prisma/client';
+import {
+  AgentActionStatus,
+  EventStatus,
+  MemoryKind,
+  Prisma,
+  RoutineChannel,
+  RoutineMode,
+  TaskFromMeetingStatus,
+  TaskPriority,
+  TaskStatus,
+  UndoKind,
+  UndoRecordAction,
+  UndoRecordStatus,
+  type MemoryItem,
+} from '@prisma/client';
+import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -27,7 +42,21 @@ import { MemoryService } from '../memory/memory.service';
 import { MEMORY_TEXT_MAX } from '../memory/memory-index';
 import { RoutinesService } from '../routines/routines.service';
 import type { TaskSearchFilter } from '../tasks/tasks.service';
-import { FIND_TASKS_TOOL, GET_TASK_TOOL, historyEmployeeIds, parseFindTasksInput, toFoundTask, toGroupData, toTaskDetail, type FoundTaskData, type TaskDetailData } from './task-tools';
+import {
+  describeTaskChanges,
+  FIND_TASKS_TOOL,
+  GET_TASK_TOOL,
+  historyEmployeeIds,
+  parseFindTasksInput,
+  parseUpdateTaskInput,
+  SETTABLE_TASK_STATUSES,
+  TASK_WRITE_TOOLS,
+  toFoundTask,
+  toGroupData,
+  toTaskDetail,
+  type FoundTaskData,
+  type TaskDetailData,
+} from './task-tools';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -45,6 +74,24 @@ function isUniqueConstraintError(err: unknown): boolean {
 // STALE_VOICE_EXECUTION_MS в voice.service.ts (там между RECEIVED и
 // EXECUTING может быть реальный STT+LLM-вызов).
 const STALE_TASK_FROM_MEETING_MS = 60 * 1000;
+
+// Единый агент A2: брошенный (процесс упал) claim изменения задачи — то же
+// окно, что у создания: одно изменение — не многошаговый процесс.
+const STALE_AGENT_ACTION_MS = 60 * 1000;
+// Окно отмены — то же, что у голоса (UNDO_WINDOW_MS в voice.service.ts).
+export const AGENT_UNDO_WINDOW_MS = 30_000;
+
+// Ожидаемые отказы TasksService → понятный модели код с текстом сервиса
+// (он уже по-русски и без деталей БД). Остальное — общий TOOL_ERROR_MESSAGES.
+// Порядок важен: все они — наследники HttpException.
+function taskWriteError(tool: KnownToolName, err: unknown): { tool: KnownToolName; error: true; message: string } | null {
+  if (err instanceof NotFoundException) return { tool, error: true, message: 'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks' };
+  if (err instanceof ForbiddenException) return { tool, error: true, message: `TASK_FORBIDDEN: ${err.message}` };
+  if (err instanceof ServiceUnavailableException) return { tool, error: true, message: 'TELEGRAM_FAILED: не удалось отправить сообщение в Telegram — попробуйте позже' };
+  if (err instanceof BadRequestException) return { tool, error: true, message: `INVALID_INPUT: ${err.message}` };
+  if (err instanceof HttpException && err.getStatus() === HttpStatus.TOO_MANY_REQUESTS) return { tool, error: true, message: `REMIND_TOO_SOON: ${err.message}` };
+  return null;
+}
 
 // ms сегмента транскрипта → "MM:SS"/"H:MM:SS" для человекочитаемого
 // Task.sourceTimestamp — нигде в проекте такого форматтера ещё нет
@@ -117,6 +164,11 @@ type KnownToolName =
   | 'get_tasks'
   | 'find_tasks'
   | 'get_task'
+  | 'update_task'
+  | 'set_task_status'
+  | 'comment_task'
+  | 'remind_task'
+  | 'delete_task'
   | 'get_events'
   | 'export_tasks_xlsx'
   | 'get_recent_meetings'
@@ -141,6 +193,7 @@ type KnownToolName =
 function resolveToolName(name: string): KnownToolName {
   if (name === 'find_tasks') return 'find_tasks';
   if (name === 'get_task') return 'get_task';
+  if (TASK_WRITE_TOOL_NAMES.has(name)) return name as TaskWriteToolName;
   if (name === 'get_events') return 'get_events';
   if (name === 'export_tasks_xlsx') return 'export_tasks_xlsx';
   if (name === 'get_recent_meetings') return 'get_recent_meetings';
@@ -178,7 +231,21 @@ function resolveToolName(name: string): KnownToolName {
 // Память (ARMS, фаза 1): remember создаёт пункт — ключ идемпотентности из
 // writeToolCallIndex; forget_memory меняет данные — порядок важен.
 // Регламенты (ARMS, фаза 4): propose_routine создаёт черновик — ключ из writeToolCallIndex.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task', 'create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory', 'propose_routine']);
+// Единый агент A2: изменение существующих задач — тоже write (ключ повтора
+// AgentActionExecution; регламенты их не получают).
+type TaskWriteToolName = 'update_task' | 'set_task_status' | 'comment_task' | 'remind_task' | 'delete_task';
+const TASK_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<TaskWriteToolName>(['update_task', 'set_task_status', 'comment_task', 'remind_task', 'delete_task']);
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'create_task',
+  'create_task_from_meeting',
+  'legal_review_contract',
+  'propose_mail_actions',
+  'draft_mail_reply',
+  'remember',
+  'forget_memory',
+  'propose_routine',
+  ...TASK_WRITE_TOOL_NAMES,
+]);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -194,6 +261,11 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   get_tasks: 'TASK_LOOKUP_FAILED: не удалось получить список задач',
   find_tasks: 'TASK_LOOKUP_FAILED: не удалось найти задачи',
   get_task: 'TASK_LOOKUP_FAILED: не удалось открыть задачу',
+  update_task: 'TASK_UPDATE_FAILED: не удалось изменить задачу',
+  set_task_status: 'TASK_UPDATE_FAILED: не удалось сменить статус задачи',
+  comment_task: 'TASK_UPDATE_FAILED: не удалось добавить комментарий',
+  remind_task: 'TASK_REMIND_FAILED: не удалось напомнить исполнителю',
+  delete_task: 'TASK_DELETE_FAILED: не удалось удалить задачу',
   get_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
   export_tasks_xlsx: 'EXPORT_FAILED: не удалось сформировать файл',
   get_recent_meetings: 'MEETING_LOOKUP_FAILED: не удалось получить список встреч',
@@ -298,6 +370,13 @@ export type ToolExecutionResult =
       filter: { assignee: string | null; creator: string | null };
     }
   | { tool: 'get_task'; task: TaskDetailData }
+  // Единый агент A2: карточка изменённой задачи (с changes и undoToken).
+  | { tool: 'update_task' | 'set_task_status' | 'remind_task'; task: TaskCardData }
+  | { tool: 'comment_task'; task: TaskCardData; comment: string }
+  | { tool: 'delete_task'; taskId: string; title: string }
+  // Повтор хода, когда прошлая попытка уже применила изменение, но
+  // результат не успела сохранить: сообщаем модели, задачу не трогаем.
+  | { tool: TaskWriteToolName; alreadyApplied: true; taskId: string }
   | { tool: 'get_events'; items: EventCardData[]; totalCount: number }
   | { tool: 'export_tasks_xlsx'; file: FilePartData; totalCount: number }
   | { tool: 'get_recent_meetings'; items: MeetingSummaryData[]; totalCount: number }
@@ -358,6 +437,20 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
         ? 'Сохранено. В памяти есть похожие пункты (similar) — если новый их заменяет, коротко спроси пользователя, убрать ли старые (forget_memory).'
         : 'Сохранено в память. Коротко подтверди одной фразой.';
     return { ...result, note };
+  }
+  if ('alreadyApplied' in result) {
+    return { ...result, note: 'Это изменение уже было выполнено в прошлой попытке ответа. Скажи пользователю, что уже сделано; при сомнении проверь задачу через get_task.' };
+  }
+  if (result.tool === 'update_task' || result.tool === 'set_task_status') {
+    return {
+      ...result,
+      note: result.task.changes?.length
+        ? 'Выполнено. Пользователь видит карточку с изменениями и 30 секунд может отменить их кнопкой. Подтверди одной фразой, без повтора всех полей.'
+        : 'Ничего не изменилось — задача уже в таком состоянии. Скажи об этом.',
+    };
+  }
+  if (result.tool === 'comment_task' || result.tool === 'remind_task' || result.tool === 'delete_task') {
+    return { ...result, note: 'Выполнено. Подтверди одной фразой.' };
   }
   if (result.tool === 'propose_routine') {
     return {
@@ -445,6 +538,9 @@ export class AssistantToolsService {
       // Единый агент A1 — всем ролям: задачи видят все (владелец 20.10.2026).
       FIND_TASKS_TOOL,
       GET_TASK_TOOL,
+      // A2 — тоже всем: кто что может менять, решает TasksService
+      // (постановщик/руководство — поля и удаление, исполнитель — статус).
+      ...TASK_WRITE_TOOLS,
       {
         name: 'export_tasks_xlsx',
         description:
@@ -775,6 +871,14 @@ export class AssistantToolsService {
       if (name === 'get_task') {
         const taskId = (input as { taskId?: unknown } | null)?.taskId;
         return await this.getTask(typeof taskId === 'string' ? taskId.trim() : '');
+      }
+      if (TASK_WRITE_TOOL_NAMES.has(name)) {
+        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+          // Как у create_task: без идентичности вызова нет ключа повтора —
+          // задачу не меняем.
+          throw new Error(`${name}: отсутствует conversationId/userMessageId/writeToolCallIndex`);
+        }
+        return await this.runTaskWrite(name as TaskWriteToolName, input, user, conversationId, `${userMessageId}:${writeToolCallIndex}`);
       }
       if (name === 'get_events') return await this.getEvents(user);
       if (name === 'export_tasks_xlsx') {
@@ -1139,6 +1243,215 @@ export class AssistantToolsService {
       ? new Map((await this.prisma.employee.findMany({ where: { id: { in: ids } }, select: { id: true, fullName: true } })).map((e) => [e.id, e.fullName]))
       : new Map<string, string>();
     return { tool: 'get_task', task: toTaskDetail(task, names) };
+  }
+
+  // ── Единый агент A2: изменение существующих задач ──────────────────────
+  // Права, история и уведомления — внутри TasksService; здесь только разбор
+  // входа, ключ повтора, снимок для отмены и карточка «было → стало».
+  private async runTaskWrite(
+    tool: TaskWriteToolName,
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    const taskId = typeof (input as { taskId?: unknown } | null)?.taskId === 'string' ? (input as { taskId: string }).taskId.trim() : '';
+    if (!taskId) return { tool, error: true, message: 'INVALID_INPUT: не указан id задачи' };
+
+    if (tool === 'update_task') {
+      const parsed = parseUpdateTaskInput(input);
+      const dto: UpdateTaskDto = {};
+      if (parsed.title !== undefined) dto.title = parsed.title;
+      if (parsed.description !== undefined) dto.description = parsed.description;
+      if (parsed.dueDate !== undefined) dto.dueDate = parsed.dueDate;
+      if (parsed.priority !== undefined) dto.priority = TaskPriority[parsed.priority];
+      if (parsed.unassign) dto.assigneeId = null;
+      else if (parsed.assigneeRawText) {
+        const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
+        const resolution = await this.employeeResolver.resolve(parsed.assigneeRawText, employees);
+        if (resolution.status !== 'RESOLVED' || !resolution.employeeId) {
+          return {
+            tool,
+            error: true,
+            message:
+              resolution.status === 'AMBIGUOUS'
+                ? `ASSIGNEE_AMBIGUOUS: по имени «${parsed.assigneeRawText}» подходят несколько сотрудников — уточните у пользователя`
+                : `ASSIGNEE_NOT_FOUND: не нашёл сотрудника «${parsed.assigneeRawText}» — уточните у пользователя`,
+          };
+        }
+        dto.assigneeId = resolution.employeeId;
+      }
+      if (Object.keys(dto).length === 0) return { tool, error: true, message: 'INVALID_INPUT: не указано, что изменить' };
+      return this.runOnce(conversationId, dedupeKey, tool, taskId, () => this.updateTask(taskId, dto, user, conversationId), () => this.updateApplied(taskId, dto));
+    }
+
+    if (tool === 'set_task_status') {
+      const status = (input as { status?: unknown } | null)?.status;
+      if (!SETTABLE_TASK_STATUSES.includes(status as TaskStatus)) return { tool, error: true, message: 'INVALID_INPUT: неизвестный статус' };
+      const target = status as TaskStatus;
+      return this.runOnce(conversationId, dedupeKey, tool, taskId, () => this.setTaskStatus(taskId, target, user, conversationId), async () => (await this.prisma.task.findUnique({ where: { id: taskId }, select: { status: true } }))?.status === target);
+    }
+
+    if (tool === 'comment_task') {
+      const text = typeof (input as { text?: unknown } | null)?.text === 'string' ? (input as { text: string }).text.trim() : '';
+      if (!text) return { tool, error: true, message: 'INVALID_INPUT: пустой комментарий' };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        taskId,
+        async () => {
+          const task = await this.tasks.addComment(taskId, { body: text }, user);
+          void this.audit.log(user.id, 'AI_TASK_COMMENT', 'Task', taskId, { length: text.length });
+          return { tool, task: toTaskCardData(task), comment: text };
+        },
+        async (since) => (await this.prisma.taskComment.count({ where: { taskId, authorId: user.id, body: text, createdAt: { gte: since } } })) > 0,
+      );
+    }
+
+    if (tool === 'remind_task') {
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        taskId,
+        async () => {
+          const task = await this.tasks.remind(taskId, user);
+          void this.audit.log(user.id, 'AI_TASK_REMIND', 'Task', taskId, {});
+          return { tool, task: toTaskCardData(task) };
+        },
+        async (since) => (await this.prisma.taskHistory.count({ where: { taskId, field: 'remind', changedById: user.id, createdAt: { gte: since } } })) > 0,
+      );
+    }
+
+    // delete_task — без отмены (сущности уже нет), как и голосовое удаление.
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      taskId,
+      async () => {
+        const before = await this.tasks.findOne(taskId);
+        await this.tasks.remove(taskId, user);
+        void this.audit.log(user.id, 'AI_TASK_DELETE', 'Task', taskId, {});
+        return { tool, taskId, title: before.title };
+      },
+      async () => (await this.prisma.task.count({ where: { id: taskId } })) === 0,
+    );
+  }
+
+  private async updateTask(taskId: string, dto: UpdateTaskDto, user: AuthenticatedUser, conversationId: string): Promise<ToolExecutionResult> {
+    const before = await this.tasks.findOne(taskId);
+    // Снимок «до» только по меняемым полям — тот же формат, что у голоса
+    // (TaskRevertPayload), откатывает его VoiceService.undo.
+    const previous: Record<string, unknown> = {};
+    if (dto.title !== undefined) previous.title = before.title;
+    if (dto.description !== undefined) previous.description = before.description ?? '';
+    if (dto.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
+    if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
+    if (dto.priority !== undefined) previous.priority = before.priority;
+    const after = await this.tasks.update(taskId, dto, user);
+    const undo = await this.createUndo(user, taskId, previous, conversationId);
+    void this.audit.log(user.id, 'AI_TASK_UPDATE', 'Task', taskId, { fields: Object.keys(dto) });
+    return { tool: 'update_task', task: { ...toTaskCardData(after), changes: describeTaskChanges(before, after), ...undo } };
+  }
+
+  private async setTaskStatus(taskId: string, status: TaskStatus, user: AuthenticatedUser, conversationId: string): Promise<ToolExecutionResult> {
+    const before = await this.tasks.findOne(taskId);
+    if (before.status === status) return { tool: 'set_task_status', task: { ...toTaskCardData(before), changes: [] } };
+    const after = await this.tasks.updateStatus(taskId, status, user);
+    const undo = await this.createUndo(user, taskId, { status: before.status }, conversationId);
+    void this.audit.log(user.id, 'AI_TASK_STATUS', 'Task', taskId, { from: before.status, to: status });
+    return { tool: 'set_task_status', task: { ...toTaskCardData(after), changes: describeTaskChanges(before, after), ...undo } };
+  }
+
+  // Повтор с несовпавшими полями — значит прошлая попытка не дошла до записи.
+  private async updateApplied(taskId: string, dto: UpdateTaskDto): Promise<boolean> {
+    const task = await this.prisma.task.findUnique({ where: { id: taskId }, select: { title: true, description: true, assigneeId: true, dueDate: true, priority: true } });
+    if (!task) return false;
+    if (dto.title !== undefined && task.title !== dto.title) return false;
+    if (dto.description !== undefined && (task.description ?? '') !== dto.description) return false;
+    if (dto.assigneeId !== undefined && task.assigneeId !== dto.assigneeId) return false;
+    if (dto.priority !== undefined && task.priority !== dto.priority) return false;
+    if (dto.dueDate !== undefined) {
+      const want = dto.dueDate ? new Date(dto.dueDate).getTime() : null;
+      if ((task.dueDate?.getTime() ?? null) !== want) return false;
+    }
+    return true;
+  }
+
+  // Та же запись UndoRecord, что у голоса (VoiceService.createUndoRecord) —
+  // откат делает тот же POST /voice/undo. conversationId — чтобы
+  // «Отменено.» появилось в том разговоре, где карточка. Сбой — без отмены,
+  // не ошибка самого изменения (оно уже случилось).
+  private async createUndo(user: AuthenticatedUser, taskId: string, previous: Record<string, unknown>, conversationId: string): Promise<{ undoToken: string | null; undoExpiresAt: string | null }> {
+    try {
+      const record = await this.prisma.undoRecord.create({
+        data: {
+          employeeId: user.id,
+          kind: UndoKind.TASK,
+          action: UndoRecordAction.UPDATE,
+          entityId: taskId,
+          previous: previous as Prisma.InputJsonValue,
+          status: UndoRecordStatus.AVAILABLE,
+          expiresAt: new Date(Date.now() + AGENT_UNDO_WINDOW_MS),
+          conversationId,
+        },
+      });
+      return { undoToken: record.id, undoExpiresAt: record.expiresAt.toISOString() };
+    } catch (err) {
+      this.logger.error(`undo record failed for task ${taskId} — изменение уже выполнено, без отмены: ${err instanceof Error ? err.message : String(err)}`);
+      return { undoToken: null, undoExpiresAt: null };
+    }
+  }
+
+  // Ровно одно выполнение на `<userMessageId>:<writeToolCallIndex>` в
+  // разговоре (AgentActionExecution). COMPLETED — отдаём сохранённый
+  // результат; свежий CLAIMED — параллельный вызов, отказ; брошенный CLAIMED
+  // (процесс упал) — сначала проверяем, не применено ли изменение уже
+  // (wasApplied), и только потом повторяем.
+  private async runOnce(
+    conversationId: string,
+    dedupeKey: string,
+    tool: TaskWriteToolName,
+    taskId: string,
+    run: () => Promise<ToolExecutionResult>,
+    wasApplied: (since: Date) => Promise<boolean>,
+  ): Promise<ToolExecutionResult> {
+    let executionId: string;
+    try {
+      executionId = (await this.prisma.agentActionExecution.create({ data: { conversationId, dedupeKey, tool } })).id;
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+      const existing = await this.prisma.agentActionExecution.findUnique({ where: { conversationId_dedupeKey: { conversationId, dedupeKey } } });
+      if (!existing) throw err;
+      if (existing.status === AgentActionStatus.COMPLETED && existing.resultJson) return existing.resultJson as unknown as ToolExecutionResult;
+      const stale = Date.now() - existing.updatedAt.getTime() > STALE_AGENT_ACTION_MS;
+      if (existing.status === AgentActionStatus.CLAIMED && !stale) {
+        return { tool, error: true, message: 'ALREADY_PROCESSING: это изменение уже выполняется — подождите немного' };
+      }
+      if (existing.status === AgentActionStatus.CLAIMED && (await wasApplied(existing.createdAt))) {
+        const result: ToolExecutionResult = { tool, alreadyApplied: true, taskId };
+        await this.prisma.agentActionExecution.update({ where: { id: existing.id }, data: { status: AgentActionStatus.COMPLETED, resultJson: result as unknown as Prisma.InputJsonValue } });
+        return result;
+      }
+      await this.prisma.agentActionExecution.update({ where: { id: existing.id }, data: { status: AgentActionStatus.CLAIMED, errorMessage: null } });
+      executionId = existing.id;
+    }
+
+    let result: ToolExecutionResult;
+    try {
+      result = await run();
+    } catch (err) {
+      const expected = taskWriteError(tool, err);
+      await this.prisma.agentActionExecution
+        .update({ where: { id: executionId }, data: { status: AgentActionStatus.FAILED, errorMessage: expected?.message ?? (err instanceof Error ? err.message : String(err)) } })
+        .catch(() => {});
+      if (expected) return expected;
+      throw err;
+    }
+    await this.prisma.agentActionExecution.update({ where: { id: executionId }, data: { status: AgentActionStatus.COMPLETED, resultJson: result as unknown as Prisma.InputJsonValue } });
+    return result;
   }
 
   // Stage 2, Phase G — в отличие от getTasks выше, здесь НЕТ среза на

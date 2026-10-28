@@ -21,6 +21,7 @@ import { api } from '@/lib/api';
 import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
 import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusPill } from '@/components/ui';
 import { TaskDetailOverlay } from './task-detail-overlay';
+import { TaskChangeFooter } from './assistant/task-change-footer';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
 // — реестр по part.type остаётся тем же (спека Stage 2 §21), меняются
@@ -149,6 +150,8 @@ function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) 
         fresh={fresh}
         onOpen={() => setOpen(true)}
       />
+      {/* Задачу изменил ассистент (единый агент A2) — «было → стало» и отмена. */}
+      <TaskChangeFooter data={data} />
       {open && <TaskDetailOverlay taskId={data.taskId} onClose={() => setOpen(false)} />}
     </>
   );

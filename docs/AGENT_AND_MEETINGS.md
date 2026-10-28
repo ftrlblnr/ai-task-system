@@ -205,7 +205,12 @@ push-to-talk, живой голос, навыки и регламенты; го�
   `VoiceService` в общий `assistant/undo.service.ts` (вместе с откатом из
   `VoiceService.undo`); все пишущие инструменты задач и событий (кроме
   delete и comment/remind) создают `UndoRecord` и кладут в карточку
-  `undoToken` + `undoExpiresAt`. `TaskCardData`/`EventCardData` получают
+  `undoToken` + `undoExpiresAt`. **Сделано в A2 иначе:** откат остался в
+  `VoiceService.undo` и `POST /voice/undo` (на нём сотни строк тестов);
+  чат создаёт тот же `UndoRecord` (+ `conversationId`, куда писать
+  «Отменено.»), откат статуса — через `updateStatus`. Перенос в
+  `undo.service.ts` и `POST /assistant/undo` — в A4, вместе с голосом.
+  `TaskCardData`/`EventCardData` получают
   необязательные `undoToken?: string | null`, `undoExpiresAt?: string | null`,
   `change?: { field, from, to }[]` (что изменилось — показать «срок: 25.10 →
   31.10»). Эндпоинт отката — новый `POST /assistant/undo {undoToken}`;

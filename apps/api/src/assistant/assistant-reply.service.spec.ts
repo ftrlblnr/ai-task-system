@@ -74,39 +74,39 @@ describe('AssistantReplyService.reply — ограниченный многор�
   // РЕГРЕССИЯ находки №5 — до этого фикса ВТОРОЙ раунд tool_use вообще не
   // выполнялся (только залогировать warn и вернуть текст как есть), что
   // здесь эквивалентно streamOnce, вызванному лишь дважды и tools.execute
-  // лишь один раз. MAX_TOOL_ROUNDS=3 разрешает до 3 раундов выполнения
-  // инструментов (4 вызова streamOnce: 3 раунда tool_use + 1 финальный).
-  it('MAX_TOOL_ROUNDS=3 — модель просит инструмент четвёртый раз подряд, цикл останавливается, texт берётся как есть', async () => {
+  // лишь один раз. MAX_TOOL_ROUNDS=5 (единый агент A2, было 3) разрешает до
+  // 5 раундов выполнения инструментов (6 вызовов streamOnce: 5 раундов
+  // tool_use + 1 финальный).
+  it('MAX_TOOL_ROUNDS=5 — модель просит инструмент шестой раз подряд, цикл останавливается, texт берётся как есть', async () => {
+    const empty = { tool: 'get_recent_meetings', items: [], totalCount: 0 };
     const { service, tools, streamOnce } = makeService(
       [
         toolUseMessage('get_recent_meetings', 'call-1'),
         toolUseMessage('get_recent_meetings', 'call-2'),
         toolUseMessage('get_recent_meetings', 'call-3'),
-        toolUseMessage('get_recent_meetings', 'call-4'), // сверх лимита — не выполняется
+        toolUseMessage('get_recent_meetings', 'call-4'),
+        toolUseMessage('get_recent_meetings', 'call-5'),
+        toolUseMessage('get_recent_meetings', 'call-6'), // сверх лимита — не выполняется
       ],
-      [
-        { tool: 'get_recent_meetings', items: [], totalCount: 0 },
-        { tool: 'get_recent_meetings', items: [], totalCount: 0 },
-        { tool: 'get_recent_meetings', items: [], totalCount: 0 },
-      ],
+      [empty, empty, empty, empty, empty],
     );
 
     const result = await service.reply('Зациклись', [], user(), 'c1', 'm1');
 
-    // 4 вызова streamOnce (раунды 1-4), но tools.execute — только 3 раза
-    // (раунды 1-3); 4-й ответ модели с tool_use не выполняется, цикл
+    // 6 вызовов streamOnce (раунды 1-6), но tools.execute — только 5 раз
+    // (раунды 1-5); 6-й ответ модели с tool_use не выполняется, цикл
     // останавливается и берёт его (пустой) текст как есть.
-    expect(streamOnce).toHaveBeenCalledTimes(4);
-    expect(tools.execute).toHaveBeenCalledTimes(3);
-    expect(result.toolCalls).toHaveLength(3);
+    expect(streamOnce).toHaveBeenCalledTimes(6);
+    expect(tools.execute).toHaveBeenCalledTimes(5);
+    expect(result.toolCalls).toHaveLength(5);
   });
 
   // Раздел 15 спеки Phase O ("Meeting → Task workflow") — write-tool
   // (create_task_from_meeting) должен уметь быть ЛЮБЫМ раундом, включая
-  // последний доступный (3-й) — runReply не делает разницы между read- и
+  // третий по счёту — runReply не делает разницы между read- и
   // write-инструментами, дальнейшая идемпотентность/валидация — целиком
   // внутри самого AssistantToolsService.execute (см. её тесты).
-  it('write-tool create_task_from_meeting корректно выполняется на 3-м (последнем разрешённом) раунде, получает conversationId/userMessageId', async () => {
+  it('write-tool create_task_from_meeting корректно выполняется на 3-м раунде, получает conversationId/userMessageId', async () => {
     const { service, tools, streamOnce } = makeService(
       [
         toolUseMessage('search_meetings', 'call-1'),

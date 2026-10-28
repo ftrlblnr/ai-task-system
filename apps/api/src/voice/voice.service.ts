@@ -1111,8 +1111,11 @@ export class VoiceService {
   // с произвольным текстом от клиента (conversation-history poisoning —
   // см. комментарий у VoiceUndoDto); текст теперь всегда решает сервер, не
   // клиент, поэтому метод стал private.
-  private async logAssistantMessage(text: string, user: AuthenticatedUser): Promise<void> {
-    const conversation = await this.assistantChat.getOrCreatePrimaryConversation(user);
+  // conversationId (единый агент A2) — разговор, где показана карточка с
+  // «Отменить»; только свой — иначе, как раньше, основной разговор.
+  private async logAssistantMessage(text: string, user: AuthenticatedUser, conversationId?: string | null): Promise<void> {
+    const own = conversationId ? await this.prisma.conversation.findFirst({ where: { id: conversationId, employeeId: user.id }, select: { id: true } }) : null;
+    const conversation = own ?? (await this.assistantChat.getOrCreatePrimaryConversation(user));
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
@@ -1162,7 +1165,7 @@ export class VoiceService {
     // что и у enforceEventRbac).
     if (record.kind === UndoKind.EVENT && !isManager(user.role)) {
       const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
-      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
+      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user, record.conversationId).catch(() => {});
       return { ok: false, error, warning: null };
     }
 
@@ -1195,7 +1198,11 @@ export class VoiceService {
           if (previous.assigneeId !== undefined) patch.assigneeId = previous.assigneeId;
           if (previous.dueDate !== undefined) patch.dueDate = previous.dueDate;
           if (previous.priority !== undefined) patch.priority = previous.priority;
-          await this.tasks.update(record.entityId, patch, user);
+          // Единый агент A2: смена статуса из чата откатывается через
+          // updateStatus (его права — у исполнителя, не у постановщика), а
+          // update с пустым патчем не вызываем — исполнителю он запрещён.
+          if (Object.keys(patch).length > 0) await this.tasks.update(record.entityId, patch, user);
+          if (previous.status !== undefined) await this.tasks.updateStatus(record.entityId, previous.status, user);
         }
       } else {
         if (record.action === UndoRecordAction.CREATE) {
@@ -1253,7 +1260,7 @@ export class VoiceService {
       // Логирование подтверждения — вторичный эффект, не должен превращать
       // уже случившийся успешный откат в ok:false для клиента (тот же
       // принцип, что и graceful degradation в runParse, Phase H.1).
-      await this.logAssistantMessage(warning ? `Отменено частично. ${warning}` : 'Отменено.', user).catch(() => {});
+      await this.logAssistantMessage(warning ? `Отменено частично. ${warning}` : 'Отменено.', user, record.conversationId).catch(() => {});
       return { ok: true, error: null, warning };
     } catch (err) {
       const error = toErrorMessage(err);
@@ -1262,7 +1269,7 @@ export class VoiceService {
       // причину сбоя отката), чтобы пользователь мог нажать "Отменить" ещё
       // раз в пределах expiresAt, а не получал "уже отменено" на ровном месте.
       await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.AVAILABLE } }).catch(() => {});
-      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user).catch(() => {});
+      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user, record.conversationId).catch(() => {});
       return { ok: false, error, warning: null };
     }
   }

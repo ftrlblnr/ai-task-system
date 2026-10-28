@@ -22,7 +22,7 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
   it('сотруднику предлагаются задачи (get_tasks, find_tasks, get_task) и export_tasks_xlsx — календарь закрыт на OWNER', async () => {
     const service = new AssistantToolsService({} as any, {} as any, {} as any);
     const names = (await service.buildTools(user())).map((t) => t.name);
-    expect(names).toEqual(['get_tasks', 'find_tasks', 'get_task', 'export_tasks_xlsx']);
+    expect(names).toEqual(['get_tasks', 'find_tasks', 'get_task', 'update_task', 'set_task_status', 'comment_task', 'remind_task', 'delete_task', 'export_tasks_xlsx']);
   });
 
   it('руководителю дополнительно предлагаются календарь и инструменты встреч (Stage 2, Phase K), без компетенций в компании — find_employee_by_competency не предлагается', async () => {
@@ -33,6 +33,11 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       'get_tasks',
       'find_tasks',
       'get_task',
+      'update_task',
+      'set_task_status',
+      'comment_task',
+      'remind_task',
+      'delete_task',
       'export_tasks_xlsx',
       'get_events',
       'get_recent_meetings',

@@ -3189,3 +3189,24 @@ a.row-item-title:hover { text-decoration: underline; }
 label.ds-field-label { display: block; margin: 0; }
 label.ds-btn { flex-direction: row; margin: 0; }
 .ds-panel-head .ds-spacer { flex: 1; }
+
+/* Единый агент A2: под карточкой задачи, которую изменил ассистент, —
+   «было → стало» и «Отменить» (components/assistant/task-change-footer.tsx). */
+.task-change {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.task-change-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.task-change-label {
+  color: var(--ink-3);
+}

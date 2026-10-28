@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { TaskStatus } from '@prisma/client';
-import { withLocalOffset } from '../common/timezone';
+import { TIMEZONE_OFFSET_HOURS, withLocalOffset } from '../common/timezone';
 import type { TaskSearchGroup } from '../tasks/tasks.service';
 import type { TaskCardData } from './dto/message-part-data.dto';
 
@@ -208,4 +208,144 @@ export function toTaskDetail(
     comments: t.comments.slice(-TASK_DETAIL_COMMENTS_LIMIT).map((c) => ({ author: c.author.fullName, text: clip(c.body, TASK_DETAIL_COMMENT_MAX), at: c.createdAt.toISOString() })),
     commentCount: t.comments.length,
   };
+}
+
+// ── Этап A2: изменение задач из чата ────────────────────────────────────
+// Исполнение — через TasksService (его RBAC, история, уведомления), ключ
+// повтора — AgentActionExecution, отмена — UndoRecord + POST /voice/undo.
+
+const TASK_ID_PROP = { taskId: { type: 'string', description: 'id задачи из find_tasks/get_task, [shown_task] или [page_context]' } } as const;
+const WRITE_RULES =
+  'Вызывай только по прямой просьбе пользователя. id задачи — только из find_tasks/get_task, пометки [shown_task] или блока [page_context]; если пользователь говорит «эту задачу», а какую — неясно, сначала найди через find_tasks и переспроси при нескольких кандидатах. Выполняется сразу; у пользователя 30 секунд, чтобы отменить кнопкой на карточке.';
+
+// Статусы, которые можно поставить из чата: черновик — служебный.
+export const SETTABLE_TASK_STATUSES = TASK_STATUSES.filter((s) => s !== TaskStatus.DRAFT);
+
+export const UPDATE_TASK_TOOL: Anthropic.Tool = {
+  name: 'update_task',
+  description: `Изменить задачу: название, описание, исполнителя, срок, приоритет («перенеси срок на пятницу», «передай Асель», «сделай срочной»). Передавай только то, что просят изменить. ${WRITE_RULES} Статус — через set_task_status.`,
+  input_schema: {
+    type: 'object',
+    properties: {
+      ...TASK_ID_PROP,
+      title: { type: 'string' },
+      description: { type: 'string' },
+      assigneeRawText: { type: 'string', description: 'Новый исполнитель, как прозвучал («Асель», «на Рустема») — сервер сам найдёт сотрудника' },
+      unassign: { type: 'boolean', description: 'true — снять исполнителя' },
+      dueDate: { type: 'string', description: 'Новый срок — местное время без смещения; назван только день — 18:00 этого дня' },
+      clearDueDate: { type: 'boolean', description: 'true — снять срок' },
+      priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] },
+    },
+    required: ['taskId'],
+  },
+};
+
+export const SET_TASK_STATUS_TOOL: Anthropic.Tool = {
+  name: 'set_task_status',
+  description: `Перевести задачу в другой статус: NEW — новая, IN_PROGRESS — в работе, IN_REVIEW — на проверке, DONE — выполнена, RETURNED — вернуть на доработку, CANCELLED — отменить. Исполнитель может ставить только IN_PROGRESS/IN_REVIEW/DONE, руководство — любой (сервер проверит сам). ${WRITE_RULES}`,
+  input_schema: {
+    type: 'object',
+    properties: { ...TASK_ID_PROP, status: { type: 'string', enum: SETTABLE_TASK_STATUSES } },
+    required: ['taskId', 'status'],
+  },
+};
+
+export const COMMENT_TASK_TOOL: Anthropic.Tool = {
+  name: 'comment_task',
+  description: `Написать комментарий к задаче от имени пользователя (его увидят постановщик/исполнитель и наблюдатели, им придёт уведомление). text — сам комментарий, как его написал бы пользователь. ${WRITE_RULES}`,
+  input_schema: {
+    type: 'object',
+    properties: { ...TASK_ID_PROP, text: { type: 'string' } },
+    required: ['taskId', 'text'],
+  },
+};
+
+export const REMIND_TASK_TOOL: Anthropic.Tool = {
+  name: 'remind_task',
+  description: `Напомнить исполнителю о задаче сообщением в Telegram (не чаще раза в час на задачу). ${WRITE_RULES}`,
+  input_schema: { type: 'object', properties: { ...TASK_ID_PROP }, required: ['taskId'] },
+};
+
+export const DELETE_TASK_TOOL: Anthropic.Tool = {
+  name: 'delete_task',
+  description:
+    'Удалить задачу навсегда, вместе с подзадачами и комментариями. Только когда пользователь прямо говорит «удали задачу»; «отмени», «не нужна» — это set_task_status CANCELLED. Отменить удаление нельзя. id — только из find_tasks/get_task, [shown_task] или [page_context].',
+  input_schema: { type: 'object', properties: { ...TASK_ID_PROP }, required: ['taskId'] },
+};
+
+export const TASK_WRITE_TOOLS: Anthropic.Tool[] = [UPDATE_TASK_TOOL, SET_TASK_STATUS_TOOL, COMMENT_TASK_TOOL, REMIND_TASK_TOOL, DELETE_TASK_TOOL];
+
+export interface UpdateTaskInput {
+  taskId: string;
+  title?: string;
+  description?: string;
+  assigneeRawText?: string;
+  unassign: boolean;
+  // undefined — не менять, null — снять, строка — местное время со смещением.
+  dueDate?: string | null;
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+}
+
+export function parseUpdateTaskInput(input: unknown): UpdateTaskInput {
+  const typed = (input ?? {}) as Record<string, unknown>;
+  const priority = typed.priority;
+  const due = text(typed.dueDate);
+  return {
+    taskId: text(typed.taskId) ?? '',
+    title: text(typed.title),
+    // Описание можно очистить пустой строкой — её не теряем.
+    description: typeof typed.description === 'string' ? typed.description.trim() : undefined,
+    assigneeRawText: text(typed.assigneeRawText),
+    unassign: typed.unassign === true,
+    dueDate: typed.clearDueDate === true ? null : due ? (withLocalOffset(due) as string) : undefined,
+    priority: priority === 'LOW' || priority === 'MEDIUM' || priority === 'HIGH' || priority === 'CRITICAL' ? priority : undefined,
+  };
+}
+
+export interface TaskChange {
+  label: string;
+  from: string | null;
+  to: string | null;
+}
+
+const PRIORITY_RU: Record<string, string> = { LOW: 'низкий', MEDIUM: 'обычный', HIGH: 'высокий', CRITICAL: 'критичный' };
+const STATUS_RU: Record<string, string> = {
+  DRAFT: 'Черновик',
+  NEW: 'Новая',
+  IN_PROGRESS: 'В работе',
+  IN_REVIEW: 'На проверке',
+  DONE: 'Выполнена',
+  RETURNED: 'Возвращена на доработку',
+  CANCELLED: 'Отменена',
+};
+
+// Срок для человека — по местному времени компании: «31.10, 18:00».
+export function formatDue(date: Date | null): string | null {
+  if (!date) return null;
+  const local = new Date(date.getTime() + TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000).toISOString();
+  return `${local.slice(8, 10)}.${local.slice(5, 7)}, ${local.slice(11, 16)}`;
+}
+
+interface TaskSnapshot {
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  dueDate: Date | null;
+  assignee: { id: string; fullName: string } | null;
+}
+
+// «Было → стало» для карточки: только реально изменившееся.
+export function describeTaskChanges(before: TaskSnapshot, after: TaskSnapshot): TaskChange[] {
+  const changes: TaskChange[] = [];
+  const push = (label: string, from: string | null, to: string | null) => {
+    if (from !== to) changes.push({ label, from, to });
+  };
+  push('Название', before.title, after.title);
+  if ((before.description ?? '') !== (after.description ?? '')) changes.push({ label: 'Описание', from: null, to: after.description ? 'изменено' : 'очищено' });
+  push('Статус', STATUS_RU[before.status] ?? before.status, STATUS_RU[after.status] ?? after.status);
+  push('Приоритет', PRIORITY_RU[before.priority] ?? before.priority, PRIORITY_RU[after.priority] ?? after.priority);
+  push('Срок', formatDue(before.dueDate), formatDue(after.dueDate));
+  push('Исполнитель', before.assignee?.fullName ?? null, after.assignee?.fullName ?? null);
+  return changes;
 }

@@ -1,4 +1,4 @@
-import { TaskPriority } from '@prisma/client';
+import { TaskPriority, TaskStatus } from '@prisma/client';
 import type { ResponseMessage } from '../../assistant/assistant-response.mapper';
 
 // Ответ POST /voice/parse. Черновик разбирается и ВЫПОЛНЯЕТСЯ в одном и том
@@ -100,6 +100,8 @@ export interface TaskRevertPayload {
   // поле в схеме (@default(MEDIUM)), снимок "до" всегда несёт конкретное
   // значение (см. VoiceService, previous.priority = before.priority).
   priority?: TaskPriority;
+  // Единый агент A2 (set_task_status из чата) — статус до смены.
+  status?: TaskStatus;
 }
 export interface EventRevertPayload {
   title?: string;

@@ -540,6 +540,12 @@ export interface TaskCardData {
     timestamp?: string | null;
     context?: string | null;
   } | null;
+  // Единый агент A2: задачу только что изменил ассистент — что изменилось
+  // («Срок: 25.10, 18:00 → 31.10, 18:00») и токен отмены для POST /voice/undo,
+  // действует до undoExpiresAt (время сервера).
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface EventCardData {

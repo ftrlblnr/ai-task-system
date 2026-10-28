@@ -1,4 +1,5 @@
-import { MessagePartType, Prisma } from '@prisma/client';
+import { MessagePartType, Prisma, type TaskStatus } from '@prisma/client';
+import { TASK_STATUS_RU } from '../tasks/tasks.service';
 import type { AssistantReplyResult } from './assistant-reply.service';
 import type { ToolExecutionResult } from './assistant-tools.service';
 import type { ToolActivityData } from './dto/message-part-data.dto';
@@ -56,6 +57,9 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'forget_memory') return { label: 'Не удалось убрать из памяти' };
     if (result.tool === 'propose_routine') return { label: 'Не удалось подготовить регламент' };
     if (result.tool === 'create_task' || result.tool === 'create_task_from_meeting') return { label: 'Не удалось поставить задачу' };
+    if (result.tool === 'update_task' || result.tool === 'set_task_status' || result.tool === 'comment_task') return { label: 'Не удалось изменить задачу' };
+    if (result.tool === 'remind_task') return { label: 'Не удалось напомнить исполнителю' };
+    if (result.tool === 'delete_task') return { label: 'Не удалось удалить задачу' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -66,6 +70,15 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     return { label: `Нашёл задачи${who}: ${result.totalCount}${overdue}` };
   }
   if (result.tool === 'get_task') return { label: `Открыл задачу «${result.task.title}»` };
+  // Единый агент A2.
+  if ('alreadyApplied' in result) return { label: 'Изменение уже было выполнено раньше' };
+  if (result.tool === 'update_task') return { label: result.task.changes?.length ? `Изменил задачу «${result.task.title}»` : `Задача «${result.task.title}» уже такая` };
+  if (result.tool === 'set_task_status') {
+    return { label: result.task.changes?.length ? `Статус «${result.task.title}»: ${TASK_STATUS_RU[result.task.status as TaskStatus] ?? result.task.status}` : `Задача «${result.task.title}» уже в этом статусе` };
+  }
+  if (result.tool === 'comment_task') return { label: `Написал комментарий к «${result.task.title}»` };
+  if (result.tool === 'remind_task') return { label: `Напомнил исполнителю о «${result.task.title}»` };
+  if (result.tool === 'delete_task') return { label: `Удалил задачу «${result.title}»` };
   if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
   if (result.tool === 'export_tasks_xlsx') return { label: `Сформировал файл: ${result.file.name}` };
   if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
@@ -123,8 +136,11 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
 // Карточки одного инструмента (order проставляет вызывающий).
 function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
   const parts: MessagePartInput[] = [];
-  if ('error' in result) return parts;
-  if (result.tool === 'get_tasks') {
+  if ('error' in result || 'alreadyApplied' in result) return parts;
+  if (result.tool === 'update_task' || result.tool === 'set_task_status' || result.tool === 'comment_task' || result.tool === 'remind_task') {
+    // Единый агент A2 — карточка с «было → стало» и «Отменить» (если есть undoToken).
+    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
+  } else if (result.tool === 'get_tasks') {
     for (const item of result.items) {
       parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(item) });
     }
@@ -179,7 +195,19 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
 // действий терять нельзя: без карточки плана/письма нечем подтвердить
 // (инцидент 23.10.2026 — «перенеси в архив» голосом, план создан, кнопки нет).
 // Списки get_tasks/get_events и ответ юриста голос по-прежнему пересказывает.
-const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>(['propose_mail_actions', 'draft_mail_reply', 'create_task', 'create_task_from_meeting', 'export_tasks_xlsx']);
+const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>([
+  'propose_mail_actions',
+  'draft_mail_reply',
+  'create_task',
+  'create_task_from_meeting',
+  'export_tasks_xlsx',
+  // Единый агент A2 — голосовой вопрос может закончиться изменением задачи
+  // через Assistant Core: карточка с отменой не должна теряться.
+  'update_task',
+  'set_task_status',
+  'comment_task',
+  'remind_task',
+]);
 
 export function voiceActionCardParts(result: AssistantReplyResult): MessagePartInput[] {
   return result.toolCalls.filter((call) => VOICE_CARD_TOOLS.has(call.result.tool)).flatMap((call) => toolCardParts(call.result));

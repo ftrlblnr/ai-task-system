@@ -20,6 +20,7 @@ import type {
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
 import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
+import { TaskChangeFooter } from './assistant/task-change-footer';
 import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -140,16 +141,20 @@ const KNOWN_STATUS = new Set(Object.keys(STATUS_LABELS));
 function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) {
   const router = useRouter();
   return (
-    <EntityCard
-      kind="task"
-      title={data.title}
-      status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
-      due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
-      assignee={data.assignee?.name}
-      source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
-      fresh={fresh}
-      onOpen={() => router.push(`/tasks/${data.taskId}`)}
-    />
+    <>
+      <EntityCard
+        kind="task"
+        title={data.title}
+        status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
+        due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
+        assignee={data.assignee?.name}
+        source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
+        fresh={fresh}
+        onOpen={() => router.push(`/tasks/${data.taskId}`)}
+      />
+      {/* Задачу изменил ассистент (единый агент A2) — «было → стало» и отмена. */}
+      <TaskChangeFooter data={data} />
+    </>
   );
 }
 

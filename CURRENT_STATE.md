@@ -2719,3 +2719,33 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   - Тесты: `assistant/task-tools.spec.ts` (разбор входа, where, счётчики,
     резолв имён, карточки, get_task), `skill-catalog.spec.ts` (обновление
     навыков). Scoped eslint api на VPS падает по памяти — вердикт CI.
+- **A2 (28.10.2026) — изменение задач из чата:**
+  - Инструменты (`assistant/task-tools.ts`, всем ролям — права решает
+    `TasksService`): `update_task` (название, описание, исполнитель текстом —
+    резолвер, срок по Алматы, приоритет; снять срок/исполнителя — флагами),
+    `set_task_status` (кроме DRAFT), `comment_task`, `remind_task`,
+    `delete_task` (только на прямое «удали», без отмены). Все — в
+    `WRITE_TOOL_NAMES` (регламенты их не получают), в MCP и навыках их нет.
+  - Повторы: таблица `AgentActionExecution` (миграция
+    `20261028090000_agent_action_execution`), ключ
+    `<userMessageId>:<writeToolCallIndex>` в разговоре. COMPLETED — отдаётся
+    сохранённый результат; свежий CLAIMED — `ALREADY_PROCESSING`; брошенный
+    (> 60 с) — сначала проверка, не применено ли уже (`wasApplied` по
+    инструменту), иначе повтор. Отказы сервиса — кодами `TASK_FORBIDDEN` /
+    `TASK_NOT_FOUND` / `INVALID_INPUT` / `REMIND_TOO_SOON` / `TELEGRAM_FAILED`
+    с текстом сервиса.
+  - Отмена: `update_task`/`set_task_status` пишут тот же `UndoRecord`, что
+    голос (+ новое поле `conversationId`), 30 с; откат — существующий
+    `POST /voice/undo`. В `VoiceService.undo`: статус откатывается
+    `updateStatus` (`TaskRevertPayload.status`), пустой патч `update` не
+    вызывается (исполнителю запрещён), «Отменено.» пишется в разговор
+    карточки. Перенос отката в общий сервис — A4.
+  - Карточка: `TaskCardData.changes` («Срок: 25.10, 18:00 → 31.10, 18:00»),
+    `undoToken`, `undoExpiresAt`. web и Mini App:
+    `components/assistant/task-change-footer.tsx` — изменения и «Отменить»
+    до срока (минус 2 с на расхождение часов); после отмены
+    `lib/assistant-refresh.ts` просит ленту перечитать разговор.
+  - `SYSTEM_PROMPT` — правила изменения задач; `MAX_TOOL_ROUNDS` 3 → 5.
+  - Тесты: `assistant/task-write-tools.spec.ts` (изменения, повторы, права,
+    отмена статуса). jest api 1240/1240, `next build` web и miniapp,
+    `tsc --noEmit` обоих — чисто.
