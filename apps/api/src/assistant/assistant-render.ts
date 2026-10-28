@@ -2,6 +2,9 @@ import { MessagePartType, Prisma } from '@prisma/client';
 import type { AssistantReplyResult } from './assistant-reply.service';
 import type { ToolExecutionResult } from './assistant-tools.service';
 import type { ToolActivityData } from './dto/message-part-data.dto';
+import { toCard } from './task-tools';
+
+const FIND_TASKS_CARDS = 10;
 
 export interface MessagePartInput {
   type: MessagePartType;
@@ -57,6 +60,12 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     return { label: `Не удалось проверить ${what}` };
   }
   if (result.tool === 'get_tasks') return { label: `Проверил задачи: найдено ${result.totalCount}` };
+  if (result.tool === 'find_tasks') {
+    const who = result.filter.assignee ? ` · ${result.filter.assignee}` : '';
+    const overdue = result.overdueCount > 0 ? `, просрочено ${result.overdueCount}` : '';
+    return { label: `Нашёл задачи${who}: ${result.totalCount}${overdue}` };
+  }
+  if (result.tool === 'get_task') return { label: `Открыл задачу «${result.task.title}»` };
   if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
   if (result.tool === 'export_tasks_xlsx') return { label: `Сформировал файл: ${result.file.name}` };
   if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
@@ -119,6 +128,14 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
     for (const item of result.items) {
       parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(item) });
     }
+  } else if (result.tool === 'find_tasks') {
+    // Карточек — не больше, чем у get_tasks: остальное модель говорит по
+    // счётчикам, лента не превращается в простыню из 30 задач.
+    for (const item of result.items.slice(0, FIND_TASKS_CARDS)) {
+      parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(toCard(item)) });
+    }
+  } else if (result.tool === 'get_task') {
+    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(toCard(result.task)) });
   } else if (result.tool === 'get_events') {
     for (const item of result.items) {
       parts.push({ type: MessagePartType.EVENT_CARD, order: 0, data: toJson(item) });

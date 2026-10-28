@@ -9,6 +9,8 @@ import type { ToolExecutionResult } from '../assistant/assistant-tools.service';
 // ассистента наружу сам не попадёт.
 export const MCP_TOOL_TITLES: Record<string, string> = {
   get_tasks: 'Задачи',
+  find_tasks: 'Поиск задач',
+  get_task: 'Задача',
   get_events: 'Календарь руководителя',
   get_recent_meetings: 'Последние встречи',
   search_meetings: 'Поиск встреч',

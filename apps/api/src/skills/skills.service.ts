@@ -18,7 +18,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { isManager } from '../auth/roles';
 import { buildMarkdownDocx, docxFileName, DOCX_MIME } from '../reports/markdown-docx';
 import { callCostUsd } from '../ai-usage/ai-usage-prices';
-import { buildToneBlock, parseSkillInvocation, SKILL_TOOL_LABELS, skillUserText, SYSTEM_SKILLS, TONE_SLUG } from './skill-catalog';
+import { buildToneBlock, parseSkillInvocation, pickSkillUpgrades, SKILL_TOOL_LABELS, skillUserText, SYSTEM_SKILLS, TONE_SLUG } from './skill-catalog';
 
 // Навык в том виде, в каком его получает AssistantReplyService.
 export interface ReplySkill {
@@ -91,12 +91,22 @@ export class SkillsService implements OnModuleInit {
     }
   }
 
-  // Только недостающие: правки людей в существующих общих навыках не трогаем.
+  // Недостающие создаём; существующий общий навык обновляем до нового seed
+  // только если его никто не правил (текст и инструменты — дословно прежний
+  // seed, SYSTEM_SKILL_UPGRADES). Правки людей не трогаем. version растёт —
+  // предложения правок, сделанные от старого текста, становятся устаревшими.
   async seedSystemSkills(): Promise<number> {
-    const existing = await this.prisma.skill.findMany({ where: { ownerId: null }, select: { slug: true } });
+    const existing = await this.prisma.skill.findMany({ where: { ownerId: null }, select: { id: true, slug: true, instructions: true, allowedTools: true } });
     const have = new Set(existing.map((s) => s.slug));
     const missing = SYSTEM_SKILLS.filter((s) => !have.has(s.slug));
     for (const s of missing) await this.prisma.skill.create({ data: { ...s, ownerId: null } });
+    for (const upgrade of pickSkillUpgrades(existing)) {
+      await this.prisma.skill.update({
+        where: { id: upgrade.id },
+        data: { instructions: upgrade.seed.instructions, allowedTools: upgrade.seed.allowedTools, version: { increment: 1 } },
+      });
+      this.logger.log(`общий навык /${upgrade.seed.slug} обновлён до нового seed`);
+    }
     return missing.length;
   }
 

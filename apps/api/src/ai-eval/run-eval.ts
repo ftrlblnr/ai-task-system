@@ -5,7 +5,7 @@ import { AnswerStructuringService } from '../reception/answer-structuring.servic
 import { isWhisperArtifact } from '../reception/whisper-artifacts';
 import { DraftExtractionService } from '../voice/draft-extraction.service';
 import { WhisperService } from '../voice/whisper.service';
-import { AssistantReplyService, buildDateContext } from '../assistant/assistant-reply.service';
+import { AssistantReplyService, buildDateContext, buildSystemBlocks, DEFAULT_CALL, type ReplyCallConfig } from '../assistant/assistant-reply.service';
 import { AssistantToolsService } from '../assistant/assistant-tools.service';
 
 // Проверочный набор ИИ (владелец 21.10.2026): реальные случаи, на которых
@@ -88,15 +88,29 @@ async function assistantTools(): Promise<Anthropic.Tool[]> {
   return toolsCache;
 }
 
-function assistantCase(text: string, expectedTool: string | null): Case {
+// expectedTool — один инструмент или любой из списка (для «просрочено»
+// годятся и get_tasks, и find_tasks); null — ответ без инструментов.
+function assistantCase(text: string, expectedTool: string | string[] | null): Case {
+  const expected = expectedTool === null ? null : Array.isArray(expectedTool) ? expectedTool : [expectedTool];
   return {
     group: 'ассистент',
-    name: `«${text}» → ${expectedTool ?? 'ответ без инструмента'}`,
+    name: `«${text}» → ${expected?.join(' | ') ?? 'ответ без инструмента'}`,
     run: async () => {
+      // Сигнатура streamOnce — как в runReply: конфиг вызова и system
+      // первыми (28.10.2026: прежний вызов без них не работал вовсе).
       const reply = new AssistantReplyService(config, {} as never) as unknown as {
-        streamOnce: (m: Anthropic.MessageParam[], t: Anthropic.Tool[], e: undefined, s: undefined) => Promise<Anthropic.Message>;
+        streamOnce: (
+          c: ReplyCallConfig,
+          sys: Anthropic.TextBlockParam[],
+          m: Anthropic.MessageParam[],
+          t: Anthropic.Tool[],
+          e: undefined,
+          s: undefined,
+        ) => Promise<Anthropic.Message>;
       };
       const message = await reply.streamOnce(
+        DEFAULT_CALL,
+        buildSystemBlocks(null),
         [
           {
             role: 'user',
@@ -111,7 +125,7 @@ function assistantCase(text: string, expectedTool: string | null): Case {
         undefined,
       );
       const used = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use').map((b) => b.name);
-      const ok = expectedTool === null ? used.length === 0 : used.includes(expectedTool);
+      const ok = expected === null ? used.length === 0 : used.some((name) => expected.includes(name));
       return check(ok, used.join(', ') || 'без инструмента');
     },
   };
@@ -183,7 +197,10 @@ const CASES: Case[] = [
     'Ирине нужно согласовать договор поставки, срок в понедельник',
     (d) => d.some((x) => x.type === 'task_action' && x.assigneeId === 'e2'),
   ),
-  assistantCase('какие у меня просроченные задачи?', 'get_tasks'),
+  assistantCase('какие у меня просроченные задачи?', ['get_tasks', 'find_tasks']),
+  assistantCase('что сейчас у Ирины в работе и что у неё просрочено?', 'find_tasks'),
+  assistantCase('у кого больше всего просроченных задач?', 'find_tasks'),
+  assistantCase('какие задачи по вентшахте ещё открыты?', 'find_tasks'),
   assistantCase('что у меня завтра в календаре?', 'get_events'),
   assistantCase('найди встречу, где обсуждали бюджет', 'search_meetings'),
   assistantCase('выгрузи мои задачи в excel', 'export_tasks_xlsx'),

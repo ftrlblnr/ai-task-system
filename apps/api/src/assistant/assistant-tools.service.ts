@@ -26,6 +26,8 @@ import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toRevi
 import { MemoryService } from '../memory/memory.service';
 import { MEMORY_TEXT_MAX } from '../memory/memory-index';
 import { RoutinesService } from '../routines/routines.service';
+import type { TaskSearchFilter } from '../tasks/tasks.service';
+import { FIND_TASKS_TOOL, GET_TASK_TOOL, historyEmployeeIds, parseFindTasksInput, toFoundTask, toGroupData, toTaskDetail, type FoundTaskData, type TaskDetailData } from './task-tools';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -113,6 +115,8 @@ export function toEventCardData(e: {
 
 type KnownToolName =
   | 'get_tasks'
+  | 'find_tasks'
+  | 'get_task'
   | 'get_events'
   | 'export_tasks_xlsx'
   | 'get_recent_meetings'
@@ -135,6 +139,8 @@ type KnownToolName =
   | 'propose_routine';
 
 function resolveToolName(name: string): KnownToolName {
+  if (name === 'find_tasks') return 'find_tasks';
+  if (name === 'get_task') return 'get_task';
   if (name === 'get_events') return 'get_events';
   if (name === 'export_tasks_xlsx') return 'export_tasks_xlsx';
   if (name === 'get_recent_meetings') return 'get_recent_meetings';
@@ -186,6 +192,8 @@ export function isWriteTool(name: string): boolean {
 // своим конкретным кодом, не бросает исключение — см. её комментарий.
 const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   get_tasks: 'TASK_LOOKUP_FAILED: не удалось получить список задач',
+  find_tasks: 'TASK_LOOKUP_FAILED: не удалось найти задачи',
+  get_task: 'TASK_LOOKUP_FAILED: не удалось открыть задачу',
   get_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
   export_tasks_xlsx: 'EXPORT_FAILED: не удалось сформировать файл',
   get_recent_meetings: 'MEETING_LOOKUP_FAILED: не удалось получить список встреч',
@@ -278,6 +286,18 @@ export interface MeetingTranscriptMatchData {
 
 export type ToolExecutionResult =
   | { tool: 'get_tasks'; items: TaskCardData[]; totalCount: number }
+  // Единый агент A1: срез и счётчики по всей выборке; filter — кого сервер
+  // нашёл по тексту имени (модель называет человека правильно).
+  | {
+      tool: 'find_tasks';
+      items: FoundTaskData[];
+      totalCount: number;
+      overdueCount: number;
+      byAssignee: { name: string; count: number; overdue: number }[];
+      byStatus: { status: string; count: number }[];
+      filter: { assignee: string | null; creator: string | null };
+    }
+  | { tool: 'get_task'; task: TaskDetailData }
   | { tool: 'get_events'; items: EventCardData[]; totalCount: number }
   | { tool: 'export_tasks_xlsx'; file: FilePartData; totalCount: number }
   | { tool: 'get_recent_meetings'; items: MeetingSummaryData[]; totalCount: number }
@@ -409,7 +429,7 @@ export class AssistantToolsService {
       {
         name: 'get_tasks',
         description:
-          'Получить список задач, видимых текущему пользователю (свои для сотрудника, все для руководителя), с исполнителем, сроком и статусом.',
+          'Получить список задач, видимых текущему пользователю (свои для сотрудника, все для руководителя), с исполнителем, сроком и статусом. Показывает только первые 10 — для вопросов про конкретного человека, срок, тему или для подсчётов используй find_tasks.',
         input_schema: {
           type: 'object',
           properties: {
@@ -422,6 +442,9 @@ export class AssistantToolsService {
           required: ['filter'],
         },
       },
+      // Единый агент A1 — всем ролям: задачи видят все (владелец 20.10.2026).
+      FIND_TASKS_TOOL,
+      GET_TASK_TOOL,
       {
         name: 'export_tasks_xlsx',
         description:
@@ -748,6 +771,11 @@ export class AssistantToolsService {
         const filter = (input as { filter?: unknown } | null)?.filter;
         return await this.getTasks(filter === 'overdue' ? 'overdue' : 'all');
       }
+      if (name === 'find_tasks') return await this.findTasks(input, user);
+      if (name === 'get_task') {
+        const taskId = (input as { taskId?: unknown } | null)?.taskId;
+        return await this.getTask(typeof taskId === 'string' ? taskId.trim() : '');
+      }
       if (name === 'get_events') return await this.getEvents(user);
       if (name === 'export_tasks_xlsx') {
         const filter = (input as { filter?: unknown } | null)?.filter;
@@ -1028,6 +1056,89 @@ export class AssistantToolsService {
     // toTaskCardData учитывает это сам.
     const items: TaskCardData[] = filtered.slice(0, MAX_TOOL_ITEMS).map(toTaskCardData);
     return { tool: 'get_tasks', items, totalCount: filtered.length };
+  }
+
+  // Единый агент A1. Имена — через тот же резолвер, что у create_task
+  // (модель передаёт текст как прозвучал, не id): неоднозначное имя —
+  // понятная модели ошибка, а не поиск по чужому человеку. Кандидаты — все
+  // сотрудники, включая неактивных: по их старым задачам тоже спрашивают.
+  private async findTasks(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    const parsed = parseFindTasksInput(input);
+    const filter: TaskSearchFilter = {
+      statuses: parsed.statuses,
+      overdue: parsed.overdue,
+      dueFrom: parsed.dueFrom,
+      dueTo: parsed.dueTo,
+      query: parsed.query,
+      sourceMeetingId: parsed.sourceMeetingId,
+      limit: parsed.limit,
+    };
+    const shown = { assignee: null as string | null, creator: null as string | null };
+
+    const needsLookup = (!parsed.unassigned && parsed.mine !== 'assigned' && !!parsed.assigneeRawText) || (parsed.mine !== 'created' && !!parsed.creatorRawText);
+    const employees = needsLookup ? await this.prisma.employee.findMany({ select: { id: true, fullName: true } }) : [];
+    const resolveName = async (raw: string, role: 'исполнителя' | 'постановщика') => {
+      const resolution = await this.employeeResolver.resolve(raw, employees);
+      if (resolution.status === 'RESOLVED' && resolution.employeeId) {
+        return { id: resolution.employeeId, name: employees.find((e) => e.id === resolution.employeeId)?.fullName ?? raw };
+      }
+      return {
+        error:
+          resolution.status === 'AMBIGUOUS'
+            ? `EMPLOYEE_AMBIGUOUS: по имени «${raw}» подходят несколько сотрудников — уточните у пользователя, кого он имел в виду (${role})`
+            : `EMPLOYEE_NOT_FOUND: не нашёл сотрудника «${raw}» — уточните у пользователя (${role})`,
+      };
+    };
+
+    if (parsed.unassigned) {
+      filter.assigneeId = null;
+      shown.assignee = 'Без исполнителя';
+    } else if (parsed.mine === 'assigned') {
+      filter.assigneeId = user.id;
+    } else if (parsed.assigneeRawText) {
+      const found = await resolveName(parsed.assigneeRawText, 'исполнителя');
+      if ('error' in found) return { tool: 'find_tasks', error: true, message: found.error };
+      filter.assigneeId = found.id;
+      shown.assignee = found.name;
+    }
+    if (parsed.mine === 'created') {
+      filter.creatorId = user.id;
+    } else if (parsed.creatorRawText) {
+      const found = await resolveName(parsed.creatorRawText, 'постановщика');
+      if ('error' in found) return { tool: 'find_tasks', error: true, message: found.error };
+      filter.creatorId = found.id;
+      shown.creator = found.name;
+    }
+
+    const result = await this.tasks.search(filter);
+    const now = new Date();
+    return {
+      tool: 'find_tasks',
+      items: result.items.map((t) => toFoundTask(t, now)),
+      totalCount: result.totalCount,
+      overdueCount: result.overdueCount,
+      byAssignee: toGroupData(result.byAssignee),
+      byStatus: result.byStatus,
+      filter: shown,
+    };
+  }
+
+  // Задача видна всем (владелец 20.10.2026) — отдельной проверки прав на
+  // чтение нет, как и у GET /tasks/:id.
+  private async getTask(taskId: string): Promise<ToolExecutionResult> {
+    if (!taskId) return { tool: 'get_task', error: true, message: 'INVALID_INPUT: не указан id задачи' };
+    let task: Awaited<ReturnType<TasksService['findOne']>>;
+    try {
+      task = await this.tasks.findOne(taskId);
+    } catch (err) {
+      if (err instanceof NotFoundException) return { tool: 'get_task', error: true, message: 'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks' };
+      throw err;
+    }
+    const ids = historyEmployeeIds(task.history);
+    const names = ids.length
+      ? new Map((await this.prisma.employee.findMany({ where: { id: { in: ids } }, select: { id: true, fullName: true } })).map((e) => [e.id, e.fullName]))
+      : new Map<string, string>();
+    return { tool: 'get_task', task: toTaskDetail(task, names) };
   }
 
   // Stage 2, Phase G — в отличие от getTasks выше, здесь НЕТ среза на

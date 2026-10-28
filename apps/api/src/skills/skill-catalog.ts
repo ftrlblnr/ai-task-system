@@ -74,6 +74,8 @@ ${text}
 // Подписи инструментов для страницы навыка (порядок — как в списке).
 export const SKILL_TOOL_LABELS: Record<string, string> = {
   get_tasks: 'Задачи',
+  find_tasks: 'Поиск задач',
+  get_task: 'Задача целиком',
   export_tasks_xlsx: 'Выгрузка задач в Excel',
   get_events: 'Календарь',
   get_recent_meetings: 'Последние встречи',
@@ -117,17 +119,20 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     model: 'HAIKU',
     effort: 'LOW',
     output: 'TELEGRAM',
-    allowedTools: ['get_events', 'get_tasks', 'search_emails'],
+    allowedTools: ['get_events', 'find_tasks', 'search_emails'],
     instructions: `Собери короткую сводку на сегодня.
 
 1. Встречи: get_events. Оставь только сегодняшние (дата — из контекста), по
    времени: «10:00 — название, место».
-2. Задачи: get_tasks с filter="overdue". Сколько просрочено и 3–5 самых
-   давних: название, исполнитель, на сколько дней просрочено.
+2. Задачи: find_tasks с overdue=true. Сколько просрочено всего (overdueCount)
+   и у кого больше всего (byAssignee, до 3 человек); 3–5 самых давних:
+   название, исполнитель, на сколько дней просрочено (daysOverdue). Затем
+   find_tasks со сроком на сегодня (dueFrom/dueTo — весь сегодняшний день):
+   что должно закрыться сегодня.
 3. Письма: search_emails с needsReply=true и readStatus="all" за последние
    3 дня. До 5 самых важных: от кого, тема, что нужно ответить.
 
-Формат: три коротких блока с заголовками «Встречи», «Просрочки», «Письма».
+Формат: три коротких блока с заголовками «Встречи», «Задачи», «Письма».
 Пустой блок — одной строкой («Встреч сегодня нет»). Без вступлений и
 выводов. Это сообщение читают в Telegram — держи его в пределах экрана.`,
   },
@@ -139,13 +144,13 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     model: 'OPUS',
     effort: 'MEDIUM',
     output: 'CHAT',
-    allowedTools: ['get_events', 'get_tasks', 'get_recent_meetings', 'search_meetings', 'get_meeting', 'search_emails', 'get_email'],
+    allowedTools: ['get_events', 'find_tasks', 'get_recent_meetings', 'search_meetings', 'get_meeting', 'search_emails', 'get_email'],
     instructions: `Подготовь руководителя к встрече.
 
 1. Встреча: если пользователь назвал её — найди в get_events по названию или
    участникам; иначе возьми ближайшую по времени.
-2. Участники: для каждого — открытые и просроченные задачи из get_tasks
-   (filter="all"), где он исполнитель.
+2. Участники: для каждого — find_tasks с assigneeRawText = его полное имя:
+   открытые задачи и сколько из них просрочено (overdueCount).
 3. История: search_meetings по фамилиям участников и теме; по 1–2 самым
    свежим — get_meeting, что решили и что обещали.
 4. Почта: search_emails по участникам за последние 2 недели, особенно
@@ -163,12 +168,14 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     model: 'HAIKU',
     effort: 'LOW',
     output: 'CHAT',
-    allowedTools: ['get_tasks'],
+    allowedTools: ['find_tasks'],
     instructions: `Разбери просроченные задачи.
 
-1. get_tasks с filter="overdue".
-2. Сгруппируй по исполнителям, сначала тех, у кого больше просрочек.
-3. Для каждого: список задач (название, на сколько дней просрочено) и
+1. find_tasks с overdue=true и limit=30.
+2. Сгруппируй по исполнителям (byAssignee), сначала тех, у кого больше
+   просрочек. Если просроченных больше, чем показано (overdueCount больше
+   числа задач), скажи об этом и разбери показанные.
+3. Для каждого: список задач (название, daysOverdue — на сколько дней) и
    короткое сообщение исполнителю от лица руководителя — вежливо, по делу,
    с просьбой назвать новый срок. Одно сообщение на человека.
 
@@ -182,12 +189,14 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     model: 'SONNET',
     effort: 'MEDIUM',
     output: 'DOCX',
-    allowedTools: ['get_tasks', 'get_recent_meetings', 'get_meeting', 'search_emails'],
+    allowedTools: ['find_tasks', 'get_recent_meetings', 'get_meeting', 'search_emails'],
     instructions: `Подготовь отчёт руководителя за последние 7 дней. Текст ответа целиком
 станет документом Word, поэтому пиши его как документ.
 
 Данные:
-1. get_tasks (filter="all") и get_tasks (filter="overdue").
+1. find_tasks без фильтров (все открытые: totalCount, byAssignee), find_tasks
+   с overdue=true и find_tasks со status ["DONE"] и dueFrom = 7 дней назад
+   (выполненные со сроком на этой неделе).
 2. get_recent_meetings (limit 10), для встреч этой недели — get_meeting.
 3. search_emails за 7 дней с importance CRITICAL и IMPORTANT.
 
@@ -209,3 +218,95 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     instructions: TONE_PLACEHOLDER,
   },
 ];
+
+// Прежние тексты системных навыков (до единого агента A1, 28.10.2026): при
+// старте общий навык обновляется до нового seed, только если его инструкция
+// и инструменты совпадают с прежними дословно — правки людей не трогаем.
+export interface SkillSeedUpgrade {
+  slug: string;
+  allowedTools: string[];
+  instructions: string;
+}
+
+export const SYSTEM_SKILL_UPGRADES: SkillSeedUpgrade[] = [
+  {
+    slug: 'день',
+    allowedTools: ['get_events', 'get_tasks', 'search_emails'],
+    instructions: `Собери короткую сводку на сегодня.
+
+1. Встречи: get_events. Оставь только сегодняшние (дата — из контекста), по
+   времени: «10:00 — название, место».
+2. Задачи: get_tasks с filter="overdue". Сколько просрочено и 3–5 самых
+   давних: название, исполнитель, на сколько дней просрочено.
+3. Письма: search_emails с needsReply=true и readStatus="all" за последние
+   3 дня. До 5 самых важных: от кого, тема, что нужно ответить.
+
+Формат: три коротких блока с заголовками «Встречи», «Просрочки», «Письма».
+Пустой блок — одной строкой («Встреч сегодня нет»). Без вступлений и
+выводов. Это сообщение читают в Telegram — держи его в пределах экрана.`,
+  },
+  {
+    slug: 'к-встрече',
+    allowedTools: ['get_events', 'get_tasks', 'get_recent_meetings', 'search_meetings', 'get_meeting', 'search_emails', 'get_email'],
+    instructions: `Подготовь руководителя к встрече.
+
+1. Встреча: если пользователь назвал её — найди в get_events по названию или
+   участникам; иначе возьми ближайшую по времени.
+2. Участники: для каждого — открытые и просроченные задачи из get_tasks
+   (filter="all"), где он исполнитель.
+3. История: search_meetings по фамилиям участников и теме; по 1–2 самым
+   свежим — get_meeting, что решили и что обещали.
+4. Почта: search_emails по участникам за последние 2 недели, особенно
+   needsReply=true.
+
+Ответ: «Встреча» (когда, где, с кем) → «Что было в прошлый раз» → «Открытые
+вопросы и задачи по участникам» → «О чём спросить» (3–5 пунктов). Только
+факты из инструментов; чего не нашёл — так и скажи.`,
+  },
+  {
+    slug: 'просрочки',
+    allowedTools: ['get_tasks'],
+    instructions: `Разбери просроченные задачи.
+
+1. get_tasks с filter="overdue".
+2. Сгруппируй по исполнителям, сначала тех, у кого больше просрочек.
+3. Для каждого: список задач (название, на сколько дней просрочено) и
+   короткое сообщение исполнителю от лица руководителя — вежливо, по делу,
+   с просьбой назвать новый срок. Одно сообщение на человека.
+
+Если просрочек нет — одной фразой.`,
+  },
+  {
+    slug: 'итоги-недели',
+    allowedTools: ['get_tasks', 'get_recent_meetings', 'get_meeting', 'search_emails'],
+    instructions: `Подготовь отчёт руководителя за последние 7 дней. Текст ответа целиком
+станет документом Word, поэтому пиши его как документ.
+
+Данные:
+1. get_tasks (filter="all") и get_tasks (filter="overdue").
+2. get_recent_meetings (limit 10), для встреч этой недели — get_meeting.
+3. search_emails за 7 дней с importance CRITICAL и IMPORTANT.
+
+Структура (markdown): «# Итоги недели» и период; «## Главное» — 3–5
+пунктов; «## Задачи» — сколько всего, что закрыто, что просрочено и у кого;
+«## Встречи и решения» — по встрече: дата, тема, решения, поручения;
+«## Почта» — важные письма и что по ним нужно; «## На следующую неделю».
+Только факты из инструментов, без выдуманных цифр.`,
+  },
+];
+
+// Какие существующие общие навыки обновить до текущего seed: только те, чей
+// текст и набор инструментов дословно совпадают с прежним seed.
+export function pickSkillUpgrades(
+  existing: { id: string; slug: string; instructions?: string | null; allowedTools?: string[] | null }[],
+  upgrades: SkillSeedUpgrade[] = SYSTEM_SKILL_UPGRADES,
+  seeds: SkillSeed[] = SYSTEM_SKILLS,
+): { id: string; seed: SkillSeed }[] {
+  const sameTools = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i]);
+  return existing.flatMap((skill) => {
+    const from = upgrades.find((u) => u.slug === skill.slug);
+    const seed = seeds.find((s) => s.slug === skill.slug);
+    if (!from || !seed || skill.instructions !== from.instructions || !sameTools(skill.allowedTools ?? [], from.allowedTools)) return [];
+    return [{ id: skill.id, seed }];
+  });
+}

@@ -7,7 +7,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { TaskStatus } from '@prisma/client';
+import { Prisma, TaskStatus } from '@prisma/client';
 import { isManager } from '../auth/roles';
 import { formatLocalDateTime } from '../common/timezone';
 import { PrismaService } from '../prisma/prisma.service';
@@ -142,6 +142,56 @@ export function isTaskOverdue(task: { dueDate: Date | null; status: TaskStatus }
 // Не чаще раза в час на задачу — см. TasksService.remind.
 export const REMIND_INTERVAL_MS = 60 * 60 * 1000;
 
+// Поиск задач для агента (единый агент A1, docs/AGENT_AND_MEETINGS.md):
+// ассистент раньше видел только первые 10 из findAll() с фильтром
+// all/overdue и не мог честно ответить «что у Ирины просрочено» при 60
+// задачах. Фильтры и счётчики — запросами в БД, не перебором findAll().
+export const CLOSED_TASK_STATUSES: TaskStatus[] = [TaskStatus.DONE, TaskStatus.CANCELLED];
+export const TASK_SEARCH_MAX_LIMIT = 30;
+
+export interface TaskSearchFilter {
+  // null — задачи без исполнителя; undefined — не фильтровать.
+  assigneeId?: string | null;
+  creatorId?: string;
+  // Пусто/не задано — открытые (всё, кроме выполненных и отменённых).
+  statuses?: TaskStatus[];
+  overdue?: boolean;
+  dueFrom?: Date;
+  dueTo?: Date;
+  query?: string;
+  sourceMeetingId?: string;
+  limit: number;
+}
+
+export interface TaskSearchGroup {
+  assigneeId: string | null;
+  name: string;
+  count: number;
+  overdue: number;
+}
+
+// Чистая функция — тестируется без БД. Подзадачи не ищутся, как и в общем
+// списке (они живут внутри карточки родителя).
+export function buildTaskSearchWhere(filter: TaskSearchFilter, now: Date = new Date()): Prisma.TaskWhereInput {
+  const and: Prisma.TaskWhereInput[] = [{ parentTaskId: null }];
+  and.push(filter.statuses && filter.statuses.length > 0 ? { status: { in: filter.statuses } } : { status: { notIn: CLOSED_TASK_STATUSES } });
+  if (filter.assigneeId !== undefined) and.push({ assigneeId: filter.assigneeId });
+  if (filter.creatorId) and.push({ creatorId: filter.creatorId });
+  if (filter.overdue) and.push(overdueWhere(now));
+  if (filter.dueFrom || filter.dueTo) and.push({ dueDate: { ...(filter.dueFrom ? { gte: filter.dueFrom } : {}), ...(filter.dueTo ? { lte: filter.dueTo } : {}) } });
+  const query = filter.query?.trim();
+  if (query) {
+    and.push({ OR: [{ title: { contains: query, mode: 'insensitive' } }, { description: { contains: query, mode: 'insensitive' } }] });
+  }
+  if (filter.sourceMeetingId) and.push({ sourceMeetingId: filter.sourceMeetingId });
+  return { AND: and };
+}
+
+// То же правило, что isTaskOverdue, в виде Prisma-фильтра.
+function overdueWhere(now: Date): Prisma.TaskWhereInput {
+  return { dueDate: { lt: now }, status: { notIn: CLOSED_TASK_STATUSES } };
+}
+
 @Injectable()
 export class TasksService {
   constructor(
@@ -174,6 +224,46 @@ export class TasksService {
       orderBy: [{ order: 'asc' }, { createdAt: 'desc' }],
     });
     return tasks.map((t) => this.toListItem(t));
+  }
+
+  // Поиск для агента: срез по сроку (ближайшие и просроченные сверху, без
+  // срока — в конце) и счётчики по ВСЕЙ выборке, не по срезу — модель
+  // говорит «всего 37, у Ирины 5 просрочено», а не «вижу 10».
+  async search(filter: TaskSearchFilter) {
+    const now = new Date();
+    const where = buildTaskSearchWhere(filter, now);
+    const overdue: Prisma.TaskWhereInput = { AND: [where, overdueWhere(now)] };
+    const limit = Math.min(Math.max(1, filter.limit), TASK_SEARCH_MAX_LIMIT);
+    const [rows, totalCount, overdueCount, byAssigneeRaw, overdueByAssigneeRaw, byStatusRaw] = await Promise.all([
+      this.prisma.task.findMany({
+        where,
+        select: TASK_LIST_SELECT,
+        orderBy: [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
+        take: limit,
+      }),
+      this.prisma.task.count({ where }),
+      this.prisma.task.count({ where: overdue }),
+      this.prisma.task.groupBy({ by: ['assigneeId'], where, _count: { _all: true } }),
+      this.prisma.task.groupBy({ by: ['assigneeId'], where: overdue, _count: { _all: true } }),
+      this.prisma.task.groupBy({ by: ['status'], where, _count: { _all: true } }),
+    ]);
+
+    const assigneeIds = byAssigneeRaw.map((g) => g.assigneeId).filter((id): id is string => id !== null);
+    const names = assigneeIds.length
+      ? new Map((await this.prisma.employee.findMany({ where: { id: { in: assigneeIds } }, select: { id: true, fullName: true } })).map((e) => [e.id, e.fullName]))
+      : new Map<string, string>();
+    const overdueBy = new Map(overdueByAssigneeRaw.map((g) => [g.assigneeId, g._count._all]));
+    const byAssignee: TaskSearchGroup[] = byAssigneeRaw
+      .map((g) => ({
+        assigneeId: g.assigneeId,
+        name: g.assigneeId ? (names.get(g.assigneeId) ?? 'Неизвестный сотрудник') : 'Без исполнителя',
+        count: g._count._all,
+        overdue: overdueBy.get(g.assigneeId) ?? 0,
+      }))
+      .sort((a, b) => b.overdue - a.overdue || b.count - a.count || a.name.localeCompare(b.name, 'ru'));
+    const byStatus = byStatusRaw.map((g) => ({ status: g.status, count: g._count._all })).sort((a, b) => b.count - a.count);
+
+    return { items: rows.map((t) => this.toListItem(t)), totalCount, overdueCount, byAssignee, byStatus };
   }
 
   // Полная новая последовательность одной колонки канбана (все задачи
