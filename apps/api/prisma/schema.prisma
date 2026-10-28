@@ -1689,6 +1689,9 @@ model MailDraft {
   state                MailDraftState @default(DRAFT)
   // Безопасный текст последней ошибки отправки (для показа пользователю).
   lastError            String?
+  // Черновик «Разбора»: версия навыка /тон, с которой его написала модель
+  // (null — без стиля). Интерфейс сравнивает с текущей и предлагает переписать.
+  toneVersion          Int?
   sentAt               DateTime?
   // Message-ID отправленного письма — сверка с «Отправленными».
   sentMessageId        String?
