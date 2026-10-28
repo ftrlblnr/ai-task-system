@@ -1,5 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { MessagePartType, MessageRole, MessageStatus, Prisma, UndoKind, UndoRecordAction, UndoRecordStatus } from '@prisma/client';
+import {
+  MessagePartType,
+  MessageRole,
+  MessageStatus,
+  Prisma,
+  UndoKind,
+  UndoRecordAction,
+  UndoRecordStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { isManager } from '../auth/roles';
@@ -7,7 +15,10 @@ import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
 import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
-import type { EventRevertPayload, TaskRevertPayload } from '../voice/dto/voice-draft-response.dto';
+import type {
+  EventRevertPayload,
+  TaskRevertPayload,
+} from '../voice/dto/voice-draft-response.dto';
 import type { VoiceUndoDto } from '../voice/dto/voice-undo.dto';
 import { AssistantChatService } from './assistant-chat.service';
 
@@ -25,7 +36,9 @@ function toErrorMessage(err: unknown): string {
 
 // P2025 — «запись под where не найдена»: конкурентный запрос уже забрал отмену.
 function isRecordNotFoundError(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025';
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025'
+  );
 }
 
 @Injectable()
@@ -48,15 +61,33 @@ export class UndoService {
   // клиент, поэтому метод стал private.
   // conversationId (единый агент A2) — разговор, где показана карточка с
   // «Отменить»; только свой — иначе, как раньше, основной разговор.
-  async logAssistantMessage(text: string, user: AuthenticatedUser, conversationId?: string | null): Promise<void> {
-    const own = conversationId ? await this.prisma.conversation.findFirst({ where: { id: conversationId, employeeId: user.id }, select: { id: true } }) : null;
-    const conversation = own ?? (await this.assistantChat.getOrCreatePrimaryConversation(user));
+  async logAssistantMessage(
+    text: string,
+    user: AuthenticatedUser,
+    conversationId?: string | null,
+  ): Promise<void> {
+    const own = conversationId
+      ? await this.prisma.conversation.findFirst({
+          where: { id: conversationId, employeeId: user.id },
+          select: { id: true },
+        })
+      : null;
+    const conversation =
+      own ?? (await this.assistantChat.getOrCreatePrimaryConversation(user));
     await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         role: MessageRole.ASSISTANT,
         status: MessageStatus.COMPLETED,
-        parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: text } }] },
+        parts: {
+          create: [
+            {
+              type: MessagePartType.MARKDOWN,
+              order: 0,
+              data: { content: text },
+            },
+          ],
+        },
       },
     });
   }
@@ -84,11 +115,24 @@ export class UndoService {
   // CLAIMED (атомарно, тот же приём P2025 через where) → COMPLETED (откат
   // реально удался) или обратно в AVAILABLE (откат упал — в пределах
   // expiresAt пользователь может нажать "Отменить" ещё раз).
-  async undo(dto: VoiceUndoDto, user: AuthenticatedUser): Promise<{ ok: boolean; error: string | null; warning: string | null }> {
-    const genericError = 'Время для отмены истекло, действие уже отменено, или ссылка на отмену недействительна.';
-    const record = await this.prisma.undoRecord.findUnique({ where: { id: dto.undoToken } });
-    if (!record || record.employeeId !== user.id || record.expiresAt.getTime() < Date.now()) {
-      await this.logAssistantMessage(`Не получилось отменить: ${genericError}`, user).catch(() => {});
+  async undo(
+    dto: VoiceUndoDto,
+    user: AuthenticatedUser,
+  ): Promise<{ ok: boolean; error: string | null; warning: string | null }> {
+    const genericError =
+      'Время для отмены истекло, действие уже отменено, или ссылка на отмену недействительна.';
+    const record = await this.prisma.undoRecord.findUnique({
+      where: { id: dto.undoToken },
+    });
+    if (
+      !record ||
+      record.employeeId !== user.id ||
+      record.expiresAt.getTime() < Date.now()
+    ) {
+      await this.logAssistantMessage(
+        `Не получилось отменить: ${genericError}`,
+        user,
+      ).catch(() => {});
       return { ok: false, error: genericError, warning: null };
     }
 
@@ -99,8 +143,13 @@ export class UndoService {
     // фронте, но это не граница безопасности сама по себе (тот же принцип,
     // что и у enforceEventRbac).
     if (record.kind === UndoKind.EVENT && !isManager(user.role)) {
-      const error = 'Календарь доступен только руководителю — отменить это действие может только он.';
-      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user, record.conversationId).catch(() => {});
+      const error =
+        'Календарь доступен только руководителю — отменить это действие может только он.';
+      await this.logAssistantMessage(
+        `Не получилось отменить: ${error}`,
+        user,
+        record.conversationId,
+      ).catch(() => {});
       return { ok: false, error, warning: null };
     }
 
@@ -112,7 +161,10 @@ export class UndoService {
     // запрос откатывается на безопасный "уже отменено", не выполняет
     // мутацию повторно.
     try {
-      await this.prisma.undoRecord.update({ where: { id: record.id, status: UndoRecordStatus.AVAILABLE }, data: { status: UndoRecordStatus.CLAIMED } });
+      await this.prisma.undoRecord.update({
+        where: { id: record.id, status: UndoRecordStatus.AVAILABLE },
+        data: { status: UndoRecordStatus.CLAIMED },
+      });
     } catch (err) {
       if (isRecordNotFoundError(err)) {
         return { ok: false, error: genericError, warning: null };
@@ -129,15 +181,24 @@ export class UndoService {
           const previous = (record.previous ?? {}) as TaskRevertPayload;
           const patch: UpdateTaskDto = {};
           if (previous.title !== undefined) patch.title = previous.title;
-          if (previous.description !== undefined) patch.description = previous.description;
-          if (previous.assigneeId !== undefined) patch.assigneeId = previous.assigneeId;
+          if (previous.description !== undefined)
+            patch.description = previous.description;
+          if (previous.assigneeId !== undefined)
+            patch.assigneeId = previous.assigneeId;
           if (previous.dueDate !== undefined) patch.dueDate = previous.dueDate;
-          if (previous.priority !== undefined) patch.priority = previous.priority;
+          if (previous.priority !== undefined)
+            patch.priority = previous.priority;
           // Единый агент A2: смена статуса из чата откатывается через
           // updateStatus (его права — у исполнителя, не у постановщика), а
           // update с пустым патчем не вызываем — исполнителю он запрещён.
-          if (Object.keys(patch).length > 0) await this.tasks.update(record.entityId, patch, user);
-          if (previous.status !== undefined) await this.tasks.updateStatus(record.entityId, previous.status, user);
+          if (Object.keys(patch).length > 0)
+            await this.tasks.update(record.entityId, patch, user);
+          if (previous.status !== undefined)
+            await this.tasks.updateStatus(
+              record.entityId,
+              previous.status,
+              user,
+            );
         }
       } else {
         if (record.action === UndoRecordAction.CREATE) {
@@ -146,12 +207,15 @@ export class UndoService {
           const previous = (record.previous ?? {}) as EventRevertPayload;
           const patch: UpdateEventDto = {};
           if (previous.title !== undefined) patch.title = previous.title;
-          if (previous.description !== undefined) patch.description = previous.description;
-          if (previous.location !== undefined) patch.location = previous.location;
+          if (previous.description !== undefined)
+            patch.description = previous.description;
+          if (previous.location !== undefined)
+            patch.location = previous.location;
           if (previous.startAt !== undefined) patch.startAt = previous.startAt;
           if (previous.endAt !== undefined) patch.endAt = previous.endAt;
           if (previous.allDay !== undefined) patch.allDay = previous.allDay;
-          if (Object.keys(patch).length > 0) await this.events.update(record.entityId, patch, user.id);
+          if (Object.keys(patch).length > 0)
+            await this.events.update(record.entityId, patch, user.id);
           // Инверсия: то, что исходное действие ДОБАВИЛО, undo СНИМАЕТ, и
           // наоборот — тот же смысл, что уже был в прежнем клиентском
           // performUndo (обеих фронтендов), просто выполняется здесь.
@@ -169,33 +233,53 @@ export class UndoService {
           // становилась COMPLETED, и пользователь видел "Отменено.", хотя
           // откат участников прошёл не полностью. Теперь собираем сбои и
           // ниже выставляем PARTIAL вместо COMPLETED, если хоть один был.
-          const addedParticipantIds = (record.addedParticipantIds ?? []) as string[];
-          const removedParticipantIds = (record.removedParticipantIds ?? []) as string[];
+          const addedParticipantIds = (record.addedParticipantIds ??
+            []) as string[];
+          const removedParticipantIds = (record.removedParticipantIds ??
+            []) as string[];
           for (const employeeId of addedParticipantIds) {
-            await this.events.removeParticipant(record.entityId, employeeId, user.id).catch((err) => {
-              const message = `не удалось откатить добавленного участника ${employeeId}: ${toErrorMessage(err)}`;
-              this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
-              participantFailures.push(message);
-            });
+            await this.events
+              .removeParticipant(record.entityId, employeeId, user.id)
+              .catch((err) => {
+                const message = `не удалось откатить добавленного участника ${employeeId}: ${toErrorMessage(err)}`;
+                this.logger.warn(
+                  `undo: ${message} (событие ${record.entityId})`,
+                );
+                participantFailures.push(message);
+              });
           }
           for (const employeeId of removedParticipantIds) {
-            await this.events.addParticipant(record.entityId, employeeId, user.id).catch((err) => {
-              const message = `не удалось восстановить снятого участника ${employeeId}: ${toErrorMessage(err)}`;
-              this.logger.warn(`undo: ${message} (событие ${record.entityId})`);
-              participantFailures.push(message);
-            });
+            await this.events
+              .addParticipant(record.entityId, employeeId, user.id)
+              .catch((err) => {
+                const message = `не удалось восстановить снятого участника ${employeeId}: ${toErrorMessage(err)}`;
+                this.logger.warn(
+                  `undo: ${message} (событие ${record.entityId})`,
+                );
+                participantFailures.push(message);
+              });
           }
         }
       }
-      const warning = participantFailures.length > 0 ? participantFailures.join('; ') : null;
+      const warning =
+        participantFailures.length > 0 ? participantFailures.join('; ') : null;
       await this.prisma.undoRecord.update({
         where: { id: record.id },
-        data: { status: warning ? UndoRecordStatus.PARTIAL : UndoRecordStatus.COMPLETED, consumedAt: new Date() },
+        data: {
+          status: warning
+            ? UndoRecordStatus.PARTIAL
+            : UndoRecordStatus.COMPLETED,
+          consumedAt: new Date(),
+        },
       });
       // Логирование подтверждения — вторичный эффект, не должен превращать
       // уже случившийся успешный откат в ok:false для клиента (тот же
       // принцип, что и graceful degradation в runParse, Phase H.1).
-      await this.logAssistantMessage(warning ? `Отменено частично. ${warning}` : 'Отменено.', user, record.conversationId).catch(() => {});
+      await this.logAssistantMessage(
+        warning ? `Отменено частично. ${warning}` : 'Отменено.',
+        user,
+        record.conversationId,
+      ).catch(() => {});
       return { ok: true, error: null, warning };
     } catch (err) {
       const error = toErrorMessage(err);
@@ -203,8 +287,17 @@ export class UndoService {
       // своём catch: сбой этого шага не должен маскировать реальную
       // причину сбоя отката), чтобы пользователь мог нажать "Отменить" ещё
       // раз в пределах expiresAt, а не получал "уже отменено" на ровном месте.
-      await this.prisma.undoRecord.update({ where: { id: record.id }, data: { status: UndoRecordStatus.AVAILABLE } }).catch(() => {});
-      await this.logAssistantMessage(`Не получилось отменить: ${error}`, user, record.conversationId).catch(() => {});
+      await this.prisma.undoRecord
+        .update({
+          where: { id: record.id },
+          data: { status: UndoRecordStatus.AVAILABLE },
+        })
+        .catch(() => {});
+      await this.logAssistantMessage(
+        `Не получилось отменить: ${error}`,
+        user,
+        record.conversationId,
+      ).catch(() => {});
       return { ok: false, error, warning: null };
     }
   }

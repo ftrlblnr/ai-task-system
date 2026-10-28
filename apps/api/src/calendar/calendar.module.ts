@@ -10,7 +10,10 @@ import { CalendarPlanService } from './action/calendar-plan.service';
 import { registerCalendarActionExecutors } from './action/executors/register-calendar-executors';
 import { CalendarAvailabilityService } from './calendar-availability.service';
 import { CalendarPolicyService } from './calendar-policy.service';
-import { CalendarController, GoogleCalendarPublicController } from './calendar.controller';
+import {
+  CalendarController,
+  GoogleCalendarPublicController,
+} from './calendar.controller';
 import { EventsService } from './events.service';
 import { GoogleFreeBusyService } from './google-freebusy.service';
 import { GoogleOAuthService } from './google-oauth.service';
@@ -21,7 +24,11 @@ import { CalendarSyncCron } from './calendar-sync.cron';
   // AuthModule — JwtModule (state-токен для OAuth callback). TelegramModule
   // — уведомления участникам встреч (владелец 09.09.2026).
   imports: [AuthModule, TelegramModule],
-  controllers: [CalendarController, CalendarActionController, GoogleCalendarPublicController],
+  controllers: [
+    CalendarController,
+    CalendarActionController,
+    GoogleCalendarPublicController,
+  ],
   providers: [
     EventsService,
     GoogleOAuthService,
@@ -50,6 +57,10 @@ export class CalendarModule implements OnModuleInit {
   // регистрация здесь, не в конструкторе исполнителей, тот же принцип, что
   // MailModule.onModuleInit.
   onModuleInit(): void {
-    registerCalendarActionExecutors(this.executors, this.events, this.idempotency);
+    registerCalendarActionExecutors(
+      this.executors,
+      this.events,
+      this.idempotency,
+    );
   }
 }

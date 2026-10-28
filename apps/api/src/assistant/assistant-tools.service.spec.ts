@@ -4,10 +4,18 @@ import { ConfigService } from '@nestjs/config';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { LegalAgentError } from '../legal/legal-agent.service';
 import { LegalReviewLimitError } from '../legal/legal-review.service';
-import { AssistantToolsService, toolResultForModel } from './assistant-tools.service';
+import {
+  AssistantToolsService,
+  toolResultForModel,
+} from './assistant-tools.service';
 
-function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRequestError {
-  return new Prisma.PrismaClientKnownRequestError(message, { code: 'P2002', clientVersion: '6.19.3' });
+function p2002(
+  message = 'Unique constraint failed',
+): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError(message, {
+    code: 'P2002',
+    clientVersion: '6.19.3',
+  });
 }
 
 // buildTools/execute не трогают реальный Anthropic — только RBAC-видимость
@@ -15,20 +23,45 @@ function p2002(message = 'Unique constraint failed'): Prisma.PrismaClientKnownRe
 // Phase C, §16 — LLM не сочиняет данные карточек, только решает вызвать
 // инструмент).
 function user(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
+  return {
+    id: 'u1',
+    email: 'u1@example.com',
+    role: Role.EMPLOYEE,
+    ...overrides,
+  };
 }
 
 describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уровне видимости инструмента, не постфактум)', () => {
   it('сотруднику предлагаются задачи (get_tasks, find_tasks, get_task) и export_tasks_xlsx — календарь закрыт на OWNER', async () => {
     const service = new AssistantToolsService({} as any, {} as any, {} as any);
     const names = (await service.buildTools(user())).map((t) => t.name);
-    expect(names).toEqual(['get_tasks', 'find_tasks', 'get_task', 'update_task', 'set_task_status', 'comment_task', 'remind_task', 'delete_task', 'export_tasks_xlsx']);
+    expect(names).toEqual([
+      'get_tasks',
+      'find_tasks',
+      'get_task',
+      'update_task',
+      'set_task_status',
+      'comment_task',
+      'remind_task',
+      'delete_task',
+      'export_tasks_xlsx',
+    ]);
   });
 
   it('руководителю дополнительно предлагаются календарь и инструменты встреч (Stage 2, Phase K), без компетенций в компании — find_employee_by_competency не предлагается', async () => {
-    const prisma = { competency: { findMany: jest.fn().mockResolvedValue([]) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
-    const names = (await service.buildTools(user({ role: Role.OWNER }))).map((t) => t.name);
+    const prisma = {
+      competency: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prisma as any,
+    );
+    const names = (await service.buildTools(user({ role: Role.OWNER }))).map(
+      (t) => t.name,
+    );
     expect(names).toEqual([
       'get_tasks',
       'find_tasks',
@@ -61,20 +94,37 @@ describe('AssistantToolsService.buildTools (Stage 2 §16 — RBAC на уров�
       { id: 'c1', name: 'Юридические вопросы', description: 'Договоры, споры' },
       { id: 'c2', name: 'Бухгалтерия', description: 'Счета, отчётность' },
     ];
-    const prisma = { competency: { findMany: jest.fn().mockResolvedValue(competencies) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const prisma = {
+      competency: { findMany: jest.fn().mockResolvedValue(competencies) },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prisma as any,
+    );
     const tools = await service.buildTools(user({ role: Role.OWNER }));
     const tool = tools.find((t) => t.name === 'find_employee_by_competency');
 
     expect(tool).toBeDefined();
-    expect((tool!.input_schema.properties as any).competencyId.enum).toEqual(['c1', 'c2']);
+    expect((tool!.input_schema.properties as any).competencyId.enum).toEqual([
+      'c1',
+      'c2',
+    ]);
     expect(tool!.description).toContain('Юридические вопросы');
     expect(tool!.description).toContain('Бухгалтерия');
   });
 
   it('сотруднику (не OWNER) find_employee_by_competency не предлагается, даже если компетенции есть', async () => {
     const prisma = { competency: { findMany: jest.fn() } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prisma as any,
+    );
     const names = (await service.buildTools(user())).map((t) => t.name);
 
     expect(names).not.toContain('find_employee_by_competency');
@@ -94,27 +144,57 @@ describe('AssistantToolsService.execute get_tasks (Stage 2 §5.2/§16 — тол
 
   it('filter=all — все задачи, capped на 10, totalCount = реальное число', async () => {
     const tasksStub = { findAll: jest.fn().mockResolvedValue(tasks) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any);
-    const result = await service.execute('get_tasks', { filter: 'all' }, user());
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      {} as any,
+    );
+    const result = await service.execute(
+      'get_tasks',
+      { filter: 'all' },
+      user(),
+    );
     expect(result).toMatchObject({ tool: 'get_tasks', totalCount: 15 });
     expect('items' in result && result.items).toHaveLength(10);
   });
 
   it('filter=overdue — фильтрует по isOverdue до каппинга (totalCount = 12, не 15)', async () => {
     const tasksStub = { findAll: jest.fn().mockResolvedValue(tasks) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any);
-    const result = await service.execute('get_tasks', { filter: 'overdue' }, user());
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      {} as any,
+    );
+    const result = await service.execute(
+      'get_tasks',
+      { filter: 'overdue' },
+      user(),
+    );
     expect(result).toMatchObject({ tool: 'get_tasks', totalCount: 12 });
     expect('items' in result && result.items).toHaveLength(10);
   });
 
   it('сбой TasksService.findAll превращается в {error:true} с безопасным кодом, не пробрасывает err.message наружу (аудит 16.09.2026)', async () => {
-    const tasksStub = { findAll: jest.fn().mockRejectedValue(new Error('db down: password=secret')) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any);
-    const result = await service.execute('get_tasks', { filter: 'all' }, user());
+    const tasksStub = {
+      findAll: jest
+        .fn()
+        .mockRejectedValue(new Error('db down: password=secret')),
+    };
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      {} as any,
+    );
+    const result = await service.execute(
+      'get_tasks',
+      { filter: 'all' },
+      user(),
+    );
     expect(result).toMatchObject({ tool: 'get_tasks', error: true });
     expect('message' in result && result.message).not.toContain('db down');
-    expect('message' in result && result.message).toContain('TASK_LOOKUP_FAILED');
+    expect('message' in result && result.message).toContain(
+      'TASK_LOOKUP_FAILED',
+    );
   });
 });
 
@@ -122,13 +202,45 @@ describe('AssistantToolsService.execute get_events (Stage 2 §5.3 — тольк
   it('отфильтровывает отменённые и прошедшие встречи', async () => {
     const now = Date.now();
     const events = [
-      { id: 'e1', title: 'Прошедшая', location: null, startAt: new Date(now - 1000), endAt: new Date(now), status: 'CONFIRMED', participants: [] },
-      { id: 'e2', title: 'Отменённая', location: null, startAt: new Date(now + 1000), endAt: new Date(now + 2000), status: 'CANCELLED', participants: [] },
-      { id: 'e3', title: 'Предстоящая', location: null, startAt: new Date(now + 3000), endAt: new Date(now + 4000), status: 'CONFIRMED', participants: [] },
+      {
+        id: 'e1',
+        title: 'Прошедшая',
+        location: null,
+        startAt: new Date(now - 1000),
+        endAt: new Date(now),
+        status: 'CONFIRMED',
+        participants: [],
+      },
+      {
+        id: 'e2',
+        title: 'Отменённая',
+        location: null,
+        startAt: new Date(now + 1000),
+        endAt: new Date(now + 2000),
+        status: 'CANCELLED',
+        participants: [],
+      },
+      {
+        id: 'e3',
+        title: 'Предстоящая',
+        location: null,
+        startAt: new Date(now + 3000),
+        endAt: new Date(now + 4000),
+        status: 'CONFIRMED',
+        participants: [],
+      },
     ];
     const eventsStub = { findAll: jest.fn().mockResolvedValue(events) };
-    const service = new AssistantToolsService({} as any, eventsStub as any, {} as any);
-    const result = await service.execute('get_events', {}, user({ role: Role.OWNER }));
+    const service = new AssistantToolsService(
+      {} as any,
+      eventsStub as any,
+      {} as any,
+    );
+    const result = await service.execute(
+      'get_events',
+      {},
+      user({ role: Role.OWNER }),
+    );
     expect(result).toMatchObject({ tool: 'get_events', totalCount: 1 });
     expect('items' in result && result.items[0].eventId).toBe('e3');
   });
@@ -146,38 +258,85 @@ describe('AssistantToolsService.execute export_tasks_xlsx (Stage 2, Phase G)', (
   }));
 
   it('НЕ обрезает список до MAX_TOOL_ITEMS — весь смысл экспорта в том, чтобы увидеть больше 10 задач', async () => {
-    const created = { id: 'f1', name: 'Задачи (все) 2026-09-16.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 1234 };
+    const created = {
+      id: 'f1',
+      name: 'Задачи (все) 2026-09-16.xlsx',
+      mimeType:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 1234,
+    };
     const tasksStub = { findAll: jest.fn().mockResolvedValue(tasks) };
     const filesStub = { createGenerated: jest.fn().mockResolvedValue(created) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, filesStub as any);
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      filesStub as any,
+    );
 
-    const result = await service.execute('export_tasks_xlsx', { filter: 'all' }, user());
+    const result = await service.execute(
+      'export_tasks_xlsx',
+      { filter: 'all' },
+      user(),
+    );
 
     expect(result).toMatchObject({ tool: 'export_tasks_xlsx', totalCount: 15 });
     expect(filesStub.createGenerated).toHaveBeenCalledTimes(1);
     const [, buffer, , mimeType] = filesStub.createGenerated.mock.calls[0];
     expect(Buffer.isBuffer(buffer)).toBe(true);
-    expect(mimeType).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    expect('file' in result && result.file).toEqual({ fileId: 'f1', name: created.name, mimeType: created.mimeType, size: created.size });
+    expect(mimeType).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect('file' in result && result.file).toEqual({
+      fileId: 'f1',
+      name: created.name,
+      mimeType: created.mimeType,
+      size: created.size,
+    });
   });
 
   it('filter=overdue — фильтрует по isOverdue (totalCount = 12, не 15)', async () => {
-    const created = { id: 'f2', name: 'Задачи (просроченные) 2026-09-16.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 999 };
+    const created = {
+      id: 'f2',
+      name: 'Задачи (просроченные) 2026-09-16.xlsx',
+      mimeType:
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 999,
+    };
     const tasksStub = { findAll: jest.fn().mockResolvedValue(tasks) };
     const filesStub = { createGenerated: jest.fn().mockResolvedValue(created) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, filesStub as any);
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      filesStub as any,
+    );
 
-    const result = await service.execute('export_tasks_xlsx', { filter: 'overdue' }, user());
+    const result = await service.execute(
+      'export_tasks_xlsx',
+      { filter: 'overdue' },
+      user(),
+    );
 
     expect(result).toMatchObject({ tool: 'export_tasks_xlsx', totalCount: 12 });
   });
 
   it('сбой FilesService.createGenerated превращается в {error:true, EXPORT_FAILED}, не пробрасывает err.message', async () => {
     const tasksStub = { findAll: jest.fn().mockResolvedValue(tasks) };
-    const filesStub = { createGenerated: jest.fn().mockRejectedValue(new Error('disk full: /data/uploads')) };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, filesStub as any);
+    const filesStub = {
+      createGenerated: jest
+        .fn()
+        .mockRejectedValue(new Error('disk full: /data/uploads')),
+    };
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      filesStub as any,
+    );
 
-    const result = await service.execute('export_tasks_xlsx', { filter: 'all' }, user());
+    const result = await service.execute(
+      'export_tasks_xlsx',
+      { filter: 'all' },
+      user(),
+    );
 
     expect(result).toMatchObject({ tool: 'export_tasks_xlsx', error: true });
     expect('message' in result && result.message).not.toContain('disk full');
@@ -204,19 +363,29 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
   }
 
   it('search_emails: без подключённого ящика — MAIL_NOT_CONNECTED, поиск не вызывается', async () => {
-    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([]) };
+    const mailStore = {
+      listMailboxesByEmployee: jest.fn().mockResolvedValue([]),
+    };
     const mailQuery = { search: jest.fn() };
     const service = serviceWithMail(mailStore, mailQuery);
 
-    const result = await service.execute('search_emails', {}, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_emails',
+      {},
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ tool: 'search_emails', error: true });
-    expect('message' in result && result.message).toContain('MAIL_NOT_CONNECTED');
+    expect('message' in result && result.message).toContain(
+      'MAIL_NOT_CONNECTED',
+    );
     expect(mailQuery.search).not.toHaveBeenCalled();
   });
 
   it('search_emails: подключённый ящик — маппит письма в компактные карточки', async () => {
-    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]) };
+    const mailStore = {
+      listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]),
+    };
     const items = [
       {
         id: 'e1',
@@ -224,38 +393,74 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
         fromAddress: 'a@x.com',
         fromName: 'A',
         receivedAt: new Date('2026-09-27T10:00:00Z'),
-        analysis: { summary: 'Кратко', importance: 'IMPORTANT', needsReply: true },
+        analysis: {
+          summary: 'Кратко',
+          importance: 'IMPORTANT',
+          needsReply: true,
+        },
       },
     ];
-    const mailQuery = { search: jest.fn().mockResolvedValue({ items, totalCount: 1 }) };
+    const mailQuery = {
+      search: jest.fn().mockResolvedValue({ items, totalCount: 1 }),
+    };
     const service = serviceWithMail(mailStore, mailQuery);
 
-    const result = await service.execute('search_emails', { query: 'тема' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_emails',
+      { query: 'тема' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ tool: 'search_emails', totalCount: 1 });
-    expect('items' in result && result.items[0]).toMatchObject({ emailId: 'e1', importance: 'IMPORTANT', needsReply: true });
-    expect(mailQuery.search).toHaveBeenCalledWith(['mb1'], expect.objectContaining({ query: 'тема', direction: 'incoming' }), { limit: expect.any(Number) });
+    expect('items' in result && result.items[0]).toMatchObject({
+      emailId: 'e1',
+      importance: 'IMPORTANT',
+      needsReply: true,
+    });
+    expect(mailQuery.search).toHaveBeenCalledWith(
+      ['mb1'],
+      expect.objectContaining({ query: 'тема', direction: 'incoming' }),
+      { limit: expect.any(Number) },
+    );
   });
 
   it('get_email: без подключённого ящика — MAIL_NOT_CONNECTED', async () => {
-    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([]) };
+    const mailStore = {
+      listMailboxesByEmployee: jest.fn().mockResolvedValue([]),
+    };
     const service = serviceWithMail(mailStore, {});
 
-    const result = await service.execute('get_email', { emailId: 'e1' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_email',
+      { emailId: 'e1' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ tool: 'get_email', error: true });
-    expect('message' in result && result.message).toContain('MAIL_NOT_CONNECTED');
+    expect('message' in result && result.message).toContain(
+      'MAIL_NOT_CONNECTED',
+    );
   });
 
   it('get_email: письмо не найдено/чужое — общий MAIL_LOOKUP_FAILED, не пробрасывает детали (404)', async () => {
-    const mailStore = { listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]) };
-    const mailQuery = { getMessage: jest.fn().mockRejectedValue(new Error('Письмо не найдено')) };
+    const mailStore = {
+      listMailboxesByEmployee: jest.fn().mockResolvedValue([{ id: 'mb1' }]),
+    };
+    const mailQuery = {
+      getMessage: jest.fn().mockRejectedValue(new Error('Письмо не найдено')),
+    };
     const service = serviceWithMail(mailStore, mailQuery);
 
-    const result = await service.execute('get_email', { emailId: 'e404' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_email',
+      { emailId: 'e404' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ tool: 'get_email', error: true });
-    expect('message' in result && result.message).toContain('MAIL_LOOKUP_FAILED');
+    expect('message' in result && result.message).toContain(
+      'MAIL_LOOKUP_FAILED',
+    );
   });
 });
 
@@ -264,23 +469,54 @@ describe('AssistantToolsService.execute search_emails/get_email (Release 2)', ()
 // вопрос про прошлые встречи.
 describe('AssistantToolsService.execute — инструменты встреч (Stage 2, Phase K)', () => {
   it('get_recent_meetings — берёт первые limit из уже отсортированного MeetingsService.findAll, totalCount = реальное число', async () => {
-    const meetings = Array.from({ length: 8 }, (_, i) => ({ id: `m${i}`, title: `Встреча ${i}`, meetingDate: new Date(2026, 8, 20 - i) }));
+    const meetings = Array.from({ length: 8 }, (_, i) => ({
+      id: `m${i}`,
+      title: `Встреча ${i}`,
+      meetingDate: new Date(2026, 8, 20 - i),
+    }));
     const meetingsStub = { findAll: jest.fn().mockResolvedValue(meetings) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_recent_meetings', { limit: 3 }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_recent_meetings',
+      { limit: 3 },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toMatchObject({ tool: 'get_recent_meetings', totalCount: 8 });
+    expect(result).toMatchObject({
+      tool: 'get_recent_meetings',
+      totalCount: 8,
+    });
     expect('items' in result && result.items).toHaveLength(3);
     expect('items' in result && result.items[0].meetingId).toBe('m0');
   });
 
   it('get_recent_meetings — limit выше MAX_TOOL_ITEMS всё равно капается', async () => {
-    const meetings = Array.from({ length: 20 }, (_, i) => ({ id: `m${i}`, title: `Встреча ${i}`, meetingDate: new Date() }));
+    const meetings = Array.from({ length: 20 }, (_, i) => ({
+      id: `m${i}`,
+      title: `Встреча ${i}`,
+      meetingDate: new Date(),
+    }));
     const meetingsStub = { findAll: jest.fn().mockResolvedValue(meetings) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_recent_meetings', { limit: 100 }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_recent_meetings',
+      { limit: 100 },
+      user({ role: Role.OWNER }),
+    );
 
     expect('items' in result && result.items).toHaveLength(10);
   });
@@ -291,19 +527,43 @@ describe('AssistantToolsService.execute — инструменты встреч 
   // спрятать все не-Plaud встречи от честного вопроса "все встречи").
   it("get_recent_meetings — source='plaud' доходит до MeetingsService.findAll('plaud')", async () => {
     const meetingsStub = { findAll: jest.fn().mockResolvedValue([]) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    await service.execute('get_recent_meetings', { source: 'plaud' }, user({ role: Role.OWNER }));
+    await service.execute(
+      'get_recent_meetings',
+      { source: 'plaud' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(meetingsStub.findAll).toHaveBeenCalledWith('plaud');
   });
 
   it("get_recent_meetings — source отсутствует/невалиден → MeetingsService.findAll('all')", async () => {
     const meetingsStub = { findAll: jest.fn().mockResolvedValue([]) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    await service.execute('get_recent_meetings', {}, user({ role: Role.OWNER }));
-    await service.execute('get_recent_meetings', { source: 'garbage' }, user({ role: Role.OWNER }));
+    await service.execute(
+      'get_recent_meetings',
+      {},
+      user({ role: Role.OWNER }),
+    );
+    await service.execute(
+      'get_recent_meetings',
+      { source: 'garbage' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(meetingsStub.findAll).toHaveBeenNthCalledWith(1, 'all');
     expect(meetingsStub.findAll).toHaveBeenNthCalledWith(2, 'all');
@@ -311,21 +571,57 @@ describe('AssistantToolsService.execute — инструменты встреч 
 
   it('search_meetings — пустой query не бьёт в БД, сразу пустой результат', async () => {
     const prismaStub = { meeting: { findMany: jest.fn(), count: jest.fn() } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+    );
 
-    const result = await service.execute('search_meetings', { query: '   ' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meetings',
+      { query: '   ' },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toEqual({ tool: 'search_meetings', items: [], totalCount: 0 });
+    expect(result).toEqual({
+      tool: 'search_meetings',
+      items: [],
+      totalCount: 0,
+    });
     expect(prismaStub.meeting.findMany).not.toHaveBeenCalled();
   });
 
   it('search_meetings — ищет по title/rawSummary/latestSummary/enhancedSummary без учёта регистра', async () => {
-    const found = [{ id: 'm1', title: 'Встреча про завод', meetingDate: new Date('2026-09-01') }];
-    const prismaStub = { meeting: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const found = [
+      {
+        id: 'm1',
+        title: 'Встреча про завод',
+        meetingDate: new Date('2026-09-01'),
+      },
+    ];
+    const prismaStub = {
+      meeting: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    const result = await service.execute('search_meetings', { query: 'завод' }, user({ role: Role.OWNER, id: 'owner1' }));
+    const result = await service.execute(
+      'search_meetings',
+      { query: 'завод' },
+      user({ role: Role.OWNER, id: 'owner1' }),
+    );
 
     expect(result).toMatchObject({ tool: 'search_meetings', totalCount: 1 });
     expect(prismaStub.meeting.findMany).toHaveBeenCalledWith(
@@ -346,43 +642,117 @@ describe('AssistantToolsService.execute — инструменты встреч 
   // оставлял следа в AuditLog вообще (в отличие от MeetingsService.findOne/
   // extractTasks, где раздел 15 ТЗ уже соблюдался для отдельной встречи).
   it('search_meetings — успешный непустой поиск логируется в AuditLog как AI_MEETING_SEARCH', async () => {
-    const found = [{ id: 'm1', title: 'Встреча про завод', meetingDate: new Date('2026-09-01') }];
-    const prismaStub = { meeting: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const found = [
+      {
+        id: 'm1',
+        title: 'Встреча про завод',
+        meetingDate: new Date('2026-09-01'),
+      },
+    ];
+    const prismaStub = {
+      meeting: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    await service.execute('search_meetings', { query: 'завод' }, user({ role: Role.OWNER, id: 'owner1' }));
+    await service.execute(
+      'search_meetings',
+      { query: 'завод' },
+      user({ role: Role.OWNER, id: 'owner1' }),
+    );
 
-    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_MEETING_SEARCH', 'Meeting', 'завод', { resultCount: 1 });
+    expect(auditStub.log).toHaveBeenCalledWith(
+      'owner1',
+      'AI_MEETING_SEARCH',
+      'Meeting',
+      'завод',
+      { resultCount: 1 },
+    );
   });
 
   it('search_meetings — пустой query не пишет в AuditLog', async () => {
     const prismaStub = { meeting: { findMany: jest.fn(), count: jest.fn() } };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    await service.execute('search_meetings', { query: '   ' }, user({ role: Role.OWNER }));
+    await service.execute(
+      'search_meetings',
+      { query: '   ' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(auditStub.log).not.toHaveBeenCalled();
   });
 
   it('get_meeting — делегирует MeetingsService.findOne (тот же audit.log/404), предпочитает enhancedSummary', async () => {
-    const meeting = { id: 'm1', title: 'Встреча', meetingDate: new Date('2026-09-01'), rawSummary: 'сырое', enhancedSummary: 'обработанное' };
+    const meeting = {
+      id: 'm1',
+      title: 'Встреча',
+      meetingDate: new Date('2026-09-01'),
+      rawSummary: 'сырое',
+      enhancedSummary: 'обработанное',
+    };
     const meetingsStub = { findOne: jest.fn().mockResolvedValue(meeting) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_meeting', { meetingId: 'm1' }, user({ role: Role.OWNER, id: 'owner1' }));
+    const result = await service.execute(
+      'get_meeting',
+      { meetingId: 'm1' },
+      user({ role: Role.OWNER, id: 'owner1' }),
+    );
 
     expect(meetingsStub.findOne).toHaveBeenCalledWith('m1', 'owner1');
-    expect(result).toMatchObject({ tool: 'get_meeting', meeting: { meetingId: 'm1', summary: 'обработанное' } });
+    expect(result).toMatchObject({
+      tool: 'get_meeting',
+      meeting: { meetingId: 'm1', summary: 'обработанное' },
+    });
   });
 
   it('get_meeting — без enhancedSummary отдаёт rawSummary', async () => {
-    const meeting = { id: 'm1', title: 'Встреча', meetingDate: new Date('2026-09-01'), rawSummary: 'сырое', enhancedSummary: null };
+    const meeting = {
+      id: 'm1',
+      title: 'Встреча',
+      meetingDate: new Date('2026-09-01'),
+      rawSummary: 'сырое',
+      enhancedSummary: null,
+    };
     const meetingsStub = { findOne: jest.fn().mockResolvedValue(meeting) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_meeting', { meetingId: 'm1' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_meeting',
+      { meetingId: 'm1' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ meeting: { summary: 'сырое' } });
   });
@@ -392,49 +762,135 @@ describe('AssistantToolsService.execute — инструменты встреч 
   // вообще, Assistant всегда отвечал по замороженной rawSummary, даже
   // если Plaud обновил содержимое встречи.
   it('get_meeting — без enhancedSummary, но с latestSummary — предпочитает latestSummary над rawSummary', async () => {
-    const meeting = { id: 'm1', title: 'Встреча', meetingDate: new Date('2026-09-01'), rawSummary: 'исходное', latestSummary: 'обновлённое с Plaud', enhancedSummary: null };
+    const meeting = {
+      id: 'm1',
+      title: 'Встреча',
+      meetingDate: new Date('2026-09-01'),
+      rawSummary: 'исходное',
+      latestSummary: 'обновлённое с Plaud',
+      enhancedSummary: null,
+    };
     const meetingsStub = { findOne: jest.fn().mockResolvedValue(meeting) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_meeting', { meetingId: 'm1' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_meeting',
+      { meetingId: 'm1' },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toMatchObject({ meeting: { summary: 'обновлённое с Plaud' } });
+    expect(result).toMatchObject({
+      meeting: { summary: 'обновлённое с Plaud' },
+    });
   });
 
   it('get_meeting — MeetingsService.findOne бросает NotFoundException — безопасный error, не 404-текст наружу', async () => {
-    const meetingsStub = { findOne: jest.fn().mockRejectedValue(new Error('Встреча не найдена')) };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, meetingsStub as any, {} as any);
+    const meetingsStub = {
+      findOne: jest.fn().mockRejectedValue(new Error('Встреча не найдена')),
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      {} as any,
+    );
 
-    const result = await service.execute('get_meeting', { meetingId: 'ghost' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'get_meeting',
+      { meetingId: 'ghost' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({ tool: 'get_meeting', error: true });
-    expect('message' in result && result.message).toContain('MEETING_LOOKUP_FAILED');
+    expect('message' in result && result.message).toContain(
+      'MEETING_LOOKUP_FAILED',
+    );
   });
 
   it('search_meeting_transcript — пустой query не бьёт в БД', async () => {
-    const prismaStub = { meetingSegment: { findMany: jest.fn(), count: jest.fn() } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any);
+    const prismaStub = {
+      meetingSegment: { findMany: jest.fn(), count: jest.fn() },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+    );
 
-    const result = await service.execute('search_meeting_transcript', { query: '' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meeting_transcript',
+      { query: '' },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toEqual({ tool: 'search_meeting_transcript', items: [], totalCount: 0 });
+    expect(result).toEqual({
+      tool: 'search_meeting_transcript',
+      items: [],
+      totalCount: 0,
+    });
     expect(prismaStub.meetingSegment.findMany).not.toHaveBeenCalled();
   });
 
   it('search_meeting_transcript — находит реплики, опционально ограничивает одной встречей', async () => {
-    const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
+    const found = [
+      {
+        meetingId: 'm1',
+        speakerLabel: 'Жандос',
+        startMs: 60000,
+        endMs: 65000,
+        text: 'по договору',
+        meeting: { title: 'Встреча про завод' },
+      },
+    ];
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      { log: jest.fn() } as any,
+    );
 
-    const result = await service.execute('search_meeting_transcript', { query: 'договор', meetingId: 'm1' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meeting_transcript',
+      { query: 'договор', meetingId: 'm1' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({
       tool: 'search_meeting_transcript',
       totalCount: 1,
-      items: [{ meetingId: 'm1', meetingTitle: 'Встреча про завод', speakerLabel: 'Жандос', text: 'по договору' }],
+      items: [
+        {
+          meetingId: 'm1',
+          meetingTitle: 'Встреча про завод',
+          speakerLabel: 'Жандос',
+          text: 'по договору',
+        },
+      ],
     });
     expect(prismaStub.meetingSegment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { text: { contains: 'договор', mode: 'insensitive' }, meetingId: 'm1' } }),
+      expect.objectContaining({
+        where: {
+          text: { contains: 'договор', mode: 'insensitive' },
+          meetingId: 'm1',
+        },
+      }),
     );
   });
 
@@ -442,33 +898,108 @@ describe('AssistantToolsService.execute — инструменты встреч 
   // раньше не оставлял следа в AuditLog вообще. entityId — meetingId, если
   // поиск сужен на конкретную встречу (есть реальная целевая запись).
   it('search_meeting_transcript — успешный поиск по конкретной встрече логируется в AuditLog как AI_TRANSCRIPT_SEARCH с entityId=meetingId', async () => {
-    const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const found = [
+      {
+        meetingId: 'm1',
+        speakerLabel: 'Жандос',
+        startMs: 60000,
+        endMs: 65000,
+        text: 'по договору',
+        meeting: { title: 'Встреча про завод' },
+      },
+    ];
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    await service.execute('search_meeting_transcript', { query: 'договор', meetingId: 'm1' }, user({ role: Role.OWNER, id: 'owner1' }));
+    await service.execute(
+      'search_meeting_transcript',
+      { query: 'договор', meetingId: 'm1' },
+      user({ role: Role.OWNER, id: 'owner1' }),
+    );
 
-    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TRANSCRIPT_SEARCH', 'Meeting', 'm1', { query: 'договор', meetingId: 'm1', resultCount: 1 });
+    expect(auditStub.log).toHaveBeenCalledWith(
+      'owner1',
+      'AI_TRANSCRIPT_SEARCH',
+      'Meeting',
+      'm1',
+      { query: 'договор', meetingId: 'm1', resultCount: 1 },
+    );
   });
 
   it('search_meeting_transcript — поиск без ограничения встречей логирует entityId=запрос', async () => {
-    const found = [{ meetingId: 'm1', speakerLabel: 'Жандос', startMs: 60000, endMs: 65000, text: 'по договору', meeting: { title: 'Встреча про завод' } }];
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
+    const found = [
+      {
+        meetingId: 'm1',
+        speakerLabel: 'Жандос',
+        startMs: 60000,
+        endMs: 65000,
+        text: 'по договору',
+        meeting: { title: 'Встреча про завод' },
+      },
+    ];
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    await service.execute('search_meeting_transcript', { query: 'договор' }, user({ role: Role.OWNER, id: 'owner1' }));
+    await service.execute(
+      'search_meeting_transcript',
+      { query: 'договор' },
+      user({ role: Role.OWNER, id: 'owner1' }),
+    );
 
-    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TRANSCRIPT_SEARCH', 'Meeting', 'договор', { query: 'договор', meetingId: null, resultCount: 1 });
+    expect(auditStub.log).toHaveBeenCalledWith(
+      'owner1',
+      'AI_TRANSCRIPT_SEARCH',
+      'Meeting',
+      'договор',
+      { query: 'договор', meetingId: null, resultCount: 1 },
+    );
   });
 
   it('search_meeting_transcript — пустой query не пишет в AuditLog', async () => {
-    const prismaStub = { meetingSegment: { findMany: jest.fn(), count: jest.fn() } };
+    const prismaStub = {
+      meetingSegment: { findMany: jest.fn(), count: jest.fn() },
+    };
     const auditStub = { log: jest.fn() };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, auditStub as any);
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      auditStub as any,
+    );
 
-    await service.execute('search_meeting_transcript', { query: '' }, user({ role: Role.OWNER }));
+    await service.execute(
+      'search_meeting_transcript',
+      { query: '' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(auditStub.log).not.toHaveBeenCalled();
   });
@@ -490,33 +1021,104 @@ describe('AssistantToolsService.execute — инструменты встреч 
         meeting: { title: 'Встреча про завод' },
       },
     ];
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      { log: jest.fn() } as any,
+    );
 
-    const result = await service.execute('search_meeting_transcript', { query: 'договор' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meeting_transcript',
+      { query: 'договор' },
+      user({ role: Role.OWNER }),
+    );
 
     expect(result).toMatchObject({
-      items: [{ speakerLabel: 'Speaker 2', speakerEmployeeId: 'e1', speakerName: 'Жандос Ахметов' }],
+      items: [
+        {
+          speakerLabel: 'Speaker 2',
+          speakerEmployeeId: 'e1',
+          speakerName: 'Жандос Ахметов',
+        },
+      ],
     });
   });
 
   it('search_meeting_transcript — говорящий НЕ сопоставлен — speakerEmployeeId/speakerName оба null', async () => {
-    const found = [{ meetingId: 'm1', speakerLabel: 'Speaker 1', speakerEmployeeId: null, speakerEmployee: null, startMs: 0, endMs: 1000, text: 'привет', meeting: { title: 'Встреча' } }];
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue(found), count: jest.fn().mockResolvedValue(1) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
+    const found = [
+      {
+        meetingId: 'm1',
+        speakerLabel: 'Speaker 1',
+        speakerEmployeeId: null,
+        speakerEmployee: null,
+        startMs: 0,
+        endMs: 1000,
+        text: 'привет',
+        meeting: { title: 'Встреча' },
+      },
+    ];
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue(found),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      { log: jest.fn() } as any,
+    );
 
-    const result = await service.execute('search_meeting_transcript', { query: 'привет' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meeting_transcript',
+      { query: 'привет' },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toMatchObject({ items: [{ speakerEmployeeId: null, speakerName: null }] });
+    expect(result).toMatchObject({
+      items: [{ speakerEmployeeId: null, speakerName: null }],
+    });
   });
 
   it('search_meeting_transcript — без транскрипта (ничего не найдено) отдаёт пустой items, не бросает', async () => {
-    const prismaStub = { meetingSegment: { findMany: jest.fn().mockResolvedValue([]), count: jest.fn().mockResolvedValue(0) } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prismaStub as any, { log: jest.fn() } as any);
+    const prismaStub = {
+      meetingSegment: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+      },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prismaStub as any,
+      { log: jest.fn() } as any,
+    );
 
-    const result = await service.execute('search_meeting_transcript', { query: 'что угодно' }, user({ role: Role.OWNER }));
+    const result = await service.execute(
+      'search_meeting_transcript',
+      { query: 'что угодно' },
+      user({ role: Role.OWNER }),
+    );
 
-    expect(result).toEqual({ tool: 'search_meeting_transcript', items: [], totalCount: 0 });
+    expect(result).toEqual({
+      tool: 'search_meeting_transcript',
+      items: [],
+      totalCount: 0,
+    });
   });
 });
 
@@ -526,39 +1128,92 @@ describe('AssistantToolsService.execute — инструменты встреч 
 // бэкенде, а не на слово модели.
 describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase O)', () => {
   const owner = user({ id: 'owner1', role: Role.OWNER });
-  const meeting = { id: 'm1', title: 'Автоматизация завода', meetingDate: new Date('2026-09-21T10:00:00Z') };
-  const createdTask = { id: 't1', title: 'Получить КП', status: 'NEW', dueDate: null, assignee: null };
+  const meeting = {
+    id: 'm1',
+    title: 'Автоматизация завода',
+    meetingDate: new Date('2026-09-21T10:00:00Z'),
+  };
+  const createdTask = {
+    id: 't1',
+    title: 'Получить КП',
+    status: 'NEW',
+    dueDate: null,
+    assignee: null,
+  };
 
-  function makeDeps(overrides: {
-    meetingsFindOne?: jest.Mock;
-    segment?: { id: string; meetingId: string; startMs: number } | null;
-    employees?: { id: string; fullName: string }[];
-    resolve?: jest.Mock;
-    tasksCreate?: jest.Mock;
-    taskFindUnique?: jest.Mock;
-    executionCreate?: jest.Mock;
-    executionFindUnique?: jest.Mock;
-    executionUpdate?: jest.Mock;
-  } = {}) {
-    const meetingsStub = { findOne: overrides.meetingsFindOne ?? jest.fn().mockResolvedValue(meeting) };
-    const tasksStub = { create: overrides.tasksCreate ?? jest.fn().mockResolvedValue(createdTask) };
+  function makeDeps(
+    overrides: {
+      meetingsFindOne?: jest.Mock;
+      segment?: { id: string; meetingId: string; startMs: number } | null;
+      employees?: { id: string; fullName: string }[];
+      resolve?: jest.Mock;
+      tasksCreate?: jest.Mock;
+      taskFindUnique?: jest.Mock;
+      executionCreate?: jest.Mock;
+      executionFindUnique?: jest.Mock;
+      executionUpdate?: jest.Mock;
+    } = {},
+  ) {
+    const meetingsStub = {
+      findOne:
+        overrides.meetingsFindOne ?? jest.fn().mockResolvedValue(meeting),
+    };
+    const tasksStub = {
+      create: overrides.tasksCreate ?? jest.fn().mockResolvedValue(createdTask),
+    };
     const auditStub = { log: jest.fn() };
-    const employeeResolverStub = { resolve: overrides.resolve ?? jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) };
+    const employeeResolverStub = {
+      resolve:
+        overrides.resolve ??
+        jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }),
+    };
     const prisma = {
-      meetingSegment: { findUnique: jest.fn().mockResolvedValue(overrides.segment === undefined ? null : overrides.segment) },
-      employee: { findMany: jest.fn().mockResolvedValue(overrides.employees ?? [{ id: 'e1', fullName: 'Жандос Ахметов' }]) },
+      meetingSegment: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(
+            overrides.segment === undefined ? null : overrides.segment,
+          ),
+      },
+      employee: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(
+            overrides.employees ?? [{ id: 'e1', fullName: 'Жандос Ахметов' }],
+          ),
+      },
       // Hardening (P0, crash-safe) — Task.findUnique({sourceExecutionId})
       // по умолчанию "ничего не найдено" (обычный путь, execution ещё не
       // привязан ни к одной Task); тесты crash-safety переопределяют.
-      task: { findUnique: overrides.taskFindUnique ?? jest.fn().mockResolvedValue(null) },
+      task: {
+        findUnique:
+          overrides.taskFindUnique ?? jest.fn().mockResolvedValue(null),
+      },
       taskFromMeetingExecution: {
-        create: overrides.executionCreate ?? jest.fn().mockResolvedValue({ id: 'exec1' }),
+        create:
+          overrides.executionCreate ??
+          jest.fn().mockResolvedValue({ id: 'exec1' }),
         findUnique: overrides.executionFindUnique ?? jest.fn(),
         update: overrides.executionUpdate ?? jest.fn(),
       },
     };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any, meetingsStub as any, prisma as any, auditStub as any, employeeResolverStub as any);
-    return { service, meetingsStub, tasksStub, auditStub, employeeResolverStub, prisma };
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      {} as any,
+      meetingsStub as any,
+      prisma as any,
+      auditStub as any,
+      employeeResolverStub as any,
+    );
+    return {
+      service,
+      meetingsStub,
+      tasksStub,
+      auditStub,
+      employeeResolverStub,
+      prisma,
+    };
   }
 
   const baseInput = { meetingId: 'm1', title: 'Получить КП' };
@@ -566,20 +1221,32 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
   // create_task_from_meeting, см. execute()'s guard); большинство тестов
   // ниже используют один и тот же вызов в изоляции — конкретное значение
   // не важно само по себе, важно только то, что оно ЕСТЬ.
-  const call = (service: any, input: unknown, u = owner, idx = 0) => service.execute('create_task_from_meeting', input, u, 'c1', 'msg1', idx);
+  const call = (service: any, input: unknown, u = owner, idx = 0) =>
+    service.execute('create_task_from_meeting', input, u, 'c1', 'msg1', idx);
 
   it('встреча не найдена — безопасная ошибка, TasksService.create не вызывается', async () => {
-    const { service, tasksStub } = makeDeps({ meetingsFindOne: jest.fn().mockRejectedValue(new Error('Встреча не найдена')) });
+    const { service, tasksStub } = makeDeps({
+      meetingsFindOne: jest
+        .fn()
+        .mockRejectedValue(new Error('Встреча не найдена')),
+    });
 
     const result = await call(service, baseInput);
 
-    expect(result).toMatchObject({ tool: 'create_task_from_meeting', error: true });
-    expect('message' in result && result.message).toContain('MEETING_LOOKUP_FAILED');
+    expect(result).toMatchObject({
+      tool: 'create_task_from_meeting',
+      error: true,
+    });
+    expect('message' in result && result.message).toContain(
+      'MEETING_LOOKUP_FAILED',
+    );
     expect(tasksStub.create).not.toHaveBeenCalled();
   });
 
   it('segmentId принадлежит ДРУГОЙ встрече — SEGMENT_MISMATCH, задача не создаётся', async () => {
-    const { service, tasksStub } = makeDeps({ segment: { id: 's1', meetingId: 'm-other', startMs: 1000 } });
+    const { service, tasksStub } = makeDeps({
+      segment: { id: 's1', meetingId: 'm-other', startMs: 1000 },
+    });
 
     const result = await call(service, { ...baseInput, segmentId: 's1' });
 
@@ -601,45 +1268,83 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
     const result = await call(service, baseInput);
 
-    expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { source: { meetingId: 'm1', timestamp: null } } });
+    expect(result).toMatchObject({
+      tool: 'create_task_from_meeting',
+      task: { source: { meetingId: 'm1', timestamp: null } },
+    });
   });
 
   it('с segmentId — TasksService.create получает sourceSegmentId, sourceExecutionId и отформатированный sourceTimestamp, source.timestamp в ответе тоже заполнен', async () => {
-    const { service, tasksStub } = makeDeps({ segment: { id: 's1', meetingId: 'm1', startMs: 65000 } });
+    const { service, tasksStub } = makeDeps({
+      segment: { id: 's1', meetingId: 'm1', startMs: 65000 },
+    });
 
     const result = await call(service, { ...baseInput, segmentId: 's1' });
 
     expect(tasksStub.create).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceMeetingId: 'm1', sourceSegmentId: 's1', sourceExecutionId: 'exec1', sourceTimestamp: '1:05' }),
+      expect.objectContaining({
+        sourceMeetingId: 'm1',
+        sourceSegmentId: 's1',
+        sourceExecutionId: 'exec1',
+        sourceTimestamp: '1:05',
+      }),
       owner,
     );
     expect(result).toMatchObject({ task: { source: { timestamp: '1:05' } } });
   });
 
   it('assigneeRawText резолвится (RESOLVED) — TasksService.create получает найденный assigneeId', async () => {
-    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) });
+    const { service, tasksStub } = makeDeps({
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }),
+    });
 
     await call(service, { ...baseInput, assigneeRawText: 'Жандосу' });
 
-    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: 'e1' }), owner);
+    expect(tasksStub.create).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: 'e1' }),
+      owner,
+    );
   });
 
   it('assigneeRawText неоднозначен (AMBIGUOUS) — задача НЕ создаётся, execution помечается FAILED', async () => {
-    const { service, tasksStub, prisma } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }) });
+    const { service, tasksStub, prisma } = makeDeps({
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }),
+    });
 
-    const result = await call(service, { ...baseInput, assigneeRawText: 'Алексей' });
+    const result = await call(service, {
+      ...baseInput,
+      assigneeRawText: 'Алексей',
+    });
 
-    expect('message' in result && result.message).toContain('ASSIGNEE_AMBIGUOUS');
+    expect('message' in result && result.message).toContain(
+      'ASSIGNEE_AMBIGUOUS',
+    );
     expect(tasksStub.create).not.toHaveBeenCalled();
-    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'FAILED' }) });
+    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({
+      where: { id: 'exec1' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
   });
 
   it('assigneeRawText не найден (NOT_FOUND) — задача НЕ создаётся', async () => {
-    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'NOT_FOUND', employeeId: null }) });
+    const { service, tasksStub } = makeDeps({
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ status: 'NOT_FOUND', employeeId: null }),
+    });
 
-    const result = await call(service, { ...baseInput, assigneeRawText: 'Незнакомец' });
+    const result = await call(service, {
+      ...baseInput,
+      assigneeRawText: 'Незнакомец',
+    });
 
-    expect('message' in result && result.message).toContain('ASSIGNEE_NOT_FOUND');
+    expect('message' in result && result.message).toContain(
+      'ASSIGNEE_NOT_FOUND',
+    );
     expect(tasksStub.create).not.toHaveBeenCalled();
   });
 
@@ -649,20 +1354,33 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
     await call(service, baseInput);
 
     expect(employeeResolverStub.resolve).not.toHaveBeenCalled();
-    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: undefined }), owner);
+    expect(tasksStub.create).toHaveBeenCalledWith(
+      expect.objectContaining({ assigneeId: undefined }),
+      owner,
+    );
   });
 
   it('успешное создание пишет AI_MEETING_TASK_CREATE в AuditLog без полного транскрипта', async () => {
     const { service, auditStub } = makeDeps();
 
-    await call(service, { ...baseInput, assigneeRawText: 'Жандосу', dueDate: '2026-09-26T10:00:00' });
-
-    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_MEETING_TASK_CREATE', 'Task', 't1', {
-      meetingId: 'm1',
-      segmentId: null,
-      assigneeId: 'e1',
+    await call(service, {
+      ...baseInput,
+      assigneeRawText: 'Жандосу',
       dueDate: '2026-09-26T10:00:00',
     });
+
+    expect(auditStub.log).toHaveBeenCalledWith(
+      'owner1',
+      'AI_MEETING_TASK_CREATE',
+      'Task',
+      't1',
+      {
+        meetingId: 'm1',
+        segmentId: null,
+        assigneeId: 'e1',
+        dueDate: '2026-09-26T10:00:00',
+      },
+    );
   });
 
   it('dueDate приводится к местному времени с явным смещением (withLocalOffset), как в voice', async () => {
@@ -670,7 +1388,10 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
     await call(service, { ...baseInput, dueDate: '2026-09-26T10:00:00' });
 
-    expect(tasksStub.create).toHaveBeenCalledWith(expect.objectContaining({ dueDate: '2026-09-26T10:00:00+05:00' }), owner);
+    expect(tasksStub.create).toHaveBeenCalledWith(
+      expect.objectContaining({ dueDate: '2026-09-26T10:00:00+05:00' }),
+      owner,
+    );
   });
 
   // Hardening-раунд (22.09.2026, P0/P1) — dedupeKey/идемпотентность.
@@ -680,7 +1401,9 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
       await call(service, baseInput, owner, 3);
 
-      expect(prisma.taskFromMeetingExecution.create).toHaveBeenCalledWith({ data: { conversationId: 'c1', dedupeKey: 'msg1:3' } });
+      expect(prisma.taskFromMeetingExecution.create).toHaveBeenCalledWith({
+        data: { conversationId: 'c1', dedupeKey: 'msg1:3' },
+      });
     });
 
     // РЕГРЕССИЯ P0/P1 находки №1 отчёта — старый ключ включал title,
@@ -689,13 +1412,22 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
     // execution-записи, обе задачи создаются независимо.
     it('два вызова в одном ответе с одинаковым title, но разным assignee/toolCallIndex — НЕ схлопываются (разные dedupeKey)', async () => {
       const { service, prisma } = makeDeps();
-      const executionCreate = prisma.taskFromMeetingExecution.create as jest.Mock;
+      const executionCreate = prisma.taskFromMeetingExecution.create;
 
       await call(service, { ...baseInput, assigneeRawText: 'Амиру' }, owner, 0);
-      await call(service, { ...baseInput, assigneeRawText: 'Жандосу' }, owner, 1);
+      await call(
+        service,
+        { ...baseInput, assigneeRawText: 'Жандосу' },
+        owner,
+        1,
+      );
 
-      expect(executionCreate).toHaveBeenNthCalledWith(1, { data: { conversationId: 'c1', dedupeKey: 'msg1:0' } });
-      expect(executionCreate).toHaveBeenNthCalledWith(2, { data: { conversationId: 'c1', dedupeKey: 'msg1:1' } });
+      expect(executionCreate).toHaveBeenNthCalledWith(1, {
+        data: { conversationId: 'c1', dedupeKey: 'msg1:0' },
+      });
+      expect(executionCreate).toHaveBeenNthCalledWith(2, {
+        data: { conversationId: 'c1', dedupeKey: 'msg1:1' },
+      });
     });
 
     // РЕГРЕССИЯ P0/P1 находки №2 отчёта — раньше перефразированный моделью
@@ -704,16 +1436,32 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
     // ДРУГИМ title всё равно ловит P2002 и уходит в reclaim/crash-safe
     // ветку, не создаёт вторую задачу.
     it('ретрай с ДРУГИМ (перефразированным) title, но тем же (userMessageId, toolCallIndex) — распознаётся как дубликат через P2002', async () => {
-      const existingExecution = { id: 'exec1', status: 'FAILED', taskId: null, updatedAt: new Date() };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'FAILED',
+        taskId: null,
+        updatedAt: new Date(),
+      };
       const { service, tasksStub } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
       });
 
-      const result = await call(service, { ...baseInput, title: 'Запросить коммерческое предложение IDAT (перефразировано)' }, owner, 0);
+      const result = await call(
+        service,
+        {
+          ...baseInput,
+          title: 'Запросить коммерческое предложение IDAT (перефразировано)',
+        },
+        owner,
+        0,
+      );
 
       expect(tasksStub.create).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+      expect(result).toMatchObject({
+        tool: 'create_task_from_meeting',
+        task: { taskId: 't1' },
+      });
     });
 
     // РЕГРЕССИЯ P0 находки №1 отчёта (crash-safety) — execution мог
@@ -722,8 +1470,19 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
     // Task.sourceExecutionId (не по execution.status) должна найти уже
     // созданную Task и вернуть её, а НЕ пытаться создать вторую.
     it('crash-safety: execution завис в свежем CLAIMED, но Task с этим sourceExecutionId уже реально существует — возвращает её, НЕ создаёт вторую, самоисцеляет execution', async () => {
-      const existingExecution = { id: 'exec1', status: 'CLAIMED', taskId: null, updatedAt: new Date() };
-      const alreadyCreatedTask = { id: 't1', title: 'Получить КП', status: 'NEW', dueDate: null, assignee: null };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'CLAIMED',
+        taskId: null,
+        updatedAt: new Date(),
+      };
+      const alreadyCreatedTask = {
+        id: 't1',
+        title: 'Получить КП',
+        status: 'NEW',
+        dueDate: null,
+        assignee: null,
+      };
       const { service, tasksStub, prisma } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
@@ -732,9 +1491,14 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
       const result = await call(service, baseInput);
 
-      expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+      expect(result).toMatchObject({
+        tool: 'create_task_from_meeting',
+        task: { taskId: 't1' },
+      });
       expect(tasksStub.create).not.toHaveBeenCalled();
-      expect(prisma.task.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { sourceExecutionId: 'exec1' } }));
+      expect(prisma.task.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { sourceExecutionId: 'exec1' } }),
+      );
       expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({
         where: { id: 'exec1' },
         data: { status: 'COMPLETED', taskId: 't1', errorMessage: null },
@@ -742,8 +1506,19 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
     });
 
     it('crash-safety: execution уже COMPLETED и консистентен (taskId совпадает с найденной Task) — возвращает Task, execution НЕ обновляется повторно', async () => {
-      const existingExecution = { id: 'exec1', status: 'COMPLETED', taskId: 't1', updatedAt: new Date() };
-      const alreadyCreatedTask = { id: 't1', title: 'Получить КП', status: 'NEW', dueDate: null, assignee: null };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'COMPLETED',
+        taskId: 't1',
+        updatedAt: new Date(),
+      };
+      const alreadyCreatedTask = {
+        id: 't1',
+        title: 'Получить КП',
+        status: 'NEW',
+        dueDate: null,
+        assignee: null,
+      };
       const { service, tasksStub, prisma } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
@@ -752,13 +1527,21 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
       const result = await call(service, baseInput);
 
-      expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+      expect(result).toMatchObject({
+        tool: 'create_task_from_meeting',
+        task: { taskId: 't1' },
+      });
       expect(tasksStub.create).not.toHaveBeenCalled();
       expect(prisma.taskFromMeetingExecution.update).not.toHaveBeenCalled();
     });
 
     it('FAILED execution, Task ещё нет — допускает повтор, TasksService.create вызывается, execution переиспользуется', async () => {
-      const existingExecution = { id: 'exec1', status: 'FAILED', taskId: null, updatedAt: new Date() };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'FAILED',
+        taskId: null,
+        updatedAt: new Date(),
+      };
       const { service, tasksStub, prisma } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
@@ -767,14 +1550,25 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
       const result = await call(service, baseInput);
 
       expect(tasksStub.create).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+      expect(result).toMatchObject({
+        tool: 'create_task_from_meeting',
+        task: { taskId: 't1' },
+      });
       expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'CLAIMED' }) }),
+        expect.objectContaining({
+          where: { id: 'exec1' },
+          data: expect.objectContaining({ status: 'CLAIMED' }),
+        }),
       );
     });
 
     it('свежий CLAIMED, Task ещё нет (реально конкурентный вызов) — безопасный отказ, TasksService.create НЕ вызывается', async () => {
-      const existingExecution = { id: 'exec1', status: 'CLAIMED', taskId: null, updatedAt: new Date() };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'CLAIMED',
+        taskId: null,
+        updatedAt: new Date(),
+      };
       const { service, tasksStub } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
@@ -782,13 +1576,20 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 
       const result = await call(service, baseInput);
 
-      expect('message' in result && result.message).toContain('ALREADY_PROCESSING');
+      expect('message' in result && result.message).toContain(
+        'ALREADY_PROCESSING',
+      );
       expect(tasksStub.create).not.toHaveBeenCalled();
     });
 
     it('устаревший (stale) CLAIMED, Task ещё нет — брошенный процесс, безопасно переиспользуется', async () => {
       const staleDate = new Date(Date.now() - 5 * 60 * 1000); // 5 минут назад
-      const existingExecution = { id: 'exec1', status: 'CLAIMED', taskId: null, updatedAt: staleDate };
+      const existingExecution = {
+        id: 'exec1',
+        status: 'CLAIMED',
+        taskId: null,
+        updatedAt: staleDate,
+      };
       const { service, tasksStub } = makeDeps({
         executionCreate: jest.fn().mockRejectedValue(p2002()),
         executionFindUnique: jest.fn().mockResolvedValue(existingExecution),
@@ -797,24 +1598,42 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
       const result = await call(service, baseInput);
 
       expect(tasksStub.create).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({ tool: 'create_task_from_meeting', task: { taskId: 't1' } });
+      expect(result).toMatchObject({
+        tool: 'create_task_from_meeting',
+        task: { taskId: 't1' },
+      });
     });
   });
 
   it('TasksService.create падает — execution помечается FAILED, безопасная generic-ошибка наружу', async () => {
-    const { service, prisma } = makeDeps({ tasksCreate: jest.fn().mockRejectedValue(new Error('db down: password=secret')) });
+    const { service, prisma } = makeDeps({
+      tasksCreate: jest
+        .fn()
+        .mockRejectedValue(new Error('db down: password=secret')),
+    });
 
     const result = await call(service, baseInput);
 
-    expect(result).toMatchObject({ tool: 'create_task_from_meeting', error: true, message: expect.stringContaining('TASK_CREATE_FAILED') });
+    expect(result).toMatchObject({
+      tool: 'create_task_from_meeting',
+      error: true,
+      message: expect.stringContaining('TASK_CREATE_FAILED'),
+    });
     expect('message' in result && result.message).not.toContain('password');
-    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({ where: { id: 'exec1' }, data: expect.objectContaining({ status: 'FAILED' }) });
+    expect(prisma.taskFromMeetingExecution.update).toHaveBeenCalledWith({
+      where: { id: 'exec1' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
   });
 
   it('conversationId/userMessageId отсутствуют — безопасный отказ, ничего не создаёт (не должно случаться на практике, см. execute())', async () => {
     const { service, tasksStub } = makeDeps();
 
-    const result = await (service as any).execute('create_task_from_meeting', baseInput, owner);
+    const result = await (service as any).execute(
+      'create_task_from_meeting',
+      baseInput,
+      owner,
+    );
 
     expect(result).toMatchObject({ error: true });
     expect(tasksStub.create).not.toHaveBeenCalled();
@@ -830,64 +1649,148 @@ describe('AssistantToolsService.execute create_task_from_meeting (Stage 2, Phase
 // и подбор исполнителя, что у create_task_from_meeting.
 describe('AssistantToolsService.execute create_task', () => {
   const owner = user({ id: 'owner1', role: Role.OWNER });
-  const createdTask = { id: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: new Date('2026-10-26T13:00:00Z'), assignee: { id: 'e1', fullName: 'Рустем Сапаров' } };
+  const createdTask = {
+    id: 't1',
+    title: 'Сходить в магазин',
+    status: 'NEW',
+    dueDate: new Date('2026-10-26T13:00:00Z'),
+    assignee: { id: 'e1', fullName: 'Рустем Сапаров' },
+  };
 
-  function makeDeps(overrides: { resolve?: jest.Mock; executionCreate?: jest.Mock; executionFindUnique?: jest.Mock; taskFindUnique?: jest.Mock } = {}) {
+  function makeDeps(
+    overrides: {
+      resolve?: jest.Mock;
+      executionCreate?: jest.Mock;
+      executionFindUnique?: jest.Mock;
+      taskFindUnique?: jest.Mock;
+    } = {},
+  ) {
     const tasksStub = { create: jest.fn().mockResolvedValue(createdTask) };
     const auditStub = { log: jest.fn() };
-    const employeeResolverStub = { resolve: overrides.resolve ?? jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }) };
+    const employeeResolverStub = {
+      resolve:
+        overrides.resolve ??
+        jest.fn().mockResolvedValue({ status: 'RESOLVED', employeeId: 'e1' }),
+    };
     const prisma = {
-      employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Рустем Сапаров' }]) },
-      task: { findUnique: overrides.taskFindUnique ?? jest.fn().mockResolvedValue(null) },
+      employee: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'e1', fullName: 'Рустем Сапаров' }]),
+      },
+      task: {
+        findUnique:
+          overrides.taskFindUnique ?? jest.fn().mockResolvedValue(null),
+      },
       taskFromMeetingExecution: {
-        create: overrides.executionCreate ?? jest.fn().mockResolvedValue({ id: 'exec1' }),
+        create:
+          overrides.executionCreate ??
+          jest.fn().mockResolvedValue({ id: 'exec1' }),
         findUnique: overrides.executionFindUnique ?? jest.fn(),
         update: jest.fn(),
       },
     };
-    const service = new AssistantToolsService(tasksStub as any, {} as any, {} as any, {} as any, prisma as any, auditStub as any, employeeResolverStub as any);
+    const service = new AssistantToolsService(
+      tasksStub as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prisma as any,
+      auditStub as any,
+      employeeResolverStub as any,
+    );
     return { service, tasksStub, auditStub };
   }
-  const call = (service: any, input: unknown, u = owner) => service.execute('create_task', input, u, 'c1', 'msg1', 0);
+  const call = (service: any, input: unknown, u = owner) =>
+    service.execute('create_task', input, u, 'c1', 'msg1', 0);
 
   it('ставит задачу исполнителю со сроком по Алматы, карточка без source', async () => {
     const { service, tasksStub, auditStub } = makeDeps();
-    const result = await call(service, { title: 'Сходить в магазин', assigneeRawText: 'на Рустема', dueDate: '2026-10-26T18:00:00', priority: 'HIGH' });
+    const result = await call(service, {
+      title: 'Сходить в магазин',
+      assigneeRawText: 'на Рустема',
+      dueDate: '2026-10-26T18:00:00',
+      priority: 'HIGH',
+    });
     expect(tasksStub.create).toHaveBeenCalledWith(
-      { title: 'Сходить в магазин', description: undefined, assigneeId: 'e1', dueDate: '2026-10-26T18:00:00+05:00', priority: 'HIGH', sourceExecutionId: 'exec1' },
+      {
+        title: 'Сходить в магазин',
+        description: undefined,
+        assigneeId: 'e1',
+        dueDate: '2026-10-26T18:00:00+05:00',
+        priority: 'HIGH',
+        sourceExecutionId: 'exec1',
+      },
       owner,
     );
     // Единый агент A4: у новой задачи есть «Отменить» — без мока undoRecord
     // запись отмены не создаётся (сбой глотается), токен null.
     expect(result).toEqual({
       tool: 'create_task',
-      task: { taskId: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: '2026-10-26T13:00:00.000Z', assignee: { id: 'e1', name: 'Рустем Сапаров' }, undoToken: null, undoExpiresAt: null },
+      task: {
+        taskId: 't1',
+        title: 'Сходить в магазин',
+        status: 'NEW',
+        dueDate: '2026-10-26T13:00:00.000Z',
+        assignee: { id: 'e1', name: 'Рустем Сапаров' },
+        undoToken: null,
+        undoExpiresAt: null,
+      },
     });
-    expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TASK_CREATE', 'Task', 't1', expect.any(Object));
+    expect(auditStub.log).toHaveBeenCalledWith(
+      'owner1',
+      'AI_TASK_CREATE',
+      'Task',
+      't1',
+      expect.any(Object),
+    );
   });
 
   it('исполнитель неоднозначен — задача не создаётся', async () => {
-    const { service, tasksStub } = makeDeps({ resolve: jest.fn().mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }) });
-    const result = await call(service, { title: 'Сходить в магазин', assigneeRawText: 'Рустему' });
-    expect('message' in result && result.message).toContain('ASSIGNEE_AMBIGUOUS');
+    const { service, tasksStub } = makeDeps({
+      resolve: jest
+        .fn()
+        .mockResolvedValue({ status: 'AMBIGUOUS', employeeId: null }),
+    });
+    const result = await call(service, {
+      title: 'Сходить в магазин',
+      assigneeRawText: 'Рустему',
+    });
+    expect('message' in result && result.message).toContain(
+      'ASSIGNEE_AMBIGUOUS',
+    );
     expect(tasksStub.create).not.toHaveBeenCalled();
   });
 
   it('повтор того же вызова (ретрай ответа) — та же задача, без дубля', async () => {
     const { service, tasksStub } = makeDeps({
       executionCreate: jest.fn().mockRejectedValue(p2002()),
-      executionFindUnique: jest.fn().mockResolvedValue({ id: 'exec1', status: 'COMPLETED', taskId: 't1', updatedAt: new Date() }),
+      executionFindUnique: jest.fn().mockResolvedValue({
+        id: 'exec1',
+        status: 'COMPLETED',
+        taskId: 't1',
+        updatedAt: new Date(),
+      }),
       taskFindUnique: jest.fn().mockResolvedValue(createdTask),
     });
     const result = await call(service, { title: 'Сходить в магазин' });
-    expect(result).toMatchObject({ tool: 'create_task', task: { taskId: 't1' } });
+    expect(result).toMatchObject({
+      tool: 'create_task',
+      task: { taskId: 't1' },
+    });
     expect(tasksStub.create).not.toHaveBeenCalled();
   });
 
   it('сотрудник — отказ, задача не создаётся', async () => {
     const { service, tasksStub } = makeDeps();
-    const result = await call(service, { title: 'Сходить в магазин' }, user({ id: 'e2', role: Role.EMPLOYEE }));
-    expect('message' in result && result.message).toContain('TASK_CREATE_FORBIDDEN');
+    const result = await call(
+      service,
+      { title: 'Сходить в магазин' },
+      user({ id: 'e2', role: Role.EMPLOYEE }),
+    );
+    expect('message' in result && result.message).toContain(
+      'TASK_CREATE_FORBIDDEN',
+    );
     expect(tasksStub.create).not.toHaveBeenCalled();
   });
 
@@ -902,17 +1805,33 @@ describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Ph
   const owner = user({ id: 'owner1', role: Role.OWNER });
 
   function makeDeps(employeeCompetencyFindMany: jest.Mock) {
-    const prisma = { employeeCompetency: { findMany: employeeCompetencyFindMany } };
-    const service = new AssistantToolsService({} as any, {} as any, {} as any, {} as any, prisma as any);
+    const prisma = {
+      employeeCompetency: { findMany: employeeCompetencyFindMany },
+    };
+    const service = new AssistantToolsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      prisma as any,
+    );
     return { service, prisma };
   }
 
   it('ни одного активного сотрудника с этой компетенцией — пустой список, не ошибка', async () => {
     const { service, prisma } = makeDeps(jest.fn().mockResolvedValue([]));
 
-    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+    const result = await service.execute(
+      'find_employee_by_competency',
+      { competencyId: 'c1' },
+      owner,
+    );
 
-    expect(result).toEqual({ tool: 'find_employee_by_competency', competencyId: 'c1', employees: [] });
+    expect(result).toEqual({
+      tool: 'find_employee_by_competency',
+      competencyId: 'c1',
+      employees: [],
+    });
     expect(prisma.employeeCompetency.findMany).toHaveBeenCalledWith({
       where: { competencyId: 'c1', employee: { status: 'ACTIVE' } },
       select: { employee: { select: { id: true, fullName: true } } },
@@ -920,22 +1839,42 @@ describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Ph
   });
 
   it('ровно один сотрудник — список из одного', async () => {
-    const { service } = makeDeps(jest.fn().mockResolvedValue([{ employee: { id: 'e1', fullName: 'Жандос Ахметов' } }]));
+    const { service } = makeDeps(
+      jest
+        .fn()
+        .mockResolvedValue([
+          { employee: { id: 'e1', fullName: 'Жандос Ахметов' } },
+        ]),
+    );
 
-    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+    const result = await service.execute(
+      'find_employee_by_competency',
+      { competencyId: 'c1' },
+      owner,
+    );
 
-    expect(result).toEqual({ tool: 'find_employee_by_competency', competencyId: 'c1', employees: [{ id: 'e1', fullName: 'Жандос Ахметов' }] });
+    expect(result).toEqual({
+      tool: 'find_employee_by_competency',
+      competencyId: 'c1',
+      employees: [{ id: 'e1', fullName: 'Жандос Ахметов' }],
+    });
   });
 
   it('несколько сотрудников — полный список, backend НЕ выбирает за модель', async () => {
     const { service } = makeDeps(
-      jest.fn().mockResolvedValue([
-        { employee: { id: 'e1', fullName: 'Жандос Ахметов' } },
-        { employee: { id: 'e2', fullName: 'Амир Жаксылыков' } },
-      ]),
+      jest
+        .fn()
+        .mockResolvedValue([
+          { employee: { id: 'e1', fullName: 'Жандос Ахметов' } },
+          { employee: { id: 'e2', fullName: 'Амир Жаксылыков' } },
+        ]),
     );
 
-    const result = await service.execute('find_employee_by_competency', { competencyId: 'c1' }, owner);
+    const result = await service.execute(
+      'find_employee_by_competency',
+      { competencyId: 'c1' },
+      owner,
+    );
 
     expect(result).toMatchObject({
       employees: [
@@ -948,9 +1887,16 @@ describe('AssistantToolsService.execute find_employee_by_competency (Stage 2, Ph
   it('competencyId не передан — безопасная ошибка, БД не запрашивается', async () => {
     const { service, prisma } = makeDeps(jest.fn());
 
-    const result = await service.execute('find_employee_by_competency', {}, owner);
+    const result = await service.execute(
+      'find_employee_by_competency',
+      {},
+      owner,
+    );
 
-    expect(result).toMatchObject({ tool: 'find_employee_by_competency', error: true });
+    expect(result).toMatchObject({
+      tool: 'find_employee_by_competency',
+      error: true,
+    });
     expect('message' in result && result.message).toContain('INVALID_INPUT');
     expect(prisma.employeeCompetency.findMany).not.toHaveBeenCalled();
   });
@@ -989,38 +1935,80 @@ describe('AssistantToolsService — агент-юрист (legal_ask)', () => {
     const legal = { ask: jest.fn() };
     const on = make({ LEGAL_AGENT_ENABLED: 'true' }, legal).service;
     const off = make({}, legal).service;
-    expect((await on.buildTools(user())).map((t) => t.name)).toContain('legal_ask');
-    expect((await off.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+    expect((await on.buildTools(user())).map((t) => t.name)).toContain(
+      'legal_ask',
+    );
+    expect((await off.buildTools(user())).map((t) => t.name)).not.toContain(
+      'legal_ask',
+    );
   });
 
   it('LEGAL_AGENT_ROLES скрывает инструмент от других ролей', async () => {
-    const { service } = make({ LEGAL_AGENT_ENABLED: 'true', LEGAL_AGENT_ROLES: 'OWNER' }, { ask: jest.fn() });
-    expect((await service.buildTools(user())).map((t) => t.name)).not.toContain('legal_ask');
+    const { service } = make(
+      { LEGAL_AGENT_ENABLED: 'true', LEGAL_AGENT_ROLES: 'OWNER' },
+      { ask: jest.fn() },
+    );
+    expect((await service.buildTools(user())).map((t) => t.name)).not.toContain(
+      'legal_ask',
+    );
   });
 
   it('execute: ответ юриста + markdown из проверенных данных, аудит', async () => {
     const legal = { ask: jest.fn().mockResolvedValue(answer) };
     const { service, audit } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
-    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    const result = await service.execute(
+      'legal_ask',
+      { question: 'гарантия?' },
+      user(),
+    );
     expect(legal.ask).toHaveBeenCalledWith('гарантия?');
-    expect(result).toMatchObject({ tool: 'legal_ask', answer: { conclusion: 'Не меньше 10 лет' } });
-    expect('markdown' in result && result.markdown).toContain('**Вывод.** Не меньше 10 лет');
-    expect(audit.log).toHaveBeenCalledWith('u1', 'LEGAL_ASK', 'LegalQuestion', 'assistant', expect.any(Object));
+    expect(result).toMatchObject({
+      tool: 'legal_ask',
+      answer: { conclusion: 'Не меньше 10 лет' },
+    });
+    expect('markdown' in result && result.markdown).toContain(
+      '**Вывод.** Не меньше 10 лет',
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      'u1',
+      'LEGAL_ASK',
+      'LegalQuestion',
+      'assistant',
+      expect.any(Object),
+    );
   });
 
   it('execute: флаг выключен — отказ без обращения к агенту', async () => {
     const legal = { ask: jest.fn() };
     const { service } = make({}, legal);
-    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
+    const result = await service.execute(
+      'legal_ask',
+      { question: 'гарантия?' },
+      user(),
+    );
     expect(result).toMatchObject({ tool: 'legal_ask', error: true });
     expect(legal.ask).not.toHaveBeenCalled();
   });
 
   it('execute: ожидаемый отказ агента — безопасный код без подробностей', async () => {
-    const legal = { ask: jest.fn().mockRejectedValue(new LegalAgentError('TOO_MANY_ROUNDS', 'секретная деталь')) };
+    const legal = {
+      ask: jest
+        .fn()
+        .mockRejectedValue(
+          new LegalAgentError('TOO_MANY_ROUNDS', 'секретная деталь'),
+        ),
+    };
     const { service } = make({ LEGAL_AGENT_ENABLED: 'true' }, legal);
-    const result = await service.execute('legal_ask', { question: 'гарантия?' }, user());
-    expect(result).toEqual({ tool: 'legal_ask', error: true, message: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ' });
+    const result = await service.execute(
+      'legal_ask',
+      { question: 'гарантия?' },
+      user(),
+    );
+    expect(result).toEqual({
+      tool: 'legal_ask',
+      error: true,
+      message: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ',
+    });
   });
 });
 
@@ -1041,7 +2029,10 @@ describe('AssistantToolsService — разбор договора (legal_review_
     startedAt: null,
     finishedAt: null,
   };
-  function make(env: Record<string, string>, reviews: { create?: jest.Mock; list?: jest.Mock }) {
+  function make(
+    env: Record<string, string>,
+    reviews: { create?: jest.Mock; list?: jest.Mock },
+  ) {
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
     const service = new AssistantToolsService(
       {} as any,
@@ -1064,21 +2055,67 @@ describe('AssistantToolsService — разбор договора (legal_review_
   it('ставит разбор с ключом из идентичности вызова, аудит только для нового', async () => {
     const create = jest.fn().mockResolvedValue({ run, created: true });
     const { service, audit } = make(ON, { create });
-    const result = await service.execute('legal_review_contract', { fileId: 'f1', focus: 'гарантии' }, user(), 'c1', 'm1', 0);
-    expect(create).toHaveBeenCalledWith(user(), { fileId: 'f1', focus: 'гарантии', conversationId: 'c1', dedupeKey: 'chat:m1:0' });
-    expect(result).toMatchObject({ tool: 'legal_review_contract', alreadyStarted: false, review: { id: 'r1', createdAt: '2026-10-21T10:00:00.000Z' } });
-    expect(audit.log).toHaveBeenCalledWith('u1', 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', 'r1', { fileId: 'f1', source: 'assistant' });
+    const result = await service.execute(
+      'legal_review_contract',
+      { fileId: 'f1', focus: 'гарантии' },
+      user(),
+      'c1',
+      'm1',
+      0,
+    );
+    expect(create).toHaveBeenCalledWith(user(), {
+      fileId: 'f1',
+      focus: 'гарантии',
+      conversationId: 'c1',
+      dedupeKey: 'chat:m1:0',
+    });
+    expect(result).toMatchObject({
+      tool: 'legal_review_contract',
+      alreadyStarted: false,
+      review: { id: 'r1', createdAt: '2026-10-21T10:00:00.000Z' },
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      'u1',
+      'LEGAL_REVIEW_REQUESTED',
+      'LegalReviewRun',
+      'r1',
+      { fileId: 'f1', source: 'assistant' },
+    );
 
     create.mockResolvedValue({ run, created: false });
     audit.log.mockClear();
-    expect(await service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0)).toMatchObject({ alreadyStarted: true });
+    expect(
+      await service.execute(
+        'legal_review_contract',
+        { fileId: 'f1', focus: '' },
+        user(),
+        'c1',
+        'm1',
+        0,
+      ),
+    ).toMatchObject({ alreadyStarted: true });
     expect(audit.log).not.toHaveBeenCalled();
   });
 
   it('без идентичности вызова или с выключенным флагом — не ставит', async () => {
     const create = jest.fn();
-    expect(await make(ON, { create }).service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user())).toMatchObject({ error: true });
-    expect(await make({}, { create }).service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0)).toMatchObject({
+    expect(
+      await make(ON, { create }).service.execute(
+        'legal_review_contract',
+        { fileId: 'f1', focus: '' },
+        user(),
+      ),
+    ).toMatchObject({ error: true });
+    expect(
+      await make({}, { create }).service.execute(
+        'legal_review_contract',
+        { fileId: 'f1', focus: '' },
+        user(),
+        'c1',
+        'm1',
+        0,
+      ),
+    ).toMatchObject({
       error: true,
       message: expect.stringContaining('LEGAL_UNAVAILABLE'),
     });
@@ -1092,16 +2129,31 @@ describe('AssistantToolsService — разбор договора (legal_review_
       [new BadRequestException(), 'LEGAL_UNSUPPORTED_FILE'],
     ];
     for (const [err, code] of cases) {
-      const { service } = make(ON, { create: jest.fn().mockRejectedValue(err) });
-      const result = await service.execute('legal_review_contract', { fileId: 'f1', focus: '' }, user(), 'c1', 'm1', 0);
-      expect(result).toMatchObject({ error: true, message: expect.stringContaining(code) });
+      const { service } = make(ON, {
+        create: jest.fn().mockRejectedValue(err),
+      });
+      const result = await service.execute(
+        'legal_review_contract',
+        { fileId: 'f1', focus: '' },
+        user(),
+        'c1',
+        'm1',
+        0,
+      );
+      expect(result).toMatchObject({
+        error: true,
+        message: expect.stringContaining(code),
+      });
     }
   });
 
   it('legal_review_status — последние 5 своих', async () => {
     const list = jest.fn().mockResolvedValue([]);
     const { service } = make(ON, { list });
-    expect(await service.execute('legal_review_status', {}, user())).toEqual({ tool: 'legal_review_status', items: [] });
+    expect(await service.execute('legal_review_status', {}, user())).toEqual({
+      tool: 'legal_review_status',
+      items: [],
+    });
     expect(list).toHaveBeenCalledWith(user(), 5);
   });
 });
@@ -1111,14 +2163,27 @@ describe('toolResultForModel', () => {
     const out = toolResultForModel({
       tool: 'legal_ask',
       markdown: '**Вывод.** секрет',
-      answer: { conclusion: 'секрет', reasoning: '', citations: [], notCovered: [], questions: [], model: 'm' },
+      answer: {
+        conclusion: 'секрет',
+        reasoning: '',
+        citations: [],
+        notCovered: [],
+        questions: [],
+        model: 'm',
+      },
     });
     expect(JSON.stringify(out)).not.toContain('секрет');
     expect(out).toMatchObject({ shown_to_user: true, norms_cited: 0 });
   });
 
   it('ошибка — безопасное сообщение, прочие инструменты — как есть', () => {
-    expect(toolResultForModel({ tool: 'get_tasks', error: true, message: 'TASK_LOOKUP_FAILED' })).toEqual({ error: 'TASK_LOOKUP_FAILED' });
+    expect(
+      toolResultForModel({
+        tool: 'get_tasks',
+        error: true,
+        message: 'TASK_LOOKUP_FAILED',
+      }),
+    ).toEqual({ error: 'TASK_LOOKUP_FAILED' });
     const tasks = { tool: 'get_tasks' as const, items: [], totalCount: 0 };
     expect(toolResultForModel(tasks)).toBe(tasks);
   });

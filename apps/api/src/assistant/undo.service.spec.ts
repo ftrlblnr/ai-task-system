@@ -6,26 +6,46 @@ import { UndoService } from './undo.service';
 // ассистента теперь в общем UndoService — тесты те же, конструктор короче
 // (prisma, tasks, events, assistantChat).
 
-function makeUser(overrides: Partial<AuthenticatedUser> = {}): AuthenticatedUser {
-  return { id: 'u1', email: 'u1@example.com', role: Role.EMPLOYEE, ...overrides };
+function makeUser(
+  overrides: Partial<AuthenticatedUser> = {},
+): AuthenticatedUser {
+  return {
+    id: 'u1',
+    email: 'u1@example.com',
+    role: Role.EMPLOYEE,
+    ...overrides,
+  };
 }
 
 describe('UndoService.logAssistantMessage (Stage 2, Phase H — standalone-сообщение в общей ленте, не отдельная VoiceMessage)', () => {
   it('пишет ASSISTANT-сообщение без replyToMessageId в разговор от getOrCreatePrimaryConversation', async () => {
     const conversation = { id: 'c1' };
-    const assistantChat = { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue(conversation) };
+    const assistantChat = {
+      getOrCreatePrimaryConversation: jest.fn().mockResolvedValue(conversation),
+    };
     const prisma = { message: { create: jest.fn().mockResolvedValue({}) } };
-    const service = new UndoService(prisma as any, {} as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      {} as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     await service.logAssistantMessage('Отменено.', makeUser());
 
-    expect(assistantChat.getOrCreatePrimaryConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1' }));
+    expect(assistantChat.getOrCreatePrimaryConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'u1' }),
+    );
     expect(prisma.message.create).toHaveBeenCalledWith({
       data: {
         conversationId: 'c1',
         role: MessageRole.ASSISTANT,
         status: 'COMPLETED',
-        parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } }] },
+        parts: {
+          create: [
+            { type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } },
+          ],
+        },
       },
     });
   });
@@ -43,7 +63,11 @@ describe('UndoService.logAssistantMessage (Stage 2, Phase H — standalone-со�
 // из хранимой UndoRecord, не из того, что прислал клиент.
 describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
   function makeAssistantChat(conversationId = 'c1') {
-    return { getOrCreatePrimaryConversation: jest.fn().mockResolvedValue({ id: conversationId }) };
+    return {
+      getOrCreatePrimaryConversation: jest
+        .fn()
+        .mockResolvedValue({ id: conversationId }),
+    };
   }
 
   function undoRecord(overrides: Partial<Record<string, unknown>> = {}) {
@@ -70,16 +94,34 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
   // найдена") — без этого мок не мог бы отличить "первый claim прошёл" от
   // "запись уже CLAIMED/COMPLETED", и тесты на гонку/повторный отказ были
   // бы бессмысленны (update просто всегда бы "успевал").
-  function undoPrisma(record: ReturnType<typeof undoRecord> | null, messageCreate = jest.fn().mockResolvedValue({})) {
+  function undoPrisma(
+    record: ReturnType<typeof undoRecord> | null,
+    messageCreate = jest.fn().mockResolvedValue({}),
+  ) {
     let current = record ? { ...record } : null;
-    const update = jest.fn().mockImplementation(({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-      if (!current) return Promise.reject(new Error('not found'));
-      if (where.status !== undefined && where.status !== current.status) {
-        return Promise.reject(new Prisma.PrismaClientKnownRequestError('Record not found', { code: 'P2025', clientVersion: '6.19.3' }));
-      }
-      current = { ...current, ...data };
-      return Promise.resolve(current);
-    });
+    const update = jest
+      .fn()
+      .mockImplementation(
+        ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if (!current) return Promise.reject(new Error('not found'));
+          if (where.status !== undefined && where.status !== current.status) {
+            return Promise.reject(
+              new Prisma.PrismaClientKnownRequestError('Record not found', {
+                code: 'P2025',
+                clientVersion: '6.19.3',
+              }),
+            );
+          }
+          current = { ...current, ...data };
+          return Promise.resolve(current);
+        },
+      );
     return {
       undoRecord: {
         findUnique: jest.fn().mockResolvedValue(record),
@@ -94,30 +136,65 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
     const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(tasks.remove).toHaveBeenCalledWith('t1', expect.objectContaining({ id: 'u1' }));
+    expect(tasks.remove).toHaveBeenCalledWith(
+      't1',
+      expect.objectContaining({ id: 'u1' }),
+    );
     expect(result).toEqual({ ok: true, error: null, warning: null });
-    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, { where: { id: 'undo-1', status: 'AVAILABLE' }, data: { status: 'CLAIMED' } });
-    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'COMPLETED', consumedAt: expect.any(Date) } });
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 'undo-1', status: 'AVAILABLE' },
+      data: { status: 'CLAIMED' },
+    });
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 'undo-1' },
+      data: { status: 'COMPLETED', consumedAt: expect.any(Date) },
+    });
     expect(prisma.message.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } }] } }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          parts: {
+            create: [
+              { type: 'MARKDOWN', order: 0, data: { content: 'Отменено.' } },
+            ],
+          },
+        }),
+      }),
     );
   });
 
   it('task update — собирает патч из previous поштучно, не спредом (лишние поля previous не всплывают в вызове)', async () => {
-    const previous = { title: 'Старое название', assigneeId: null, unexpectedField: 'should be ignored' };
+    const previous = {
+      title: 'Старое название',
+      assigneeId: null,
+      unexpectedField: 'should be ignored',
+    };
     const record = undoRecord({ action: 'UPDATE', previous });
     const tasks = { update: jest.fn().mockResolvedValue({}) };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(tasks.update).toHaveBeenCalledWith('t1', { title: 'Старое название', assigneeId: null }, expect.objectContaining({ id: 'u1' }));
+    expect(tasks.update).toHaveBeenCalledWith(
+      't1',
+      { title: 'Старое название', assigneeId: null },
+      expect.objectContaining({ id: 'u1' }),
+    );
   });
 
   // Находка №8 пятого аудита: если сам откат (tasks.remove/update) бросает,
@@ -128,16 +205,35 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
   // не осознанный отказ).
   it('откат бросает исключение → UndoRecord возвращается в AVAILABLE (не остаётся CLAIMED), ok:false с текстом ошибки', async () => {
     const record = undoRecord();
-    const tasks = { remove: jest.fn().mockRejectedValue(new Error('tasks db temporarily down')) };
+    const tasks = {
+      remove: jest
+        .fn()
+        .mockRejectedValue(new Error('tasks db temporarily down')),
+    };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(result).toEqual({ ok: false, error: 'tasks db temporarily down', warning: null });
-    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, { where: { id: 'undo-1', status: 'AVAILABLE' }, data: { status: 'CLAIMED' } });
-    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'AVAILABLE' } });
+    expect(result).toEqual({
+      ok: false,
+      error: 'tasks db temporarily down',
+      warning: null,
+    });
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 'undo-1', status: 'AVAILABLE' },
+      data: { status: 'CLAIMED' },
+    });
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 'undo-1' },
+      data: { status: 'AVAILABLE' },
+    });
   });
 
   // Находка №9 пятого аудита: сбой logAssistantMessage('Отменено.') —
@@ -148,13 +244,23 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
     const tasks = { remove: jest.fn().mockResolvedValue(undefined) };
     const prisma = undoPrisma(record);
     const assistantChat = { ...makeAssistantChat() };
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
-    jest.spyOn(service, 'logAssistantMessage').mockRejectedValue(new Error('log db down'));
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
+    jest
+      .spyOn(service, 'logAssistantMessage')
+      .mockRejectedValue(new Error('log db down'));
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
     expect(result).toEqual({ ok: true, error: null, warning: null });
-    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, { where: { id: 'undo-1' }, data: { status: 'COMPLETED', consumedAt: expect.any(Date) } });
+    expect(prisma.undoRecord.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 'undo-1' },
+      data: { status: 'COMPLETED', consumedAt: expect.any(Date) },
+    });
   });
 
   it('не найдено / не своя / уже отменена / истекла — общий безопасный текст, TasksService/EventsService не трогаются', async () => {
@@ -164,26 +270,48 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
 
     // не найдено
     let prisma = undoPrisma(null);
-    let service = new UndoService(prisma as any, tasks as any, events as any, assistantChat as any) as any;
+    let service = new UndoService(
+      prisma as any,
+      tasks as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
     let result = await service.undo({ undoToken: 'missing' }, makeUser());
     expect(result.ok).toBe(false);
     expect(result.error).toContain('истекло');
 
     // чужая (employeeId не совпадает)
     prisma = undoPrisma(undoRecord({ employeeId: 'someone-else' }));
-    service = new UndoService(prisma as any, tasks as any, events as any, assistantChat as any) as any;
+    service = new UndoService(
+      prisma as any,
+      tasks as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
     result = await service.undo({ undoToken: 'undo-1' }, makeUser());
     expect(result.ok).toBe(false);
 
     // уже отменена (или в процессе отмены — CLAIMED/COMPLETED, не AVAILABLE)
-    prisma = undoPrisma(undoRecord({ status: 'COMPLETED', consumedAt: new Date() }));
-    service = new UndoService(prisma as any, tasks as any, events as any, assistantChat as any) as any;
+    prisma = undoPrisma(
+      undoRecord({ status: 'COMPLETED', consumedAt: new Date() }),
+    );
+    service = new UndoService(
+      prisma as any,
+      tasks as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
     result = await service.undo({ undoToken: 'undo-1' }, makeUser());
     expect(result.ok).toBe(false);
 
     // истекла
     prisma = undoPrisma(undoRecord({ expiresAt: new Date(Date.now() - 1000) }));
-    service = new UndoService(prisma as any, tasks as any, events as any, assistantChat as any) as any;
+    service = new UndoService(
+      prisma as any,
+      tasks as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
     result = await service.undo({ undoToken: 'undo-1' }, makeUser());
     expect(result.ok).toBe(false);
 
@@ -196,9 +324,17 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
     const events = { remove: jest.fn() };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, {} as any, events as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      {} as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
 
-    const result = await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.EMPLOYEE }));
+    const result = await service.undo(
+      { undoToken: 'undo-1' },
+      makeUser({ role: Role.EMPLOYEE }),
+    );
 
     expect(events.remove).not.toHaveBeenCalled();
     expect(result.ok).toBe(false);
@@ -221,7 +357,12 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
     };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, {} as any, events as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      {} as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
 
     await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.OWNER }));
 
@@ -249,13 +390,23 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
       removeParticipant: jest
         .fn()
         .mockImplementationOnce(() => Promise.resolve(undefined))
-        .mockImplementationOnce(() => Promise.reject(new Error('сотрудник уже удалён'))),
+        .mockImplementationOnce(() =>
+          Promise.reject(new Error('сотрудник уже удалён')),
+        ),
     };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, {} as any, events as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      {} as any,
+      events as any,
+      assistantChat as any,
+    ) as any;
 
-    const result = await service.undo({ undoToken: 'undo-1' }, makeUser({ role: Role.OWNER }));
+    const result = await service.undo(
+      { undoToken: 'undo-1' },
+      makeUser({ role: Role.OWNER }),
+    );
 
     expect(result.ok).toBe(true);
     expect(result.warning).toContain('emp2');
@@ -264,24 +415,64 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
       data: { status: 'PARTIAL', consumedAt: expect.any(Date) },
     });
     expect(prisma.message.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: expect.stringContaining('Отменено частично') } }] } }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          parts: {
+            create: [
+              {
+                type: 'MARKDOWN',
+                order: 0,
+                data: { content: expect.stringContaining('Отменено частично') },
+              },
+            ],
+          },
+        }),
+      }),
     );
   });
 
   it('ошибка отката — ok=false, безопасный текст (toErrorMessage), тоже логируется', async () => {
     const record = undoRecord();
-    const tasks = { remove: jest.fn().mockRejectedValue(new Error('Удалить задачу может только её постановщик или руководитель')) };
+    const tasks = {
+      remove: jest
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            'Удалить задачу может только её постановщик или руководитель',
+          ),
+        ),
+    };
     const prisma = undoPrisma(record);
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 
-    expect(result).toEqual({ ok: false, error: 'Удалить задачу может только её постановщик или руководитель', warning: null });
+    expect(result).toEqual({
+      ok: false,
+      error: 'Удалить задачу может только её постановщик или руководитель',
+      warning: null,
+    });
     expect(prisma.message.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          parts: { create: [{ type: 'MARKDOWN', order: 0, data: { content: 'Не получилось отменить: Удалить задачу может только её постановщик или руководитель' } }] },
+          parts: {
+            create: [
+              {
+                type: 'MARKDOWN',
+                order: 0,
+                data: {
+                  content:
+                    'Не получилось отменить: Удалить задачу может только её постановщик или руководитель',
+                },
+              },
+            ],
+          },
         }),
       }),
     );
@@ -298,12 +489,22 @@ describe('UndoService.undo (Stage 2, Phase H.1 → H.4)', () => {
     const prisma = {
       undoRecord: {
         findUnique: jest.fn().mockResolvedValue(record),
-        update: jest.fn().mockRejectedValue(new Prisma.PrismaClientKnownRequestError('Record not found', { code: 'P2025', clientVersion: '6.19.3' })),
+        update: jest.fn().mockRejectedValue(
+          new Prisma.PrismaClientKnownRequestError('Record not found', {
+            code: 'P2025',
+            clientVersion: '6.19.3',
+          }),
+        ),
       },
       message: { create: jest.fn().mockResolvedValue({}) },
     };
     const assistantChat = makeAssistantChat();
-    const service = new UndoService(prisma as any, tasks as any, {} as any, assistantChat as any) as any;
+    const service = new UndoService(
+      prisma as any,
+      tasks as any,
+      {} as any,
+      assistantChat as any,
+    ) as any;
 
     const result = await service.undo({ undoToken: 'undo-1' }, makeUser());
 

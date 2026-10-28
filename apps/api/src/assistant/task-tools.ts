@@ -27,16 +27,50 @@ export const FIND_TASKS_TOOL: Anthropic.Tool = {
   input_schema: {
     type: 'object',
     properties: {
-      assigneeRawText: { type: 'string', description: 'Исполнитель, как назван: «Ирины», «у Жандоса», «Сергееву»' },
-      unassigned: { type: 'boolean', description: 'true — только задачи без исполнителя' },
-      creatorRawText: { type: 'string', description: 'Постановщик, как назван' },
-      mine: { type: 'string', enum: ['assigned', 'created'], description: 'assigned — задачи на самом пользователе, created — поставленные им' },
-      status: { type: 'array', items: { type: 'string', enum: TASK_STATUSES }, description: 'Статусы; не указывать — все открытые' },
+      assigneeRawText: {
+        type: 'string',
+        description:
+          'Исполнитель, как назван: «Ирины», «у Жандоса», «Сергееву»',
+      },
+      unassigned: {
+        type: 'boolean',
+        description: 'true — только задачи без исполнителя',
+      },
+      creatorRawText: {
+        type: 'string',
+        description: 'Постановщик, как назван',
+      },
+      mine: {
+        type: 'string',
+        enum: ['assigned', 'created'],
+        description:
+          'assigned — задачи на самом пользователе, created — поставленные им',
+      },
+      status: {
+        type: 'array',
+        items: { type: 'string', enum: TASK_STATUSES },
+        description: 'Статусы; не указывать — все открытые',
+      },
       overdue: { type: 'boolean', description: 'true — только просроченные' },
-      dueFrom: { type: 'string', description: 'Срок не раньше — местное время без смещения, «2026-11-02T00:00:00»' },
-      dueTo: { type: 'string', description: 'Срок не позже — местное время без смещения, «2026-11-08T23:59:59»' },
-      query: { type: 'string', description: 'Слово из названия или описания задачи' },
-      sourceMeetingId: { type: 'string', description: 'Только задачи, поставленные по этой встрече (id из инструментов встреч)' },
+      dueFrom: {
+        type: 'string',
+        description:
+          'Срок не раньше — местное время без смещения, «2026-11-02T00:00:00»',
+      },
+      dueTo: {
+        type: 'string',
+        description:
+          'Срок не позже — местное время без смещения, «2026-11-08T23:59:59»',
+      },
+      query: {
+        type: 'string',
+        description: 'Слово из названия или описания задачи',
+      },
+      sourceMeetingId: {
+        type: 'string',
+        description:
+          'Только задачи, поставленные по этой встрече (id из инструментов встреч)',
+      },
       limit: { type: 'integer', description: 'Сколько задач показать, 1–30' },
     },
     required: [],
@@ -88,14 +122,24 @@ export function parseFindTasksInput(input: unknown): FindTasksInput {
     assigneeRawText: text(typed.assigneeRawText),
     unassigned: typed.unassigned === true,
     creatorRawText: text(typed.creatorRawText),
-    mine: typed.mine === 'assigned' || typed.mine === 'created' ? typed.mine : undefined,
-    statuses: Array.isArray(typed.status) ? typed.status.filter((s): s is TaskStatus => TASK_STATUSES.includes(s as TaskStatus)) : [],
+    mine:
+      typed.mine === 'assigned' || typed.mine === 'created'
+        ? typed.mine
+        : undefined,
+    statuses: Array.isArray(typed.status)
+      ? typed.status.filter((s): s is TaskStatus =>
+          TASK_STATUSES.includes(s as TaskStatus),
+        )
+      : [],
     overdue: typed.overdue === true,
     dueFrom: localDate(typed.dueFrom),
     dueTo: localDate(typed.dueTo),
     query: text(typed.query),
     sourceMeetingId: text(typed.sourceMeetingId),
-    limit: Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.floor(rawLimit) : FIND_TASKS_DEFAULT_LIMIT,
+    limit:
+      Number.isFinite(rawLimit) && rawLimit >= 1
+        ? Math.floor(rawLimit)
+        : FIND_TASKS_DEFAULT_LIMIT,
   };
 }
 
@@ -125,37 +169,70 @@ export function toFoundTask(
     title: t.title,
     status: t.status,
     dueDate: t.dueDate ? t.dueDate.toISOString() : null,
-    assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.fullName } : null,
+    assignee: t.assignee
+      ? { id: t.assignee.id, name: t.assignee.fullName }
+      : null,
     priority: t.priority,
     isOverdue: t.isOverdue,
-    daysOverdue: t.isOverdue && t.dueDate ? Math.floor((now.getTime() - t.dueDate.getTime()) / DAY_MS) : null,
+    daysOverdue:
+      t.isOverdue && t.dueDate
+        ? Math.floor((now.getTime() - t.dueDate.getTime()) / DAY_MS)
+        : null,
     creator: t.creator?.fullName ?? null,
   };
 }
 
 // Карточка в чате — общий TaskCardData без служебных полей поиска.
 export function toCard(t: FoundTaskData): TaskCardData {
-  return { taskId: t.taskId, title: t.title, status: t.status, dueDate: t.dueDate, assignee: t.assignee };
+  return {
+    taskId: t.taskId,
+    title: t.title,
+    status: t.status,
+    dueDate: t.dueDate,
+    assignee: t.assignee,
+  };
 }
 
-export function toGroupData(groups: TaskSearchGroup[]): { name: string; count: number; overdue: number }[] {
+export function toGroupData(
+  groups: TaskSearchGroup[],
+): { name: string; count: number; overdue: number }[] {
   return groups.map(({ name, count, overdue }) => ({ name, count, overdue }));
 }
 
 export interface TaskDetailData extends FoundTaskData {
   description: string | null;
-  source: { meetingId: string; meetingTitle: string; timestamp: string | null; context: string | null } | null;
+  source: {
+    meetingId: string;
+    meetingTitle: string;
+    timestamp: string | null;
+    context: string | null;
+  } | null;
   subtasks: { title: string; status: string; assignee: string | null }[];
-  history: { field: string; from: string | null; to: string | null; by: string; at: string }[];
+  history: {
+    field: string;
+    from: string | null;
+    to: string | null;
+    by: string;
+    at: string;
+  }[];
   comments: { author: string; text: string; at: string }[];
   commentCount: number;
 }
 
 // Поля TaskHistory, где значения — id сотрудников (tasks.service.ts diff/remind).
-export const HISTORY_EMPLOYEE_FIELDS: ReadonlySet<string> = new Set(['assigneeId', 'remind']);
+export const HISTORY_EMPLOYEE_FIELDS: ReadonlySet<string> = new Set([
+  'assigneeId',
+  'remind',
+]);
 
 // id сотрудников из истории — чтобы подтянуть имена одним запросом.
-export function historyEmployeeIds(history: { field: string; oldValue: string | null; newValue: string | null }[]): string[] {
+export function historyEmployeeIds(
+  history: {
+    field: string;
+    oldValue: string | null;
+    newValue: string | null;
+  }[],
+): string[] {
   const ids = history
     .slice(0, TASK_DETAIL_HISTORY_LIMIT)
     .filter((h) => HISTORY_EMPLOYEE_FIELDS.has(h.field))
@@ -182,9 +259,19 @@ export function toTaskDetail(
     sourceMeeting: { id: string; title: string } | null;
     sourceTimestamp: string | null;
     sourceContext: string | null;
-    subtasks: { title: string; status: string; assignee: { fullName: string } | null }[];
+    subtasks: {
+      title: string;
+      status: string;
+      assignee: { fullName: string } | null;
+    }[];
     // TasksService.findOne: история — новые сверху, комментарии — по порядку.
-    history: { field: string; oldValue: string | null; newValue: string | null; createdAt: Date; changedBy: { fullName: string } }[];
+    history: {
+      field: string;
+      oldValue: string | null;
+      newValue: string | null;
+      createdAt: Date;
+      changedBy: { fullName: string };
+    }[];
     comments: { body: string; createdAt: Date; author: { fullName: string } }[];
   },
   // id сотрудника → имя: в истории исполнитель и «напомнил» хранятся id,
@@ -192,12 +279,28 @@ export function toTaskDetail(
   employeeNames: Map<string, string> = new Map(),
   now: Date = new Date(),
 ): TaskDetailData {
-  const shown = (field: string, value: string | null) => (value && HISTORY_EMPLOYEE_FIELDS.has(field) ? (employeeNames.get(value) ?? value) : value);
+  const shown = (field: string, value: string | null) =>
+    value && HISTORY_EMPLOYEE_FIELDS.has(field)
+      ? (employeeNames.get(value) ?? value)
+      : value;
   return {
     ...toFoundTask(t, now),
-    description: t.description ? clip(t.description, TASK_DETAIL_DESCRIPTION_MAX) : null,
-    source: t.sourceMeeting ? { meetingId: t.sourceMeeting.id, meetingTitle: t.sourceMeeting.title, timestamp: t.sourceTimestamp, context: t.sourceContext } : null,
-    subtasks: t.subtasks.map((s) => ({ title: s.title, status: s.status, assignee: s.assignee?.fullName ?? null })),
+    description: t.description
+      ? clip(t.description, TASK_DETAIL_DESCRIPTION_MAX)
+      : null,
+    source: t.sourceMeeting
+      ? {
+          meetingId: t.sourceMeeting.id,
+          meetingTitle: t.sourceMeeting.title,
+          timestamp: t.sourceTimestamp,
+          context: t.sourceContext,
+        }
+      : null,
+    subtasks: t.subtasks.map((s) => ({
+      title: s.title,
+      status: s.status,
+      assignee: s.assignee?.fullName ?? null,
+    })),
     history: t.history.slice(0, TASK_DETAIL_HISTORY_LIMIT).map((h) => ({
       field: h.field,
       from: shown(h.field, h.oldValue),
@@ -205,7 +308,11 @@ export function toTaskDetail(
       by: h.changedBy.fullName,
       at: h.createdAt.toISOString(),
     })),
-    comments: t.comments.slice(-TASK_DETAIL_COMMENTS_LIMIT).map((c) => ({ author: c.author.fullName, text: clip(c.body, TASK_DETAIL_COMMENT_MAX), at: c.createdAt.toISOString() })),
+    comments: t.comments.slice(-TASK_DETAIL_COMMENTS_LIMIT).map((c) => ({
+      author: c.author.fullName,
+      text: clip(c.body, TASK_DETAIL_COMMENT_MAX),
+      at: c.createdAt.toISOString(),
+    })),
     commentCount: t.comments.length,
   };
 }
@@ -214,12 +321,20 @@ export function toTaskDetail(
 // Исполнение — через TasksService (его RBAC, история, уведомления), ключ
 // повтора — AgentActionExecution, отмена — UndoRecord + POST /voice/undo.
 
-const TASK_ID_PROP = { taskId: { type: 'string', description: 'id задачи из find_tasks/get_task, [shown_task] или [page_context]' } } as const;
+const TASK_ID_PROP = {
+  taskId: {
+    type: 'string',
+    description:
+      'id задачи из find_tasks/get_task, [shown_task] или [page_context]',
+  },
+} as const;
 const WRITE_RULES =
   'Вызывай только по прямой просьбе пользователя. id задачи — только из find_tasks/get_task, пометки [shown_task] или блока [page_context]; если пользователь говорит «эту задачу», а какую — неясно, сначала найди через find_tasks и переспроси при нескольких кандидатах. Выполняется сразу; у пользователя 30 секунд, чтобы отменить кнопкой на карточке.';
 
 // Статусы, которые можно поставить из чата: черновик — служебный.
-export const SETTABLE_TASK_STATUSES = TASK_STATUSES.filter((s) => s !== TaskStatus.DRAFT);
+export const SETTABLE_TASK_STATUSES = TASK_STATUSES.filter(
+  (s) => s !== TaskStatus.DRAFT,
+);
 
 export const UPDATE_TASK_TOOL: Anthropic.Tool = {
   name: 'update_task',
@@ -230,9 +345,17 @@ export const UPDATE_TASK_TOOL: Anthropic.Tool = {
       ...TASK_ID_PROP,
       title: { type: 'string' },
       description: { type: 'string' },
-      assigneeRawText: { type: 'string', description: 'Новый исполнитель, как прозвучал («Асель», «на Рустема») — сервер сам найдёт сотрудника' },
+      assigneeRawText: {
+        type: 'string',
+        description:
+          'Новый исполнитель, как прозвучал («Асель», «на Рустема») — сервер сам найдёт сотрудника',
+      },
       unassign: { type: 'boolean', description: 'true — снять исполнителя' },
-      dueDate: { type: 'string', description: 'Новый срок — местное время без смещения; назван только день — 18:00 этого дня' },
+      dueDate: {
+        type: 'string',
+        description:
+          'Новый срок — местное время без смещения; назван только день — 18:00 этого дня',
+      },
       clearDueDate: { type: 'boolean', description: 'true — снять срок' },
       priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] },
     },
@@ -245,7 +368,10 @@ export const SET_TASK_STATUS_TOOL: Anthropic.Tool = {
   description: `Перевести задачу в другой статус: NEW — новая, IN_PROGRESS — в работе, IN_REVIEW — на проверке, DONE — выполнена, RETURNED — вернуть на доработку, CANCELLED — отменить. Исполнитель может ставить только IN_PROGRESS/IN_REVIEW/DONE, руководство — любой (сервер проверит сам). ${WRITE_RULES}`,
   input_schema: {
     type: 'object',
-    properties: { ...TASK_ID_PROP, status: { type: 'string', enum: SETTABLE_TASK_STATUSES } },
+    properties: {
+      ...TASK_ID_PROP,
+      status: { type: 'string', enum: SETTABLE_TASK_STATUSES },
+    },
     required: ['taskId', 'status'],
   },
 };
@@ -263,17 +389,31 @@ export const COMMENT_TASK_TOOL: Anthropic.Tool = {
 export const REMIND_TASK_TOOL: Anthropic.Tool = {
   name: 'remind_task',
   description: `Напомнить исполнителю о задаче сообщением в Telegram (не чаще раза в час на задачу). ${WRITE_RULES}`,
-  input_schema: { type: 'object', properties: { ...TASK_ID_PROP }, required: ['taskId'] },
+  input_schema: {
+    type: 'object',
+    properties: { ...TASK_ID_PROP },
+    required: ['taskId'],
+  },
 };
 
 export const DELETE_TASK_TOOL: Anthropic.Tool = {
   name: 'delete_task',
   description:
     'Удалить задачу навсегда, вместе с подзадачами и комментариями. Только когда пользователь прямо говорит «удали задачу»; «отмени», «не нужна» — это set_task_status CANCELLED. Отменить удаление нельзя. id — только из find_tasks/get_task, [shown_task] или [page_context].',
-  input_schema: { type: 'object', properties: { ...TASK_ID_PROP }, required: ['taskId'] },
+  input_schema: {
+    type: 'object',
+    properties: { ...TASK_ID_PROP },
+    required: ['taskId'],
+  },
 };
 
-export const TASK_WRITE_TOOLS: Anthropic.Tool[] = [UPDATE_TASK_TOOL, SET_TASK_STATUS_TOOL, COMMENT_TASK_TOOL, REMIND_TASK_TOOL, DELETE_TASK_TOOL];
+export const TASK_WRITE_TOOLS: Anthropic.Tool[] = [
+  UPDATE_TASK_TOOL,
+  SET_TASK_STATUS_TOOL,
+  COMMENT_TASK_TOOL,
+  REMIND_TASK_TOOL,
+  DELETE_TASK_TOOL,
+];
 
 export interface UpdateTaskInput {
   taskId: string;
@@ -294,11 +434,25 @@ export function parseUpdateTaskInput(input: unknown): UpdateTaskInput {
     taskId: text(typed.taskId) ?? '',
     title: text(typed.title),
     // Описание можно очистить пустой строкой — её не теряем.
-    description: typeof typed.description === 'string' ? typed.description.trim() : undefined,
+    description:
+      typeof typed.description === 'string'
+        ? typed.description.trim()
+        : undefined,
     assigneeRawText: text(typed.assigneeRawText),
     unassign: typed.unassign === true,
-    dueDate: typed.clearDueDate === true ? null : due ? (withLocalOffset(due) as string) : undefined,
-    priority: priority === 'LOW' || priority === 'MEDIUM' || priority === 'HIGH' || priority === 'CRITICAL' ? priority : undefined,
+    dueDate:
+      typed.clearDueDate === true
+        ? null
+        : due
+          ? withLocalOffset(due)
+          : undefined,
+    priority:
+      priority === 'LOW' ||
+      priority === 'MEDIUM' ||
+      priority === 'HIGH' ||
+      priority === 'CRITICAL'
+        ? priority
+        : undefined,
   };
 }
 
@@ -308,7 +462,12 @@ export interface TaskChange {
   to: string | null;
 }
 
-const PRIORITY_RU: Record<string, string> = { LOW: 'низкий', MEDIUM: 'обычный', HIGH: 'высокий', CRITICAL: 'критичный' };
+const PRIORITY_RU: Record<string, string> = {
+  LOW: 'низкий',
+  MEDIUM: 'обычный',
+  HIGH: 'высокий',
+  CRITICAL: 'критичный',
+};
 const STATUS_RU: Record<string, string> = {
   DRAFT: 'Черновик',
   NEW: 'Новая',
@@ -322,7 +481,9 @@ const STATUS_RU: Record<string, string> = {
 // Срок для человека — по местному времени компании: «31.10, 18:00».
 export function formatDue(date: Date | null): string | null {
   if (!date) return null;
-  const local = new Date(date.getTime() + TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000).toISOString();
+  const local = new Date(
+    date.getTime() + TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000,
+  ).toISOString();
   return `${local.slice(8, 10)}.${local.slice(5, 7)}, ${local.slice(11, 16)}`;
 }
 
@@ -336,16 +497,36 @@ interface TaskSnapshot {
 }
 
 // «Было → стало» для карточки: только реально изменившееся.
-export function describeTaskChanges(before: TaskSnapshot, after: TaskSnapshot): TaskChange[] {
+export function describeTaskChanges(
+  before: TaskSnapshot,
+  after: TaskSnapshot,
+): TaskChange[] {
   const changes: TaskChange[] = [];
   const push = (label: string, from: string | null, to: string | null) => {
     if (from !== to) changes.push({ label, from, to });
   };
   push('Название', before.title, after.title);
-  if ((before.description ?? '') !== (after.description ?? '')) changes.push({ label: 'Описание', from: null, to: after.description ? 'изменено' : 'очищено' });
-  push('Статус', STATUS_RU[before.status] ?? before.status, STATUS_RU[after.status] ?? after.status);
-  push('Приоритет', PRIORITY_RU[before.priority] ?? before.priority, PRIORITY_RU[after.priority] ?? after.priority);
+  if ((before.description ?? '') !== (after.description ?? ''))
+    changes.push({
+      label: 'Описание',
+      from: null,
+      to: after.description ? 'изменено' : 'очищено',
+    });
+  push(
+    'Статус',
+    STATUS_RU[before.status] ?? before.status,
+    STATUS_RU[after.status] ?? after.status,
+  );
+  push(
+    'Приоритет',
+    PRIORITY_RU[before.priority] ?? before.priority,
+    PRIORITY_RU[after.priority] ?? after.priority,
+  );
   push('Срок', formatDue(before.dueDate), formatDue(after.dueDate));
-  push('Исполнитель', before.assignee?.fullName ?? null, after.assignee?.fullName ?? null);
+  push(
+    'Исполнитель',
+    before.assignee?.fullName ?? null,
+    after.assignee?.fullName ?? null,
+  );
   return changes;
 }

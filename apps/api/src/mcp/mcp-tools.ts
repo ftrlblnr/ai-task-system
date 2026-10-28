@@ -30,7 +30,12 @@ export interface McpToolDescriptor {
   title: string;
   description: string;
   inputSchema: { type: 'object'; [key: string]: unknown };
-  annotations: { title: string; readOnlyHint: true; destructiveHint: false; openWorldHint: false };
+  annotations: {
+    title: string;
+    readOnlyHint: true;
+    destructiveHint: false;
+    openWorldHint: false;
+  };
 }
 
 export function toMcpTools(tools: Anthropic.Tool[]): McpToolDescriptor[] {
@@ -43,7 +48,12 @@ export function toMcpTools(tools: Anthropic.Tool[]): McpToolDescriptor[] {
         title,
         description: t.description ?? title,
         inputSchema: t.input_schema,
-        annotations: { title, readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        annotations: {
+          title,
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
       };
     });
 }
@@ -52,7 +62,8 @@ export function toMcpTools(tools: Anthropic.Tool[]): McpToolDescriptor[] {
 // markdown с проверенными цитатами (тот же, что видит пользователь в чате),
 // остальное — JSON без служебного поля tool.
 export function toMcpResult(result: ToolExecutionResult): CallToolResult {
-  if ('error' in result) return { content: [{ type: 'text', text: result.message }], isError: true };
+  if ('error' in result)
+    return { content: [{ type: 'text', text: result.message }], isError: true };
   if (result.tool === 'legal_ask') {
     return {
       content: [
@@ -65,7 +76,9 @@ export function toMcpResult(result: ToolExecutionResult): CallToolResult {
   }
   const payload: Record<string, unknown> = { ...result };
   delete payload.tool;
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 1) }] };
+  return {
+    content: [{ type: 'text', text: JSON.stringify(payload, null, 1) }],
+  };
 }
 
 export const MCP_SERVER_INSTRUCTIONS =

@@ -1,7 +1,22 @@
 import { randomUUID } from 'crypto';
-import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MessagePartType, MessageRole, MessageStatus, Prisma, Role, UndoKind, UndoRecordAction, UndoRecordStatus, VoiceExecutionStatus } from '@prisma/client';
+import {
+  MessagePartType,
+  MessageRole,
+  MessageStatus,
+  Prisma,
+  Role,
+  UndoKind,
+  UndoRecordAction,
+  UndoRecordStatus,
+  VoiceExecutionStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
@@ -21,14 +36,34 @@ import {
 } from '../assistant/assistant-chat.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import { CompanyVocabularyService } from '../employees/company-vocabulary.service';
-import { AssistantReplyService, stripLeakedContextMarkers } from '../assistant/assistant-reply.service';
+import {
+  AssistantReplyService,
+  stripLeakedContextMarkers,
+} from '../assistant/assistant-reply.service';
 import { toResponseMessage } from '../assistant/assistant-response.mapper';
 import { WhisperService } from './whisper.service';
-import { DraftExtractionService, MAX_DRAFTS_PER_NOTE, type VoiceHistoryItem } from './draft-extraction.service';
-import { buildVoiceAssistantParts, resolveClarificationReason } from './voice-render';
+import {
+  DraftExtractionService,
+  MAX_DRAFTS_PER_NOTE,
+  type VoiceHistoryItem,
+} from './draft-extraction.service';
+import {
+  buildVoiceAssistantParts,
+  resolveClarificationReason,
+} from './voice-render';
 import { loadMailCardState } from '../assistant/assistant-mail-state';
-import { buildAssistantParts, voiceActionCardParts, type MessagePartInput } from '../assistant/assistant-render';
-import { generatedFileIds, needsEscalation, VOICE_AGENT_CALL, VOICE_ESCALATION_CALL, voiceEngineFor } from './voice-agent';
+import {
+  buildAssistantParts,
+  voiceActionCardParts,
+  type MessagePartInput,
+} from '../assistant/assistant-render';
+import {
+  generatedFileIds,
+  needsEscalation,
+  VOICE_AGENT_CALL,
+  VOICE_ESCALATION_CALL,
+  voiceEngineFor,
+} from './voice-agent';
 import { isPromptEcho } from './stt-echo';
 import type {
   EventRevertPayload,
@@ -111,7 +146,9 @@ function serverNotice(reply: string): ServerNotice {
 // классификация, валидация, исполнение, durable exactly-once, undo — общее.
 // liveContext — недавний голосовой разговор Live: уходит только моделям
 // (извлечение черновиков и chat-ответ), в ленту сохраняется чистый транскрипт.
-type VoiceInput = { kind: 'audio'; audio: MulterFile } | { kind: 'text'; transcript: string; liveContext?: string };
+type VoiceInput =
+  | { kind: 'audio'; audio: MulterFile }
+  | { kind: 'text'; transcript: string; liveContext?: string };
 
 // Сколько задач/событий максимум класть в контекст модели — не весь архив,
 // иначе на компании с историей в сотни задач промпт (и, соответственно,
@@ -202,7 +239,10 @@ export class VoiceService {
   // рестарта процесса — VoiceExecution закрывает оба случая разом). Ключ —
   // `${conversationId}:${clientRequestId}`, не просто clientRequestId — на
   // случай, если один сотрудник когда-нибудь получит несколько разговоров.
-  private readonly inFlightParseRequests = new Map<string, Promise<VoiceParseResponse>>();
+  private readonly inFlightParseRequests = new Map<
+    string,
+    Promise<VoiceParseResponse>
+  >();
 
   async parse(
     audio: MulterFile | undefined,
@@ -215,9 +255,17 @@ export class VoiceService {
     // cb(null, false) — файл молча не попадает в запрос, а не кидает ошибку,
     // поэтому здесь audio может быть undefined и это нужно проверять явно.
     if (!audio) {
-      throw new BadRequestException('Аудио не получено или формат файла не поддерживается');
+      throw new BadRequestException(
+        'Аудио не получено или формат файла не поддерживается',
+      );
     }
-    return this.dispatch({ kind: 'audio', audio }, user, meetingId, clientRequestId, conversationId);
+    return this.dispatch(
+      { kind: 'audio', audio },
+      user,
+      meetingId,
+      clientRequestId,
+      conversationId,
+    );
   }
 
   // Делегация GPT-Live (Stage 2, Phase Q): транскрипт уже есть — тот же
@@ -225,7 +273,12 @@ export class VoiceService {
   // durable exactly-once, что у обычной голосовой записи.
   async parseTranscript(
     user: AuthenticatedUser,
-    params: { transcript: string; clientRequestId: string; conversationId?: string; liveContext?: string },
+    params: {
+      transcript: string;
+      clientRequestId: string;
+      conversationId?: string;
+      liveContext?: string;
+    },
   ): Promise<VoiceParseResponse> {
     const transcript = params.transcript.trim();
     if (!transcript) throw new BadRequestException('Пустая команда');
@@ -269,7 +322,9 @@ export class VoiceService {
     // прежнее поведение (последний по updatedAt), обратная совместимость с
     // apps/web, который его не передаёт.
     const conversation = conversationId
-      ? await this.assistantChat.assertOwnedConversation(user, conversationId).then(() => ({ id: conversationId }))
+      ? await this.assistantChat
+          .assertOwnedConversation(user, conversationId)
+          .then(() => ({ id: conversationId }))
       : await this.assistantChat.getOrCreatePrimaryConversation(user);
 
     // Claim — синхронная проверка карты и запись в неё СРАЗУ, без await
@@ -284,7 +339,16 @@ export class VoiceService {
     const existingInFlight = this.inFlightParseRequests.get(claimKey);
     if (existingInFlight) return existingInFlight;
 
-    const promise = this.claimAndRunDurable(input, user, meetingId, clientRequestId, conversation, requestId, t0, audioBytes).finally(() => {
+    const promise = this.claimAndRunDurable(
+      input,
+      user,
+      meetingId,
+      clientRequestId,
+      conversation,
+      requestId,
+      t0,
+      audioBytes,
+    ).finally(() => {
       if (this.inFlightParseRequests.get(claimKey) === promise) {
         this.inFlightParseRequests.delete(claimKey);
       }
@@ -321,15 +385,27 @@ export class VoiceService {
     t0: number,
     audioBytes: number,
   ): Promise<VoiceParseResponse> {
-    let execution: Awaited<ReturnType<typeof this.prisma.voiceExecution.create>>;
+    let execution: Awaited<
+      ReturnType<typeof this.prisma.voiceExecution.create>
+    >;
     try {
       execution = await this.prisma.voiceExecution.create({
-        data: { employeeId: user.id, conversationId: conversation.id, clientRequestId, status: VoiceExecutionStatus.RECEIVED },
+        data: {
+          employeeId: user.id,
+          conversationId: conversation.id,
+          clientRequestId,
+          status: VoiceExecutionStatus.RECEIVED,
+        },
       });
     } catch (err) {
       if (!isUniqueConstraintError(err)) throw err;
       const existing = await this.prisma.voiceExecution.findUnique({
-        where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
+        where: {
+          conversationId_clientRequestId: {
+            conversationId: conversation.id,
+            clientRequestId,
+          },
+        },
       });
       if (!existing) throw err;
 
@@ -337,7 +413,8 @@ export class VoiceService {
         return this.reconstructCompletedResponse(existing);
       }
 
-      const isStale = Date.now() - existing.updatedAt.getTime() > STALE_VOICE_EXECUTION_MS;
+      const isStale =
+        Date.now() - existing.updatedAt.getTime() > STALE_VOICE_EXECUTION_MS;
       // RECEIVED/PROCESSING — до этой точки НИ ОДНО действие ещё не
       // выполнялось (см. runParse: цикл исполнения черновиков начинается
       // только после loadContextAndExtract, EXECUTING ставится прямо перед
@@ -347,7 +424,9 @@ export class VoiceService {
       // же путём, что и для FAILED.
       const safeToReclaim =
         existing.status === VoiceExecutionStatus.FAILED ||
-        ((existing.status === VoiceExecutionStatus.RECEIVED || existing.status === VoiceExecutionStatus.PROCESSING) && isStale);
+        ((existing.status === VoiceExecutionStatus.RECEIVED ||
+          existing.status === VoiceExecutionStatus.PROCESSING) &&
+          isStale);
 
       if (!safeToReclaim) {
         // EXECUTING/NEEDS_RECONCILIATION (независимо от давности — мутация
@@ -366,10 +445,34 @@ export class VoiceService {
       });
     }
 
-    if (voiceEngineFor(this.config?.get<string>('VOICE_ENGINE'), isManager(user.role)) === 'agent') {
-      return this.runAgentParse(input, user, conversation, requestId, t0, audioBytes, clientRequestId, execution.id);
+    if (
+      voiceEngineFor(
+        this.config?.get<string>('VOICE_ENGINE'),
+        isManager(user.role),
+      ) === 'agent'
+    ) {
+      return this.runAgentParse(
+        input,
+        user,
+        conversation,
+        requestId,
+        t0,
+        audioBytes,
+        clientRequestId,
+        execution.id,
+      );
     }
-    return this.runParse(input, user, meetingId, conversation, requestId, t0, audioBytes, clientRequestId, execution.id);
+    return this.runParse(
+      input,
+      user,
+      meetingId,
+      conversation,
+      requestId,
+      t0,
+      audioBytes,
+      clientRequestId,
+      execution.id,
+    );
   }
 
   // Единый агент A4 (docs/AGENT_AND_MEETINGS.md): транскрипт — в тот же
@@ -391,14 +494,28 @@ export class VoiceService {
     clientRequestId: string,
     executionId: string,
   ): Promise<VoiceParseResponse> {
-    await this.prisma.voiceExecution.update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.PROCESSING } }).catch(() => {});
+    await this.prisma.voiceExecution
+      .update({
+        where: { id: executionId },
+        data: { status: VoiceExecutionStatus.PROCESSING },
+      })
+      .catch(() => {});
     let stt: Awaited<ReturnType<typeof this.transcribeInput>>;
     let history: VoiceHistoryItem[];
     try {
-      [stt, history] = await Promise.all([this.transcribeInput(input), this.loadHistory(conversation.id)]);
+      [stt, history] = await Promise.all([
+        this.transcribeInput(input),
+        this.loadHistory(conversation.id),
+      ]);
     } catch (err) {
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.FAILED, errorMessage: toErrorMessage(err) } })
+        .update({
+          where: { id: executionId },
+          data: {
+            status: VoiceExecutionStatus.FAILED,
+            errorMessage: toErrorMessage(err),
+          },
+        })
         .catch(() => {});
       throw err;
     }
@@ -411,7 +528,15 @@ export class VoiceService {
         role: MessageRole.USER,
         status: MessageStatus.COMPLETED,
         clientRequestId,
-        parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
+        parts: {
+          create: [
+            {
+              type: MessagePartType.MARKDOWN,
+              order: 0,
+              data: { content: transcript },
+            },
+          ],
+        },
       },
       include: { parts: { orderBy: { order: 'asc' } } },
     });
@@ -419,24 +544,57 @@ export class VoiceService {
     // разбираем его ниже, после ответа (как в runParse).
     userMessagePromise.catch(() => {});
 
-    await this.prisma.voiceExecution.update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } }).catch(() => {});
+    await this.prisma.voiceExecution
+      .update({
+        where: { id: executionId },
+        data: { status: VoiceExecutionStatus.EXECUTING },
+      })
+      .catch(() => {});
 
     // executionId — userMessageId для ключей повтора пишущих инструментов:
     // существует до вызова агента и не зависит от записи истории.
-    const turn = serializeCurrentUserTurn(transcript, [], input.kind === 'text' ? input.liveContext : undefined);
+    const turn = serializeCurrentUserTurn(
+      transcript,
+      [],
+      input.kind === 'text' ? input.liveContext : undefined,
+    );
     const t1 = Date.now();
     let reply: Awaited<ReturnType<AssistantReplyService['reply']>>;
     let escalated = false;
     try {
-      reply = await this.assistantReply.reply(turn, history, user, conversation.id, executionId, null, null, VOICE_AGENT_CALL);
+      reply = await this.assistantReply.reply(
+        turn,
+        history,
+        user,
+        conversation.id,
+        executionId,
+        null,
+        null,
+        VOICE_AGENT_CALL,
+      );
       if (needsEscalation(transcript, reply)) {
         escalated = true;
-        reply = await this.assistantReply.reply(turn, history, user, conversation.id, executionId, null, null, VOICE_ESCALATION_CALL);
+        reply = await this.assistantReply.reply(
+          turn,
+          history,
+          user,
+          conversation.id,
+          executionId,
+          null,
+          null,
+          VOICE_ESCALATION_CALL,
+        );
       }
     } catch (err) {
       // Агент мог успеть что-то изменить — повтор вслепую небезопасен.
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.NEEDS_RECONCILIATION, errorMessage: toErrorMessage(err) } })
+        .update({
+          where: { id: executionId },
+          data: {
+            status: VoiceExecutionStatus.NEEDS_RECONCILIATION,
+            errorMessage: toErrorMessage(err),
+          },
+        })
         .catch(() => {});
       throw err;
     }
@@ -447,7 +605,16 @@ export class VoiceService {
     await this.prisma.voiceExecution
       .update({
         where: { id: executionId },
-        data: { status: VoiceExecutionStatus.COMPLETED, resultJson: toJson({ transcript, confidence: 'HIGH', clarificationNeeded: false, clarificationReason: null, results }) },
+        data: {
+          status: VoiceExecutionStatus.COMPLETED,
+          resultJson: toJson({
+            transcript,
+            confidence: 'HIGH',
+            clarificationNeeded: false,
+            clarificationReason: null,
+            results,
+          }),
+        },
       })
       .catch(() => {});
 
@@ -469,11 +636,23 @@ export class VoiceService {
       assistantMessage = created;
       const fileIds = generatedFileIds(reply);
       if (fileIds.length > 0) {
-        await this.prisma.fileArtifact.updateMany({ where: { id: { in: fileIds }, employeeId: user.id }, data: { messageId: created.id, conversationId: conversation.id } });
+        await this.prisma.fileArtifact.updateMany({
+          where: { id: { in: fileIds }, employeeId: user.id },
+          data: { messageId: created.id, conversationId: conversation.id },
+        });
       }
-      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { userMessageId: userMessage.id, assistantMessageId: created.id } })
+        .update({
+          where: { id: executionId },
+          data: {
+            userMessageId: userMessage.id,
+            assistantMessageId: created.id,
+          },
+        })
         .catch(() => {});
     } catch (err) {
       this.logger.error(
@@ -488,7 +667,9 @@ export class VoiceService {
     void this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', requestId, {
       engine: 'agent',
       tools: reply.toolCalls.map((c) => c.name),
-      outcomes: reply.toolCalls.map((c) => ('error' in c.result ? 'error' : 'ok')),
+      outcomes: reply.toolCalls.map((c) =>
+        'error' in c.result ? 'error' : 'ok',
+      ),
       escalated,
     });
 
@@ -500,7 +681,9 @@ export class VoiceService {
       results,
       conversationId: userMessage ? conversation.id : null,
       userMessage: userMessage ? toResponseMessage(userMessage) : null,
-      assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
+      assistantMessage: assistantMessage
+        ? toResponseMessage(assistantMessage)
+        : null,
     };
   }
 
@@ -527,10 +710,16 @@ export class VoiceService {
     };
     const [userMessage, assistantMessage] = await Promise.all([
       execution.userMessageId
-        ? this.prisma.message.findUnique({ where: { id: execution.userMessageId }, include: { parts: { orderBy: { order: 'asc' } } } })
+        ? this.prisma.message.findUnique({
+            where: { id: execution.userMessageId },
+            include: { parts: { orderBy: { order: 'asc' } } },
+          })
         : Promise.resolve(null),
       execution.assistantMessageId
-        ? this.prisma.message.findUnique({ where: { id: execution.assistantMessageId }, include: { parts: { orderBy: { order: 'asc' } } } })
+        ? this.prisma.message.findUnique({
+            where: { id: execution.assistantMessageId },
+            include: { parts: { orderBy: { order: 'asc' } } },
+          })
         : Promise.resolve(null),
     ]);
     return {
@@ -541,34 +730,63 @@ export class VoiceService {
       results: cached.results,
       conversationId: userMessage ? execution.conversationId : null,
       userMessage: userMessage ? toResponseMessage(userMessage) : null,
-      assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
+      assistantMessage: assistantMessage
+        ? toResponseMessage(assistantMessage)
+        : null,
     };
   }
 
   // Распознавание речи — общее для разбора черновиков и единого агента (A4).
-  private async transcribeInput(input: VoiceInput): Promise<{ text: string; durationMs: number | null; sttMs: number; sttRetried: boolean }> {
+  private async transcribeInput(input: VoiceInput): Promise<{
+    text: string;
+    durationMs: number | null;
+    sttMs: number;
+    sttRetried: boolean;
+  }> {
     // Готовый транскрипт (делегация GPT-Live) — STT не нужен.
-    if (input.kind === 'text') return { text: input.transcript, durationMs: null, sttMs: 0, sttRetried: false };
+    if (input.kind === 'text')
+      return {
+        text: input.transcript,
+        durationMs: null,
+        sttMs: 0,
+        sttRetried: false,
+      };
     const start = Date.now();
     // Stage 2, Phase I (внешний аудит 21.09.2026, "Company/STT
     // vocabulary") — обычно кэшировано (CompanyVocabularyService,
     // TTL 10 минут), поэтому не превращает эту ветку в дорогой
     // последовательный запрос к БД перед каждой транскрипцией.
     const prompt = await this.vocabulary.getPrompt();
-    let result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname, prompt);
+    let result = await this.whisper.transcribe(
+      input.audio.buffer,
+      input.audio.mimetype,
+      input.audio.originalname,
+      prompt,
+    );
     let sttRetried = false;
     // Whisper иногда возвращает саму подсказку вместо речи (неразборчивая/
     // тихая запись) — повторяем БЕЗ подсказки: без неё эхо невозможно.
     if (prompt && isPromptEcho(result.text, prompt)) {
       sttRetried = true;
-      result = await this.whisper.transcribe(input.audio.buffer, input.audio.mimetype, input.audio.originalname);
+      result = await this.whisper.transcribe(
+        input.audio.buffer,
+        input.audio.mimetype,
+        input.audio.originalname,
+      );
     }
     // Пустой транскрипт — не команда: явная ошибка вместо мусорной записи в
     // общую ленту (которая потом попадала в контекст следующей команды).
     if (!result.text.trim()) {
-      throw new BadRequestException('Не удалось разобрать речь — повторите, пожалуйста, ближе к микрофону.');
+      throw new BadRequestException(
+        'Не удалось разобрать речь — повторите, пожалуйста, ближе к микрофону.',
+      );
     }
-    return { text: result.text, durationMs: result.durationMs, sttMs: Date.now() - start, sttRetried };
+    return {
+      text: result.text,
+      durationMs: result.durationMs,
+      sttMs: Date.now() - start,
+      sttRetried,
+    };
   }
 
   // STT + контекст (сотрудники/задачи/события/история) + draft extraction —
@@ -597,45 +815,53 @@ export class VoiceService {
     let sttMs = 0;
     let sttRetried = false;
     let contextDbMs = 0;
-    const [{ text: transcript, durationMs: audioDurationMs }, [meetingContext, employees, visibleTasks, visibleEvents, history]] =
-      await Promise.all([
-        (async () => {
-          const result = await this.transcribeInput(input);
-          sttMs = result.sttMs;
-          sttRetried = result.sttRetried;
-          return result;
-        })(),
-        (async () => {
-          const start = Date.now();
-          const result = await Promise.all([
-            // Диктовка со страницы встречи (владелец 09.09.2026) — доступно
-            // только руководителю (сам /meetings и так открыт лишь ему),
-            // тот же принцип, что sourceMeetingId-проверка в
-            // TasksService.create(). Прямой prisma-запрос, а не
-            // MeetingsService.findOne() — тот пишет audit-log READ на
-            // каждый вызов, здесь это не нужный побочный эффект.
-            meetingId && isManager(user.role)
-              ? this.prisma.meeting.findUnique({
-                  where: { id: meetingId },
-                  select: { title: true, rawSummary: true, enhancedSummary: true },
-                })
-              : Promise.resolve(null),
-            this.prisma.employee.findMany({
-              where: { status: 'ACTIVE' },
-              select: { id: true, fullName: true },
-            }),
-            // Те же findAll, что отдают обычные списки задач/календаря в UI
-            // — те же правила видимости (сотрудник видит своё, руководитель
-            // — всё; календарь целиком закрыт на OWNER), без отдельной
-            // копии RBAC здесь.
-            this.tasks.findAll(),
-            isManager(user.role) ? this.events.findAll(user.id) : Promise.resolve([]),
-            this.loadHistory(conversation.id),
-          ]);
-          contextDbMs = Date.now() - start;
-          return result;
-        })(),
-      ]);
+    const [
+      { text: transcript, durationMs: audioDurationMs },
+      [meetingContext, employees, visibleTasks, visibleEvents, history],
+    ] = await Promise.all([
+      (async () => {
+        const result = await this.transcribeInput(input);
+        sttMs = result.sttMs;
+        sttRetried = result.sttRetried;
+        return result;
+      })(),
+      (async () => {
+        const start = Date.now();
+        const result = await Promise.all([
+          // Диктовка со страницы встречи (владелец 09.09.2026) — доступно
+          // только руководителю (сам /meetings и так открыт лишь ему),
+          // тот же принцип, что sourceMeetingId-проверка в
+          // TasksService.create(). Прямой prisma-запрос, а не
+          // MeetingsService.findOne() — тот пишет audit-log READ на
+          // каждый вызов, здесь это не нужный побочный эффект.
+          meetingId && isManager(user.role)
+            ? this.prisma.meeting.findUnique({
+                where: { id: meetingId },
+                select: {
+                  title: true,
+                  rawSummary: true,
+                  enhancedSummary: true,
+                },
+              })
+            : Promise.resolve(null),
+          this.prisma.employee.findMany({
+            where: { status: 'ACTIVE' },
+            select: { id: true, fullName: true },
+          }),
+          // Те же findAll, что отдают обычные списки задач/календаря в UI
+          // — те же правила видимости (сотрудник видит своё, руководитель
+          // — всё; календарь целиком закрыт на OWNER), без отдельной
+          // копии RBAC здесь.
+          this.tasks.findAll(),
+          isManager(user.role)
+            ? this.events.findAll(user.id)
+            : Promise.resolve([]),
+          this.loadHistory(conversation.id),
+        ]);
+        contextDbMs = Date.now() - start;
+        return result;
+      })(),
+    ]);
 
     const taskContext = visibleTasks.slice(0, MAX_CONTEXT_TASKS).map((t) => ({
       id: t.id,
@@ -646,7 +872,9 @@ export class VoiceService {
     }));
 
     const now = new Date();
-    const lookaheadCutoff = new Date(now.getTime() + EVENT_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000);
+    const lookaheadCutoff = new Date(
+      now.getTime() + EVENT_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000,
+    );
     const eventContext = visibleEvents
       .filter((e) => e.startAt >= now && e.startAt <= lookaheadCutoff)
       .slice(0, MAX_CONTEXT_EVENTS)
@@ -666,14 +894,30 @@ export class VoiceService {
       taskContext,
       eventContext,
       meetingContext
-        ? { title: meetingContext.title, summary: meetingContext.enhancedSummary ?? meetingContext.rawSummary }
+        ? {
+            title: meetingContext.title,
+            summary:
+              meetingContext.enhancedSummary ?? meetingContext.rawSummary,
+          }
         : null,
       history,
       requestId,
       input.kind === 'text' ? input.liveContext : undefined,
     );
 
-    return { transcript, audioDurationMs, sttMs, sttRetried, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history };
+    return {
+      transcript,
+      audioDurationMs,
+      sttMs,
+      sttRetried,
+      contextDbMs,
+      meetingContext,
+      employees,
+      taskContext,
+      eventContext,
+      result,
+      history,
+    };
   }
 
   // Тело фактического разбора — выполняется не более одного раза на
@@ -694,20 +938,47 @@ export class VoiceService {
     executionId: string,
   ): Promise<VoiceParseResponse> {
     await this.prisma.voiceExecution
-      .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.PROCESSING } })
+      .update({
+        where: { id: executionId },
+        data: { status: VoiceExecutionStatus.PROCESSING },
+      })
       .catch(() => {});
     let loaded: Awaited<ReturnType<typeof this.loadContextAndExtract>>;
     try {
-      loaded = await this.loadContextAndExtract(input, user, meetingId, conversation, requestId);
+      loaded = await this.loadContextAndExtract(
+        input,
+        user,
+        meetingId,
+        conversation,
+        requestId,
+      );
     } catch (err) {
       // Ничего не выполнено — retry с тем же clientRequestId безопасен
       // (claimAndRunDurable разрешает повтор только на FAILED).
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.FAILED, errorMessage: toErrorMessage(err) } })
+        .update({
+          where: { id: executionId },
+          data: {
+            status: VoiceExecutionStatus.FAILED,
+            errorMessage: toErrorMessage(err),
+          },
+        })
         .catch(() => {});
       throw err;
     }
-    const { transcript, audioDurationMs, sttMs, sttRetried, contextDbMs, meetingContext, employees, taskContext, eventContext, result, history } = loaded;
+    const {
+      transcript,
+      audioDurationMs,
+      sttMs,
+      sttRetried,
+      contextDbMs,
+      meetingContext,
+      employees,
+      taskContext,
+      eventContext,
+      result,
+      history,
+    } = loaded;
 
     // Реплика пользователя (Stage 2, Phase H) — пишется в ту же ленту, что и
     // текстовый чат, не в отдельную VoiceMessage. Запущено здесь, ДО цикла
@@ -726,7 +997,15 @@ export class VoiceService {
           role: MessageRole.USER,
           status: MessageStatus.COMPLETED,
           clientRequestId,
-          parts: { create: [{ type: MessagePartType.MARKDOWN, order: 0, data: { content: transcript } }] },
+          parts: {
+            create: [
+              {
+                type: MessagePartType.MARKDOWN,
+                order: 0,
+                data: { content: transcript },
+              },
+            ],
+          },
         },
         include: { parts: { orderBy: { order: 'asc' } } },
       })
@@ -739,7 +1018,12 @@ export class VoiceService {
         // в AssistantChatService.createUserMessageIdempotent.
         if (isUniqueConstraintError(err)) {
           const winner = await this.prisma.message.findUnique({
-            where: { conversationId_clientRequestId: { conversationId: conversation.id, clientRequestId } },
+            where: {
+              conversationId_clientRequestId: {
+                conversationId: conversation.id,
+                clientRequestId,
+              },
+            },
             include: { parts: { orderBy: { order: 'asc' } } },
           });
           if (winner) return winner;
@@ -771,11 +1055,25 @@ export class VoiceService {
     const draftGroups = await Promise.all(
       result.drafts.slice(0, MAX_DRAFTS_PER_NOTE).map(async (draft) => {
         const validatedTarget = this.validateTarget(draft, taskIds, eventIds);
-        const withCompleteEvent = this.validateEventCreateCompleteness(validatedTarget);
-        const validatedRefs = this.validateReferences(withCompleteEvent, employeeIds);
-        const resolvedAssignee = await this.resolveAssigneeMention(validatedRefs, employees);
-        const enrichedDraft = this.attachAssigneeName(resolvedAssignee, employees);
-        const withMeeting = this.attachSourceMeeting(enrichedDraft, meetingId, meetingContext);
+        const withCompleteEvent =
+          this.validateEventCreateCompleteness(validatedTarget);
+        const validatedRefs = this.validateReferences(
+          withCompleteEvent,
+          employeeIds,
+        );
+        const resolvedAssignee = await this.resolveAssigneeMention(
+          validatedRefs,
+          employees,
+        );
+        const enrichedDraft = this.attachAssigneeName(
+          resolvedAssignee,
+          employees,
+        );
+        const withMeeting = this.attachSourceMeeting(
+          enrichedDraft,
+          meetingId,
+          meetingContext,
+        );
         return this.enforceEventRbac(withMeeting, user.role);
       }),
     );
@@ -805,13 +1103,18 @@ export class VoiceService {
     // NEEDS_RECONCILIATION: claimAndRunDurable откажет в повторе, оставляя
     // ручную проверку по логам/audit trail.
     await this.prisma.voiceExecution
-      .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.EXECUTING } })
+      .update({
+        where: { id: executionId },
+        data: { status: VoiceExecutionStatus.EXECUTING },
+      })
       .catch(() => {});
 
     // Чистый информационный вопрос: все черновики — обычный chat модели (не
     // уточнение сервера), без запроса уточнения. Только тогда ответ строит
     // Assistant Core с его tools (Plaud/встречи/задачи) — паритет с текстом.
-    const isInformationalTurn = !result.clarificationNeeded && drafts.every((d) => d.type === 'chat' && !('origin' in d));
+    const isInformationalTurn =
+      !result.clarificationNeeded &&
+      drafts.every((d) => d.type === 'chat' && !('origin' in d));
 
     const t2 = Date.now();
     const execResults: ExecutedVoiceAction[] = [];
@@ -825,7 +1128,13 @@ export class VoiceService {
           // Assistant Core, и уточнение «не нашёл сотрудника…» превращалось в
           // «я не умею создавать задачи» — при том что событие из той же реплики
           // реально создавалось (инцидент 24.09.2026).
-          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(draft.reply) }, entity: null });
+          execResults.push({
+            result: {
+              type: 'chat',
+              reply: stripLeakedContextMarkers(draft.reply),
+            },
+            entity: null,
+          });
         } else if (draft.type === 'chat') {
           // Hardening (22.09.2026, "voice ↔ text meeting Q&A parity") —
           // draft.reply здесь больше не используется как есть: он строился
@@ -845,9 +1154,26 @@ export class VoiceService {
           // ответ всё равно должен успешно построиться, ровно как раньше.
           // liveContext (только делегация GPT-Live) — блок [live_context] ПЕРЕД
           // командой, только для модели; в ленту сохраняется чистый транскрипт.
-          const replyText = serializeCurrentUserTurn(transcript, [], input.kind === 'text' ? input.liveContext : undefined);
-          const replyResult = await this.assistantReply.reply(replyText, history, user, conversation.id, executionId);
-          execResults.push({ result: { type: 'chat', reply: stripLeakedContextMarkers(replyResult.text) }, entity: null, cards: voiceActionCardParts(replyResult) });
+          const replyText = serializeCurrentUserTurn(
+            transcript,
+            [],
+            input.kind === 'text' ? input.liveContext : undefined,
+          );
+          const replyResult = await this.assistantReply.reply(
+            replyText,
+            history,
+            user,
+            conversation.id,
+            executionId,
+          );
+          execResults.push({
+            result: {
+              type: 'chat',
+              reply: stripLeakedContextMarkers(replyResult.text),
+            },
+            entity: null,
+            cards: voiceActionCardParts(replyResult),
+          });
         } else if (draft.type === 'task_action') {
           execResults.push(await this.executeTaskAction(draft, user));
         } else {
@@ -856,7 +1182,13 @@ export class VoiceService {
       }
     } catch (err) {
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { status: VoiceExecutionStatus.NEEDS_RECONCILIATION, errorMessage: toErrorMessage(err) } })
+        .update({
+          where: { id: executionId },
+          data: {
+            status: VoiceExecutionStatus.NEEDS_RECONCILIATION,
+            errorMessage: toErrorMessage(err),
+          },
+        })
         .catch(() => {});
       throw err;
     }
@@ -870,7 +1202,10 @@ export class VoiceService {
     // (voice-render.ts) — гейт на clarificationNeeded + санитизация от утечки
     // [shown_task]/[file]-меток в одном месте, см. комментарий там (живой
     // прогон 20.09.2026 поймал лишний пузырь "null" без этого гейта).
-    const clarificationReason = resolveClarificationReason(result.clarificationNeeded, result.clarificationReason);
+    const clarificationReason = resolveClarificationReason(
+      result.clarificationNeeded,
+      result.clarificationReason,
+    );
 
     // COMPLETED (Stage 2, Phase H.3) — ставим СРАЗУ здесь, а не после
     // персистентности ниже: действия выше уже выполнены и это необратимо,
@@ -886,7 +1221,13 @@ export class VoiceService {
         where: { id: executionId },
         data: {
           status: VoiceExecutionStatus.COMPLETED,
-          resultJson: toJson({ transcript, confidence: result.confidence, clarificationNeeded: result.clarificationNeeded, clarificationReason, results }),
+          resultJson: toJson({
+            transcript,
+            confidence: result.confidence,
+            clarificationNeeded: result.clarificationNeeded,
+            clarificationReason,
+            results,
+          }),
         },
       })
       .catch(() => {});
@@ -914,13 +1255,24 @@ export class VoiceService {
           role: MessageRole.ASSISTANT,
           status: MessageStatus.COMPLETED,
           replyToMessageId: userMessage.id,
-          parts: { create: buildVoiceAssistantParts(execResults, clarificationReason) },
+          parts: {
+            create: buildVoiceAssistantParts(execResults, clarificationReason),
+          },
         },
         include: { parts: { orderBy: { order: 'asc' } } },
       });
-      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { updatedAt: new Date() } });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
       await this.prisma.voiceExecution
-        .update({ where: { id: executionId }, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id } })
+        .update({
+          where: { id: executionId },
+          data: {
+            userMessageId: userMessage.id,
+            assistantMessageId: assistantMessage.id,
+          },
+        })
         .catch(() => {});
     } catch (err) {
       this.logger.error(
@@ -962,7 +1314,9 @@ export class VoiceService {
     // их здесь ещё раз.
     void this.audit.log(user.id, 'TRANSCRIBE', 'VoiceDraft', requestId, {
       draftTypes: drafts.map((d) => d.type),
-      outcomes: results.map((r) => (r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error')),
+      outcomes: results.map((r) =>
+        r.type === 'chat' ? 'chat' : r.ok ? 'ok' : 'error',
+      ),
       confidence: result.confidence,
     });
 
@@ -974,7 +1328,9 @@ export class VoiceService {
       results,
       conversationId: userMessage ? conversation.id : null,
       userMessage: userMessage ? toResponseMessage(userMessage) : null,
-      assistantMessage: assistantMessage ? toResponseMessage(assistantMessage) : null,
+      assistantMessage: assistantMessage
+        ? toResponseMessage(assistantMessage)
+        : null,
     };
   }
 
@@ -998,7 +1354,11 @@ export class VoiceService {
     kind: UndoKind,
     action: UndoRecordAction,
     entityId: string,
-    extra: { previous?: unknown; addedParticipantIds?: string[]; removedParticipantIds?: string[] } = {},
+    extra: {
+      previous?: unknown;
+      addedParticipantIds?: string[];
+      removedParticipantIds?: string[];
+    } = {},
   ): Promise<string | null> {
     try {
       const record = await this.prisma.undoRecord.create({
@@ -1007,9 +1367,14 @@ export class VoiceService {
           kind,
           action,
           entityId,
-          previous: extra.previous !== undefined ? toJson(extra.previous) : undefined,
-          addedParticipantIds: extra.addedParticipantIds ? toJson(extra.addedParticipantIds) : undefined,
-          removedParticipantIds: extra.removedParticipantIds ? toJson(extra.removedParticipantIds) : undefined,
+          previous:
+            extra.previous !== undefined ? toJson(extra.previous) : undefined,
+          addedParticipantIds: extra.addedParticipantIds
+            ? toJson(extra.addedParticipantIds)
+            : undefined,
+          removedParticipantIds: extra.removedParticipantIds
+            ? toJson(extra.removedParticipantIds)
+            : undefined,
           status: UndoRecordStatus.AVAILABLE,
           expiresAt: new Date(Date.now() + UNDO_WINDOW_MS),
         },
@@ -1028,7 +1393,10 @@ export class VoiceService {
   // её здесь) и возвращает итог вместо черновика. undoToken — см.
   // createUndoRecord выше; null для delete (сущности уже нет, откатывать
   // нечего) и для ok=false.
-  private async executeTaskAction(draft: VoiceTaskActionDraft, user: AuthenticatedUser): Promise<ExecutedVoiceAction> {
+  private async executeTaskAction(
+    draft: VoiceTaskActionDraft,
+    user: AuthenticatedUser,
+  ): Promise<ExecutedVoiceAction> {
     try {
       if (draft.action === 'create') {
         const dto: CreateTaskDto = {
@@ -1040,9 +1408,21 @@ export class VoiceService {
           sourceMeetingId: draft.sourceMeetingId || undefined,
         };
         const created = await this.tasks.create(dto, user);
-        const undoToken = await this.createUndoRecord(user, UndoKind.TASK, UndoRecordAction.CREATE, created.id);
+        const undoToken = await this.createUndoRecord(
+          user,
+          UndoKind.TASK,
+          UndoRecordAction.CREATE,
+          created.id,
+        );
         return {
-          result: { type: 'task_action', draft, ok: true, error: null, taskId: created.id, undoToken },
+          result: {
+            type: 'task_action',
+            draft,
+            ok: true,
+            error: null,
+            taskId: created.id,
+            undoToken,
+          },
           entity: created,
         };
       }
@@ -1062,21 +1442,39 @@ export class VoiceService {
         const before = await this.tasks.findOne(draft.targetTaskId);
         const previous: TaskRevertPayload = {};
         if (dto.title !== undefined) previous.title = before.title;
-        if (dto.description !== undefined) previous.description = before.description ?? '';
-        if (dto.assigneeId !== undefined) previous.assigneeId = before.assignee?.id ?? null;
+        if (dto.description !== undefined)
+          previous.description = before.description ?? '';
+        if (dto.assigneeId !== undefined)
+          previous.assigneeId = before.assignee?.id ?? null;
         // before.dueDate — сырой Prisma Date (findOne вызван напрямую, не
         // через HTTP — сериализация в строку, которую видит фронтенд
         // обычно, происходит только на выходе из Nest-контроллера).
-        if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
+        if (dto.dueDate !== undefined)
+          previous.dueDate = before.dueDate
+            ? before.dueDate.toISOString()
+            : null;
         if (dto.priority !== undefined) previous.priority = before.priority;
 
         // updated — свежая сущность ПОСЛЕ патча (Stage 2, Phase H): раньше
         // возврат update() отбрасывался, карточку в объединённой ленте
         // строить было не из чего.
         const updated = await this.tasks.update(draft.targetTaskId, dto, user);
-        const undoToken = await this.createUndoRecord(user, UndoKind.TASK, UndoRecordAction.UPDATE, draft.targetTaskId, { previous });
+        const undoToken = await this.createUndoRecord(
+          user,
+          UndoKind.TASK,
+          UndoRecordAction.UPDATE,
+          draft.targetTaskId,
+          { previous },
+        );
         return {
-          result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, undoToken },
+          result: {
+            type: 'task_action',
+            draft,
+            ok: true,
+            error: null,
+            taskId: draft.targetTaskId,
+            undoToken,
+          },
           entity: updated,
         };
       }
@@ -1085,12 +1483,26 @@ export class VoiceService {
       // "по удалению давай доверять", после практической проверки).
       await this.tasks.remove(draft.targetTaskId, user);
       return {
-        result: { type: 'task_action', draft, ok: true, error: null, taskId: draft.targetTaskId, undoToken: null },
+        result: {
+          type: 'task_action',
+          draft,
+          ok: true,
+          error: null,
+          taskId: draft.targetTaskId,
+          undoToken: null,
+        },
         entity: null,
       };
     } catch (err) {
       return {
-        result: { type: 'task_action', draft, ok: false, error: toErrorMessage(err), taskId: null, undoToken: null },
+        result: {
+          type: 'task_action',
+          draft,
+          ok: false,
+          error: toErrorMessage(err),
+          taskId: null,
+          undoToken: null,
+        },
         entity: null,
       };
     }
@@ -1106,20 +1518,35 @@ export class VoiceService {
   // читаемое описание, какие именно упали (result.warning, ok остаётся
   // true — сама встреча создана/изменена успешно, это вторичный сбой, тот
   // же decoupling-принцип, что и у createUndoRecord).
-  private async applyParticipants(eventId: string, addParticipantIds: string[], removeParticipantIds: string[], ownerId: string): Promise<string | null> {
+  private async applyParticipants(
+    eventId: string,
+    addParticipantIds: string[],
+    removeParticipantIds: string[],
+    ownerId: string,
+  ): Promise<string | null> {
     const failures: string[] = [];
     for (const employeeId of addParticipantIds) {
-      await this.events.addParticipant(eventId, employeeId, ownerId).catch((err) => {
-        failures.push(`не удалось добавить участника ${employeeId}: ${toErrorMessage(err)}`);
-      });
+      await this.events
+        .addParticipant(eventId, employeeId, ownerId)
+        .catch((err) => {
+          failures.push(
+            `не удалось добавить участника ${employeeId}: ${toErrorMessage(err)}`,
+          );
+        });
     }
     for (const employeeId of removeParticipantIds) {
-      await this.events.removeParticipant(eventId, employeeId, ownerId).catch((err) => {
-        failures.push(`не удалось убрать участника ${employeeId}: ${toErrorMessage(err)}`);
-      });
+      await this.events
+        .removeParticipant(eventId, employeeId, ownerId)
+        .catch((err) => {
+          failures.push(
+            `не удалось убрать участника ${employeeId}: ${toErrorMessage(err)}`,
+          );
+        });
     }
     if (failures.length === 0) return null;
-    this.logger.warn(`executeEventAction: частичный сбой участников события ${eventId}: ${failures.join('; ')}`);
+    this.logger.warn(
+      `executeEventAction: частичный сбой участников события ${eventId}: ${failures.join('; ')}`,
+    );
     return failures.join('; ');
   }
 
@@ -1128,7 +1555,10 @@ export class VoiceService {
   // AuthenticatedUser (весь модуль и так закрыт на Role.OWNER на уровне
   // контроллера, см. комментарий в events.service.ts); enforceEventRbac
   // выше гарантирует, что сюда event_action от не-OWNER не попадает.
-  private async executeEventAction(draft: VoiceEventActionDraft, user: AuthenticatedUser): Promise<ExecutedVoiceAction> {
+  private async executeEventAction(
+    draft: VoiceEventActionDraft,
+    user: AuthenticatedUser,
+  ): Promise<ExecutedVoiceAction> {
     try {
       if (draft.action === 'create') {
         const dto: CreateEventDto = {
@@ -1140,16 +1570,37 @@ export class VoiceService {
           allDay: draft.allDay ?? false,
         };
         const created = await this.events.create(dto, user.id);
-        const warning = await this.applyParticipants(created.id, draft.addParticipantIds, [], user.id);
+        const warning = await this.applyParticipants(
+          created.id,
+          draft.addParticipantIds,
+          [],
+          user.id,
+        );
         // Свежая сущность ПОСЛЕ добавления участников (Stage 2, Phase H) —
         // created сам по себе ещё не знает про них (addParticipant меняет
         // строку в БД уже после того, как created был получен), карточка с
         // пустым participants была бы неверна для только что созданной
         // встречи с указанными участниками.
-        const entity = draft.addParticipantIds.length > 0 ? await this.events.findOne(created.id, user.id) : created;
-        const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.CREATE, created.id);
+        const entity =
+          draft.addParticipantIds.length > 0
+            ? await this.events.findOne(created.id, user.id)
+            : created;
+        const undoToken = await this.createUndoRecord(
+          user,
+          UndoKind.EVENT,
+          UndoRecordAction.CREATE,
+          created.id,
+        );
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: created.id, undoToken, warning },
+          result: {
+            type: 'event_action',
+            draft,
+            ok: true,
+            error: null,
+            eventId: created.id,
+            undoToken,
+            warning,
+          },
           entity,
         };
       }
@@ -1167,31 +1618,61 @@ export class VoiceService {
 
         const previous: EventRevertPayload = {};
         if (Object.keys(dto).length > 0) {
-          const before = await this.events.findOne(draft.targetEventId, user.id);
+          const before = await this.events.findOne(
+            draft.targetEventId,
+            user.id,
+          );
           if (dto.title !== undefined) previous.title = before.title;
-          if (dto.description !== undefined) previous.description = before.description ?? '';
-          if (dto.location !== undefined) previous.location = before.location ?? '';
-          if (dto.startAt !== undefined) previous.startAt = before.startAt.toISOString();
-          if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
+          if (dto.description !== undefined)
+            previous.description = before.description ?? '';
+          if (dto.location !== undefined)
+            previous.location = before.location ?? '';
+          if (dto.startAt !== undefined)
+            previous.startAt = before.startAt.toISOString();
+          if (dto.endAt !== undefined)
+            previous.endAt = before.endAt.toISOString();
           if (dto.allDay !== undefined) previous.allDay = before.allDay;
           // Раздел 17 ТЗ — version только что прочитанного before: гонка с
           // параллельной правкой (другая голосовая команда, веб, обратная
           // синхронизация Google) теперь корректно даёт конфликт, а не
           // тихую перезапись.
-          await this.events.update(draft.targetEventId, { ...dto, version: before.version }, user.id);
+          await this.events.update(
+            draft.targetEventId,
+            { ...dto, version: before.version },
+            user.id,
+          );
         }
-        const warning = await this.applyParticipants(draft.targetEventId, draft.addParticipantIds, draft.removeParticipantIds, user.id);
+        const warning = await this.applyParticipants(
+          draft.targetEventId,
+          draft.addParticipantIds,
+          draft.removeParticipantIds,
+          user.id,
+        );
         // Один финальный findOne после всех изменений (полей + участников)
         // — Stage 2, Phase H: раньше возврат update()/addParticipant не
         // использовался вовсе, строить карточку было не из чего.
         const entity = await this.events.findOne(draft.targetEventId, user.id);
-        const undoToken = await this.createUndoRecord(user, UndoKind.EVENT, UndoRecordAction.UPDATE, draft.targetEventId, {
-          previous,
-          addedParticipantIds: draft.addParticipantIds,
-          removedParticipantIds: draft.removeParticipantIds,
-        });
+        const undoToken = await this.createUndoRecord(
+          user,
+          UndoKind.EVENT,
+          UndoRecordAction.UPDATE,
+          draft.targetEventId,
+          {
+            previous,
+            addedParticipantIds: draft.addParticipantIds,
+            removedParticipantIds: draft.removeParticipantIds,
+          },
+        );
         return {
-          result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken, warning },
+          result: {
+            type: 'event_action',
+            draft,
+            ok: true,
+            error: null,
+            eventId: draft.targetEventId,
+            undoToken,
+            warning,
+          },
           entity,
         };
       }
@@ -1200,12 +1681,28 @@ export class VoiceService {
       // для задач (владелец 10.09.2026).
       await this.events.remove(draft.targetEventId, user.id);
       return {
-        result: { type: 'event_action', draft, ok: true, error: null, eventId: draft.targetEventId, undoToken: null, warning: null },
+        result: {
+          type: 'event_action',
+          draft,
+          ok: true,
+          error: null,
+          eventId: draft.targetEventId,
+          undoToken: null,
+          warning: null,
+        },
         entity: null,
       };
     } catch (err) {
       return {
-        result: { type: 'event_action', draft, ok: false, error: toErrorMessage(err), eventId: null, undoToken: null, warning: null },
+        result: {
+          type: 'event_action',
+          draft,
+          ok: false,
+          error: toErrorMessage(err),
+          eventId: null,
+          undoToken: null,
+          warning: null,
+        },
         entity: null,
       };
     }
@@ -1223,18 +1720,29 @@ export class VoiceService {
   // используется AssistantChatService.loadHistory (Stage 2, Phase F.1), даёт
   // тот же {role, text}-формат, что уже ожидает DraftExtractionService (не
   // меняется).
-  private async loadHistory(conversationId: string): Promise<VoiceHistoryItem[]> {
+  private async loadHistory(
+    conversationId: string,
+  ): Promise<VoiceHistoryItem[]> {
     const rows = await this.prisma.message.findMany({
-      where: { conversationId, createdAt: { gte: new Date(Date.now() - VOICE_HISTORY_MAX_AGE_MS) } },
+      where: {
+        conversationId,
+        createdAt: { gte: new Date(Date.now() - VOICE_HISTORY_MAX_AGE_MS) },
+      },
       orderBy: { createdAt: 'desc' },
       take: VOICE_HISTORY_LIMIT,
       include: { parts: { orderBy: { order: 'asc' } } },
     });
-    const mailState = await loadMailCardState(this.prisma, rows.flatMap((m) => m.parts));
+    const mailState = await loadMailCardState(
+      this.prisma,
+      rows.flatMap((m) => m.parts),
+    );
     return rows
       .reverse()
       .map((m) => ({
-        role: m.role === MessageRole.USER ? ('user' as const) : ('assistant' as const),
+        role:
+          m.role === MessageRole.USER
+            ? ('user' as const)
+            : ('assistant' as const),
         text: serializeMessageForModelContext(m.parts, mailState),
       }))
       .filter((h) => h.text);
@@ -1246,12 +1754,28 @@ export class VoiceService {
   // в chat с объяснением, а не 404 где-то ниже по цепочке; невалидные
   // ассignee/участники просто отфильтровываются (fail-safe в "без
   // исполнителя/без этого участника", а не в ошибку).
-  private validateTarget(draft: VoiceDraft, taskIds: Set<string>, eventIds: Set<string>): VoiceDraft {
-    if (draft.type === 'task_action' && draft.action !== 'create' && !taskIds.has(draft.targetTaskId)) {
-      return serverNotice(`Не нашёл задачу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`);
+  private validateTarget(
+    draft: VoiceDraft,
+    taskIds: Set<string>,
+    eventIds: Set<string>,
+  ): VoiceDraft {
+    if (
+      draft.type === 'task_action' &&
+      draft.action !== 'create' &&
+      !taskIds.has(draft.targetTaskId)
+    ) {
+      return serverNotice(
+        `Не нашёл задачу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`,
+      );
     }
-    if (draft.type === 'event_action' && draft.action !== 'create' && !eventIds.has(draft.targetEventId)) {
-      return serverNotice(`Не нашёл встречу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`);
+    if (
+      draft.type === 'event_action' &&
+      draft.action !== 'create' &&
+      !eventIds.has(draft.targetEventId)
+    ) {
+      return serverNotice(
+        `Не нашёл встречу «${draft.targetTitle}» — уточните, пожалуйста, формулировку.`,
+      );
     }
     return draft;
   }
@@ -1264,14 +1788,24 @@ export class VoiceService {
   // подстраховываемся здесь: недостающее startAt на create превращаем в
   // уточняющий вопрос вместо попытки создать битое событие.
   private validateEventCreateCompleteness(draft: VoiceDraft): VoiceDraft {
-    if (draft.type === 'event_action' && draft.action === 'create' && !draft.startAt) {
-      return serverNotice(`Не расслышал, на какое время поставить встречу «${draft.title || 'без названия'}» — уточните дату и время.`);
+    if (
+      draft.type === 'event_action' &&
+      draft.action === 'create' &&
+      !draft.startAt
+    ) {
+      return serverNotice(
+        `Не расслышал, на какое время поставить встречу «${draft.title || 'без названия'}» — уточните дату и время.`,
+      );
     }
     return draft;
   }
 
-  private validateReferences(draft: VoiceDraft, employeeIds: Set<string>): VoiceDraft {
-    const validId = (id: string | null) => (id && employeeIds.has(id) ? id : null);
+  private validateReferences(
+    draft: VoiceDraft,
+    employeeIds: Set<string>,
+  ): VoiceDraft {
+    const validId = (id: string | null) =>
+      id && employeeIds.has(id) ? id : null;
     const validIds = (ids: string[]) => ids.filter((id) => employeeIds.has(id));
 
     if (draft.type === 'task_action') {
@@ -1301,11 +1835,21 @@ export class VoiceService {
   // контексту); AMBIGUOUS/NOT_FOUND превращают черновик в уточняющий
   // вопрос вместо того, чтобы молча создать/изменить задачу без
   // исполнителя или с неверным.
-  private async resolveAssigneeMention(draft: VoiceDraft, employees: { id: string; fullName: string }[]): Promise<VoiceDraft> {
-    if (draft.type !== 'task_action' || !draft.assigneeMentioned || !draft.assigneeRawText) {
+  private async resolveAssigneeMention(
+    draft: VoiceDraft,
+    employees: { id: string; fullName: string }[],
+  ): Promise<VoiceDraft> {
+    if (
+      draft.type !== 'task_action' ||
+      !draft.assigneeMentioned ||
+      !draft.assigneeRawText
+    ) {
       return draft;
     }
-    const resolution = await this.employeeResolver.resolve(draft.assigneeRawText, employees);
+    const resolution = await this.employeeResolver.resolve(
+      draft.assigneeRawText,
+      employees,
+    );
     if (resolution.status === 'RESOLVED') {
       return { ...draft, assigneeId: resolution.employeeId };
     }
@@ -1320,11 +1864,20 @@ export class VoiceService {
   // проверены (validateReferences выше) — имена резолвим здесь, из того же
   // списка сотрудников, чтобы фронтенду не нужен был отдельный запрос к
   // /employees ради текста чат-подтверждения.
-  private attachAssigneeName(draft: VoiceDraft, employees: { id: string; fullName: string }[]): VoiceDraft {
-    const nameOf = (id: string) => employees.find((e) => e.id === id)?.fullName ?? '';
+  private attachAssigneeName(
+    draft: VoiceDraft,
+    employees: { id: string; fullName: string }[],
+  ): VoiceDraft {
+    const nameOf = (id: string) =>
+      employees.find((e) => e.id === id)?.fullName ?? '';
 
     if (draft.type === 'task_action') {
-      return { ...draft, assigneeName: draft.assigneeId ? (nameOf(draft.assigneeId) || null) : null };
+      return {
+        ...draft,
+        assigneeName: draft.assigneeId
+          ? nameOf(draft.assigneeId) || null
+          : null,
+      };
     }
     if (draft.type === 'event_action') {
       return {
@@ -1349,7 +1902,10 @@ export class VoiceService {
     meetingContext: unknown,
   ): VoiceDraft {
     if (draft.type !== 'task_action' || draft.action !== 'create') return draft;
-    return { ...draft, sourceMeetingId: meetingContext && meetingId ? meetingId : null };
+    return {
+      ...draft,
+      sourceMeetingId: meetingContext && meetingId ? meetingId : null,
+    };
   }
 
   // Claude инструктирован никогда не классифицировать транскрипт не-OWNER'а
@@ -1387,11 +1943,15 @@ export class VoiceService {
         priority: null,
         sourceMeetingId: null,
       };
-      const explanation: VoiceDraft = serverNotice('Похоже на событие календаря, но календарь доступен только руководителю — создал как задачу.');
+      const explanation: VoiceDraft = serverNotice(
+        'Похоже на событие календаря, но календарь доступен только руководителю — создал как задачу.',
+      );
       return [taskDraft, explanation];
     }
     return [
-      serverNotice('Календарь доступен только руководителю — изменить или удалить встречу я не могу.'),
+      serverNotice(
+        'Календарь доступен только руководителю — изменить или удалить встречу я не могу.',
+      ),
     ];
   }
 }

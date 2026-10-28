@@ -64,7 +64,14 @@ import { AuditService } from '../audit/audit.service';
     MailActionSessionFactory,
     MailTriageService,
   ],
-  exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService, MailTriageService],
+  exports: [
+    MailStore,
+    MailQueryService,
+    MailActionExecutorRegistry,
+    MailActionPlanService,
+    MailComposeService,
+    MailTriageService,
+  ],
 })
 export class MailModule implements OnModuleInit {
   constructor(
@@ -83,6 +90,12 @@ export class MailModule implements OnModuleInit {
   onModuleInit(): void {
     registerStage1MailActionExecutors(this.executors);
     // Разбор почты (W4) — ответ и задача из письма.
-    registerTriageMailActionExecutors(this.executors, { prisma: this.prisma, store: this.store, compose: this.compose, audit: this.audit, tasks: this.tasks });
+    registerTriageMailActionExecutors(this.executors, {
+      prisma: this.prisma,
+      store: this.store,
+      compose: this.compose,
+      audit: this.audit,
+      tasks: this.tasks,
+    });
   }
 }

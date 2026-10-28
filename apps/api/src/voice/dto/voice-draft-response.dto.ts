@@ -83,7 +83,8 @@ export interface VoiceChatReply {
   reply: string;
 }
 
-export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
+export type VoiceDraft =
+  VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
 // Snapshot "до" мутации — Stage 2, Phase H.4: больше не отдаётся клиенту
 // (не экспортируется из packages/shared-types), только внутреннее
@@ -136,7 +137,8 @@ export interface VoiceChatResult {
   reply: string;
 }
 
-export type VoiceActionResult = VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
+export type VoiceActionResult =
+  VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
 
 // results: массив, не одиночный результат (владелец 10.09.2026, найдено в
 // проде: "удали встречу с Петром и создай новую на пятницу" в одной

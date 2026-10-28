@@ -1,4 +1,9 @@
-import type { SkillEffort, SkillKind, SkillModel, SkillOutput } from '@prisma/client';
+import type {
+  SkillEffort,
+  SkillKind,
+  SkillModel,
+  SkillOutput,
+} from '@prisma/client';
 
 // ARMS, фаза 3 — навыки. Здесь только чистые вещи (тестируются без БД и
 // ключа): модели, разбор «/slug», system-блоки навыка и тона, стартовые
@@ -13,14 +18,21 @@ export const SKILL_MODEL_IDS: Record<SkillModel, string> = {
   OPUS: 'claude-opus-5-5',
 };
 
-export const SKILL_EFFORT_VALUES: Record<SkillEffort, 'low' | 'medium' | 'high'> = {
+export const SKILL_EFFORT_VALUES: Record<
+  SkillEffort,
+  'low' | 'medium' | 'high'
+> = {
   LOW: 'low',
   MEDIUM: 'medium',
   HIGH: 'high',
 };
 
 // Размышления входят в max_tokens: большим моделям — с запасом.
-export const SKILL_MAX_TOKENS: Record<SkillModel, number> = { HAIKU: 8192, SONNET: 16000, OPUS: 16000 };
+export const SKILL_MAX_TOKENS: Record<SkillModel, number> = {
+  HAIKU: 8192,
+  SONNET: 16000,
+  OPUS: 16000,
+};
 
 // Навыку можно больше раундов инструментов, чем обычному чату: подготовка к
 // встрече — календарь, задачи, прошлые встречи, письма.
@@ -32,11 +44,14 @@ export const SKILL_SLUG_MAX = 32;
 export const SKILL_SLUG_RE = /^[\p{Ll}\p{N}]+(?:-[\p{Ll}\p{N}]+)*$/u;
 
 export const TONE_SLUG = 'тон';
-export const TONE_PLACEHOLDER = 'Пока пусто. Соберите стиль из отправленных писем на странице навыка.';
+export const TONE_PLACEHOLDER =
+  'Пока пусто. Соберите стиль из отправленных писем на странице навыка.';
 
 // Навык вызывает только человек — «/slug» в начале сообщения. Модель сама
 // навык не выбирает (план ARMS: поведение должно быть предсказуемым).
-export function parseSkillInvocation(text: string): { slug: string; rest: string } | null {
+export function parseSkillInvocation(
+  text: string,
+): { slug: string; rest: string } | null {
   const m = /^\/([\p{L}\p{N}-]{1,32})(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (!m) return null;
   return { slug: m[1].toLowerCase(), rest: (m[2] ?? '').trim() };
@@ -47,7 +62,11 @@ export function skillUserText(rest: string): string {
   return rest || 'Выполни навык.';
 }
 
-export function buildSkillBlock(skill: { slug: string; title: string; instructions: string }): string {
+export function buildSkillBlock(skill: {
+  slug: string;
+  title: string;
+  instructions: string;
+}): string {
   return `[skill /${skill.slug} — ${skill.title}]
 Пользователь вызвал этот навык. Выполни его по инструкции ниже. Инструкция
 уточняет порядок работы и формат ответа, но не отменяет общие правила и
@@ -141,12 +160,21 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
   {
     slug: 'к-встрече',
     title: 'Подготовка к встрече',
-    description: 'Ближайшая встреча: кто будет, их задачи, прошлые встречи, открытые письма.',
+    description:
+      'Ближайшая встреча: кто будет, их задачи, прошлые встречи, открытые письма.',
     kind: 'PLAYBOOK',
     model: 'OPUS',
     effort: 'MEDIUM',
     output: 'CHAT',
-    allowedTools: ['get_events', 'find_tasks', 'get_recent_meetings', 'search_meetings', 'get_meeting', 'search_emails', 'get_email'],
+    allowedTools: [
+      'get_events',
+      'find_tasks',
+      'get_recent_meetings',
+      'search_meetings',
+      'get_meeting',
+      'search_emails',
+      'get_email',
+    ],
     instructions: `Подготовь руководителя к встрече.
 
 1. Встреча: если пользователь назвал её — найди в get_events по названию или
@@ -165,7 +193,8 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
   {
     slug: 'просрочки',
     title: 'Разбор просрочек',
-    description: 'Просроченные задачи по исполнителям и короткие сообщения каждому.',
+    description:
+      'Просроченные задачи по исполнителям и короткие сообщения каждому.',
     kind: 'PLAYBOOK',
     model: 'HAIKU',
     effort: 'LOW',
@@ -191,7 +220,12 @@ export const SYSTEM_SKILLS: SkillSeed[] = [
     model: 'SONNET',
     effort: 'MEDIUM',
     output: 'DOCX',
-    allowedTools: ['find_tasks', 'get_recent_meetings', 'get_meeting', 'search_emails'],
+    allowedTools: [
+      'find_tasks',
+      'get_recent_meetings',
+      'get_meeting',
+      'search_emails',
+    ],
     instructions: `Подготовь отчёт руководителя за последние 7 дней. Текст ответа целиком
 станет документом Word, поэтому пиши его как документ.
 
@@ -249,7 +283,15 @@ export const SYSTEM_SKILL_UPGRADES: SkillSeedUpgrade[] = [
   },
   {
     slug: 'к-встрече',
-    allowedTools: ['get_events', 'get_tasks', 'get_recent_meetings', 'search_meetings', 'get_meeting', 'search_emails', 'get_email'],
+    allowedTools: [
+      'get_events',
+      'get_tasks',
+      'get_recent_meetings',
+      'search_meetings',
+      'get_meeting',
+      'search_emails',
+      'get_email',
+    ],
     instructions: `Подготовь руководителя к встрече.
 
 1. Встреча: если пользователь назвал её — найди в get_events по названию или
@@ -280,7 +322,12 @@ export const SYSTEM_SKILL_UPGRADES: SkillSeedUpgrade[] = [
   },
   {
     slug: 'итоги-недели',
-    allowedTools: ['get_tasks', 'get_recent_meetings', 'get_meeting', 'search_emails'],
+    allowedTools: [
+      'get_tasks',
+      'get_recent_meetings',
+      'get_meeting',
+      'search_emails',
+    ],
     instructions: `Подготовь отчёт руководителя за последние 7 дней. Текст ответа целиком
 станет документом Word, поэтому пиши его как документ.
 
@@ -300,15 +347,27 @@ export const SYSTEM_SKILL_UPGRADES: SkillSeedUpgrade[] = [
 // Какие существующие общие навыки обновить до текущего seed: только те, чей
 // текст и набор инструментов дословно совпадают с прежним seed.
 export function pickSkillUpgrades(
-  existing: { id: string; slug: string; instructions?: string | null; allowedTools?: string[] | null }[],
+  existing: {
+    id: string;
+    slug: string;
+    instructions?: string | null;
+    allowedTools?: string[] | null;
+  }[],
   upgrades: SkillSeedUpgrade[] = SYSTEM_SKILL_UPGRADES,
   seeds: SkillSeed[] = SYSTEM_SKILLS,
 ): { id: string; seed: SkillSeed }[] {
-  const sameTools = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i]);
+  const sameTools = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((t, i) => t === b[i]);
   return existing.flatMap((skill) => {
     const from = upgrades.find((u) => u.slug === skill.slug);
     const seed = seeds.find((s) => s.slug === skill.slug);
-    if (!from || !seed || skill.instructions !== from.instructions || !sameTools(skill.allowedTools ?? [], from.allowedTools)) return [];
+    if (
+      !from ||
+      !seed ||
+      skill.instructions !== from.instructions ||
+      !sameTools(skill.allowedTools ?? [], from.allowedTools)
+    )
+      return [];
     return [{ id: skill.id, seed }];
   });
 }

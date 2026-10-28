@@ -1,4 +1,11 @@
-import { Body, Controller, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -55,7 +62,13 @@ export class VoiceController {
   ) {
     // audio может быть undefined (fileFilter отклонил формат) — проверка и
     // BadRequestException живут в VoiceService.parse, не дублируем здесь.
-    return this.voice.parse(audio, user, dto.meetingId, dto.clientRequestId, dto.conversationId);
+    return this.voice.parse(
+      audio,
+      user,
+      dto.meetingId,
+      dto.clientRequestId,
+      dto.conversationId,
+    );
   }
 
   // Stage 2, Phase H.1 (аудит 20.09.2026, P0/P1) — заменяет прежний

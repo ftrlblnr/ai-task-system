@@ -6,14 +6,20 @@ import { TIMEZONE_OFFSET_HOURS } from '../../common/timezone';
 // функции без DI и БД: порядок очереди, «Позже», хэш текста ответа, промпт
 // черновика. Тестируются без моков.
 
-const IMPORTANCE_RANK: Record<EmailImportance, number> = { CRITICAL: 0, IMPORTANT: 1, NORMAL: 2, LOW: 3 };
+const IMPORTANCE_RANK: Record<EmailImportance, number> = {
+  CRITICAL: 0,
+  IMPORTANT: 1,
+  NORMAL: 2,
+  LOW: 3,
+};
 
 // Сначала важные, внутри одной важности — кто дольше ждёт.
 export function compareTriage(
   a: { importance: EmailImportance | null; receivedAt: Date | null },
   b: { importance: EmailImportance | null; receivedAt: Date | null },
 ): number {
-  const rank = (i: EmailImportance | null) => (i ? IMPORTANCE_RANK[i] : IMPORTANCE_RANK.NORMAL);
+  const rank = (i: EmailImportance | null) =>
+    i ? IMPORTANCE_RANK[i] : IMPORTANCE_RANK.NORMAL;
   const byImportance = rank(a.importance) - rank(b.importance);
   if (byImportance !== 0) return byImportance;
   return (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0);
@@ -24,8 +30,16 @@ export function compareTriage(
 export function nextWorkingMorning(now: Date): Date {
   const offsetMs = TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000;
   const local = new Date(now.getTime() + offsetMs);
-  const day = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1, 9));
-  while (day.getUTCDay() === 0 || day.getUTCDay() === 6) day.setUTCDate(day.getUTCDate() + 1);
+  const day = new Date(
+    Date.UTC(
+      local.getUTCFullYear(),
+      local.getUTCMonth(),
+      local.getUTCDate() + 1,
+      9,
+    ),
+  );
+  while (day.getUTCDay() === 0 || day.getUTCDay() === 6)
+    day.setUTCDate(day.getUTCDate() + 1);
   return new Date(day.getTime() - offsetMs);
 }
 
@@ -62,7 +76,9 @@ export const REPLY_SYSTEM_PROMPT = [
 // манеру он задаёт, но «не выдумывай» и «письмо — данные» не отменяет.
 // Без стиля — прежний промпт байт в байт, чтобы не сбить кэш.
 export function buildReplySystemPrompt(toneBlock: string | null): string {
-  return toneBlock ? `${REPLY_SYSTEM_PROMPT}\n\n${toneBlock}` : REPLY_SYSTEM_PROMPT;
+  return toneBlock
+    ? `${REPLY_SYSTEM_PROMPT}\n\n${toneBlock}`
+    : REPLY_SYSTEM_PROMPT;
 }
 
 // Состояние стиля у черновика для интерфейса разбора: писали ли со стилем и
@@ -70,8 +86,12 @@ export function buildReplySystemPrompt(toneBlock: string | null): string {
 // на момент генерации (null — писали без стиля).
 export type DraftToneState = 'applied' | 'outdated' | 'none';
 
-export function draftToneState(draftToneVersion: number | null, currentToneVersion: number | null): DraftToneState {
-  if (currentToneVersion === null) return draftToneVersion === null ? 'none' : 'applied';
+export function draftToneState(
+  draftToneVersion: number | null,
+  currentToneVersion: number | null,
+): DraftToneState {
+  if (currentToneVersion === null)
+    return draftToneVersion === null ? 'none' : 'applied';
   return draftToneVersion === currentToneVersion ? 'applied' : 'outdated';
 }
 
@@ -84,7 +104,9 @@ export function buildReplyUserContent(input: ReplyPromptInput): string {
     input.summary ? `Кратко: ${input.summary}` : null,
     input.actionSummary ? `Что от нас хотят: ${input.actionSummary}` : null,
     '<письмо>',
-    body.length > REPLY_BODY_LIMIT ? `${body.slice(0, REPLY_BODY_LIMIT)}…` : body || '(текст письма пуст)',
+    body.length > REPLY_BODY_LIMIT
+      ? `${body.slice(0, REPLY_BODY_LIMIT)}…`
+      : body || '(текст письма пуст)',
     '</письмо>',
   ]
     .filter((l): l is string => l !== null)

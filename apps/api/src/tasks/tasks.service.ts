@@ -31,7 +31,13 @@ const TASK_LIST_SELECT = {
   // direction — для клиентского фильтра задач по направлению (владелец
   // 30.09.2026, kanban-board.tsx), тот же принцип, что assignee-фильтр:
   // без отдельного запроса, из уже загруженных задач.
-  assignee: { select: { id: true, fullName: true, direction: { select: { id: true, title: true } } } },
+  assignee: {
+    select: {
+      id: true,
+      fullName: true,
+      direction: { select: { id: true, title: true } },
+    },
+  },
   creator: { select: { id: true, fullName: true } },
   // Только статусы — достаточно посчитать subtaskCount/subtaskDoneCount
   // (см. toListItem), полный список полей отдаёт только TASK_DETAIL_SELECT.
@@ -133,9 +139,13 @@ export const TASK_STATUS_RU: Record<TaskStatus, string> = {
 // (dueDate в прошлом, status не DONE/CANCELLED) TasksOverdueCron выражает
 // отдельно как Prisma where-фильтр (вызвать JS-функцию внутри SQL-запроса
 // нельзя), но по смыслу это одно и то же правило.
-export function isTaskOverdue(task: { dueDate: Date | null; status: TaskStatus }): boolean {
+export function isTaskOverdue(task: {
+  dueDate: Date | null;
+  status: TaskStatus;
+}): boolean {
   if (!task.dueDate) return false;
-  if (task.status === TaskStatus.DONE || task.status === TaskStatus.CANCELLED) return false;
+  if (task.status === TaskStatus.DONE || task.status === TaskStatus.CANCELLED)
+    return false;
   return task.dueDate < new Date();
 }
 
@@ -146,7 +156,10 @@ export const REMIND_INTERVAL_MS = 60 * 60 * 1000;
 // ассистент раньше видел только первые 10 из findAll() с фильтром
 // all/overdue и не мог честно ответить «что у Ирины просрочено» при 60
 // задачах. Фильтры и счётчики — запросами в БД, не перебором findAll().
-export const CLOSED_TASK_STATUSES: TaskStatus[] = [TaskStatus.DONE, TaskStatus.CANCELLED];
+export const CLOSED_TASK_STATUSES: TaskStatus[] = [
+  TaskStatus.DONE,
+  TaskStatus.CANCELLED,
+];
 export const TASK_SEARCH_MAX_LIMIT = 30;
 
 export interface TaskSearchFilter {
@@ -172,18 +185,38 @@ export interface TaskSearchGroup {
 
 // Чистая функция — тестируется без БД. Подзадачи не ищутся, как и в общем
 // списке (они живут внутри карточки родителя).
-export function buildTaskSearchWhere(filter: TaskSearchFilter, now: Date = new Date()): Prisma.TaskWhereInput {
+export function buildTaskSearchWhere(
+  filter: TaskSearchFilter,
+  now: Date = new Date(),
+): Prisma.TaskWhereInput {
   const and: Prisma.TaskWhereInput[] = [{ parentTaskId: null }];
-  and.push(filter.statuses && filter.statuses.length > 0 ? { status: { in: filter.statuses } } : { status: { notIn: CLOSED_TASK_STATUSES } });
-  if (filter.assigneeId !== undefined) and.push({ assigneeId: filter.assigneeId });
+  and.push(
+    filter.statuses && filter.statuses.length > 0
+      ? { status: { in: filter.statuses } }
+      : { status: { notIn: CLOSED_TASK_STATUSES } },
+  );
+  if (filter.assigneeId !== undefined)
+    and.push({ assigneeId: filter.assigneeId });
   if (filter.creatorId) and.push({ creatorId: filter.creatorId });
   if (filter.overdue) and.push(overdueWhere(now));
-  if (filter.dueFrom || filter.dueTo) and.push({ dueDate: { ...(filter.dueFrom ? { gte: filter.dueFrom } : {}), ...(filter.dueTo ? { lte: filter.dueTo } : {}) } });
+  if (filter.dueFrom || filter.dueTo)
+    and.push({
+      dueDate: {
+        ...(filter.dueFrom ? { gte: filter.dueFrom } : {}),
+        ...(filter.dueTo ? { lte: filter.dueTo } : {}),
+      },
+    });
   const query = filter.query?.trim();
   if (query) {
-    and.push({ OR: [{ title: { contains: query, mode: 'insensitive' } }, { description: { contains: query, mode: 'insensitive' } }] });
+    and.push({
+      OR: [
+        { title: { contains: query, mode: 'insensitive' } },
+        { description: { contains: query, mode: 'insensitive' } },
+      ],
+    });
   }
-  if (filter.sourceMeetingId) and.push({ sourceMeetingId: filter.sourceMeetingId });
+  if (filter.sourceMeetingId)
+    and.push({ sourceMeetingId: filter.sourceMeetingId });
   return { AND: and };
 }
 
@@ -207,7 +240,11 @@ export class TasksService {
   // фильтр «Просрочено»: открытые задачи верхнего уровня со сроком в прошлом.
   overdueCount(): Promise<number> {
     return this.prisma.task.count({
-      where: { parentTaskId: null, status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] }, dueDate: { lt: new Date() } },
+      where: {
+        parentTaskId: null,
+        status: { notIn: [TaskStatus.DONE, TaskStatus.CANCELLED] },
+        dueDate: { lt: new Date() },
+      },
     });
   }
 
@@ -234,36 +271,84 @@ export class TasksService {
     const where = buildTaskSearchWhere(filter, now);
     const overdue: Prisma.TaskWhereInput = { AND: [where, overdueWhere(now)] };
     const limit = Math.min(Math.max(1, filter.limit), TASK_SEARCH_MAX_LIMIT);
-    const [rows, totalCount, overdueCount, byAssigneeRaw, overdueByAssigneeRaw, byStatusRaw] = await Promise.all([
+    const [
+      rows,
+      totalCount,
+      overdueCount,
+      byAssigneeRaw,
+      overdueByAssigneeRaw,
+      byStatusRaw,
+    ] = await Promise.all([
       this.prisma.task.findMany({
         where,
         select: TASK_LIST_SELECT,
-        orderBy: [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
+        orderBy: [
+          { dueDate: { sort: 'asc', nulls: 'last' } },
+          { createdAt: 'desc' },
+        ],
         take: limit,
       }),
       this.prisma.task.count({ where }),
       this.prisma.task.count({ where: overdue }),
-      this.prisma.task.groupBy({ by: ['assigneeId'], where, _count: { _all: true } }),
-      this.prisma.task.groupBy({ by: ['assigneeId'], where: overdue, _count: { _all: true } }),
-      this.prisma.task.groupBy({ by: ['status'], where, _count: { _all: true } }),
+      this.prisma.task.groupBy({
+        by: ['assigneeId'],
+        where,
+        _count: { _all: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ['assigneeId'],
+        where: overdue,
+        _count: { _all: true },
+      }),
+      this.prisma.task.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+      }),
     ]);
 
-    const assigneeIds = byAssigneeRaw.map((g) => g.assigneeId).filter((id): id is string => id !== null);
+    const assigneeIds = byAssigneeRaw
+      .map((g) => g.assigneeId)
+      .filter((id): id is string => id !== null);
     const names = assigneeIds.length
-      ? new Map((await this.prisma.employee.findMany({ where: { id: { in: assigneeIds } }, select: { id: true, fullName: true } })).map((e) => [e.id, e.fullName]))
+      ? new Map(
+          (
+            await this.prisma.employee.findMany({
+              where: { id: { in: assigneeIds } },
+              select: { id: true, fullName: true },
+            })
+          ).map((e) => [e.id, e.fullName]),
+        )
       : new Map<string, string>();
-    const overdueBy = new Map(overdueByAssigneeRaw.map((g) => [g.assigneeId, g._count._all]));
+    const overdueBy = new Map(
+      overdueByAssigneeRaw.map((g) => [g.assigneeId, g._count._all]),
+    );
     const byAssignee: TaskSearchGroup[] = byAssigneeRaw
       .map((g) => ({
         assigneeId: g.assigneeId,
-        name: g.assigneeId ? (names.get(g.assigneeId) ?? 'Неизвестный сотрудник') : 'Без исполнителя',
+        name: g.assigneeId
+          ? (names.get(g.assigneeId) ?? 'Неизвестный сотрудник')
+          : 'Без исполнителя',
         count: g._count._all,
         overdue: overdueBy.get(g.assigneeId) ?? 0,
       }))
-      .sort((a, b) => b.overdue - a.overdue || b.count - a.count || a.name.localeCompare(b.name, 'ru'));
-    const byStatus = byStatusRaw.map((g) => ({ status: g.status, count: g._count._all })).sort((a, b) => b.count - a.count);
+      .sort(
+        (a, b) =>
+          b.overdue - a.overdue ||
+          b.count - a.count ||
+          a.name.localeCompare(b.name, 'ru'),
+      );
+    const byStatus = byStatusRaw
+      .map((g) => ({ status: g.status, count: g._count._all }))
+      .sort((a, b) => b.count - a.count);
 
-    return { items: rows.map((t) => this.toListItem(t)), totalCount, overdueCount, byAssignee, byStatus };
+    return {
+      items: rows.map((t) => this.toListItem(t)),
+      totalCount,
+      overdueCount,
+      byAssignee,
+      byStatus,
+    };
   }
 
   // Полная новая последовательность одной колонки канбана (все задачи
@@ -272,21 +357,31 @@ export class TasksService {
   // видят задачи теперь все (владелец 20.10.2026) — поэтому пользователь
   // переставляет только свои (поставленные им или ему), руководство — любые.
   async reorder(taskIds: string[], actor: AuthenticatedUser) {
-    const tasks = await this.prisma.task.findMany({ where: { id: { in: taskIds } } });
+    const tasks = await this.prisma.task.findMany({
+      where: { id: { in: taskIds } },
+    });
     if (tasks.length !== taskIds.length) {
       throw new NotFoundException('Одна или несколько задач не найдены');
     }
-    if (!isManager(actor.role) && tasks.some((t) => t.creatorId !== actor.id && t.assigneeId !== actor.id)) {
+    if (
+      !isManager(actor.role) &&
+      tasks.some((t) => t.creatorId !== actor.id && t.assigneeId !== actor.id)
+    ) {
       throw new ForbiddenException('Переставлять можно только свои задачи');
     }
 
     await this.prisma.$transaction(
-      taskIds.map((id, index) => this.prisma.task.update({ where: { id }, data: { order: index } })),
+      taskIds.map((id, index) =>
+        this.prisma.task.update({ where: { id }, data: { order: index } }),
+      ),
     );
   }
 
   async findOne(id: string) {
-    const task = await this.prisma.task.findUnique({ where: { id }, select: TASK_DETAIL_SELECT });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: TASK_DETAIL_SELECT,
+    });
     if (!task) throw new NotFoundException('Задача не найдена');
 
     // Раньше здесь писался AuditLog READ на каждое открытие карточки —
@@ -309,7 +404,8 @@ export class TasksService {
       source: rest.sourceMeeting?.title ?? null,
       subtasks,
       subtaskCount: subtasks.length,
-      subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
+      subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE)
+        .length,
       watchers: watchers.map((w) => w.employee),
       isOverdue: isTaskOverdue(task),
     };
@@ -322,8 +418,13 @@ export class TasksService {
     // весь набор source-полей (hardening-раунд Phase O, 22.09.2026, P1) —
     // раньше проверялся только sourceMeetingId, а sourceSegmentId/
     // sourceExecutionId можно было теоретически передать отдельно от него.
-    if ((dto.sourceMeetingId || dto.sourceSegmentId || dto.sourceExecutionId) && !isManager(creator.role)) {
-      throw new ForbiddenException('Задачи из встречи может ставить только руководитель');
+    if (
+      (dto.sourceMeetingId || dto.sourceSegmentId || dto.sourceExecutionId) &&
+      !isManager(creator.role)
+    ) {
+      throw new ForbiddenException(
+        'Задачи из встречи может ставить только руководитель',
+      );
     }
 
     // Hardening-раунд Phase O (22.09.2026, P1 "source integrity") —
@@ -337,11 +438,18 @@ export class TasksService {
     // любого другого пути создания задачи.
     if (dto.sourceSegmentId) {
       if (!dto.sourceMeetingId) {
-        throw new BadRequestException('sourceSegmentId указан без sourceMeetingId');
+        throw new BadRequestException(
+          'sourceSegmentId указан без sourceMeetingId',
+        );
       }
-      const segment = await this.prisma.meetingSegment.findUnique({ where: { id: dto.sourceSegmentId }, select: { meetingId: true } });
+      const segment = await this.prisma.meetingSegment.findUnique({
+        where: { id: dto.sourceSegmentId },
+        select: { meetingId: true },
+      });
       if (!segment || segment.meetingId !== dto.sourceMeetingId) {
-        throw new BadRequestException('sourceSegmentId не принадлежит указанной встрече');
+        throw new BadRequestException(
+          'sourceSegmentId не принадлежит указанной встрече',
+        );
       }
     }
 
@@ -351,7 +459,9 @@ export class TasksService {
     if (dto.parentTaskId) {
       const parent = await this.getOrThrow(dto.parentTaskId);
       if (parent.parentTaskId) {
-        throw new BadRequestException('У подзадачи не может быть своих подзадач');
+        throw new BadRequestException(
+          'У подзадачи не может быть своих подзадач',
+        );
       }
     }
 
@@ -383,8 +493,13 @@ export class TasksService {
     });
 
     if (task.assigneeId && task.assigneeId !== creator.id) {
-      const due = task.dueDate ? ` (срок: ${task.dueDate.toLocaleDateString('ru-RU')})` : '';
-      this.notifyEmployee(task.assigneeId, `Вам назначена задача: «${task.title}»${due}`);
+      const due = task.dueDate
+        ? ` (срок: ${task.dueDate.toLocaleDateString('ru-RU')})`
+        : '';
+      this.notifyEmployee(
+        task.assigneeId,
+        `Вам назначена задача: «${task.title}»${due}`,
+      );
     }
 
     return this.toListItem(task);
@@ -396,7 +511,9 @@ export class TasksService {
   async update(id: string, dto: UpdateTaskDto, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
     if (!isManager(actor.role) && task.creatorId !== actor.id) {
-      throw new ForbiddenException('Редактировать задачу может только её постановщик или руководитель');
+      throw new ForbiddenException(
+        'Редактировать задачу может только её постановщик или руководитель',
+      );
     }
 
     const changes = this.diff(task, dto);
@@ -413,7 +530,12 @@ export class TasksService {
           // null — явно снять срок; строка — новая дата. Раньше null тоже
           // превращался в undefined и снять срок через редактирование было
           // невозможно (владелец 08.09.2026: "задачи нельзя редактировать").
-          dueDate: dto.dueDate === undefined ? undefined : dto.dueDate ? new Date(dto.dueDate) : null,
+          dueDate:
+            dto.dueDate === undefined
+              ? undefined
+              : dto.dueDate
+                ? new Date(dto.dueDate)
+                : null,
           // Срок поменялся — сбрасываем отметку об уведомлении о просрочке
           // (аудит 10.09.2026, п. 2.1), иначе TasksOverdueCron решит, что уже
           // уведомлял, и не пришлёт уведомление заново, если новый срок тоже
@@ -429,8 +551,15 @@ export class TasksService {
     ]);
 
     // Переназначение — уведомляем нового исполнителя, если это не сам актор.
-    if (dto.assigneeId !== undefined && dto.assigneeId !== task.assigneeId && dto.assigneeId !== actor.id) {
-      this.notifyEmployee(dto.assigneeId, `Вам назначена задача: «${dto.title ?? task.title}»`);
+    if (
+      dto.assigneeId !== undefined &&
+      dto.assigneeId !== task.assigneeId &&
+      dto.assigneeId !== actor.id
+    ) {
+      this.notifyEmployee(
+        dto.assigneeId,
+        `Вам назначена задача: «${dto.title ?? task.title}»`,
+      );
     }
 
     return this.findOne(id);
@@ -444,10 +573,14 @@ export class TasksService {
     // (или руководитель). Иначе постановщик мог бы сам отчитаться о
     // выполнении чужой работы.
     if (!isManager(actor.role) && task.assigneeId !== actor.id) {
-      throw new ForbiddenException('Статус может менять исполнитель задачи или руководитель');
+      throw new ForbiddenException(
+        'Статус может менять исполнитель задачи или руководитель',
+      );
     }
     if (!isManager(actor.role) && !EMPLOYEE_ALLOWED_STATUSES.includes(status)) {
-      throw new ForbiddenException('Этот статус может установить только руководитель');
+      throw new ForbiddenException(
+        'Этот статус может установить только руководитель',
+      );
     }
 
     await this.prisma.$transaction([
@@ -479,40 +612,80 @@ export class TasksService {
   async remind(id: string, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
     if (!isManager(actor.role) && task.creatorId !== actor.id) {
-      throw new ForbiddenException('Напомнить может постановщик задачи или руководитель');
+      throw new ForbiddenException(
+        'Напомнить может постановщик задачи или руководитель',
+      );
     }
-    if (!task.assigneeId) throw new BadRequestException('У задачи нет исполнителя');
-    if (task.assigneeId === actor.id) throw new BadRequestException('Это ваша задача');
-    if (task.status === TaskStatus.DONE || task.status === TaskStatus.CANCELLED) {
+    if (!task.assigneeId)
+      throw new BadRequestException('У задачи нет исполнителя');
+    if (task.assigneeId === actor.id)
+      throw new BadRequestException('Это ваша задача');
+    if (
+      task.status === TaskStatus.DONE ||
+      task.status === TaskStatus.CANCELLED
+    ) {
       throw new BadRequestException('Задача уже закрыта');
     }
 
     const last = await this.prisma.taskHistory.findFirst({
-      where: { taskId: id, field: 'remind', createdAt: { gt: new Date(Date.now() - REMIND_INTERVAL_MS) } },
+      where: {
+        taskId: id,
+        field: 'remind',
+        createdAt: { gt: new Date(Date.now() - REMIND_INTERVAL_MS) },
+      },
       orderBy: { createdAt: 'desc' },
     });
     if (last) {
-      throw new HttpException('Напоминание уже отправлено в течение последнего часа', HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        'Напоминание уже отправлено в течение последнего часа',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const [assignee, author] = await Promise.all([
-      this.prisma.employee.findUnique({ where: { id: task.assigneeId }, select: { telegramId: true } }),
-      this.prisma.employee.findUnique({ where: { id: actor.id }, select: { fullName: true } }),
+      this.prisma.employee.findUnique({
+        where: { id: task.assigneeId },
+        select: { telegramId: true },
+      }),
+      this.prisma.employee.findUnique({
+        where: { id: actor.id },
+        select: { fullName: true },
+      }),
     ]);
-    if (!assignee?.telegramId) throw new BadRequestException('У исполнителя не привязан Telegram');
+    if (!assignee?.telegramId)
+      throw new BadRequestException('У исполнителя не привязан Telegram');
 
-    const due = task.dueDate ? `, срок — ${formatLocalDateTime(task.dueDate)}` : '';
-    const from = author?.fullName ? `${author.fullName} напоминает` : 'Напоминание';
-    const sent = await this.bot.sendMessageWithResult(assignee.telegramId, `${from} о задаче «${task.title}»${due}`);
-    if (!sent.ok) throw new ServiceUnavailableException('Не удалось отправить напоминание в Telegram');
+    const due = task.dueDate
+      ? `, срок — ${formatLocalDateTime(task.dueDate)}`
+      : '';
+    const from = author?.fullName
+      ? `${author.fullName} напоминает`
+      : 'Напоминание';
+    const sent = await this.bot.sendMessageWithResult(
+      assignee.telegramId,
+      `${from} о задаче «${task.title}»${due}`,
+    );
+    if (!sent.ok)
+      throw new ServiceUnavailableException(
+        'Не удалось отправить напоминание в Telegram',
+      );
 
     await this.prisma.taskHistory.create({
-      data: { taskId: id, changedById: actor.id, field: 'remind', newValue: task.assigneeId },
+      data: {
+        taskId: id,
+        changedById: actor.id,
+        field: 'remind',
+        newValue: task.assigneeId,
+      },
     });
     return this.findOne(id);
   }
 
-  async addComment(id: string, dto: CreateCommentDto, actor: AuthenticatedUser) {
+  async addComment(
+    id: string,
+    dto: CreateCommentDto,
+    actor: AuthenticatedUser,
+  ) {
     const task = await this.getOrThrow(id);
 
     await this.prisma.taskComment.create({
@@ -520,8 +693,10 @@ export class TasksService {
     });
 
     const text = `Новый комментарий к задаче «${task.title}»`;
-    const otherPartyId = actor.id === task.creatorId ? task.assigneeId : task.creatorId;
-    if (otherPartyId && otherPartyId !== actor.id) this.notifyEmployee(otherPartyId, text);
+    const otherPartyId =
+      actor.id === task.creatorId ? task.assigneeId : task.creatorId;
+    if (otherPartyId && otherPartyId !== actor.id)
+      this.notifyEmployee(otherPartyId, text);
     void this.notifyWatchers(id, actor.id, text);
 
     return this.findOne(id);
@@ -530,11 +705,17 @@ export class TasksService {
   // Наблюдатель (владелец 08.09.2026): любой участник может подписаться
   // сам на себя; добавить наблюдателем ДРУГОГО человека может только
   // руководитель — как и остальные значимые назначения в системе.
-  async addWatcher(taskId: string, employeeId: string | undefined, actor: AuthenticatedUser) {
+  async addWatcher(
+    taskId: string,
+    employeeId: string | undefined,
+    actor: AuthenticatedUser,
+  ) {
     await this.getOrThrow(taskId);
     const targetId = employeeId ?? actor.id;
     if (targetId !== actor.id && !isManager(actor.role)) {
-      throw new ForbiddenException('Добавить наблюдателем другого человека может только руководитель');
+      throw new ForbiddenException(
+        'Добавить наблюдателем другого человека может только руководитель',
+      );
     }
     await this.prisma.taskWatcher.upsert({
       where: { taskId_employeeId: { taskId, employeeId: targetId } },
@@ -544,10 +725,16 @@ export class TasksService {
     return this.findOne(taskId);
   }
 
-  async removeWatcher(taskId: string, employeeId: string, actor: AuthenticatedUser) {
+  async removeWatcher(
+    taskId: string,
+    employeeId: string,
+    actor: AuthenticatedUser,
+  ) {
     await this.getOrThrow(taskId);
     if (employeeId !== actor.id && !isManager(actor.role)) {
-      throw new ForbiddenException('Убрать другого наблюдателя может только руководитель');
+      throw new ForbiddenException(
+        'Убрать другого наблюдателя может только руководитель',
+      );
     }
     await this.prisma.taskWatcher.deleteMany({ where: { taskId, employeeId } });
     return this.findOne(taskId);
@@ -560,7 +747,9 @@ export class TasksService {
   async remove(id: string, actor: AuthenticatedUser) {
     const task = await this.getOrThrow(id);
     if (!isManager(actor.role) && task.creatorId !== actor.id) {
-      throw new ForbiddenException('Удалить задачу может только её постановщик или руководитель');
+      throw new ForbiddenException(
+        'Удалить задачу может только её постановщик или руководитель',
+      );
     }
     await this.prisma.task.delete({ where: { id } });
   }
@@ -588,15 +777,31 @@ export class TasksService {
     },
     dto: UpdateTaskDto,
   ) {
-    const changes: { field: string; oldValue: string | null; newValue: string | null }[] = [];
+    const changes: {
+      field: string;
+      oldValue: string | null;
+      newValue: string | null;
+    }[] = [];
     if (dto.title !== undefined && dto.title !== task.title) {
-      changes.push({ field: 'title', oldValue: task.title, newValue: dto.title });
+      changes.push({
+        field: 'title',
+        oldValue: task.title,
+        newValue: dto.title,
+      });
     }
     if (dto.assigneeId !== undefined && dto.assigneeId !== task.assigneeId) {
-      changes.push({ field: 'assigneeId', oldValue: task.assigneeId, newValue: dto.assigneeId });
+      changes.push({
+        field: 'assigneeId',
+        oldValue: task.assigneeId,
+        newValue: dto.assigneeId,
+      });
     }
     if (dto.priority !== undefined && dto.priority !== task.priority) {
-      changes.push({ field: 'priority', oldValue: task.priority, newValue: dto.priority });
+      changes.push({
+        field: 'priority',
+        oldValue: task.priority,
+        newValue: dto.priority,
+      });
     }
     // dueDate === undefined — не пришло в запросе, не трогаем; null — явно
     // снят срок; строка — новый. Сравниваем по ISO-строке, а не Date-объекту
@@ -604,13 +809,25 @@ export class TasksService {
     if (dto.dueDate !== undefined) {
       const oldIso = task.dueDate ? task.dueDate.toISOString() : null;
       const newIso = dto.dueDate ? new Date(dto.dueDate).toISOString() : null;
-      if (oldIso !== newIso) changes.push({ field: 'dueDate', oldValue: oldIso, newValue: newIso });
+      if (oldIso !== newIso)
+        changes.push({ field: 'dueDate', oldValue: oldIso, newValue: newIso });
     }
     if (dto.description !== undefined && dto.description !== task.description) {
-      changes.push({ field: 'description', oldValue: task.description, newValue: dto.description });
+      changes.push({
+        field: 'description',
+        oldValue: task.description,
+        newValue: dto.description,
+      });
     }
-    if (dto.taskProfileId !== undefined && dto.taskProfileId !== task.taskProfileId) {
-      changes.push({ field: 'taskProfileId', oldValue: task.taskProfileId, newValue: dto.taskProfileId });
+    if (
+      dto.taskProfileId !== undefined &&
+      dto.taskProfileId !== task.taskProfileId
+    ) {
+      changes.push({
+        field: 'taskProfileId',
+        oldValue: task.taskProfileId,
+        newValue: dto.taskProfileId,
+      });
     }
     return changes;
   }
@@ -631,7 +848,8 @@ export class TasksService {
     return {
       ...rest,
       subtaskCount: subtasks.length,
-      subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE).length,
+      subtaskDoneCount: subtasks.filter((s) => s.status === TaskStatus.DONE)
+        .length,
       isOverdue: isTaskOverdue(task),
       fromAgent: sourceExecutionId != null,
       source: sourceMeeting?.title ?? null,
@@ -642,18 +860,26 @@ export class TasksService {
   // AuditService.log и GoogleCalendarSyncService.pushBestEffort. Не await'ится
   // вызывающим кодом нигде специально (fire-and-forget), чтобы push в
   // Telegram не добавлял задержку в ответ API.
-  private notifyEmployee(employeeId: string | null | undefined, text: string): void {
+  private notifyEmployee(
+    employeeId: string | null | undefined,
+    text: string,
+  ): void {
     if (!employeeId) return;
     void this.prisma.employee
       .findUnique({ where: { id: employeeId }, select: { telegramId: true } })
       .then((emp) => this.bot.sendMessage(emp?.telegramId, text));
   }
 
-  private async notifyWatchers(taskId: string, excludeActorId: string, text: string): Promise<void> {
+  private async notifyWatchers(
+    taskId: string,
+    excludeActorId: string,
+    text: string,
+  ): Promise<void> {
     const watchers = await this.prisma.taskWatcher.findMany({
       where: { taskId, employeeId: { not: excludeActorId } },
       select: { employee: { select: { telegramId: true } } },
     });
-    for (const w of watchers) void this.bot.sendMessage(w.employee.telegramId, text);
+    for (const w of watchers)
+      void this.bot.sendMessage(w.employee.telegramId, text);
   }
 }
