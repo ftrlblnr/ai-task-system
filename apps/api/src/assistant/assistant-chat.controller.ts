@@ -8,6 +8,8 @@ import { AssistantChatService, type InternalStreamEvent } from './assistant-chat
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
+import { VoiceUndoDto } from '../voice/dto/voice-undo.dto';
+import { UndoService } from './undo.service';
 import type { StreamEvent } from './dto/stream-event.dto';
 import { toResponseConversation, toResponseMessage, toResponseMessagePart } from './assistant-response.mapper';
 
@@ -26,7 +28,18 @@ const SSE_KEEPALIVE_MS = 15_000;
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('assistant')
 export class AssistantChatController {
-  constructor(private readonly chat: AssistantChatService) {}
+  constructor(
+    private readonly chat: AssistantChatService,
+    private readonly undoService: UndoService,
+  ) {}
+
+  // Единый агент A4: «Отменить» на карточке, которую оставил ассистент
+  // (текст, голос, живой голос) — только непрозрачный токен, откат по
+  // серверному снимку. POST /voice/undo — тот же метод для прежних клиентов.
+  @Post('undo')
+  undo(@Body() dto: VoiceUndoDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.undoService.undo(dto, user);
+  }
 
   @Get('conversations')
   async listConversations(@CurrentUser() user: AuthenticatedUser) {

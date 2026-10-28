@@ -2019,7 +2019,8 @@ export class AssistantToolsService {
     // Раздел 21 спеки Phase L — без транскрипта целиком, только ссылки.
     await this.audit.log(user.id, 'AI_MEETING_TASK_CREATE', 'Task', task.id, { meetingId, segmentId: segment?.id ?? null, assigneeId, dueDate: input.dueDate ?? null });
 
-    return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(task, meeting, segment, input.sourceContext) };
+    const undo = await this.createUndo(user, { kind: UndoKind.TASK, action: UndoRecordAction.CREATE, entityId: task.id }, {}, conversationId);
+    return { tool: 'create_task_from_meeting', task: { ...this.buildTaskCardWithSource(task, meeting, segment, input.sourceContext), ...undo } };
   }
 
   // Обычная задача из чата (25.10.2026) — та же идемпотентность и тот же
@@ -2065,7 +2066,10 @@ export class AssistantToolsService {
     }
     await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id } });
     await this.audit.log(user.id, 'AI_TASK_CREATE', 'Task', task.id, { assigneeId: assignee.assigneeId, dueDate: input.dueDate ?? null });
-    return { tool: 'create_task', task: toTaskCardData(task) };
+    // Единый агент A4: «Отменить» и для новой задачи — голосовое «поставь
+    // задачу» через агента не должно потерять отмену, которая была у голоса.
+    const undo = await this.createUndo(user, { kind: UndoKind.TASK, action: UndoRecordAction.CREATE, entityId: task.id }, {}, conversationId);
+    return { tool: 'create_task', task: { ...toTaskCardData(task), ...undo } };
   }
 
   // Durable claim одного write-вызова «поставить задачу» (идемпотентность

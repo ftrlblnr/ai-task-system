@@ -857,7 +857,12 @@ describe('AssistantToolsService.execute create_task', () => {
       { title: 'Сходить в магазин', description: undefined, assigneeId: 'e1', dueDate: '2026-10-26T18:00:00+05:00', priority: 'HIGH', sourceExecutionId: 'exec1' },
       owner,
     );
-    expect(result).toEqual({ tool: 'create_task', task: { taskId: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: '2026-10-26T13:00:00.000Z', assignee: { id: 'e1', name: 'Рустем Сапаров' } } });
+    // Единый агент A4: у новой задачи есть «Отменить» — без мока undoRecord
+    // запись отмены не создаётся (сбой глотается), токен null.
+    expect(result).toEqual({
+      tool: 'create_task',
+      task: { taskId: 't1', title: 'Сходить в магазин', status: 'NEW', dueDate: '2026-10-26T13:00:00.000Z', assignee: { id: 'e1', name: 'Рустем Сапаров' }, undoToken: null, undoExpiresAt: null },
+    });
     expect(auditStub.log).toHaveBeenCalledWith('owner1', 'AI_TASK_CREATE', 'Task', 't1', expect.any(Object));
   });
 

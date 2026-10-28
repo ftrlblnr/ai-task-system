@@ -9,7 +9,7 @@ import { Button } from '@/components/ui';
 
 // Единый агент A2/A3: под карточкой задачи или события, которые только что
 // изменил ассистент, — что изменилось и «Отменить» на 30 секунд. Откат делает
-// сервер по своему снимку (POST /voice/undo, тот же, что у голоса); клиент
+// сервер по своему снимку (POST /assistant/undo, общий для текста и голоса); клиент
 // присылает только токен.
 
 // Кнопка гаснет чуть раньше серверного срока — часы телефона и сервера
@@ -45,7 +45,7 @@ export function ChangeFooter({ data }: { data: ChangeFooterData }) {
     setState('busy');
     setError(null);
     try {
-      const response = await api.post<VoiceUndoResponse>('/voice/undo', { undoToken: data.undoToken });
+      const response = await api.post<VoiceUndoResponse>('/assistant/undo', { undoToken: data.undoToken });
       notificationHaptic(response.ok ? 'success' : 'error');
       if (response.ok) {
         setState('done');

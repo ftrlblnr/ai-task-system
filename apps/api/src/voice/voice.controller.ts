@@ -8,6 +8,7 @@ import { VoiceService } from './voice.service';
 import { LiveTranscriptionService } from './live-transcription.service';
 import { ParseVoiceDto } from './dto/parse-voice.dto';
 import { VoiceUndoDto } from './dto/voice-undo.dto';
+import { UndoService } from '../assistant/undo.service';
 
 // Без @Roles(...) — как TasksController: голосом можно надиктовать задачу
 // себе или коллеге, а это открыто любому сотруднику (раздел 5 ТЗ,
@@ -28,6 +29,7 @@ export class VoiceController {
   constructor(
     private readonly voice: VoiceService,
     private readonly liveTranscription: LiveTranscriptionService,
+    private readonly undoService: UndoService,
   ) {}
 
   // Секрет для живой расшифровки во время записи (предпросмотр текста).
@@ -64,6 +66,7 @@ export class VoiceController {
   // текст подтверждения решает сервер, см. VoiceService.undo.
   @Post('undo')
   undo(@Body() dto: VoiceUndoDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.voice.undo(dto, user);
+    // Единый агент A4: откат — общий UndoService (тот же, что POST /assistant/undo).
+    return this.undoService.undo(dto, user);
   }
 }

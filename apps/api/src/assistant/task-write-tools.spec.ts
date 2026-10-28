@@ -3,7 +3,7 @@ import { Prisma, Role, TaskStatus } from '@prisma/client';
 import Anthropic from '@anthropic-ai/sdk';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { routineTools } from '../routines/routine-catalog';
-import { VoiceService } from '../voice/voice.service';
+import { UndoService } from './undo.service';
 import { AssistantToolsService, isWriteTool, toolResultForModel } from './assistant-tools.service';
 import { buildAssistantParts } from './assistant-render';
 import { describeTaskChanges, formatDue, parseUpdateTaskInput, TASK_WRITE_TOOLS } from './task-tools';
@@ -231,7 +231,7 @@ describe('set_task_status / comment_task / delete_task', () => {
   });
 });
 
-describe('VoiceService.undo — отмена изменений из чата', () => {
+describe('UndoService.undo — отмена изменений из чата', () => {
   function undoPrisma(record: Record<string, unknown>) {
     let current = { ...record };
     return {
@@ -264,7 +264,7 @@ describe('VoiceService.undo — отмена изменений из чата', 
     });
     const tasks = { update: jest.fn(), updateStatus: jest.fn().mockResolvedValue({}) };
     const chat = { getOrCreatePrimaryConversation: jest.fn() };
-    const service = new VoiceService({} as any, {} as any, prisma as any, {} as any, tasks as any, {} as any, chat as any) as any;
+    const service = new UndoService(prisma as any, tasks as any, {} as any, chat as any) as any;
 
     const result = await service.undo({ undoToken: 'undo-1' }, user({ role: Role.EMPLOYEE }));
 
@@ -274,5 +274,19 @@ describe('VoiceService.undo — отмена изменений из чата', 
     expect(prisma.conversation.findFirst).toHaveBeenCalledWith({ where: { id: 'conv-card', employeeId: 'u1' }, select: { id: true } });
     expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv-card' }) }));
     expect(chat.getOrCreatePrimaryConversation).not.toHaveBeenCalled();
+  });
+});
+
+describe('create_task — отмена новой задачи (A4)', () => {
+  it('после создания — UndoRecord TASK/CREATE в разговор карточки, токен в карточке', async () => {
+    const prisma = {
+      ...executionPrisma(),
+      taskFromMeetingExecution: { create: jest.fn().mockResolvedValue({ id: 'exec1' }), update: jest.fn().mockResolvedValue({}) },
+    };
+    const tasks = { create: jest.fn().mockResolvedValue({ id: 't9', title: 'Сходить в банк', status: 'NEW', dueDate: null, assignee: null }) };
+    const { service } = serviceWith(tasks, prisma as any);
+    const result = await service.execute('create_task', { title: 'Сходить в банк' }, user(), 'conv1', 'msg1', 0);
+    expect(prisma.undoRecord.create).toHaveBeenCalledWith({ data: expect.objectContaining({ kind: 'TASK', action: 'CREATE', entityId: 't9', conversationId: 'conv1' }) });
+    expect(result).toMatchObject({ tool: 'create_task', task: { taskId: 't9', undoToken: 'undo-1' } });
   });
 });

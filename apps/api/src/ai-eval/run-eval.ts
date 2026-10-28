@@ -82,6 +82,8 @@ async function assistantTools(): Promise<Anthropic.Tool[]> {
     Object.assign(svc, {
       prisma: { competency: { findMany: () => Promise.resolve([]) } },
       mailStore: { listMailboxesByEmployee: () => Promise.resolve([]) },
+      // Единый агент A3: find_free_slots предлагается, только если сервис есть.
+      availability: {},
     });
     toolsCache = await svc.buildTools({ id: 'eval', role: 'OWNER' } as never);
   }
@@ -201,10 +203,21 @@ const CASES: Case[] = [
   assistantCase('что сейчас у Ирины в работе и что у неё просрочено?', 'find_tasks'),
   assistantCase('у кого больше всего просроченных задач?', 'find_tasks'),
   assistantCase('какие задачи по вентшахте ещё открыты?', 'find_tasks'),
-  assistantCase('что у меня завтра в календаре?', 'get_events'),
+  assistantCase('что у меня завтра в календаре?', ['get_events', 'find_events']),
   assistantCase('найди встречу, где обсуждали бюджет', 'search_meetings'),
   assistantCase('выгрузи мои задачи в excel', 'export_tasks_xlsx'),
   assistantCase('привет', null),
+  // Единый агент A1–A4: первый шаг на командах изменения — найти задачу или
+  // событие (id модель не выдумывает), прямые постановки — сразу инструмент.
+  assistantCase('перенеси Азамату срок по вентшахте на пятницу', 'find_tasks'),
+  assistantCase('отметь задачу про коммерческое предложение выполненной', 'find_tasks'),
+  assistantCase('напомни Ирине про отчёт по объекту', 'find_tasks'),
+  assistantCase('напиши в задаче про вентшахту, что нужен новый срок', 'find_tasks'),
+  assistantCase('как поставить задачу на Азамата, чтобы он завтра сходил в банк', 'create_task'),
+  assistantCase('найди час с Арманом на следующей неделе', 'find_free_slots'),
+  assistantCase('поставь встречу с Арманом завтра в 15:00 по смете', 'create_event'),
+  assistantCase('перенеси планёрку на четверг', 'find_events'),
+  assistantCase('удали', null),
   sttCase('тишина → пусто', () => Promise.resolve(wav(new Array<number>(64000).fill(0))), (t) => isWhisperArtifact(t)),
   sttCase(
     'тихий шум → пусто',

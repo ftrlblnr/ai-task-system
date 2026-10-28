@@ -2774,3 +2774,35 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   - В MCP — `find_events`, `find_free_slots`; в навыках — они же.
   - Тесты: `assistant/event-tools.spec.ts`. jest api 1254/1254, сборки web
     и miniapp — чисто.
+- **A4 (28.10.2026) — голос и живой голос на едином агенте (флаг `VOICE_ENGINE`):**
+  - `VOICE_ENGINE=agent` (в `apps/api/.env.production`, по умолчанию
+    `legacy`) — только для руководства (`voice/voice-agent.ts`,
+    `voiceEngineFor`): сотрудник остаётся на прежнем разборе, иначе потерял
+    бы голосовую постановку задач (`create_task` в чате — только руководство).
+  - `VoiceService.runAgentParse`: STT (`transcribeInput`, общий с прежним
+    путём) и история → `AssistantReplyService.reply` с `[live_context]`;
+    `userMessageId` для ключей повтора — `VoiceExecution.id`. Статусы
+    VoiceExecution прежние: PROCESSING → EXECUTING → COMPLETED, сбой агента —
+    NEEDS_RECONCILIATION (повтор вслепую запрещён). Ответ в ленте —
+    `buildAssistantParts` (активность, текст, карточки с отменой);
+    сгенерированные файлы привязываются к сообщению. `results` — один `chat`
+    с итоговым текстом: Live проговаривает его, «Отменить» клиенты берут из
+    данных карточек. Метрики — строка `voice parse … engine=agent`, AiCall
+    `voice.agent` / `voice.agent.escalation`.
+  - Эскалация: команда (глагол-действие) без единого инструмента и без
+    встречного вопроса → повтор хода на Opus 5.5 effort low.
+  - `meetingId` в режиме агента не используется (страница `/voice` удалена в
+    A0; контекст встречи даёт панель агента).
+  - Откат вынесен из VoiceService в `assistant/undo.service.ts`
+    (`UndoService`, логика без изменений); `POST /assistant/undo` — новый
+    адрес (его вызывает `change-footer.tsx`), `POST /voice/undo` — тот же
+    метод для прежних клиентов. Тесты отмены перенесены в
+    `assistant/undo.service.spec.ts`.
+  - `create_task` и `create_task_from_meeting` теперь тоже дают отмену
+    (UndoRecord TASK/CREATE) — голосовое «поставь задачу» через агента не
+    теряет «Отменить».
+  - `ai-eval`: группа случаев агента (поиск перед изменением, постановка,
+    календарь, «удали» без объекта). Прогон — до включения флага на проде.
+  - Тесты: `voice/voice-agent.spec.ts`. jest api 1263/1263, сборки web и
+    miniapp — чисто. `DraftExtractionService` не удалён — до «ок» владельца
+    после живой проверки с `VOICE_ENGINE=agent`.

@@ -13,6 +13,7 @@ import { RoutinesModule } from '../routines/routines.module';
 import { AssistantChatController } from './assistant-chat.controller';
 import { AssistantChatService } from './assistant-chat.service';
 import { AssistantReplyService } from './assistant-reply.service';
+import { UndoService } from './undo.service';
 import { AssistantToolsService } from './assistant-tools.service';
 import { LegalReviewNotifier } from './legal-review-notifier.service';
 import { ConversationCompactionService } from './conversation-compaction.service';
@@ -42,7 +43,7 @@ import { PageContextService } from './page-context.service';
   // (ARMS, фаза 4) — propose_routine и прогон регламентов.
   imports: [TasksModule, CalendarModule, FilesModule, MailModule, MeetingsModule, EmployeesModule, LegalModule, MemoryModule, SkillsModule, TelegramModule, RoutinesModule],
   controllers: [AssistantChatController],
-  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService, RoutineRunExecutionService, PageContextService],
+  providers: [AssistantChatService, AssistantReplyService, AssistantToolsService, UndoService, LegalReviewNotifier, ConversationCompactionService, SkillRunExecutionService, RoutineRunExecutionService, PageContextService],
   // AssistantChatService — Stage 2, Phase H: VoiceModule импортирует этот
   // модуль, чтобы писать голосовые реплики в ту же ленту через
   // getOrCreatePrimaryConversation, не дублируя её логику.
@@ -52,6 +53,6 @@ import { PageContextService } from './page-context.service';
   // Meeting/Plaud данные вообще — DraftExtractionService's контекст
   // ограничен tasks/events), не дублируя сам tool loop.
   // AssistantToolsService — MCP-сервер (McpModule) отдаёт те же инструменты Claude.
-  exports: [AssistantChatService, AssistantReplyService, AssistantToolsService],
+  exports: [AssistantChatService, AssistantReplyService, AssistantToolsService, UndoService],
 })
 export class AssistantModule {}

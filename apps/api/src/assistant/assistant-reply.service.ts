@@ -307,8 +307,11 @@ export class AssistantReplyService {
     userMessageId: string,
     summary?: string | null,
     skill?: ReplySkill | null,
+    // Единый агент A4: голос задаёт модель сам (отдельная строка в расходе,
+    // эскалация на Opus) — мимо роутера.
+    call?: ReplyCallConfig,
   ): Promise<AssistantReplyResult> {
-    return this.runReply(text, history, user, conversationId, userMessageId, undefined, undefined, summary, skill);
+    return this.runReply(text, history, user, conversationId, userMessageId, undefined, undefined, summary, skill, call);
   }
 
   // signal — обрыв соединения с клиентом (AssistantChatService слушает
@@ -347,6 +350,7 @@ export class AssistantReplyService {
     signal?: AbortSignal,
     summary?: string | null,
     skill?: ReplySkill | null,
+    callOverride?: ReplyCallConfig,
   ): Promise<AssistantReplyResult> {
     // Дата — в последнем сообщении, а не в system: system и tools не меняются
     // от запроса к запросу и кэшируются (см. streamOnce). Сводка ранней части
@@ -366,7 +370,7 @@ export class AssistantReplyService {
       this.tools.buildTools(user),
       this.loadMemoryIndex(user),
       this.loadTone(user),
-      skill ? Promise.resolve(skillCallConfig(skill)) : this.route(text),
+      skill ? Promise.resolve(skillCallConfig(skill)) : callOverride ? Promise.resolve(callOverride) : this.route(text),
     ]);
     const tools = toolsForSkill(allTools, skill);
     const system = buildSystemBlocks(memoryIndex, { tone, skill });
