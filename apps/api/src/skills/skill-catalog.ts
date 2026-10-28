@@ -78,6 +78,8 @@ export const SKILL_TOOL_LABELS: Record<string, string> = {
   get_task: 'Задача целиком',
   export_tasks_xlsx: 'Выгрузка задач в Excel',
   get_events: 'Календарь',
+  find_events: 'Поиск событий',
+  find_free_slots: 'Свободное время',
   get_recent_meetings: 'Последние встречи',
   search_meetings: 'Поиск встреч',
   get_meeting: 'Саммари встречи',

@@ -3190,8 +3190,8 @@ label.ds-field-label { display: block; margin: 0; }
 label.ds-btn { flex-direction: row; margin: 0; }
 .ds-panel-head .ds-spacer { flex: 1; }
 
-/* Единый агент A2: под карточкой задачи, которую изменил ассистент, —
-   «было → стало» и «Отменить» (components/assistant/task-change-footer.tsx). */
+/* Единый агент A2/A3: под карточкой задачи или события, изменённых ассистентом, —
+   «было → стало» и «Отменить» (components/assistant/change-footer.tsx). */
 .task-change {
   display: flex;
   flex-direction: column;

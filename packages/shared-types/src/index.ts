@@ -562,6 +562,11 @@ export interface EventCardData {
   // карточек из get_events — всегда undefined. Хранится прямо в
   // MessagePart.data, поэтому переживает перезагрузку истории.
   warning?: string | null;
+  // Единый агент A3: событие только что поставил/изменил ассистент —
+  // что изменилось и токен отмены (POST /voice/undo), как у TaskCardData.
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface ToolActivityData {

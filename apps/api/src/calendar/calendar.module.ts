@@ -36,7 +36,8 @@ import { CalendarSyncCron } from './calendar-sync.cron';
     CalendarActionExecutionService,
     CalendarActionExecutorRegistry,
   ],
-  exports: [EventsService],
+  // CalendarAvailabilityService — единый агент A3 (find_free_slots в чате).
+  exports: [EventsService, CalendarAvailabilityService],
 })
 export class CalendarModule implements OnModuleInit {
   constructor(

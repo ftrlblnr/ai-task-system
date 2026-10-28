@@ -12,6 +12,8 @@ export const MCP_TOOL_TITLES: Record<string, string> = {
   find_tasks: 'Поиск задач',
   get_task: 'Задача',
   get_events: 'Календарь руководителя',
+  find_events: 'Поиск событий календаря',
+  find_free_slots: 'Свободное время в календаре',
   get_recent_meetings: 'Последние встречи',
   search_meetings: 'Поиск встреч',
   get_meeting: 'Встреча',

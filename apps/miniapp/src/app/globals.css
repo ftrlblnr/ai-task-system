@@ -2097,8 +2097,8 @@ select {
 .status-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .trip-tabs { margin: 0 -14px 12px; padding: 0 14px 2px; }
 
-/* Единый агент A2: под карточкой задачи, которую изменил ассистент, —
-   «было → стало» и «Отменить» (components/assistant/task-change-footer.tsx). */
+/* Единый агент A2/A3: под карточкой задачи или события, изменённых ассистентом, —
+   «было → стало» и «Отменить» (components/assistant/change-footer.tsx). */
 .task-change {
   display: flex;
   flex-direction: column;

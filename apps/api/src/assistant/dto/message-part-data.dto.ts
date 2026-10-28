@@ -44,6 +44,10 @@ export interface EventCardData {
   participants: { id: string; name: string }[];
   // Зеркало packages/shared-types — подробные комментарии там.
   warning?: string | null;
+  // Единый агент A3 — как у TaskCardData: изменения и отмена.
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface ToolActivityData {

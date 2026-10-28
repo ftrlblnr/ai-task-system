@@ -7,8 +7,8 @@ import { requestAssistantRefresh } from '@/lib/assistant-refresh';
 import { notificationHaptic } from '@/lib/telegram';
 import { Button } from '@/components/ui';
 
-// Единый агент A2: под карточкой задачи, которую только что изменил
-// ассистент, — что изменилось и «Отменить» на 30 секунд. Откат делает
+// Единый агент A2/A3: под карточкой задачи или события, которые только что
+// изменил ассистент, — что изменилось и «Отменить» на 30 секунд. Откат делает
 // сервер по своему снимку (POST /voice/undo, тот же, что у голоса); клиент
 // присылает только токен.
 
@@ -22,7 +22,10 @@ function changeText(change: { from: string | null; to: string | null }): string 
   return change.to ?? '';
 }
 
-export function TaskChangeFooter({ data }: { data: TaskCardData }) {
+// Общее у TaskCardData и EventCardData.
+type ChangeFooterData = Pick<TaskCardData, 'changes' | 'undoToken' | 'undoExpiresAt'>;
+
+export function ChangeFooter({ data }: { data: ChangeFooterData }) {
   const deadline = data.undoToken && data.undoExpiresAt ? Date.parse(data.undoExpiresAt) - CLOCK_MARGIN_MS : 0;
   const [undoOpen, setUndoOpen] = useState(() => deadline > Date.now());
   const [state, setState] = useState<'idle' | 'busy' | 'done'>('idle');

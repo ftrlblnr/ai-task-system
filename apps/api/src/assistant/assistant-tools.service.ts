@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import {
@@ -17,6 +17,7 @@ import {
   type MemoryItem,
 } from '@prisma/client';
 import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
+import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
@@ -41,6 +42,21 @@ import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toRevi
 import { MemoryService } from '../memory/memory.service';
 import { MEMORY_TEXT_MAX } from '../memory/memory-index';
 import { RoutinesService } from '../routines/routines.service';
+import { CalendarAvailabilityService } from '../calendar/calendar-availability.service';
+import {
+  describeEventChanges,
+  EVENT_READ_TOOLS,
+  EVENT_WRITE_TOOLS,
+  nextEventTimes,
+  parseCreateEventInput,
+  parseFindEventsInput,
+  parseFreeSlotsInput,
+  parseUpdateEventInput,
+  toEventCard,
+  toFoundEvent,
+  toSlotData,
+  type FoundEventData,
+} from './event-tools';
 import type { TaskSearchFilter } from '../tasks/tasks.service';
 import {
   describeTaskChanges,
@@ -85,7 +101,12 @@ export const AGENT_UNDO_WINDOW_MS = 30_000;
 // (он уже по-русски и без деталей БД). Остальное — общий TOOL_ERROR_MESSAGES.
 // Порядок важен: все они — наследники HttpException.
 function taskWriteError(tool: KnownToolName, err: unknown): { tool: KnownToolName; error: true; message: string } | null {
-  if (err instanceof NotFoundException) return { tool, error: true, message: 'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks' };
+  const isEvent = tool === 'create_event' || tool === 'update_event' || tool === 'delete_event';
+  if (err instanceof NotFoundException) {
+    return { tool, error: true, message: isEvent ? 'EVENT_NOT_FOUND: событие не найдено — найди его через find_events' : 'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks' };
+  }
+  // Календарь (A3): версия разошлась — правка из web, Google или второй командой.
+  if (err instanceof ConflictException) return { tool, error: true, message: 'EVENT_CHANGED: событие только что изменилось — перечитай его через find_events и повтори' };
   if (err instanceof ForbiddenException) return { tool, error: true, message: `TASK_FORBIDDEN: ${err.message}` };
   if (err instanceof ServiceUnavailableException) return { tool, error: true, message: 'TELEGRAM_FAILED: не удалось отправить сообщение в Telegram — попробуйте позже' };
   if (err instanceof BadRequestException) return { tool, error: true, message: `INVALID_INPUT: ${err.message}` };
@@ -117,6 +138,8 @@ const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadshee
 // модель могла честно сказать "всего 37, вот первые 10", а не соврать про
 // количество.
 const MAX_TOOL_ITEMS = 10;
+// find_events (единый агент A3): модели — до 20 событий, карточек — 10.
+const FIND_EVENTS_LIMIT = 20;
 
 export type GetTasksFilter = 'all' | 'overdue';
 
@@ -169,6 +192,11 @@ type KnownToolName =
   | 'comment_task'
   | 'remind_task'
   | 'delete_task'
+  | 'find_events'
+  | 'find_free_slots'
+  | 'create_event'
+  | 'update_event'
+  | 'delete_event'
   | 'get_events'
   | 'export_tasks_xlsx'
   | 'get_recent_meetings'
@@ -194,6 +222,9 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'find_tasks') return 'find_tasks';
   if (name === 'get_task') return 'get_task';
   if (TASK_WRITE_TOOL_NAMES.has(name)) return name as TaskWriteToolName;
+  if (EVENT_WRITE_TOOL_NAMES.has(name)) return name as EventWriteToolName;
+  if (name === 'find_events') return 'find_events';
+  if (name === 'find_free_slots') return 'find_free_slots';
   if (name === 'get_events') return 'get_events';
   if (name === 'export_tasks_xlsx') return 'export_tasks_xlsx';
   if (name === 'get_recent_meetings') return 'get_recent_meetings';
@@ -235,6 +266,10 @@ function resolveToolName(name: string): KnownToolName {
 // AgentActionExecution; регламенты их не получают).
 type TaskWriteToolName = 'update_task' | 'set_task_status' | 'comment_task' | 'remind_task' | 'delete_task';
 const TASK_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<TaskWriteToolName>(['update_task', 'set_task_status', 'comment_task', 'remind_task', 'delete_task']);
+// Единый агент A3: календарь — тот же механизм повтора и отмены.
+type EventWriteToolName = 'create_event' | 'update_event' | 'delete_event';
+const EVENT_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<EventWriteToolName>(['create_event', 'update_event', 'delete_event']);
+type AgentWriteToolName = TaskWriteToolName | EventWriteToolName;
 const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'create_task',
   'create_task_from_meeting',
@@ -245,6 +280,7 @@ const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'forget_memory',
   'propose_routine',
   ...TASK_WRITE_TOOL_NAMES,
+  ...EVENT_WRITE_TOOL_NAMES,
 ]);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
@@ -266,6 +302,11 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   comment_task: 'TASK_UPDATE_FAILED: не удалось добавить комментарий',
   remind_task: 'TASK_REMIND_FAILED: не удалось напомнить исполнителю',
   delete_task: 'TASK_DELETE_FAILED: не удалось удалить задачу',
+  find_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
+  find_free_slots: 'CALENDAR_LOOKUP_FAILED: не удалось найти свободное время',
+  create_event: 'EVENT_CREATE_FAILED: не удалось поставить событие',
+  update_event: 'EVENT_UPDATE_FAILED: не удалось изменить событие',
+  delete_event: 'EVENT_DELETE_FAILED: не удалось удалить событие',
   get_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
   export_tasks_xlsx: 'EXPORT_FAILED: не удалось сформировать файл',
   get_recent_meetings: 'MEETING_LOOKUP_FAILED: не удалось получить список встреч',
@@ -376,7 +417,13 @@ export type ToolExecutionResult =
   | { tool: 'delete_task'; taskId: string; title: string }
   // Повтор хода, когда прошлая попытка уже применила изменение, но
   // результат не успела сохранить: сообщаем модели, задачу не трогаем.
-  | { tool: TaskWriteToolName; alreadyApplied: true; taskId: string }
+  | { tool: AgentWriteToolName; alreadyApplied: true; taskId?: string; eventId?: string }
+  // Единый агент A3: календарь. items — модели (время местное), cards —
+  // для карточек в ленте (не уходят модели, см. toolResultForModel).
+  | { tool: 'find_events'; items: FoundEventData[]; totalCount: number; cards: EventCardData[] }
+  | { tool: 'find_free_slots'; slots: { start: string; end: string }[]; durationMinutes: number; googleChecked: boolean }
+  | { tool: 'create_event' | 'update_event'; event: EventCardData }
+  | { tool: 'delete_event'; eventId: string; title: string }
   | { tool: 'get_events'; items: EventCardData[]; totalCount: number }
   | { tool: 'export_tasks_xlsx'; file: FilePartData; totalCount: number }
   | { tool: 'get_recent_meetings'; items: MeetingSummaryData[]; totalCount: number }
@@ -449,7 +496,22 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
         : 'Ничего не изменилось — задача уже в таком состоянии. Скажи об этом.',
     };
   }
-  if (result.tool === 'comment_task' || result.tool === 'remind_task' || result.tool === 'delete_task') {
+  if (result.tool === 'find_events') {
+    const { cards: _cards, ...forModel } = result;
+    return forModel;
+  }
+  if (result.tool === 'create_event') {
+    return { ...result, note: 'Событие поставлено. Пользователь видит карточку и 30 секунд может отменить. Подтверди одной фразой: что, когда.' };
+  }
+  if (result.tool === 'update_event') {
+    return {
+      ...result,
+      note: result.event.changes?.length
+        ? 'Выполнено. Пользователь видит карточку с изменениями и 30 секунд может отменить. Подтверди одной фразой.'
+        : 'Ничего не изменилось — событие уже такое. Скажи об этом.',
+    };
+  }
+  if (result.tool === 'comment_task' || result.tool === 'remind_task' || result.tool === 'delete_task' || result.tool === 'delete_event') {
     return { ...result, note: 'Выполнено. Подтверди одной фразой.' };
   }
   if (result.tool === 'propose_routine') {
@@ -498,6 +560,8 @@ export class AssistantToolsService {
     @Optional() private readonly memory?: MemoryService,
     // Регламенты (ARMS, фаза 4) — без них propose_routine не предлагается.
     @Optional() private readonly routines?: RoutinesService,
+    // Единый агент A3 — без него (юнит-тесты) find_free_slots не предлагается.
+    @Optional() private readonly availability?: CalendarAvailabilityService,
   ) {}
 
   // Память — сначала руководству (план ARMS: всё новое — OWNER/ADMIN).
@@ -565,9 +629,11 @@ export class AssistantToolsService {
     if (isManager(user.role)) {
       tools.push({
         name: 'get_events',
-        description: 'Получить список предстоящих подтверждённых встреч в личном календаре руководителя.',
+        description: 'Получить список предстоящих подтверждённых встреч в личном календаре руководителя. Для конкретного периода, поиска по названию/участнику и прошедших встреч используй find_events.',
         input_schema: { type: 'object', properties: {} },
       });
+      // Единый агент A3: календарь в чате — поиск, свободное время, правка.
+      tools.push(...EVENT_READ_TOOLS.filter((t) => t.name !== 'find_free_slots' || !!this.availability), ...EVENT_WRITE_TOOLS);
 
       // Stage 2, Phase K (внешний аудит 21.09.2026) — те же протоколы
       // встреч, что и в /meetings (весь модуль закрыт на OWNER, раздел 15
@@ -871,6 +937,14 @@ export class AssistantToolsService {
       if (name === 'get_task') {
         const taskId = (input as { taskId?: unknown } | null)?.taskId;
         return await this.getTask(typeof taskId === 'string' ? taskId.trim() : '');
+      }
+      if (name === 'find_events') return await this.findEvents(input, user);
+      if (name === 'find_free_slots') return await this.findFreeSlots(input, user);
+      if (EVENT_WRITE_TOOL_NAMES.has(name)) {
+        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+          throw new Error(`${name}: отсутствует conversationId/userMessageId/writeToolCallIndex`);
+        }
+        return await this.runEventWrite(name as EventWriteToolName, input, user, conversationId, `${userMessageId}:${writeToolCallIndex}`);
       }
       if (TASK_WRITE_TOOL_NAMES.has(name)) {
         if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
@@ -1282,14 +1356,14 @@ export class AssistantToolsService {
         dto.assigneeId = resolution.employeeId;
       }
       if (Object.keys(dto).length === 0) return { tool, error: true, message: 'INVALID_INPUT: не указано, что изменить' };
-      return this.runOnce(conversationId, dedupeKey, tool, taskId, () => this.updateTask(taskId, dto, user, conversationId), () => this.updateApplied(taskId, dto));
+      return this.runOnce(conversationId, dedupeKey, tool, { taskId }, () => this.updateTask(taskId, dto, user, conversationId), () => this.updateApplied(taskId, dto));
     }
 
     if (tool === 'set_task_status') {
       const status = (input as { status?: unknown } | null)?.status;
       if (!SETTABLE_TASK_STATUSES.includes(status as TaskStatus)) return { tool, error: true, message: 'INVALID_INPUT: неизвестный статус' };
       const target = status as TaskStatus;
-      return this.runOnce(conversationId, dedupeKey, tool, taskId, () => this.setTaskStatus(taskId, target, user, conversationId), async () => (await this.prisma.task.findUnique({ where: { id: taskId }, select: { status: true } }))?.status === target);
+      return this.runOnce(conversationId, dedupeKey, tool, { taskId }, () => this.setTaskStatus(taskId, target, user, conversationId), async () => (await this.prisma.task.findUnique({ where: { id: taskId }, select: { status: true } }))?.status === target);
     }
 
     if (tool === 'comment_task') {
@@ -1299,7 +1373,7 @@ export class AssistantToolsService {
         conversationId,
         dedupeKey,
         tool,
-        taskId,
+        { taskId },
         async () => {
           const task = await this.tasks.addComment(taskId, { body: text }, user);
           void this.audit.log(user.id, 'AI_TASK_COMMENT', 'Task', taskId, { length: text.length });
@@ -1314,7 +1388,7 @@ export class AssistantToolsService {
         conversationId,
         dedupeKey,
         tool,
-        taskId,
+        { taskId },
         async () => {
           const task = await this.tasks.remind(taskId, user);
           void this.audit.log(user.id, 'AI_TASK_REMIND', 'Task', taskId, {});
@@ -1329,7 +1403,7 @@ export class AssistantToolsService {
       conversationId,
       dedupeKey,
       tool,
-      taskId,
+      { taskId },
       async () => {
         const before = await this.tasks.findOne(taskId);
         await this.tasks.remove(taskId, user);
@@ -1351,7 +1425,7 @@ export class AssistantToolsService {
     if (dto.dueDate !== undefined) previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
     if (dto.priority !== undefined) previous.priority = before.priority;
     const after = await this.tasks.update(taskId, dto, user);
-    const undo = await this.createUndo(user, taskId, previous, conversationId);
+    const undo = await this.createUndo(user, { kind: UndoKind.TASK, action: UndoRecordAction.UPDATE, entityId: taskId }, { previous }, conversationId);
     void this.audit.log(user.id, 'AI_TASK_UPDATE', 'Task', taskId, { fields: Object.keys(dto) });
     return { tool: 'update_task', task: { ...toTaskCardData(after), changes: describeTaskChanges(before, after), ...undo } };
   }
@@ -1360,7 +1434,7 @@ export class AssistantToolsService {
     const before = await this.tasks.findOne(taskId);
     if (before.status === status) return { tool: 'set_task_status', task: { ...toTaskCardData(before), changes: [] } };
     const after = await this.tasks.updateStatus(taskId, status, user);
-    const undo = await this.createUndo(user, taskId, { status: before.status }, conversationId);
+    const undo = await this.createUndo(user, { kind: UndoKind.TASK, action: UndoRecordAction.UPDATE, entityId: taskId }, { previous: { status: before.status } }, conversationId);
     void this.audit.log(user.id, 'AI_TASK_STATUS', 'Task', taskId, { from: before.status, to: status });
     return { tool: 'set_task_status', task: { ...toTaskCardData(after), changes: describeTaskChanges(before, after), ...undo } };
   }
@@ -1384,15 +1458,22 @@ export class AssistantToolsService {
   // откат делает тот же POST /voice/undo. conversationId — чтобы
   // «Отменено.» появилось в том разговоре, где карточка. Сбой — без отмены,
   // не ошибка самого изменения (оно уже случилось).
-  private async createUndo(user: AuthenticatedUser, taskId: string, previous: Record<string, unknown>, conversationId: string): Promise<{ undoToken: string | null; undoExpiresAt: string | null }> {
+  private async createUndo(
+    user: AuthenticatedUser,
+    target: { kind: UndoKind; action: UndoRecordAction; entityId: string },
+    extra: { previous?: Record<string, unknown>; addedParticipantIds?: string[]; removedParticipantIds?: string[] },
+    conversationId: string,
+  ): Promise<{ undoToken: string | null; undoExpiresAt: string | null }> {
     try {
       const record = await this.prisma.undoRecord.create({
         data: {
           employeeId: user.id,
-          kind: UndoKind.TASK,
-          action: UndoRecordAction.UPDATE,
-          entityId: taskId,
-          previous: previous as Prisma.InputJsonValue,
+          kind: target.kind,
+          action: target.action,
+          entityId: target.entityId,
+          ...(extra.previous ? { previous: extra.previous as Prisma.InputJsonValue } : {}),
+          ...(extra.addedParticipantIds?.length ? { addedParticipantIds: extra.addedParticipantIds } : {}),
+          ...(extra.removedParticipantIds?.length ? { removedParticipantIds: extra.removedParticipantIds } : {}),
           status: UndoRecordStatus.AVAILABLE,
           expiresAt: new Date(Date.now() + AGENT_UNDO_WINDOW_MS),
           conversationId,
@@ -1400,7 +1481,7 @@ export class AssistantToolsService {
       });
       return { undoToken: record.id, undoExpiresAt: record.expiresAt.toISOString() };
     } catch (err) {
-      this.logger.error(`undo record failed for task ${taskId} — изменение уже выполнено, без отмены: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`undo record failed for ${target.kind} ${target.entityId} — изменение уже выполнено, без отмены: ${err instanceof Error ? err.message : String(err)}`);
       return { undoToken: null, undoExpiresAt: null };
     }
   }
@@ -1413,8 +1494,8 @@ export class AssistantToolsService {
   private async runOnce(
     conversationId: string,
     dedupeKey: string,
-    tool: TaskWriteToolName,
-    taskId: string,
+    tool: AgentWriteToolName,
+    entity: { taskId?: string; eventId?: string },
     run: () => Promise<ToolExecutionResult>,
     wasApplied: (since: Date) => Promise<boolean>,
   ): Promise<ToolExecutionResult> {
@@ -1431,7 +1512,7 @@ export class AssistantToolsService {
         return { tool, error: true, message: 'ALREADY_PROCESSING: это изменение уже выполняется — подождите немного' };
       }
       if (existing.status === AgentActionStatus.CLAIMED && (await wasApplied(existing.createdAt))) {
-        const result: ToolExecutionResult = { tool, alreadyApplied: true, taskId };
+        const result: ToolExecutionResult = { tool, alreadyApplied: true, ...entity };
         await this.prisma.agentActionExecution.update({ where: { id: existing.id }, data: { status: AgentActionStatus.COMPLETED, resultJson: result as unknown as Prisma.InputJsonValue } });
         return result;
       }
@@ -1450,8 +1531,213 @@ export class AssistantToolsService {
       if (expected) return expected;
       throw err;
     }
-    await this.prisma.agentActionExecution.update({ where: { id: executionId }, data: { status: AgentActionStatus.COMPLETED, resultJson: result as unknown as Prisma.InputJsonValue } });
+    // Отказ проверки до изменения (неверное время и т.п.) — FAILED: повтор
+    // с исправленным вводом в том же ходе невозможен, но и «выполнено» не пишем.
+    await this.prisma.agentActionExecution.update({
+      where: { id: executionId },
+      data: 'error' in result ? { status: AgentActionStatus.FAILED, errorMessage: result.message } : { status: AgentActionStatus.COMPLETED, resultJson: result as unknown as Prisma.InputJsonValue },
+    });
     return result;
+  }
+
+  // ── Единый агент A3: календарь ──────────────────────────────────────────
+  // Владелец данных — сам пользователь (ADMIN — свой календарь, как у
+  // ассистента и голоса); права перепроверяются здесь: модель могла вызвать
+  // инструмент из старой истории после смены роли.
+
+  private async findEvents(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    if (!isManager(user.role)) return { tool: 'find_events', error: true, message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству' };
+    const parsed = parseFindEventsInput(input);
+    let participantId: string | undefined;
+    if (parsed.participantRawText) {
+      const found = await this.resolveEmployees([parsed.participantRawText]);
+      if ('message' in found) return { tool: 'find_events', error: true, message: found.message };
+      participantId = found.ids[0];
+    }
+    const query = parsed.query?.toLowerCase();
+    const events = (await this.events.findAll(user.id, { from: parsed.from, to: parsed.to })).filter(
+      (e) =>
+        e.status !== EventStatus.CANCELLED &&
+        (!query || [e.title, e.location, e.description].some((v) => v?.toLowerCase().includes(query))) &&
+        (!participantId || e.participants.some((p) => p.id === participantId)),
+    );
+    const shown = events.slice(0, FIND_EVENTS_LIMIT);
+    return { tool: 'find_events', items: shown.map(toFoundEvent), totalCount: events.length, cards: shown.slice(0, MAX_TOOL_ITEMS).map(toEventCard) };
+  }
+
+  private async findFreeSlots(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+    if (!this.availability || !isManager(user.role)) return { tool: 'find_free_slots', error: true, message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству' };
+    const parsed = parseFreeSlotsInput(input);
+    const result = await this.availability.findSlotsForAgent(user.id, parsed.from, parsed.to, parsed.durationMinutes, parsed.maxResults);
+    return { tool: 'find_free_slots', slots: result.slots.map(toSlotData), durationMinutes: parsed.durationMinutes, googleChecked: result.googleChecked };
+  }
+
+  // Сотрудники по именам, как прозвучали (тот же резолвер, что у задач):
+  // хоть одно неоднозначное или ненайденное — понятная модели ошибка, ничего
+  // не меняем.
+  private async resolveEmployees(rawNames: string[]): Promise<{ ids: string[] } | { message: string }> {
+    if (rawNames.length === 0) return { ids: [] };
+    const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
+    const ids: string[] = [];
+    for (const raw of rawNames) {
+      const resolution = await this.employeeResolver.resolve(raw, employees);
+      if (resolution.status !== 'RESOLVED' || !resolution.employeeId) {
+        return {
+          message:
+            resolution.status === 'AMBIGUOUS'
+              ? `EMPLOYEE_AMBIGUOUS: по имени «${raw}» подходят несколько сотрудников — уточните у пользователя`
+              : `EMPLOYEE_NOT_FOUND: не нашёл сотрудника «${raw}» — уточните у пользователя`,
+        };
+      }
+      ids.push(resolution.employeeId);
+    }
+    return { ids: [...new Set(ids)] };
+  }
+
+  private async runEventWrite(
+    tool: EventWriteToolName,
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    if (!isManager(user.role)) return { tool, error: true, message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству' };
+
+    if (tool === 'create_event') {
+      const parsed = parseCreateEventInput(input);
+      if ('error' in parsed) return { tool, error: true, message: parsed.error };
+      const people = await this.resolveEmployees(parsed.participants);
+      if ('message' in people) return { tool, error: true, message: people.message };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        {},
+        () => this.createEvent(parsed, people.ids, user, conversationId),
+        async (since) => (await this.prisma.event.count({ where: { createdById: user.id, title: parsed.title, startAt: parsed.startAt, createdAt: { gte: since } } })) > 0,
+      );
+    }
+
+    const eventId = typeof (input as { eventId?: unknown } | null)?.eventId === 'string' ? (input as { eventId: string }).eventId.trim() : '';
+    if (!eventId) return { tool, error: true, message: 'INVALID_INPUT: не указан id события' };
+
+    if (tool === 'update_event') {
+      const parsed = parseUpdateEventInput(input);
+      const [add, remove] = await Promise.all([this.resolveEmployees(parsed.addParticipants), this.resolveEmployees(parsed.removeParticipants)]);
+      if ('message' in add) return { tool, error: true, message: add.message };
+      if ('message' in remove) return { tool, error: true, message: remove.message };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { eventId },
+        () => this.updateEvent(eventId, parsed, add.ids, remove.ids, user, conversationId),
+        async () => {
+          const event = await this.prisma.event.findFirst({ where: { id: eventId, createdById: user.id }, include: { participants: { select: { employeeId: true } } } });
+          if (!event) return false;
+          const people = new Set(event.participants.map((p) => p.employeeId));
+          return (
+            (parsed.title === undefined || event.title === parsed.title) &&
+            (parsed.location === undefined || (event.location ?? '') === parsed.location) &&
+            (parsed.startAt === undefined || event.startAt.getTime() === parsed.startAt.getTime()) &&
+            (parsed.endAt === undefined || event.endAt.getTime() === parsed.endAt.getTime()) &&
+            add.ids.every((id) => people.has(id)) &&
+            remove.ids.every((id) => !people.has(id))
+          );
+        },
+      );
+    }
+
+    // delete_event — без отмены, как и голосовое удаление события.
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      { eventId },
+      async () => {
+        const before = await this.events.findOne(eventId, user.id);
+        await this.events.remove(eventId, user.id);
+        void this.audit.log(user.id, 'AI_EVENT_DELETE', 'Event', eventId, {});
+        return { tool, eventId, title: before.title };
+      },
+      async () => (await this.prisma.event.count({ where: { id: eventId } })) === 0,
+    );
+  }
+
+  private async createEvent(
+    input: { title: string; startAt?: Date; endAt?: Date; allDay: boolean; location?: string; description?: string },
+    participantIds: string[],
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const created = await this.events.create(
+      { title: input.title, description: input.description, location: input.location, startAt: input.startAt!.toISOString(), endAt: input.endAt!.toISOString(), allDay: input.allDay },
+      user.id,
+    );
+    const warning = await this.applyParticipants(created.id, participantIds, [], user.id);
+    const after = participantIds.length > 0 ? await this.events.findOne(created.id, user.id) : created;
+    const undo = await this.createUndo(user, { kind: UndoKind.EVENT, action: UndoRecordAction.CREATE, entityId: created.id }, {}, conversationId);
+    void this.audit.log(user.id, 'AI_EVENT_CREATE', 'Event', created.id, { participants: participantIds.length });
+    return { tool: 'create_event', event: { ...toEventCard(after), warning, ...undo } };
+  }
+
+  private async updateEvent(
+    eventId: string,
+    input: ReturnType<typeof parseUpdateEventInput>,
+    addIds: string[],
+    removeIds: string[],
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const before = await this.events.findOne(eventId, user.id);
+    const times = nextEventTimes(before, input);
+    if ('error' in times) return { tool: 'update_event', error: true, message: times.error };
+
+    const dto: UpdateEventDto = {};
+    if (input.title !== undefined && input.title !== before.title) dto.title = input.title;
+    if (input.location !== undefined && input.location !== (before.location ?? '')) dto.location = input.location;
+    if (input.description !== undefined && input.description !== (before.description ?? '')) dto.description = input.description;
+    if (times.startAt) dto.startAt = times.startAt.toISOString();
+    if (times.endAt) dto.endAt = times.endAt.toISOString();
+    const current = new Set(before.participants.map((p) => p.id));
+    const added = addIds.filter((id) => !current.has(id));
+    const removed = removeIds.filter((id) => current.has(id));
+    if (Object.keys(dto).length === 0 && added.length === 0 && removed.length === 0) {
+      return { tool: 'update_event', event: { ...toEventCard(before), changes: [] } };
+    }
+
+    // Снимок «до» — формат голосового EventRevertPayload, откатывает его
+    // VoiceService.undo (поля, затем инверсия участников).
+    const previous: Record<string, unknown> = {};
+    if (dto.title !== undefined) previous.title = before.title;
+    if (dto.description !== undefined) previous.description = before.description ?? '';
+    if (dto.location !== undefined) previous.location = before.location ?? '';
+    if (dto.startAt !== undefined) previous.startAt = before.startAt.toISOString();
+    if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
+    // version только что прочитанного события: параллельная правка (web,
+    // Google, вторая команда) даст конфликт, а не тихую перезапись.
+    if (Object.keys(dto).length > 0) await this.events.update(eventId, { ...dto, version: before.version }, user.id);
+    const warning = await this.applyParticipants(eventId, added, removed, user.id);
+    const after = await this.events.findOne(eventId, user.id);
+    const undo = await this.createUndo(
+      user,
+      { kind: UndoKind.EVENT, action: UndoRecordAction.UPDATE, entityId: eventId },
+      { previous, addedParticipantIds: added, removedParticipantIds: removed },
+      conversationId,
+    );
+    void this.audit.log(user.id, 'AI_EVENT_UPDATE', 'Event', eventId, { fields: Object.keys(dto), added: added.length, removed: removed.length });
+    return { tool: 'update_event', event: { ...toEventCard(after), changes: describeEventChanges(before, after), warning, ...undo } };
+  }
+
+  // Как VoiceService.applyParticipants: сбой участника — предупреждение на
+  // карточке, а не отказ всего действия (событие уже создано/изменено).
+  private async applyParticipants(eventId: string, addIds: string[], removeIds: string[], ownerId: string): Promise<string | null> {
+    let failed = 0;
+    for (const id of addIds) await this.events.addParticipant(eventId, id, ownerId).catch(() => failed++);
+    for (const id of removeIds) await this.events.removeParticipant(eventId, id, ownerId).catch(() => failed++);
+    if (failed === 0) return null;
+    this.logger.warn(`агент: не удалось изменить ${failed} участника(ов) события ${eventId}`);
+    return `Не удалось изменить участников: ${failed}`;
   }
 
   // Stage 2, Phase G — в отличие от getTasks выше, здесь НЕТ среза на

@@ -2749,3 +2749,28 @@ Claude (claude.ai, Desktop, мобильный, Claude Code) добавляет 
   - Тесты: `assistant/task-write-tools.spec.ts` (изменения, повторы, права,
     отмена статуса). jest api 1240/1240, `next build` web и miniapp,
     `tsc --noEmit` обоих — чисто.
+- **A3 (28.10.2026) — календарь в чате (только руководство, свой календарь):**
+  - `assistant/event-tools.ts`: `find_events` (период — по умолчанию с начала
+    сегодняшнего дня на неделю, слово в названии/месте/описании, участник
+    текстом; отменённые скрыты; модели — до 20 событий местным временем,
+    карточек — 10), `find_free_slots`, `create_event` (конец не назван — час
+    или `durationMinutes`; длиннее суток — отказ), `update_event` (перенос
+    начала сохраняет длительность; участники добавить/убрать по именам),
+    `delete_event` (без отмены). Пишущие — в `WRITE_TOOL_NAMES`.
+  - Время для модели — местное без смещения (`localIso`): UTC-строку модель
+    передала бы обратно как местное время и сдвинула бы встречу на 5 часов.
+  - Свободное время: `CalendarAvailabilityService.findSlotsForAgent` —
+    занятость из подтверждённых событий Адъютанта + freeBusy Google, если
+    ответил (`googleChecked`). Прежний `findSlots` (вкладка агента в web) не
+    менялся — он без Google по-прежнему честно отвечает «неизвестно».
+  - Повторы и отмена — как у задач (A2): `AgentActionExecution`, ответы с
+    ошибкой проверки теперь помечаются FAILED, а не COMPLETED; `UndoRecord`
+    EVENT/CREATE|UPDATE (снимок полей + добавленные/убранные участники) →
+    `POST /voice/undo`. Правка идёт с `version` прочитанного события —
+    параллельное изменение даёт `EVENT_CHANGED`, а не тихую перезапись.
+  - `EventCardData.changes/undoToken/undoExpiresAt`; web и Mini App:
+    общий `components/assistant/change-footer.tsx` под карточками задач и
+    событий (был `task-change-footer.tsx`).
+  - В MCP — `find_events`, `find_free_slots`; в навыках — они же.
+  - Тесты: `assistant/event-tools.spec.ts`. jest api 1254/1254, сборки web
+    и miniapp — чисто.

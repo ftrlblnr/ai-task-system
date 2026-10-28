@@ -60,6 +60,8 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     if (result.tool === 'update_task' || result.tool === 'set_task_status' || result.tool === 'comment_task') return { label: 'Не удалось изменить задачу' };
     if (result.tool === 'remind_task') return { label: 'Не удалось напомнить исполнителю' };
     if (result.tool === 'delete_task') return { label: 'Не удалось удалить задачу' };
+    if (result.tool === 'find_events' || result.tool === 'find_free_slots') return { label: 'Не удалось проверить календарь' };
+    if (result.tool === 'create_event' || result.tool === 'update_event' || result.tool === 'delete_event') return { label: 'Не удалось изменить календарь' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
@@ -79,6 +81,12 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
   if (result.tool === 'comment_task') return { label: `Написал комментарий к «${result.task.title}»` };
   if (result.tool === 'remind_task') return { label: `Напомнил исполнителю о «${result.task.title}»` };
   if (result.tool === 'delete_task') return { label: `Удалил задачу «${result.title}»` };
+  // Единый агент A3 — календарь.
+  if (result.tool === 'find_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
+  if (result.tool === 'find_free_slots') return { label: result.slots.length ? `Нашёл свободное время: ${result.slots.length}` : 'Свободного времени не нашёл' };
+  if (result.tool === 'create_event') return { label: `Поставил «${result.event.title}» в календарь` };
+  if (result.tool === 'update_event') return { label: result.event.changes?.length ? `Изменил «${result.event.title}»` : `«${result.event.title}» уже такое` };
+  if (result.tool === 'delete_event') return { label: `Удалил «${result.title}» из календаря` };
   if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
   if (result.tool === 'export_tasks_xlsx') return { label: `Сформировал файл: ${result.file.name}` };
   if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
@@ -140,6 +148,11 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
   if (result.tool === 'update_task' || result.tool === 'set_task_status' || result.tool === 'comment_task' || result.tool === 'remind_task') {
     // Единый агент A2 — карточка с «было → стало» и «Отменить» (если есть undoToken).
     parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
+  } else if (result.tool === 'create_event' || result.tool === 'update_event') {
+    // Единый агент A3 — карточка события с изменениями и «Отменить».
+    parts.push({ type: MessagePartType.EVENT_CARD, order: 0, data: toJson(result.event) });
+  } else if (result.tool === 'find_events') {
+    for (const card of result.cards) parts.push({ type: MessagePartType.EVENT_CARD, order: 0, data: toJson(card) });
   } else if (result.tool === 'get_tasks') {
     for (const item of result.items) {
       parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(item) });
@@ -207,6 +220,9 @@ const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>([
   'set_task_status',
   'comment_task',
   'remind_task',
+  // A3 — календарь.
+  'create_event',
+  'update_event',
 ]);
 
 export function voiceActionCardParts(result: AssistantReplyResult): MessagePartInput[] {

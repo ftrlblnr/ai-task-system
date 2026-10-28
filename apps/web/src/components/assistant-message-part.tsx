@@ -20,7 +20,7 @@ import type {
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
 import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
-import { TaskChangeFooter } from './assistant/task-change-footer';
+import { ChangeFooter } from './assistant/change-footer';
 import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -153,7 +153,7 @@ function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) 
         onOpen={() => router.push(`/tasks/${data.taskId}`)}
       />
       {/* Задачу изменил ассистент (единый агент A2) — «было → стало» и отмена. */}
-      <TaskChangeFooter data={data} />
+      <ChangeFooter data={data} />
     </>
   );
 }
@@ -166,15 +166,19 @@ function EventCardView({ data, fresh }: { data: EventCardData; fresh?: boolean }
   const end = new Date(data.endAt);
   const time = `${start.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
   return (
-    <EntityCard
-      kind="event"
-      title={data.title}
-      time={time}
-      location={data.location}
-      participants={data.participants.map((p) => p.name)}
-      warning={data.warning}
-      fresh={fresh}
-    />
+    <>
+      <EntityCard
+        kind="event"
+        title={data.title}
+        time={time}
+        location={data.location}
+        participants={data.participants.map((p) => p.name)}
+        warning={data.warning}
+        fresh={fresh}
+      />
+      {/* Событие поставил/изменил ассистент (единый агент A3) — «было → стало» и отмена. */}
+      <ChangeFooter data={data} />
+    </>
   );
 }
 
