@@ -2096,3 +2096,24 @@ select {
    руководителя не помещались в одну строку и уезжали за экран. */
 .status-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .trip-tabs { margin: 0 -14px 12px; padding: 0 14px 2px; }
+
+/* Единый агент A2/A3: под карточкой задачи или события, изменённых ассистентом, —
+   «было → стало» и «Отменить» (components/assistant/change-footer.tsx). */
+.task-change {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.task-change-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.task-change-label {
+  color: var(--ink-3);
+}

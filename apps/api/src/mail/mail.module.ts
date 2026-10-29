@@ -27,6 +27,7 @@ import { registerTriageMailActionExecutors } from './action/executors/triage-exe
 import { MailTriageController } from './triage/mail-triage.controller';
 import { MailTriageService } from './triage/mail-triage.service';
 import { TasksModule } from '../tasks/tasks.module';
+import { SkillsModule } from '../skills/skills.module';
 import { TasksService } from '../tasks/tasks.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -38,7 +39,8 @@ import { AuditService } from '../audit/audit.service';
 // 2) — MailSyncService сохраняет байты вложений через FilesService
 // (FileArtifact/FileStorage), тот же паттерн, что у чата/экспорта.
 @Module({
-  imports: [TelegramModule, FilesModule, TasksModule],
+  // SkillsModule — стиль руководителя (/тон) для черновиков «Разбора».
+  imports: [TelegramModule, FilesModule, TasksModule, SkillsModule],
   controllers: [MailController, MailActionController, MailTriageController],
   providers: [
     MailStore,
@@ -62,7 +64,14 @@ import { AuditService } from '../audit/audit.service';
     MailActionSessionFactory,
     MailTriageService,
   ],
-  exports: [MailStore, MailQueryService, MailActionExecutorRegistry, MailActionPlanService, MailComposeService, MailTriageService],
+  exports: [
+    MailStore,
+    MailQueryService,
+    MailActionExecutorRegistry,
+    MailActionPlanService,
+    MailComposeService,
+    MailTriageService,
+  ],
 })
 export class MailModule implements OnModuleInit {
   constructor(
@@ -81,6 +90,12 @@ export class MailModule implements OnModuleInit {
   onModuleInit(): void {
     registerStage1MailActionExecutors(this.executors);
     // Разбор почты (W4) — ответ и задача из письма.
-    registerTriageMailActionExecutors(this.executors, { prisma: this.prisma, store: this.store, compose: this.compose, audit: this.audit, tasks: this.tasks });
+    registerTriageMailActionExecutors(this.executors, {
+      prisma: this.prisma,
+      store: this.store,
+      compose: this.compose,
+      audit: this.audit,
+      tasks: this.tasks,
+    });
   }
 }

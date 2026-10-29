@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AgentPageContext, ConversationMessage, MessagePart, StreamEvent, UploadedFileInfo } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { useRealtime } from '@/lib/use-realtime';
+import { onAssistantRefresh } from '@/lib/assistant-refresh';
 
 // Переписка с ассистентом: история с сервера и отправка со стримингом (SSE).
 // Вынесено из app/assistant/page.tsx (редизайн web W0, docs/WEB_REDESIGN.md)
@@ -134,6 +135,14 @@ export function useAssistantStream({ conversationId, onTitlesChanged }: Options)
     refreshMessagesSilently();
     onTitlesChanged();
   });
+  // «Отменить» на карточке задачи (единый агент A2): сервер дописал
+  // «Отменено.» — подтягиваем, если не идёт ответ (тот же приём, что выше).
+  useEffect(() =>
+    onAssistantRefresh(() => {
+      if (sendingRef.current) missedRefreshRef.current = true;
+      else refreshMessagesSilently();
+    }),
+  );
   useEffect(() => {
     if (sending || !missedRefreshRef.current) return;
     missedRefreshRef.current = false;

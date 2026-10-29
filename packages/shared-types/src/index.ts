@@ -540,6 +540,12 @@ export interface TaskCardData {
     timestamp?: string | null;
     context?: string | null;
   } | null;
+  // Единый агент A2: задачу только что изменил ассистент — что изменилось
+  // («Срок: 25.10, 18:00 → 31.10, 18:00») и токен отмены для POST /voice/undo,
+  // действует до undoExpiresAt (время сервера).
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface EventCardData {
@@ -556,6 +562,11 @@ export interface EventCardData {
   // карточек из get_events — всегда undefined. Хранится прямо в
   // MessagePart.data, поэтому переживает перезагрузку истории.
   warning?: string | null;
+  // Единый агент A3: событие только что поставил/изменил ассистент —
+  // что изменилось и токен отмены (POST /voice/undo), как у TaskCardData.
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface ToolActivityData {
@@ -1754,8 +1765,19 @@ export interface MailTriageItem {
   analysis: EmailAnalysisSummary | null;
   body: string | null;
   attachments: { id: string; fileName: string; sizeBytes: number | null; downloadable: boolean }[];
-  draft: { id: string; body: string | null; version: number; state: 'DRAFT' | 'SENDING'; toAddresses: string[]; subject: string | null } | null;
+  draft: { id: string; body: string | null; version: number; state: 'DRAFT' | 'SENDING'; toAddresses: string[]; subject: string | null; tone: MailTriageDraftTone } | null;
 }
+
+// Стиль руководителя (навык /тон) у черновика разбора: applied — написан в
+// текущем стиле, outdated — стиль с тех пор обновили, none — стиль не
+// настроен. skillId — навык /тон владельца ящика (ссылка «собрать из писем»).
+export interface MailTriageDraftTone {
+  state: 'applied' | 'outdated' | 'none';
+  skillId: string | null;
+}
+
+// POST /mail/messages/:id/draft-reply — черновик и его стиль.
+export type MailTriageDraftView = MailDraftView & { tone: MailTriageDraftTone };
 
 export type MailTriageActionType = 'SEND_REPLY' | 'CREATE_TASK' | 'ARCHIVE';
 

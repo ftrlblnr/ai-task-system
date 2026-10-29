@@ -1,4 +1,4 @@
-import { TaskPriority } from '@prisma/client';
+import { TaskPriority, TaskStatus } from '@prisma/client';
 import type { ResponseMessage } from '../../assistant/assistant-response.mapper';
 
 // Ответ POST /voice/parse. Черновик разбирается и ВЫПОЛНЯЕТСЯ в одном и том
@@ -83,7 +83,8 @@ export interface VoiceChatReply {
   reply: string;
 }
 
-export type VoiceDraft = VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
+export type VoiceDraft =
+  VoiceTaskActionDraft | VoiceEventActionDraft | VoiceChatReply;
 
 // Snapshot "до" мутации — Stage 2, Phase H.4: больше не отдаётся клиенту
 // (не экспортируется из packages/shared-types), только внутреннее
@@ -100,6 +101,8 @@ export interface TaskRevertPayload {
   // поле в схеме (@default(MEDIUM)), снимок "до" всегда несёт конкретное
   // значение (см. VoiceService, previous.priority = before.priority).
   priority?: TaskPriority;
+  // Единый агент A2 (set_task_status из чата) — статус до смены.
+  status?: TaskStatus;
 }
 export interface EventRevertPayload {
   title?: string;
@@ -134,7 +137,8 @@ export interface VoiceChatResult {
   reply: string;
 }
 
-export type VoiceActionResult = VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
+export type VoiceActionResult =
+  VoiceTaskActionResult | VoiceEventActionResult | VoiceChatResult;
 
 // results: массив, не одиночный результат (владелец 10.09.2026, найдено в
 // проде: "удали встречу с Петром и создай новую на пятницу" в одной

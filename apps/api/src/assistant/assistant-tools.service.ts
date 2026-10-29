@@ -1,11 +1,41 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
-import { EventStatus, MemoryKind, Prisma, RoutineChannel, RoutineMode, TaskFromMeetingStatus, TaskPriority, type MemoryItem } from '@prisma/client';
+import {
+  AgentActionStatus,
+  EventStatus,
+  MemoryKind,
+  Prisma,
+  RoutineChannel,
+  RoutineMode,
+  TaskFromMeetingStatus,
+  TaskPriority,
+  TaskStatus,
+  UndoKind,
+  UndoRecordAction,
+  UndoRecordStatus,
+  type MemoryItem,
+} from '@prisma/client';
+import type { UpdateTaskDto } from '../tasks/dto/update-task.dto';
+import type { UpdateEventDto } from '../calendar/dto/update-event.dto';
 import { TasksService } from '../tasks/tasks.service';
 import { EventsService } from '../calendar/events.service';
 import { FilesService } from '../files/files.service';
-import { MailQueryService, type EmailFilters } from '../mail/mail-query.service';
+import {
+  MailQueryService,
+  type EmailFilters,
+} from '../mail/mail-query.service';
 import { MailStore } from '../mail/mail-store';
 import { MeetingsService } from '../meetings/meetings.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,19 +43,74 @@ import { AuditService } from '../audit/audit.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
 import { withLocalOffset } from '../common/timezone';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import type { TaskCardData, EventCardData, FilePartData, MailDraftCardData, MailPlanCardData } from './dto/message-part-data.dto';
+import type {
+  TaskCardData,
+  EventCardData,
+  FilePartData,
+  MailDraftCardData,
+  MailPlanCardData,
+} from './dto/message-part-data.dto';
 import { MailActionPlanService } from '../mail/action/mail-action-plan.service';
-import { MailComposeService, type DraftView } from '../mail/mail-compose.service';
-import { buildMailPlanCandidates, MAIL_TOOL_ACTION_TYPES, MAX_MAIL_TOOL_ACTIONS, parseMailToolActions, summarizeCandidates, type MailToolFolder } from './assistant-mail-actions';
+import {
+  MailComposeService,
+  type DraftView,
+} from '../mail/mail-compose.service';
+import {
+  buildMailPlanCandidates,
+  MAIL_TOOL_ACTION_TYPES,
+  MAX_MAIL_TOOL_ACTIONS,
+  parseMailToolActions,
+  summarizeCandidates,
+  type MailToolFolder,
+} from './assistant-mail-actions';
 import { buildTasksWorkbookBuffer } from './task-export';
 import { isManager } from '../auth/roles';
-import { LegalAgentError, LegalAgentService } from '../legal/legal-agent.service';
+import {
+  LegalAgentError,
+  LegalAgentService,
+} from '../legal/legal-agent.service';
 import { formatLegalAnswer, type LegalAnswer } from '../legal/legal-agent';
 import { legalAllowedForRole } from '../legal/legal-access';
-import { LegalReviewLimitError, LegalReviewService, type LegalReviewView, toReviewView } from '../legal/legal-review.service';
+import {
+  LegalReviewLimitError,
+  LegalReviewService,
+  type LegalReviewView,
+  toReviewView,
+} from '../legal/legal-review.service';
 import { MemoryService } from '../memory/memory.service';
 import { MEMORY_TEXT_MAX } from '../memory/memory-index';
 import { RoutinesService } from '../routines/routines.service';
+import { CalendarAvailabilityService } from '../calendar/calendar-availability.service';
+import {
+  describeEventChanges,
+  EVENT_READ_TOOLS,
+  EVENT_WRITE_TOOLS,
+  nextEventTimes,
+  parseCreateEventInput,
+  parseFindEventsInput,
+  parseFreeSlotsInput,
+  parseUpdateEventInput,
+  toEventCard,
+  toFoundEvent,
+  toSlotData,
+  type FoundEventData,
+} from './event-tools';
+import type { TaskSearchFilter } from '../tasks/tasks.service';
+import {
+  describeTaskChanges,
+  FIND_TASKS_TOOL,
+  GET_TASK_TOOL,
+  historyEmployeeIds,
+  parseFindTasksInput,
+  parseUpdateTaskInput,
+  SETTABLE_TASK_STATUSES,
+  TASK_WRITE_TOOLS,
+  toFoundTask,
+  toGroupData,
+  toTaskDetail,
+  type FoundTaskData,
+  type TaskDetailData,
+} from './task-tools';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -33,7 +118,9 @@ import { RoutinesService } from '../routines/routines.service';
 // assistant-tools). Три строки дешевле продублировать, чем городить общий
 // модуль ради одной чистой функции.
 function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+  );
 }
 
 // Stage 2, Phase O (Meeting → Task workflow, 22.09.2026) — durable claim
@@ -43,6 +130,59 @@ function isUniqueConstraintError(err: unknown): boolean {
 // STALE_VOICE_EXECUTION_MS в voice.service.ts (там между RECEIVED и
 // EXECUTING может быть реальный STT+LLM-вызов).
 const STALE_TASK_FROM_MEETING_MS = 60 * 1000;
+
+// Единый агент A2: брошенный (процесс упал) claim изменения задачи — то же
+// окно, что у создания: одно изменение — не многошаговый процесс.
+const STALE_AGENT_ACTION_MS = 60 * 1000;
+// Окно отмены — то же, что у голоса (UNDO_WINDOW_MS в voice.service.ts).
+export const AGENT_UNDO_WINDOW_MS = 30_000;
+
+// Ожидаемые отказы TasksService → понятный модели код с текстом сервиса
+// (он уже по-русски и без деталей БД). Остальное — общий TOOL_ERROR_MESSAGES.
+// Порядок важен: все они — наследники HttpException.
+function taskWriteError(
+  tool: KnownToolName,
+  err: unknown,
+): { tool: KnownToolName; error: true; message: string } | null {
+  const isEvent =
+    tool === 'create_event' ||
+    tool === 'update_event' ||
+    tool === 'delete_event';
+  if (err instanceof NotFoundException) {
+    return {
+      tool,
+      error: true,
+      message: isEvent
+        ? 'EVENT_NOT_FOUND: событие не найдено — найди его через find_events'
+        : 'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks',
+    };
+  }
+  // Календарь (A3): версия разошлась — правка из web, Google или второй командой.
+  if (err instanceof ConflictException)
+    return {
+      tool,
+      error: true,
+      message:
+        'EVENT_CHANGED: событие только что изменилось — перечитай его через find_events и повтори',
+    };
+  if (err instanceof ForbiddenException)
+    return { tool, error: true, message: `TASK_FORBIDDEN: ${err.message}` };
+  if (err instanceof ServiceUnavailableException)
+    return {
+      tool,
+      error: true,
+      message:
+        'TELEGRAM_FAILED: не удалось отправить сообщение в Telegram — попробуйте позже',
+    };
+  if (err instanceof BadRequestException)
+    return { tool, error: true, message: `INVALID_INPUT: ${err.message}` };
+  if (
+    err instanceof HttpException &&
+    err.getStatus() === Number(HttpStatus.TOO_MANY_REQUESTS)
+  )
+    return { tool, error: true, message: `REMIND_TOO_SOON: ${err.message}` };
+  return null;
+}
 
 // ms сегмента транскрипта → "MM:SS"/"H:MM:SS" для человекочитаемого
 // Task.sourceTimestamp — нигде в проекте такого форматтера ещё нет
@@ -60,7 +200,8 @@ export function formatSegmentTimestamp(ms: number): string {
 // Тот же MIME, что уже в ALLOWED_UPLOAD_MIME_TYPES (upload-file.dto.ts) для
 // пользовательских .xlsx-вложений — единственный формат, который эта фаза
 // генерирует.
-const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const XLSX_MIME_TYPE =
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 // Столько карточек максимум в одном ответе — то же соображение, что
 // MAX_CONTEXT_TASKS/MAX_CONTEXT_EVENTS в voice.service.ts: не заваливать
@@ -68,6 +209,8 @@ const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadshee
 // модель могла честно сказать "всего 37, вот первые 10", а не соврать про
 // количество.
 const MAX_TOOL_ITEMS = 10;
+// find_events (единый агент A3): модели — до 20 событий, карточек — 10.
+const FIND_EVENTS_LIMIT = 20;
 
 export type GetTasksFilter = 'all' | 'overdue';
 
@@ -89,7 +232,9 @@ export function toTaskCardData(t: {
     title: t.title,
     status: t.status,
     dueDate: t.dueDate ? t.dueDate.toISOString() : null,
-    assignee: t.assignee ? { id: t.assignee.id, name: t.assignee.fullName } : null,
+    assignee: t.assignee
+      ? { id: t.assignee.id, name: t.assignee.fullName }
+      : null,
   };
 }
 
@@ -113,6 +258,18 @@ export function toEventCardData(e: {
 
 type KnownToolName =
   | 'get_tasks'
+  | 'find_tasks'
+  | 'get_task'
+  | 'update_task'
+  | 'set_task_status'
+  | 'comment_task'
+  | 'remind_task'
+  | 'delete_task'
+  | 'find_events'
+  | 'find_free_slots'
+  | 'create_event'
+  | 'update_event'
+  | 'delete_event'
   | 'get_events'
   | 'export_tasks_xlsx'
   | 'get_recent_meetings'
@@ -135,6 +292,12 @@ type KnownToolName =
   | 'propose_routine';
 
 function resolveToolName(name: string): KnownToolName {
+  if (name === 'find_tasks') return 'find_tasks';
+  if (name === 'get_task') return 'get_task';
+  if (TASK_WRITE_TOOL_NAMES.has(name)) return name as TaskWriteToolName;
+  if (EVENT_WRITE_TOOL_NAMES.has(name)) return name as EventWriteToolName;
+  if (name === 'find_events') return 'find_events';
+  if (name === 'find_free_slots') return 'find_free_slots';
   if (name === 'get_events') return 'get_events';
   if (name === 'export_tasks_xlsx') return 'export_tasks_xlsx';
   if (name === 'get_recent_meetings') return 'get_recent_meetings';
@@ -143,7 +306,8 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'search_meeting_transcript') return 'search_meeting_transcript';
   if (name === 'create_task') return 'create_task';
   if (name === 'create_task_from_meeting') return 'create_task_from_meeting';
-  if (name === 'find_employee_by_competency') return 'find_employee_by_competency';
+  if (name === 'find_employee_by_competency')
+    return 'find_employee_by_competency';
   if (name === 'search_emails') return 'search_emails';
   if (name === 'get_email') return 'get_email';
   if (name === 'legal_ask') return 'legal_ask';
@@ -172,7 +336,39 @@ function resolveToolName(name: string): KnownToolName {
 // Память (ARMS, фаза 1): remember создаёт пункт — ключ идемпотентности из
 // writeToolCallIndex; forget_memory меняет данные — порядок важен.
 // Регламенты (ARMS, фаза 4): propose_routine создаёт черновик — ключ из writeToolCallIndex.
-const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(['create_task', 'create_task_from_meeting', 'legal_review_contract', 'propose_mail_actions', 'draft_mail_reply', 'remember', 'forget_memory', 'propose_routine']);
+// Единый агент A2: изменение существующих задач — тоже write (ключ повтора
+// AgentActionExecution; регламенты их не получают).
+type TaskWriteToolName =
+  | 'update_task'
+  | 'set_task_status'
+  | 'comment_task'
+  | 'remind_task'
+  | 'delete_task';
+const TASK_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<TaskWriteToolName>([
+  'update_task',
+  'set_task_status',
+  'comment_task',
+  'remind_task',
+  'delete_task',
+]);
+// Единый агент A3: календарь — тот же механизм повтора и отмены.
+type EventWriteToolName = 'create_event' | 'update_event' | 'delete_event';
+const EVENT_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<EventWriteToolName>(
+  ['create_event', 'update_event', 'delete_event'],
+);
+type AgentWriteToolName = TaskWriteToolName | EventWriteToolName;
+const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'create_task',
+  'create_task_from_meeting',
+  'legal_review_contract',
+  'propose_mail_actions',
+  'draft_mail_reply',
+  'remember',
+  'forget_memory',
+  'propose_routine',
+  ...TASK_WRITE_TOOL_NAMES,
+  ...EVENT_WRITE_TOOL_NAMES,
+]);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
 }
@@ -186,21 +382,39 @@ export function isWriteTool(name: string): boolean {
 // своим конкретным кодом, не бросает исключение — см. её комментарий.
 const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   get_tasks: 'TASK_LOOKUP_FAILED: не удалось получить список задач',
+  find_tasks: 'TASK_LOOKUP_FAILED: не удалось найти задачи',
+  get_task: 'TASK_LOOKUP_FAILED: не удалось открыть задачу',
+  update_task: 'TASK_UPDATE_FAILED: не удалось изменить задачу',
+  set_task_status: 'TASK_UPDATE_FAILED: не удалось сменить статус задачи',
+  comment_task: 'TASK_UPDATE_FAILED: не удалось добавить комментарий',
+  remind_task: 'TASK_REMIND_FAILED: не удалось напомнить исполнителю',
+  delete_task: 'TASK_DELETE_FAILED: не удалось удалить задачу',
+  find_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
+  find_free_slots: 'CALENDAR_LOOKUP_FAILED: не удалось найти свободное время',
+  create_event: 'EVENT_CREATE_FAILED: не удалось поставить событие',
+  update_event: 'EVENT_UPDATE_FAILED: не удалось изменить событие',
+  delete_event: 'EVENT_DELETE_FAILED: не удалось удалить событие',
   get_events: 'CALENDAR_LOOKUP_FAILED: не удалось получить события календаря',
   export_tasks_xlsx: 'EXPORT_FAILED: не удалось сформировать файл',
-  get_recent_meetings: 'MEETING_LOOKUP_FAILED: не удалось получить список встреч',
+  get_recent_meetings:
+    'MEETING_LOOKUP_FAILED: не удалось получить список встреч',
   search_meetings: 'MEETING_LOOKUP_FAILED: не удалось найти встречи',
   get_meeting: 'MEETING_LOOKUP_FAILED: не удалось получить встречу',
-  search_meeting_transcript: 'MEETING_LOOKUP_FAILED: не удалось найти в транскриптах',
+  search_meeting_transcript:
+    'MEETING_LOOKUP_FAILED: не удалось найти в транскриптах',
   create_task: 'TASK_CREATE_FAILED: не удалось создать задачу',
   create_task_from_meeting: 'TASK_CREATE_FAILED: не удалось создать задачу',
-  find_employee_by_competency: 'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
+  find_employee_by_competency:
+    'EMPLOYEE_LOOKUP_FAILED: не удалось найти сотрудников по компетенции',
   search_emails: 'MAIL_LOOKUP_FAILED: не удалось найти письма',
   get_email: 'MAIL_LOOKUP_FAILED: не удалось получить письмо',
   legal_ask: 'LEGAL_FAILED: агент-юрист не смог подготовить ответ',
-  legal_review_contract: 'LEGAL_REVIEW_FAILED: не удалось запустить разбор договора',
-  legal_review_status: 'LEGAL_REVIEW_LOOKUP_FAILED: не удалось получить статус разборов',
-  propose_mail_actions: 'MAIL_PLAN_FAILED: не удалось подготовить действия с письмами',
+  legal_review_contract:
+    'LEGAL_REVIEW_FAILED: не удалось запустить разбор договора',
+  legal_review_status:
+    'LEGAL_REVIEW_LOOKUP_FAILED: не удалось получить статус разборов',
+  propose_mail_actions:
+    'MAIL_PLAN_FAILED: не удалось подготовить действия с письмами',
   draft_mail_reply: 'MAIL_DRAFT_FAILED: не удалось подготовить письмо',
   remember: 'MEMORY_SAVE_FAILED: не удалось сохранить в память',
   recall_memory: 'MEMORY_LOOKUP_FAILED: не удалось проверить память',
@@ -256,7 +470,13 @@ function toMemoryToolItem(item: MemoryItem): MemoryToolItem {
   return { id: item.id, kind: item.kind, text: item.text };
 }
 
-const MEMORY_KINDS: MemoryKind[] = ['PREFERENCE', 'FACT', 'PERSON', 'RULE', 'CONTEXT'];
+const MEMORY_KINDS: MemoryKind[] = [
+  'PREFERENCE',
+  'FACT',
+  'PERSON',
+  'RULE',
+  'CONTEXT',
+];
 
 export interface MeetingTranscriptMatchData {
   meetingId: string;
@@ -278,28 +498,110 @@ export interface MeetingTranscriptMatchData {
 
 export type ToolExecutionResult =
   | { tool: 'get_tasks'; items: TaskCardData[]; totalCount: number }
+  // Единый агент A1: срез и счётчики по всей выборке; filter — кого сервер
+  // нашёл по тексту имени (модель называет человека правильно).
+  | {
+      tool: 'find_tasks';
+      items: FoundTaskData[];
+      totalCount: number;
+      overdueCount: number;
+      byAssignee: { name: string; count: number; overdue: number }[];
+      byStatus: { status: string; count: number }[];
+      filter: { assignee: string | null; creator: string | null };
+    }
+  | { tool: 'get_task'; task: TaskDetailData }
+  // Единый агент A2: карточка изменённой задачи (с changes и undoToken).
+  | {
+      tool: 'update_task' | 'set_task_status' | 'remind_task';
+      task: TaskCardData;
+    }
+  | { tool: 'comment_task'; task: TaskCardData; comment: string }
+  | { tool: 'delete_task'; taskId: string; title: string }
+  // Повтор хода, когда прошлая попытка уже применила изменение, но
+  // результат не успела сохранить: сообщаем модели, задачу не трогаем.
+  | {
+      tool: AgentWriteToolName;
+      alreadyApplied: true;
+      taskId?: string;
+      eventId?: string;
+    }
+  // Единый агент A3: календарь. items — модели (время местное), cards —
+  // для карточек в ленте (не уходят модели, см. toolResultForModel).
+  | {
+      tool: 'find_events';
+      items: FoundEventData[];
+      totalCount: number;
+      cards: EventCardData[];
+    }
+  | {
+      tool: 'find_free_slots';
+      slots: { start: string; end: string }[];
+      durationMinutes: number;
+      googleChecked: boolean;
+    }
+  | { tool: 'create_event' | 'update_event'; event: EventCardData }
+  | { tool: 'delete_event'; eventId: string; title: string }
   | { tool: 'get_events'; items: EventCardData[]; totalCount: number }
   | { tool: 'export_tasks_xlsx'; file: FilePartData; totalCount: number }
-  | { tool: 'get_recent_meetings'; items: MeetingSummaryData[]; totalCount: number }
+  | {
+      tool: 'get_recent_meetings';
+      items: MeetingSummaryData[];
+      totalCount: number;
+    }
   | { tool: 'search_meetings'; items: MeetingSummaryData[]; totalCount: number }
   | { tool: 'get_meeting'; meeting: MeetingDetailData }
-  | { tool: 'search_meeting_transcript'; items: MeetingTranscriptMatchData[]; totalCount: number }
+  | {
+      tool: 'search_meeting_transcript';
+      items: MeetingTranscriptMatchData[];
+      totalCount: number;
+    }
   | { tool: 'create_task'; task: TaskCardData }
   | { tool: 'create_task_from_meeting'; task: TaskCardData }
-  | { tool: 'find_employee_by_competency'; competencyId: string; employees: { id: string; fullName: string }[] }
+  | {
+      tool: 'find_employee_by_competency';
+      competencyId: string;
+      employees: { id: string; fullName: string }[];
+    }
   | { tool: 'search_emails'; items: MailToolEmailSummary[]; totalCount: number }
   | { tool: 'get_email'; email: MailToolEmailDetail }
   // Агент-юрист: markdown собран сервером из проверенных цитат и
   // показывается пользователю отдельной частью (assistant-render.ts).
   | { tool: 'legal_ask'; answer: LegalAnswer; markdown: string }
-  | { tool: 'legal_review_contract'; review: LegalReviewView; alreadyStarted: boolean }
+  | {
+      tool: 'legal_review_contract';
+      review: LegalReviewView;
+      alreadyStarted: boolean;
+    }
   | { tool: 'legal_review_status'; items: LegalReviewView[] }
-  | { tool: 'propose_mail_actions'; plans: MailPlanCardData[]; unknownEmailIds: string[] }
+  | {
+      tool: 'propose_mail_actions';
+      plans: MailPlanCardData[];
+      unknownEmailIds: string[];
+    }
   | { tool: 'draft_mail_reply'; draft: MailDraftCardData }
-  | { tool: 'remember'; item: MemoryToolItem; duplicate: boolean; replaced: MemoryToolItem | null; similar: MemoryToolItem[] }
-  | { tool: 'recall_memory'; items: (MemoryToolItem & { details: string | null })[]; totalCount: number }
+  | {
+      tool: 'remember';
+      item: MemoryToolItem;
+      duplicate: boolean;
+      replaced: MemoryToolItem | null;
+      similar: MemoryToolItem[];
+    }
+  | {
+      tool: 'recall_memory';
+      items: (MemoryToolItem & { details: string | null })[];
+      totalCount: number;
+    }
   | { tool: 'forget_memory'; item: MemoryToolItem }
-  | { tool: 'propose_routine'; routine: { id: string; title: string; schedule: string | null; mode: RoutineMode; channel: RoutineChannel } }
+  | {
+      tool: 'propose_routine';
+      routine: {
+        id: string;
+        title: string;
+        schedule: string | null;
+        mode: RoutineMode;
+        channel: RoutineChannel;
+      };
+    }
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -338,6 +640,50 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
         ? 'Сохранено. В памяти есть похожие пункты (similar) — если новый их заменяет, коротко спроси пользователя, убрать ли старые (forget_memory).'
         : 'Сохранено в память. Коротко подтверди одной фразой.';
     return { ...result, note };
+  }
+  if ('alreadyApplied' in result) {
+    return {
+      ...result,
+      note: 'Это изменение уже было выполнено в прошлой попытке ответа. Скажи пользователю, что уже сделано; при сомнении проверь задачу через get_task.',
+    };
+  }
+  if (result.tool === 'update_task' || result.tool === 'set_task_status') {
+    return {
+      ...result,
+      note: result.task.changes?.length
+        ? 'Выполнено. Пользователь видит карточку с изменениями и 30 секунд может отменить их кнопкой. Подтверди одной фразой, без повтора всех полей.'
+        : 'Ничего не изменилось — задача уже в таком состоянии. Скажи об этом.',
+    };
+  }
+  if (result.tool === 'find_events') {
+    // Карточки — только для ленты, модели хватает items.
+    return {
+      tool: result.tool,
+      items: result.items,
+      totalCount: result.totalCount,
+    };
+  }
+  if (result.tool === 'create_event') {
+    return {
+      ...result,
+      note: 'Событие поставлено. Пользователь видит карточку и 30 секунд может отменить. Подтверди одной фразой: что, когда.',
+    };
+  }
+  if (result.tool === 'update_event') {
+    return {
+      ...result,
+      note: result.event.changes?.length
+        ? 'Выполнено. Пользователь видит карточку с изменениями и 30 секунд может отменить. Подтверди одной фразой.'
+        : 'Ничего не изменилось — событие уже такое. Скажи об этом.',
+    };
+  }
+  if (
+    result.tool === 'comment_task' ||
+    result.tool === 'remind_task' ||
+    result.tool === 'delete_task' ||
+    result.tool === 'delete_event'
+  ) {
+    return { ...result, note: 'Выполнено. Подтверди одной фразой.' };
   }
   if (result.tool === 'propose_routine') {
     return {
@@ -385,6 +731,8 @@ export class AssistantToolsService {
     @Optional() private readonly memory?: MemoryService,
     // Регламенты (ARMS, фаза 4) — без них propose_routine не предлагается.
     @Optional() private readonly routines?: RoutinesService,
+    // Единый агент A3 — без него (юнит-тесты) find_free_slots не предлагается.
+    @Optional() private readonly availability?: CalendarAvailabilityService,
   ) {}
 
   // Память — сначала руководству (план ARMS: всё новое — OWNER/ADMIN).
@@ -393,7 +741,11 @@ export class AssistantToolsService {
   }
 
   private legalAvailable(user: AuthenticatedUser): boolean {
-    return !!this.legal && !!this.config && legalAllowedForRole(this.config, user.role);
+    return (
+      !!this.legal &&
+      !!this.config &&
+      legalAllowedForRole(this.config, user.role)
+    );
   }
 
   // Stage 2, Phase P (Competency-based assignee routing, 22.09.2026) —
@@ -409,19 +761,26 @@ export class AssistantToolsService {
       {
         name: 'get_tasks',
         description:
-          'Получить список задач, видимых текущему пользователю (свои для сотрудника, все для руководителя), с исполнителем, сроком и статусом.',
+          'Получить список задач, видимых текущему пользователю (свои для сотрудника, все для руководителя), с исполнителем, сроком и статусом. Показывает только первые 10 — для вопросов про конкретного человека, срок, тему или для подсчётов используй find_tasks.',
         input_schema: {
           type: 'object',
           properties: {
             filter: {
               type: 'string',
               enum: ['all', 'overdue'],
-              description: '"all" — все видимые задачи, "overdue" — только просроченные',
+              description:
+                '"all" — все видимые задачи, "overdue" — только просроченные',
             },
           },
           required: ['filter'],
         },
       },
+      // Единый агент A1 — всем ролям: задачи видят все (владелец 20.10.2026).
+      FIND_TASKS_TOOL,
+      GET_TASK_TOOL,
+      // A2 — тоже всем: кто что может менять, решает TasksService
+      // (постановщик/руководство — поля и удаление, исполнитель — статус).
+      ...TASK_WRITE_TOOLS,
       {
         name: 'export_tasks_xlsx',
         description:
@@ -432,7 +791,8 @@ export class AssistantToolsService {
             filter: {
               type: 'string',
               enum: ['all', 'overdue'],
-              description: '"all" — все видимые задачи, "overdue" — только просроченные',
+              description:
+                '"all" — все видимые задачи, "overdue" — только просроченные',
             },
           },
           required: ['filter'],
@@ -446,9 +806,17 @@ export class AssistantToolsService {
     if (isManager(user.role)) {
       tools.push({
         name: 'get_events',
-        description: 'Получить список предстоящих подтверждённых встреч в личном календаре руководителя.',
+        description:
+          'Получить список предстоящих подтверждённых встреч в личном календаре руководителя. Для конкретного периода, поиска по названию/участнику и прошедших встреч используй find_events.',
         input_schema: { type: 'object', properties: {} },
       });
+      // Единый агент A3: календарь в чате — поиск, свободное время, правка.
+      tools.push(
+        ...EVENT_READ_TOOLS.filter(
+          (t) => t.name !== 'find_free_slots' || !!this.availability,
+        ),
+        ...EVENT_WRITE_TOOLS,
+      );
 
       // Stage 2, Phase K (внешний аудит 21.09.2026) — те же протоколы
       // встреч, что и в /meetings (весь модуль закрыт на OWNER, раздел 15
@@ -460,8 +828,16 @@ export class AssistantToolsService {
         input_schema: {
           type: 'object',
           properties: {
-            limit: { type: 'integer', description: 'Сколько встреч вернуть (по умолчанию 5)' },
-            source: { type: 'string', enum: ['all', 'plaud'], description: 'all (по умолчанию) — любые встречи; plaud — только импортированные из Plaud' },
+            limit: {
+              type: 'integer',
+              description: 'Сколько встреч вернуть (по умолчанию 5)',
+            },
+            source: {
+              type: 'string',
+              enum: ['all', 'plaud'],
+              description:
+                'all (по умолчанию) — любые встречи; plaud — только импортированные из Plaud',
+            },
           },
           required: [],
         },
@@ -472,13 +848,19 @@ export class AssistantToolsService {
           'Найти встречи по названию или содержанию саммари (поиск по подстроке, без учёта регистра). Используй, когда пользователь спрашивает про встречу по теме, а не просит просто список последних.',
         input_schema: {
           type: 'object',
-          properties: { query: { type: 'string', description: 'Что искать — тема, название, ключевые слова' } },
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Что искать — тема, название, ключевые слова',
+            },
+          },
           required: ['query'],
         },
       });
       tools.push({
         name: 'get_meeting',
-        description: 'Получить полное саммари одной конкретной встречи по её id (обычно из get_recent_meetings/search_meetings).',
+        description:
+          'Получить полное саммари одной конкретной встречи по её id (обычно из get_recent_meetings/search_meetings).',
         input_schema: {
           type: 'object',
           properties: { meetingId: { type: 'string' } },
@@ -508,11 +890,23 @@ export class AssistantToolsService {
         input_schema: {
           type: 'object',
           properties: {
-            title: { type: 'string', description: 'Коротко, в повелительной форме: «Сходить в магазин»' },
+            title: {
+              type: 'string',
+              description:
+                'Коротко, в повелительной форме: «Сходить в магазин»',
+            },
             description: { type: 'string' },
             assigneeRawText: { type: 'string' },
-            dueDate: { type: 'string', description: 'ISO-дата/время, местное время пользователя без смещения' },
-            priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'], description: 'Только если назван' },
+            dueDate: {
+              type: 'string',
+              description:
+                'ISO-дата/время, местное время пользователя без смещения',
+            },
+            priority: {
+              type: 'string',
+              enum: ['LOW', 'MEDIUM', 'HIGH'],
+              description: 'Только если назван',
+            },
           },
           required: ['title'],
         },
@@ -529,7 +923,11 @@ export class AssistantToolsService {
             title: { type: 'string' },
             description: { type: 'string' },
             assigneeRawText: { type: 'string' },
-            dueDate: { type: 'string', description: 'ISO-дата/время, местное время пользователя без смещения, см. системную инструкцию про текущую дату' },
+            dueDate: {
+              type: 'string',
+              description:
+                'ISO-дата/время, местное время пользователя без смещения, см. системную инструкцию про текущую дату',
+            },
             sourceContext: { type: 'string' },
           },
           required: ['meetingId', 'title'],
@@ -542,17 +940,27 @@ export class AssistantToolsService {
       // Закрытый enum ниже — модель не может сослаться на несуществующую
       // компетенцию; сам подбор сотрудника (0/1/много) делает backend в
       // execute(), не модель (раздел 7 спеки: LLM — не security boundary).
-      const competencies = await this.prisma.competency.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true, description: true } });
+      const competencies = await this.prisma.competency.findMany({
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, description: true },
+      });
       if (competencies.length > 0) {
         tools.push({
           name: 'find_employee_by_competency',
           description:
             `Найти сотрудников, отвечающих за определённую область/компетенцию — используй, когда пользователь называет исполнителя НЕ по имени, а по роли/обязанности ("тому, кто отвечает за юридические вопросы", "бухгалтеру", "ответственному за закупки"). Список компетенций компании (id — name — description):\n` +
-            competencies.map((c) => `${c.id} — ${c.name} — ${c.description}`).join('\n') +
+            competencies
+              .map((c) => `${c.id} — ${c.name} — ${c.description}`)
+              .join('\n') +
             '\nЕсли сотрудников с этой компетенцией не нашлось — честно скажи пользователю, не пытайся поставить задачу без исполнителя. Если нашлось несколько — перечисли их пользователю и спроси, кого выбрать, НЕ угадывай. Если нашёлся ровно один — можно сразу продолжить (например, вызвать create_task_from_meeting с его настоящим полным именем в assigneeRawText).',
           input_schema: {
             type: 'object',
-            properties: { competencyId: { type: 'string', enum: competencies.map((c) => c.id) } },
+            properties: {
+              competencyId: {
+                type: 'string',
+                enum: competencies.map((c) => c.id),
+              },
+            },
             required: ['competencyId'],
           },
         });
@@ -569,12 +977,28 @@ export class AssistantToolsService {
         input_schema: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Поиск по теме/тексту/отправителю' },
-            sender: { type: 'string', description: 'Отправитель — адрес или имя (подстрока)' },
+            query: {
+              type: 'string',
+              description: 'Поиск по теме/тексту/отправителю',
+            },
+            sender: {
+              type: 'string',
+              description: 'Отправитель — адрес или имя (подстрока)',
+            },
             dateFrom: { type: 'string', format: 'date-time' },
             dateTo: { type: 'string', format: 'date-time' },
-            importance: { type: 'array', items: { type: 'string', enum: ['CRITICAL', 'IMPORTANT', 'NORMAL', 'LOW'] } },
-            needsReply: { type: 'boolean', description: 'true — только письма, требующие ответа руководителя' },
+            importance: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: ['CRITICAL', 'IMPORTANT', 'NORMAL', 'LOW'],
+              },
+            },
+            needsReply: {
+              type: 'boolean',
+              description:
+                'true — только письма, требующие ответа руководителя',
+            },
             readStatus: { type: 'string', enum: ['read', 'unread', 'all'] },
           },
           required: [],
@@ -582,7 +1006,8 @@ export class AssistantToolsService {
       });
       tools.push({
         name: 'get_email',
-        description: 'Получить полный текст и AI-анализ одного письма по его id (обычно из search_emails).',
+        description:
+          'Получить полный текст и AI-анализ одного письма по его id (обычно из search_emails).',
         input_schema: {
           type: 'object',
           properties: { emailId: { type: 'string' } },
@@ -597,7 +1022,11 @@ export class AssistantToolsService {
           input_schema: {
             type: 'object',
             properties: {
-              request: { type: 'string', description: 'Просьба пользователя одной фразой — заголовок плана' },
+              request: {
+                type: 'string',
+                description:
+                  'Просьба пользователя одной фразой — заголовок плана',
+              },
               actions: {
                 type: 'array',
                 maxItems: MAX_MAIL_TOOL_ACTIONS,
@@ -607,7 +1036,10 @@ export class AssistantToolsService {
                     emailId: { type: 'string' },
                     type: { type: 'string', enum: [...MAIL_TOOL_ACTION_TYPES] },
                     folderPath: { type: ['string', 'null'] },
-                    reason: { type: 'string', description: 'Коротко, почему именно это письмо' },
+                    reason: {
+                      type: 'string',
+                      description: 'Коротко, почему именно это письмо',
+                    },
                   },
                   required: ['emailId', 'type', 'folderPath', 'reason'],
                 },
@@ -628,7 +1060,11 @@ export class AssistantToolsService {
               emailId: { type: 'string' },
               mode: { type: 'string', enum: ['reply', 'reply_all', 'forward'] },
               body: { type: 'string' },
-              to: { type: 'array', items: { type: 'string' }, description: 'Только для forward — адреса получателей' },
+              to: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Только для forward — адреса получателей',
+              },
             },
             required: ['emailId', 'mode', 'body'],
           },
@@ -646,7 +1082,11 @@ export class AssistantToolsService {
         input_schema: {
           type: 'object',
           properties: {
-            question: { type: 'string', description: 'Юридический вопрос пользователя с контекстом ситуации' },
+            question: {
+              type: 'string',
+              description:
+                'Юридический вопрос пользователя с контекстом ситуации',
+            },
           },
           required: ['question'],
         },
@@ -659,15 +1099,24 @@ export class AssistantToolsService {
           input_schema: {
             type: 'object',
             properties: {
-              fileId: { type: 'string', description: 'id файла договора из пометки [attached_file] или [file]' },
-              focus: { type: 'string', description: 'На что пользователь просит обратить особое внимание (если сказал); иначе пустая строка' },
+              fileId: {
+                type: 'string',
+                description:
+                  'id файла договора из пометки [attached_file] или [file]',
+              },
+              focus: {
+                type: 'string',
+                description:
+                  'На что пользователь просит обратить особое внимание (если сказал); иначе пустая строка',
+              },
             },
             required: ['fileId'],
           },
         });
         tools.push({
           name: 'legal_review_status',
-          description: 'Статус последних разборов договоров пользователя (в очереди / идёт / готов / ошибка). Используй, когда спрашивают, готов ли разбор.',
+          description:
+            'Статус последних разборов договоров пользователя (в очереди / идёт / готов / ошибка). Используй, когда спрашивают, готов ли разбор.',
           input_schema: { type: 'object', properties: {} },
         });
       }
@@ -682,10 +1131,25 @@ export class AssistantToolsService {
           input_schema: {
             type: 'object',
             properties: {
-              kind: { type: 'string', enum: MEMORY_KINDS, description: 'PREFERENCE — предпочтение, RULE — правило работы, PERSON — о человеке, FACT — факт о компании/делах, CONTEXT — длительный контекст' },
-              text: { type: 'string', maxLength: MEMORY_TEXT_MAX, description: 'Суть одной фразой' },
-              details: { type: 'string', description: 'Необязательные подробности' },
-              replacesId: { type: 'string', description: 'id пункта из [memory], который этот заменяет' },
+              kind: {
+                type: 'string',
+                enum: MEMORY_KINDS,
+                description:
+                  'PREFERENCE — предпочтение, RULE — правило работы, PERSON — о человеке, FACT — факт о компании/делах, CONTEXT — длительный контекст',
+              },
+              text: {
+                type: 'string',
+                maxLength: MEMORY_TEXT_MAX,
+                description: 'Суть одной фразой',
+              },
+              details: {
+                type: 'string',
+                description: 'Необязательные подробности',
+              },
+              replacesId: {
+                type: 'string',
+                description: 'id пункта из [memory], который этот заменяет',
+              },
             },
             required: ['kind', 'text'],
           },
@@ -696,16 +1160,21 @@ export class AssistantToolsService {
             'Поиск в памяти ассистента по словам — для подробностей, которых нет в блоке [memory] (он показывает только краткий список). Используй, когда ответ может зависеть от сохранённых сведений, а в [memory] их не видно.',
           input_schema: {
             type: 'object',
-            properties: { query: { type: 'string', description: 'Ключевые слова' } },
+            properties: {
+              query: { type: 'string', description: 'Ключевые слова' },
+            },
             required: ['query'],
           },
         },
         {
           name: 'forget_memory',
-          description: 'Убрать пункт из памяти ассистента (в архив), когда пользователь просит забыть или пункт устарел. id — из блока [memory] или результата recall_memory.',
+          description:
+            'Убрать пункт из памяти ассистента (в архив), когда пользователь просит забыть или пункт устарел. id — из блока [memory] или результата recall_memory.',
           input_schema: {
             type: 'object',
-            properties: { id: { type: 'string', description: 'id пункта памяти' } },
+            properties: {
+              id: { type: 'string', description: 'id пункта памяти' },
+            },
             required: ['id'],
           },
         },
@@ -720,14 +1189,44 @@ export class AssistantToolsService {
         input_schema: {
           type: 'object',
           properties: {
-            title: { type: 'string', maxLength: 80, description: 'Короткое название, 2–6 слов' },
-            instructions: { type: 'string', description: 'Что делать в каждом прогоне: что проверить, что считать важным, в каком виде прислать' },
-            days: { type: 'array', items: { type: 'integer', minimum: 1, maximum: 7 }, description: 'Дни недели: 1 — понедельник … 7 — воскресенье; каждый день — все семь' },
+            title: {
+              type: 'string',
+              maxLength: 80,
+              description: 'Короткое название, 2–6 слов',
+            },
+            instructions: {
+              type: 'string',
+              description:
+                'Что делать в каждом прогоне: что проверить, что считать важным, в каком виде прислать',
+            },
+            days: {
+              type: 'array',
+              items: { type: 'integer', minimum: 1, maximum: 7 },
+              description:
+                'Дни недели: 1 — понедельник … 7 — воскресенье; каждый день — все семь',
+            },
             time: { type: 'string', description: 'Время по Алматы, ЧЧ:ММ' },
-            mode: { type: 'string', enum: ['ACTIVE', 'PASSIVE'], description: 'ACTIVE — присылать итог всегда (сводки, отчёты); PASSIVE — писать только если нашлось важное (проверки, «следи за…»)' },
-            channel: { type: 'string', enum: ['FEED', 'TELEGRAM', 'BOTH'], description: 'Куда присылать: FEED — в ассистент, TELEGRAM — в Telegram, BOTH — оба. По умолчанию TELEGRAM' },
+            mode: {
+              type: 'string',
+              enum: ['ACTIVE', 'PASSIVE'],
+              description:
+                'ACTIVE — присылать итог всегда (сводки, отчёты); PASSIVE — писать только если нашлось важное (проверки, «следи за…»)',
+            },
+            channel: {
+              type: 'string',
+              enum: ['FEED', 'TELEGRAM', 'BOTH'],
+              description:
+                'Куда присылать: FEED — в ассистент, TELEGRAM — в Telegram, BOTH — оба. По умолчанию TELEGRAM',
+            },
           },
-          required: ['title', 'instructions', 'days', 'time', 'mode', 'channel'],
+          required: [
+            'title',
+            'instructions',
+            'days',
+            'time',
+            'mode',
+            'channel',
+          ],
         },
       });
     }
@@ -748,43 +1247,139 @@ export class AssistantToolsService {
         const filter = (input as { filter?: unknown } | null)?.filter;
         return await this.getTasks(filter === 'overdue' ? 'overdue' : 'all');
       }
+      if (name === 'find_tasks') return await this.findTasks(input, user);
+      if (name === 'get_task') {
+        const taskId = (input as { taskId?: unknown } | null)?.taskId;
+        return await this.getTask(
+          typeof taskId === 'string' ? taskId.trim() : '',
+        );
+      }
+      if (name === 'find_events') return await this.findEvents(input, user);
+      if (name === 'find_free_slots')
+        return await this.findFreeSlots(input, user);
+      if (EVENT_WRITE_TOOL_NAMES.has(name)) {
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
+          throw new Error(
+            `${name}: отсутствует conversationId/userMessageId/writeToolCallIndex`,
+          );
+        }
+        return await this.runEventWrite(
+          name as EventWriteToolName,
+          input,
+          user,
+          conversationId,
+          `${userMessageId}:${writeToolCallIndex}`,
+        );
+      }
+      if (TASK_WRITE_TOOL_NAMES.has(name)) {
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
+          // Как у create_task: без идентичности вызова нет ключа повтора —
+          // задачу не меняем.
+          throw new Error(
+            `${name}: отсутствует conversationId/userMessageId/writeToolCallIndex`,
+          );
+        }
+        return await this.runTaskWrite(
+          name as TaskWriteToolName,
+          input,
+          user,
+          conversationId,
+          `${userMessageId}:${writeToolCallIndex}`,
+        );
+      }
       if (name === 'get_events') return await this.getEvents(user);
       if (name === 'export_tasks_xlsx') {
         const filter = (input as { filter?: unknown } | null)?.filter;
-        return await this.exportTasksXlsx(user, filter === 'overdue' ? 'overdue' : 'all');
+        return await this.exportTasksXlsx(
+          user,
+          filter === 'overdue' ? 'overdue' : 'all',
+        );
       }
       if (name === 'get_recent_meetings') {
-        const typedInput = input as { limit?: unknown; source?: unknown } | null;
+        const typedInput = input as {
+          limit?: unknown;
+          source?: unknown;
+        } | null;
         const rawLimit = Number(typedInput?.limit);
         const source = typedInput?.source === 'plaud' ? 'plaud' : 'all';
-        return await this.getRecentMeetings(Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 5, source);
+        return await this.getRecentMeetings(
+          Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 5,
+          source,
+        );
       }
       if (name === 'search_meetings') {
         const query = (input as { query?: unknown } | null)?.query;
-        return await this.searchMeetings(typeof query === 'string' ? query : '', user);
+        return await this.searchMeetings(
+          typeof query === 'string' ? query : '',
+          user,
+        );
       }
       if (name === 'get_meeting') {
         const meetingId = (input as { meetingId?: unknown } | null)?.meetingId;
-        return await this.getMeeting(typeof meetingId === 'string' ? meetingId : '', user);
+        return await this.getMeeting(
+          typeof meetingId === 'string' ? meetingId : '',
+          user,
+        );
       }
       if (name === 'search_meeting_transcript') {
-        const typedInput = input as { query?: unknown; meetingId?: unknown } | null;
-        const query = typeof typedInput?.query === 'string' ? typedInput.query : '';
-        const meetingId = typeof typedInput?.meetingId === 'string' ? typedInput.meetingId : undefined;
+        const typedInput = input as {
+          query?: unknown;
+          meetingId?: unknown;
+        } | null;
+        const query =
+          typeof typedInput?.query === 'string' ? typedInput.query : '';
+        const meetingId =
+          typeof typedInput?.meetingId === 'string'
+            ? typedInput.meetingId
+            : undefined;
         return await this.searchMeetingTranscript(query, meetingId, user);
       }
       if (name === 'create_task') {
-        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
-          throw new Error('create_task: отсутствует conversationId/userMessageId/writeToolCallIndex');
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
+          throw new Error(
+            'create_task: отсутствует conversationId/userMessageId/writeToolCallIndex',
+          );
         }
-        const typedInput = (input ?? {}) as { title?: unknown; description?: unknown; assigneeRawText?: unknown; dueDate?: unknown; priority?: unknown };
+        const typedInput = (input ?? {}) as {
+          title?: unknown;
+          description?: unknown;
+          assigneeRawText?: unknown;
+          dueDate?: unknown;
+          priority?: unknown;
+        };
         return await this.createTask(
           {
             title: typeof typedInput.title === 'string' ? typedInput.title : '',
-            description: typeof typedInput.description === 'string' ? typedInput.description : undefined,
-            assigneeRawText: typeof typedInput.assigneeRawText === 'string' ? typedInput.assigneeRawText : undefined,
-            dueDate: typeof typedInput.dueDate === 'string' ? typedInput.dueDate : undefined,
-            priority: typedInput.priority === 'LOW' || typedInput.priority === 'MEDIUM' || typedInput.priority === 'HIGH' ? TaskPriority[typedInput.priority] : undefined,
+            description:
+              typeof typedInput.description === 'string'
+                ? typedInput.description
+                : undefined,
+            assigneeRawText:
+              typeof typedInput.assigneeRawText === 'string'
+                ? typedInput.assigneeRawText
+                : undefined,
+            dueDate:
+              typeof typedInput.dueDate === 'string'
+                ? typedInput.dueDate
+                : undefined,
+            priority:
+              typedInput.priority === 'LOW' ||
+              typedInput.priority === 'MEDIUM' ||
+              typedInput.priority === 'HIGH'
+                ? TaskPriority[typedInput.priority]
+                : undefined,
           },
           user,
           conversationId,
@@ -793,7 +1388,11 @@ export class AssistantToolsService {
         );
       }
       if (name === 'create_task_from_meeting') {
-        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
           // Не должно случаться на практике — runReply прокидывает
           // writeToolCallIndex на каждый write-tool вызов (см. её
           // комментарий, roadmap v13 MUST-FIX #2). Сравнивается с undefined
@@ -801,7 +1400,9 @@ export class AssistantToolsService {
           // легитимным значением. Если всё же случилось (например, кто-то
           // вызвал execute() напрямую в обход runReply) — безопасный явный
           // отказ, не создаём задачу без идентичности для идемпотентности.
-          throw new Error('create_task_from_meeting: отсутствует conversationId/userMessageId/writeToolCallIndex');
+          throw new Error(
+            'create_task_from_meeting: отсутствует conversationId/userMessageId/writeToolCallIndex',
+          );
         }
         const typedInput = input as {
           meetingId?: unknown;
@@ -814,13 +1415,32 @@ export class AssistantToolsService {
         } | null;
         return await this.createTaskFromMeeting(
           {
-            meetingId: typeof typedInput?.meetingId === 'string' ? typedInput.meetingId : '',
-            segmentId: typeof typedInput?.segmentId === 'string' ? typedInput.segmentId : undefined,
-            title: typeof typedInput?.title === 'string' ? typedInput.title : '',
-            description: typeof typedInput?.description === 'string' ? typedInput.description : undefined,
-            assigneeRawText: typeof typedInput?.assigneeRawText === 'string' ? typedInput.assigneeRawText : undefined,
-            dueDate: typeof typedInput?.dueDate === 'string' ? typedInput.dueDate : undefined,
-            sourceContext: typeof typedInput?.sourceContext === 'string' ? typedInput.sourceContext : undefined,
+            meetingId:
+              typeof typedInput?.meetingId === 'string'
+                ? typedInput.meetingId
+                : '',
+            segmentId:
+              typeof typedInput?.segmentId === 'string'
+                ? typedInput.segmentId
+                : undefined,
+            title:
+              typeof typedInput?.title === 'string' ? typedInput.title : '',
+            description:
+              typeof typedInput?.description === 'string'
+                ? typedInput.description
+                : undefined,
+            assigneeRawText:
+              typeof typedInput?.assigneeRawText === 'string'
+                ? typedInput.assigneeRawText
+                : undefined,
+            dueDate:
+              typeof typedInput?.dueDate === 'string'
+                ? typedInput.dueDate
+                : undefined,
+            sourceContext:
+              typeof typedInput?.sourceContext === 'string'
+                ? typedInput.sourceContext
+                : undefined,
           },
           user,
           conversationId,
@@ -829,33 +1449,55 @@ export class AssistantToolsService {
         );
       }
       if (name === 'find_employee_by_competency') {
-        const competencyId = (input as { competencyId?: unknown } | null)?.competencyId;
-        return await this.findEmployeeByCompetency(typeof competencyId === 'string' ? competencyId : '');
+        const competencyId = (input as { competencyId?: unknown } | null)
+          ?.competencyId;
+        return await this.findEmployeeByCompetency(
+          typeof competencyId === 'string' ? competencyId : '',
+        );
       }
       if (name === 'search_emails') return await this.searchEmails(input, user);
       if (name === 'get_email') {
         const emailId = (input as { emailId?: unknown } | null)?.emailId;
-        return await this.getEmail(typeof emailId === 'string' ? emailId : '', user);
+        return await this.getEmail(
+          typeof emailId === 'string' ? emailId : '',
+          user,
+        );
       }
       if (name === 'propose_mail_actions' || name === 'draft_mail_reply') {
         if (!userMessageId || writeToolCallIndex === undefined) {
           // Как у create_task_from_meeting: без идентичности вызова нет ключа идемпотентности.
-          throw new Error(`${name}: отсутствует userMessageId/writeToolCallIndex`);
+          throw new Error(
+            `${name}: отсутствует userMessageId/writeToolCallIndex`,
+          );
         }
         const key = `chat:${userMessageId}:${writeToolCallIndex}`;
-        return name === 'propose_mail_actions' ? await this.proposeMailActions(input, user, key) : await this.draftMailReply(input, user, key);
+        return name === 'propose_mail_actions'
+          ? await this.proposeMailActions(input, user, key)
+          : await this.draftMailReply(input, user, key);
       }
       if (name === 'legal_ask') {
         const question = (input as { question?: unknown } | null)?.question;
-        return await this.legalAsk(typeof question === 'string' ? question : '', user);
+        return await this.legalAsk(
+          typeof question === 'string' ? question : '',
+          user,
+        );
       }
       if (name === 'legal_review_contract') {
-        if (!conversationId || !userMessageId || writeToolCallIndex === undefined) {
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
           // Как у create_task_from_meeting: без идентичности вызова нет
           // ключа идемпотентности — платное задание не ставим.
-          throw new Error('legal_review_contract: отсутствует conversationId/userMessageId/writeToolCallIndex');
+          throw new Error(
+            'legal_review_contract: отсутствует conversationId/userMessageId/writeToolCallIndex',
+          );
         }
-        const typedInput = input as { fileId?: unknown; focus?: unknown } | null;
+        const typedInput = input as {
+          fileId?: unknown;
+          focus?: unknown;
+        } | null;
         return await this.legalReviewContract(
           typeof typedInput?.fileId === 'string' ? typedInput.fileId : '',
           typeof typedInput?.focus === 'string' ? typedInput.focus : '',
@@ -864,12 +1506,33 @@ export class AssistantToolsService {
           `chat:${userMessageId}:${writeToolCallIndex}`,
         );
       }
-      if (name === 'legal_review_status') return await this.legalReviewStatus(user);
-      if (name === 'propose_routine') return await this.proposeRoutine(input, user, userMessageId, writeToolCallIndex);
-      if (name === 'remember' || name === 'recall_memory' || name === 'forget_memory') {
-        return await this.runMemoryTool(name, input, user, userMessageId, writeToolCallIndex);
+      if (name === 'legal_review_status')
+        return await this.legalReviewStatus(user);
+      if (name === 'propose_routine')
+        return await this.proposeRoutine(
+          input,
+          user,
+          userMessageId,
+          writeToolCallIndex,
+        );
+      if (
+        name === 'remember' ||
+        name === 'recall_memory' ||
+        name === 'forget_memory'
+      ) {
+        return await this.runMemoryTool(
+          name,
+          input,
+          user,
+          userMessageId,
+          writeToolCallIndex,
+        );
       }
-      return { tool: 'get_tasks', error: true, message: `Неизвестный инструмент: ${name}` };
+      return {
+        tool: 'get_tasks',
+        error: true,
+        message: `Неизвестный инструмент: ${name}`,
+      };
     } catch (err) {
       const tool = resolveToolName(name);
       // Полная ошибка (может содержать детали БД/инфраструктуры) — только в
@@ -884,27 +1547,71 @@ export class AssistantToolsService {
 
   // Регламенты (ARMS, фаза 4): только черновик — включает человек.
   // Неверные поля — понятная модели ошибка, а не исключение.
-  private async proposeRoutine(input: unknown, user: AuthenticatedUser, userMessageId: string | undefined, writeToolCallIndex: number | undefined): Promise<ToolExecutionResult> {
-    if (!this.routines || !isManager(user.role)) return { tool: 'propose_routine', error: true, message: 'ROUTINE_UNAVAILABLE: регламенты недоступны' };
-    if (!userMessageId || writeToolCallIndex === undefined) throw new Error('propose_routine: отсутствует userMessageId/writeToolCallIndex');
-    const typed = (input ?? {}) as { title?: unknown; instructions?: unknown; days?: unknown; time?: unknown; mode?: unknown; channel?: unknown };
-    const days = Array.isArray(typed.days) ? typed.days.filter((d): d is number => typeof d === 'number') : [];
+  private async proposeRoutine(
+    input: unknown,
+    user: AuthenticatedUser,
+    userMessageId: string | undefined,
+    writeToolCallIndex: number | undefined,
+  ): Promise<ToolExecutionResult> {
+    if (!this.routines || !isManager(user.role))
+      return {
+        tool: 'propose_routine',
+        error: true,
+        message: 'ROUTINE_UNAVAILABLE: регламенты недоступны',
+      };
+    if (!userMessageId || writeToolCallIndex === undefined)
+      throw new Error(
+        'propose_routine: отсутствует userMessageId/writeToolCallIndex',
+      );
+    const typed = (input ?? {}) as {
+      title?: unknown;
+      instructions?: unknown;
+      days?: unknown;
+      time?: unknown;
+      mode?: unknown;
+      channel?: unknown;
+    };
+    const days = Array.isArray(typed.days)
+      ? typed.days.filter((d): d is number => typeof d === 'number')
+      : [];
     try {
       const routine = await this.routines.proposeDraft(
         user.id,
         {
           title: typeof typed.title === 'string' ? typed.title : '',
-          prompt: typeof typed.instructions === 'string' ? typed.instructions : '',
+          prompt:
+            typeof typed.instructions === 'string' ? typed.instructions : '',
           days,
-          time: typeof typed.time === 'string' ? typed.time.padStart(5, '0') : '',
-          mode: typed.mode === 'PASSIVE' ? RoutineMode.PASSIVE : RoutineMode.ACTIVE,
-          channel: typed.channel === 'FEED' ? RoutineChannel.FEED : typed.channel === 'BOTH' ? RoutineChannel.BOTH : RoutineChannel.TELEGRAM,
+          time:
+            typeof typed.time === 'string' ? typed.time.padStart(5, '0') : '',
+          mode:
+            typed.mode === 'PASSIVE' ? RoutineMode.PASSIVE : RoutineMode.ACTIVE,
+          channel:
+            typed.channel === 'FEED'
+              ? RoutineChannel.FEED
+              : typed.channel === 'BOTH'
+                ? RoutineChannel.BOTH
+                : RoutineChannel.TELEGRAM,
         },
         `chat:${userMessageId}:${writeToolCallIndex}`,
       );
-      return { tool: 'propose_routine', routine: { id: routine.id, title: routine.title, schedule: routine.schedule, mode: routine.mode, channel: routine.channel } };
+      return {
+        tool: 'propose_routine',
+        routine: {
+          id: routine.id,
+          title: routine.title,
+          schedule: routine.schedule,
+          mode: routine.mode,
+          channel: routine.channel,
+        },
+      };
     } catch (err) {
-      if (err instanceof BadRequestException) return { tool: 'propose_routine', error: true, message: `INVALID_INPUT: ${err.message}` };
+      if (err instanceof BadRequestException)
+        return {
+          tool: 'propose_routine',
+          error: true,
+          message: `INVALID_INPUT: ${err.message}`,
+        };
       throw err;
     }
   }
@@ -919,19 +1626,48 @@ export class AssistantToolsService {
     writeToolCallIndex: number | undefined,
   ): Promise<ToolExecutionResult> {
     if (!this.memory || !this.memoryAvailable(user)) {
-      return { tool: name, error: true, message: 'MEMORY_UNAVAILABLE: память недоступна' };
+      return {
+        tool: name,
+        error: true,
+        message: 'MEMORY_UNAVAILABLE: память недоступна',
+      };
     }
-    const typed = (input ?? {}) as { kind?: unknown; text?: unknown; details?: unknown; replacesId?: unknown; query?: unknown; id?: unknown };
+    const typed = (input ?? {}) as {
+      kind?: unknown;
+      text?: unknown;
+      details?: unknown;
+      replacesId?: unknown;
+      query?: unknown;
+      id?: unknown;
+    };
     if (name === 'recall_memory') {
-      const { items, totalCount } = await this.memory.recall(user.id, typeof typed.query === 'string' ? typed.query : '');
-      return { tool: 'recall_memory', items: items.map((i) => ({ ...toMemoryToolItem(i), details: i.details })), totalCount };
+      const { items, totalCount } = await this.memory.recall(
+        user.id,
+        typeof typed.query === 'string' ? typed.query : '',
+      );
+      return {
+        tool: 'recall_memory',
+        items: items.map((i) => ({
+          ...toMemoryToolItem(i),
+          details: i.details,
+        })),
+        totalCount,
+      };
     }
     if (name === 'forget_memory') {
       const id = typeof typed.id === 'string' ? typed.id.trim() : '';
       try {
-        return { tool: 'forget_memory', item: toMemoryToolItem(await this.memory.forget(user.id, id)) };
+        return {
+          tool: 'forget_memory',
+          item: toMemoryToolItem(await this.memory.forget(user.id, id)),
+        };
       } catch (err) {
-        if (err instanceof NotFoundException) return { tool: 'forget_memory', error: true, message: 'MEMORY_NOT_FOUND: такого пункта в памяти нет' };
+        if (err instanceof NotFoundException)
+          return {
+            tool: 'forget_memory',
+            error: true,
+            message: 'MEMORY_NOT_FOUND: такого пункта в памяти нет',
+          };
         throw err;
       }
     }
@@ -939,17 +1675,28 @@ export class AssistantToolsService {
       // Как у create_task_from_meeting: без идентичности вызова нет ключа идемпотентности.
       throw new Error('remember: отсутствует userMessageId/writeToolCallIndex');
     }
-    const kind = MEMORY_KINDS.includes(typed.kind as MemoryKind) ? (typed.kind as MemoryKind) : MemoryKind.FACT;
+    const kind = MEMORY_KINDS.includes(typed.kind as MemoryKind)
+      ? (typed.kind as MemoryKind)
+      : MemoryKind.FACT;
     const text = typeof typed.text === 'string' ? typed.text.trim() : '';
-    if (text.length < 2) return { tool: 'remember', error: true, message: 'INVALID_INPUT: пустой текст пункта памяти' };
+    if (text.length < 2)
+      return {
+        tool: 'remember',
+        error: true,
+        message: 'INVALID_INPUT: пустой текст пункта памяти',
+      };
     try {
       const result = await this.memory.remember(
         user.id,
         {
           kind,
           text,
-          details: typeof typed.details === 'string' ? typed.details : undefined,
-          replacesId: typeof typed.replacesId === 'string' && typed.replacesId.trim() ? typed.replacesId.trim() : undefined,
+          details:
+            typeof typed.details === 'string' ? typed.details : undefined,
+          replacesId:
+            typeof typed.replacesId === 'string' && typed.replacesId.trim()
+              ? typed.replacesId.trim()
+              : undefined,
         },
         `chat:${userMessageId}:${writeToolCallIndex}`,
       );
@@ -961,18 +1708,35 @@ export class AssistantToolsService {
         similar: result.similar.map(toMemoryToolItem),
       };
     } catch (err) {
-      if (err instanceof NotFoundException) return { tool: 'remember', error: true, message: 'MEMORY_NOT_FOUND: заменяемого пункта в памяти нет' };
+      if (err instanceof NotFoundException)
+        return {
+          tool: 'remember',
+          error: true,
+          message: 'MEMORY_NOT_FOUND: заменяемого пункта в памяти нет',
+        };
       throw err;
     }
   }
 
   // Видимость перепроверяется и здесь: модель могла вызвать инструмент из
   // старой истории, хотя флаг уже выключен.
-  private async legalAsk(question: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async legalAsk(
+    question: string,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     if (!this.legal || !this.legalAvailable(user)) {
-      return { tool: 'legal_ask', error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+      return {
+        tool: 'legal_ask',
+        error: true,
+        message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен',
+      };
     }
-    if (question.trim().length < 3) return { tool: 'legal_ask', error: true, message: 'LEGAL_EMPTY_QUESTION: не передан вопрос' };
+    if (question.trim().length < 3)
+      return {
+        tool: 'legal_ask',
+        error: true,
+        message: 'LEGAL_EMPTY_QUESTION: не передан вопрос',
+      };
     try {
       const answer = await this.legal.ask(question);
       void this.audit.log(user.id, 'LEGAL_ASK', 'LegalQuestion', 'assistant', {
@@ -984,7 +1748,11 @@ export class AssistantToolsService {
     } catch (err) {
       if (err instanceof LegalAgentError) {
         this.logger.warn(`legal_ask: ${err.code} ${err.message}`);
-        return { tool: 'legal_ask', error: true, message: TOOL_ERROR_MESSAGES.legal_ask };
+        return {
+          tool: 'legal_ask',
+          error: true,
+          message: TOOL_ERROR_MESSAGES.legal_ask,
+        };
       }
       throw err;
     }
@@ -998,36 +1766,1020 @@ export class AssistantToolsService {
     dedupeKey: string,
   ): Promise<ToolExecutionResult> {
     const tool = 'legal_review_contract' as const;
-    if (!this.legalReviews || !this.legalAvailable(user)) return { tool, error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+    if (!this.legalReviews || !this.legalAvailable(user))
+      return {
+        tool,
+        error: true,
+        message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен',
+      };
     try {
-      const { run, created } = await this.legalReviews.create(user, { fileId, focus, conversationId, dedupeKey });
-      if (created) void this.audit.log(user.id, 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', run.id, { fileId: run.fileId, source: 'assistant' });
+      const { run, created } = await this.legalReviews.create(user, {
+        fileId,
+        focus,
+        conversationId,
+        dedupeKey,
+      });
+      if (created)
+        void this.audit.log(
+          user.id,
+          'LEGAL_REVIEW_REQUESTED',
+          'LegalReviewRun',
+          run.id,
+          { fileId: run.fileId, source: 'assistant' },
+        );
       return { tool, review: toReviewView(run), alreadyStarted: !created };
     } catch (err) {
       // Ожидаемые отказы — конкретным кодом, модель объяснит их пользователю.
-      if (err instanceof NotFoundException) return { tool, error: true, message: 'LEGAL_FILE_NOT_FOUND: файл договора не найден — попросите прикрепить его' };
-      if (err instanceof LegalReviewLimitError) return { tool, error: true, message: 'LEGAL_REVIEW_LIMIT: уже идут 3 разбора — нужно дождаться их завершения' };
-      if (err instanceof BadRequestException) return { tool, error: true, message: 'LEGAL_UNSUPPORTED_FILE: для разбора нужен договор в PDF или DOCX' };
+      if (err instanceof NotFoundException)
+        return {
+          tool,
+          error: true,
+          message:
+            'LEGAL_FILE_NOT_FOUND: файл договора не найден — попросите прикрепить его',
+        };
+      if (err instanceof LegalReviewLimitError)
+        return {
+          tool,
+          error: true,
+          message:
+            'LEGAL_REVIEW_LIMIT: уже идут 3 разбора — нужно дождаться их завершения',
+        };
+      if (err instanceof BadRequestException)
+        return {
+          tool,
+          error: true,
+          message:
+            'LEGAL_UNSUPPORTED_FILE: для разбора нужен договор в PDF или DOCX',
+        };
       throw err;
     }
   }
 
-  private async legalReviewStatus(user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async legalReviewStatus(
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     if (!this.legalReviews || !this.legalAvailable(user)) {
-      return { tool: 'legal_review_status', error: true, message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен' };
+      return {
+        tool: 'legal_review_status',
+        error: true,
+        message: 'LEGAL_UNAVAILABLE: агент-юрист недоступен',
+      };
     }
-    return { tool: 'legal_review_status', items: await this.legalReviews.list(user, 5) };
+    return {
+      tool: 'legal_review_status',
+      items: await this.legalReviews.list(user, 5),
+    };
   }
 
-  private async getTasks(filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
+  private async getTasks(
+    filter: GetTasksFilter = 'all',
+  ): Promise<ToolExecutionResult> {
     const tasks = await this.tasks.findAll();
-    const filtered = filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
+    const filtered =
+      filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
     // findAll() вызывается напрямую (в обход HTTP-сериализации), поэтому
     // dueDate — сырой Prisma Date, не строка (тот же приём, что уже был
     // пойман в voice.service.ts при прямом вызове TasksService.findOne) —
     // toTaskCardData учитывает это сам.
-    const items: TaskCardData[] = filtered.slice(0, MAX_TOOL_ITEMS).map(toTaskCardData);
+    const items: TaskCardData[] = filtered
+      .slice(0, MAX_TOOL_ITEMS)
+      .map(toTaskCardData);
     return { tool: 'get_tasks', items, totalCount: filtered.length };
+  }
+
+  // Единый агент A1. Имена — через тот же резолвер, что у create_task
+  // (модель передаёт текст как прозвучал, не id): неоднозначное имя —
+  // понятная модели ошибка, а не поиск по чужому человеку. Кандидаты — все
+  // сотрудники, включая неактивных: по их старым задачам тоже спрашивают.
+  private async findTasks(
+    input: unknown,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
+    const parsed = parseFindTasksInput(input);
+    const filter: TaskSearchFilter = {
+      statuses: parsed.statuses,
+      overdue: parsed.overdue,
+      dueFrom: parsed.dueFrom,
+      dueTo: parsed.dueTo,
+      query: parsed.query,
+      sourceMeetingId: parsed.sourceMeetingId,
+      limit: parsed.limit,
+    };
+    const shown = {
+      assignee: null as string | null,
+      creator: null as string | null,
+    };
+
+    const needsLookup =
+      (!parsed.unassigned &&
+        parsed.mine !== 'assigned' &&
+        !!parsed.assigneeRawText) ||
+      (parsed.mine !== 'created' && !!parsed.creatorRawText);
+    const employees = needsLookup
+      ? await this.prisma.employee.findMany({
+          select: { id: true, fullName: true },
+        })
+      : [];
+    const resolveName = async (
+      raw: string,
+      role: 'исполнителя' | 'постановщика',
+    ) => {
+      const resolution = await this.employeeResolver.resolve(raw, employees);
+      if (resolution.status === 'RESOLVED' && resolution.employeeId) {
+        return {
+          id: resolution.employeeId,
+          name:
+            employees.find((e) => e.id === resolution.employeeId)?.fullName ??
+            raw,
+        };
+      }
+      return {
+        error:
+          resolution.status === 'AMBIGUOUS'
+            ? `EMPLOYEE_AMBIGUOUS: по имени «${raw}» подходят несколько сотрудников — уточните у пользователя, кого он имел в виду (${role})`
+            : `EMPLOYEE_NOT_FOUND: не нашёл сотрудника «${raw}» — уточните у пользователя (${role})`,
+      };
+    };
+
+    if (parsed.unassigned) {
+      filter.assigneeId = null;
+      shown.assignee = 'Без исполнителя';
+    } else if (parsed.mine === 'assigned') {
+      filter.assigneeId = user.id;
+    } else if (parsed.assigneeRawText) {
+      const found = await resolveName(parsed.assigneeRawText, 'исполнителя');
+      if ('error' in found)
+        return { tool: 'find_tasks', error: true, message: found.error };
+      filter.assigneeId = found.id;
+      shown.assignee = found.name;
+    }
+    if (parsed.mine === 'created') {
+      filter.creatorId = user.id;
+    } else if (parsed.creatorRawText) {
+      const found = await resolveName(parsed.creatorRawText, 'постановщика');
+      if ('error' in found)
+        return { tool: 'find_tasks', error: true, message: found.error };
+      filter.creatorId = found.id;
+      shown.creator = found.name;
+    }
+
+    const result = await this.tasks.search(filter);
+    const now = new Date();
+    return {
+      tool: 'find_tasks',
+      items: result.items.map((t) => toFoundTask(t, now)),
+      totalCount: result.totalCount,
+      overdueCount: result.overdueCount,
+      byAssignee: toGroupData(result.byAssignee),
+      byStatus: result.byStatus,
+      filter: shown,
+    };
+  }
+
+  // Задача видна всем (владелец 20.10.2026) — отдельной проверки прав на
+  // чтение нет, как и у GET /tasks/:id.
+  private async getTask(taskId: string): Promise<ToolExecutionResult> {
+    if (!taskId)
+      return {
+        tool: 'get_task',
+        error: true,
+        message: 'INVALID_INPUT: не указан id задачи',
+      };
+    let task: Awaited<ReturnType<TasksService['findOne']>>;
+    try {
+      task = await this.tasks.findOne(taskId);
+    } catch (err) {
+      if (err instanceof NotFoundException)
+        return {
+          tool: 'get_task',
+          error: true,
+          message:
+            'TASK_NOT_FOUND: задача не найдена — найди её через find_tasks',
+        };
+      throw err;
+    }
+    const ids = historyEmployeeIds(task.history);
+    const names = ids.length
+      ? new Map(
+          (
+            await this.prisma.employee.findMany({
+              where: { id: { in: ids } },
+              select: { id: true, fullName: true },
+            })
+          ).map((e) => [e.id, e.fullName]),
+        )
+      : new Map<string, string>();
+    return { tool: 'get_task', task: toTaskDetail(task, names) };
+  }
+
+  // ── Единый агент A2: изменение существующих задач ──────────────────────
+  // Права, история и уведомления — внутри TasksService; здесь только разбор
+  // входа, ключ повтора, снимок для отмены и карточка «было → стало».
+  private async runTaskWrite(
+    tool: TaskWriteToolName,
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    const taskId =
+      typeof (input as { taskId?: unknown } | null)?.taskId === 'string'
+        ? (input as { taskId: string }).taskId.trim()
+        : '';
+    if (!taskId)
+      return {
+        tool,
+        error: true,
+        message: 'INVALID_INPUT: не указан id задачи',
+      };
+
+    if (tool === 'update_task') {
+      const parsed = parseUpdateTaskInput(input);
+      const dto: UpdateTaskDto = {};
+      if (parsed.title !== undefined) dto.title = parsed.title;
+      if (parsed.description !== undefined)
+        dto.description = parsed.description;
+      if (parsed.dueDate !== undefined) dto.dueDate = parsed.dueDate;
+      if (parsed.priority !== undefined)
+        dto.priority = TaskPriority[parsed.priority];
+      if (parsed.unassign) dto.assigneeId = null;
+      else if (parsed.assigneeRawText) {
+        const employees = await this.prisma.employee.findMany({
+          where: { status: 'ACTIVE' },
+          select: { id: true, fullName: true },
+        });
+        const resolution = await this.employeeResolver.resolve(
+          parsed.assigneeRawText,
+          employees,
+        );
+        if (resolution.status !== 'RESOLVED' || !resolution.employeeId) {
+          return {
+            tool,
+            error: true,
+            message:
+              resolution.status === 'AMBIGUOUS'
+                ? `ASSIGNEE_AMBIGUOUS: по имени «${parsed.assigneeRawText}» подходят несколько сотрудников — уточните у пользователя`
+                : `ASSIGNEE_NOT_FOUND: не нашёл сотрудника «${parsed.assigneeRawText}» — уточните у пользователя`,
+          };
+        }
+        dto.assigneeId = resolution.employeeId;
+      }
+      if (Object.keys(dto).length === 0)
+        return {
+          tool,
+          error: true,
+          message: 'INVALID_INPUT: не указано, что изменить',
+        };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { taskId },
+        () => this.updateTask(taskId, dto, user, conversationId),
+        () => this.updateApplied(taskId, dto),
+      );
+    }
+
+    if (tool === 'set_task_status') {
+      const status = (input as { status?: unknown } | null)?.status;
+      if (!SETTABLE_TASK_STATUSES.includes(status as TaskStatus))
+        return {
+          tool,
+          error: true,
+          message: 'INVALID_INPUT: неизвестный статус',
+        };
+      const target = status as TaskStatus;
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { taskId },
+        () => this.setTaskStatus(taskId, target, user, conversationId),
+        async () =>
+          (
+            await this.prisma.task.findUnique({
+              where: { id: taskId },
+              select: { status: true },
+            })
+          )?.status === target,
+      );
+    }
+
+    if (tool === 'comment_task') {
+      const text =
+        typeof (input as { text?: unknown } | null)?.text === 'string'
+          ? (input as { text: string }).text.trim()
+          : '';
+      if (!text)
+        return {
+          tool,
+          error: true,
+          message: 'INVALID_INPUT: пустой комментарий',
+        };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { taskId },
+        async () => {
+          const task = await this.tasks.addComment(
+            taskId,
+            { body: text },
+            user,
+          );
+          void this.audit.log(user.id, 'AI_TASK_COMMENT', 'Task', taskId, {
+            length: text.length,
+          });
+          return { tool, task: toTaskCardData(task), comment: text };
+        },
+        async (since) =>
+          (await this.prisma.taskComment.count({
+            where: {
+              taskId,
+              authorId: user.id,
+              body: text,
+              createdAt: { gte: since },
+            },
+          })) > 0,
+      );
+    }
+
+    if (tool === 'remind_task') {
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { taskId },
+        async () => {
+          const task = await this.tasks.remind(taskId, user);
+          void this.audit.log(user.id, 'AI_TASK_REMIND', 'Task', taskId, {});
+          return { tool, task: toTaskCardData(task) };
+        },
+        async (since) =>
+          (await this.prisma.taskHistory.count({
+            where: {
+              taskId,
+              field: 'remind',
+              changedById: user.id,
+              createdAt: { gte: since },
+            },
+          })) > 0,
+      );
+    }
+
+    // delete_task — без отмены (сущности уже нет), как и голосовое удаление.
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      { taskId },
+      async () => {
+        const before = await this.tasks.findOne(taskId);
+        await this.tasks.remove(taskId, user);
+        void this.audit.log(user.id, 'AI_TASK_DELETE', 'Task', taskId, {});
+        return { tool, taskId, title: before.title };
+      },
+      async () =>
+        (await this.prisma.task.count({ where: { id: taskId } })) === 0,
+    );
+  }
+
+  private async updateTask(
+    taskId: string,
+    dto: UpdateTaskDto,
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const before = await this.tasks.findOne(taskId);
+    // Снимок «до» только по меняемым полям — тот же формат, что у голоса
+    // (TaskRevertPayload), откатывает его VoiceService.undo.
+    const previous: Record<string, unknown> = {};
+    if (dto.title !== undefined) previous.title = before.title;
+    if (dto.description !== undefined)
+      previous.description = before.description ?? '';
+    if (dto.assigneeId !== undefined)
+      previous.assigneeId = before.assignee?.id ?? null;
+    if (dto.dueDate !== undefined)
+      previous.dueDate = before.dueDate ? before.dueDate.toISOString() : null;
+    if (dto.priority !== undefined) previous.priority = before.priority;
+    const after = await this.tasks.update(taskId, dto, user);
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.TASK,
+        action: UndoRecordAction.UPDATE,
+        entityId: taskId,
+      },
+      { previous },
+      conversationId,
+    );
+    void this.audit.log(user.id, 'AI_TASK_UPDATE', 'Task', taskId, {
+      fields: Object.keys(dto),
+    });
+    return {
+      tool: 'update_task',
+      task: {
+        ...toTaskCardData(after),
+        changes: describeTaskChanges(before, after),
+        ...undo,
+      },
+    };
+  }
+
+  private async setTaskStatus(
+    taskId: string,
+    status: TaskStatus,
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const before = await this.tasks.findOne(taskId);
+    if (before.status === status)
+      return {
+        tool: 'set_task_status',
+        task: { ...toTaskCardData(before), changes: [] },
+      };
+    const after = await this.tasks.updateStatus(taskId, status, user);
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.TASK,
+        action: UndoRecordAction.UPDATE,
+        entityId: taskId,
+      },
+      { previous: { status: before.status } },
+      conversationId,
+    );
+    void this.audit.log(user.id, 'AI_TASK_STATUS', 'Task', taskId, {
+      from: before.status,
+      to: status,
+    });
+    return {
+      tool: 'set_task_status',
+      task: {
+        ...toTaskCardData(after),
+        changes: describeTaskChanges(before, after),
+        ...undo,
+      },
+    };
+  }
+
+  // Повтор с несовпавшими полями — значит прошлая попытка не дошла до записи.
+  private async updateApplied(
+    taskId: string,
+    dto: UpdateTaskDto,
+  ): Promise<boolean> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: {
+        title: true,
+        description: true,
+        assigneeId: true,
+        dueDate: true,
+        priority: true,
+      },
+    });
+    if (!task) return false;
+    if (dto.title !== undefined && task.title !== dto.title) return false;
+    if (
+      dto.description !== undefined &&
+      (task.description ?? '') !== dto.description
+    )
+      return false;
+    if (dto.assigneeId !== undefined && task.assigneeId !== dto.assigneeId)
+      return false;
+    if (dto.priority !== undefined && task.priority !== dto.priority)
+      return false;
+    if (dto.dueDate !== undefined) {
+      const want = dto.dueDate ? new Date(dto.dueDate).getTime() : null;
+      if ((task.dueDate?.getTime() ?? null) !== want) return false;
+    }
+    return true;
+  }
+
+  // Та же запись UndoRecord, что у голоса (VoiceService.createUndoRecord) —
+  // откат делает тот же POST /voice/undo. conversationId — чтобы
+  // «Отменено.» появилось в том разговоре, где карточка. Сбой — без отмены,
+  // не ошибка самого изменения (оно уже случилось).
+  private async createUndo(
+    user: AuthenticatedUser,
+    target: { kind: UndoKind; action: UndoRecordAction; entityId: string },
+    extra: {
+      previous?: Record<string, unknown>;
+      addedParticipantIds?: string[];
+      removedParticipantIds?: string[];
+    },
+    conversationId: string,
+  ): Promise<{ undoToken: string | null; undoExpiresAt: string | null }> {
+    try {
+      const record = await this.prisma.undoRecord.create({
+        data: {
+          employeeId: user.id,
+          kind: target.kind,
+          action: target.action,
+          entityId: target.entityId,
+          ...(extra.previous
+            ? { previous: extra.previous as Prisma.InputJsonValue }
+            : {}),
+          ...(extra.addedParticipantIds?.length
+            ? { addedParticipantIds: extra.addedParticipantIds }
+            : {}),
+          ...(extra.removedParticipantIds?.length
+            ? { removedParticipantIds: extra.removedParticipantIds }
+            : {}),
+          status: UndoRecordStatus.AVAILABLE,
+          expiresAt: new Date(Date.now() + AGENT_UNDO_WINDOW_MS),
+          conversationId,
+        },
+      });
+      return {
+        undoToken: record.id,
+        undoExpiresAt: record.expiresAt.toISOString(),
+      };
+    } catch (err) {
+      this.logger.error(
+        `undo record failed for ${target.kind} ${target.entityId} — изменение уже выполнено, без отмены: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { undoToken: null, undoExpiresAt: null };
+    }
+  }
+
+  // Ровно одно выполнение на `<userMessageId>:<writeToolCallIndex>` в
+  // разговоре (AgentActionExecution). COMPLETED — отдаём сохранённый
+  // результат; свежий CLAIMED — параллельный вызов, отказ; брошенный CLAIMED
+  // (процесс упал) — сначала проверяем, не применено ли изменение уже
+  // (wasApplied), и только потом повторяем.
+  private async runOnce(
+    conversationId: string,
+    dedupeKey: string,
+    tool: AgentWriteToolName,
+    entity: { taskId?: string; eventId?: string },
+    run: () => Promise<ToolExecutionResult>,
+    wasApplied: (since: Date) => Promise<boolean>,
+  ): Promise<ToolExecutionResult> {
+    let executionId: string;
+    try {
+      executionId = (
+        await this.prisma.agentActionExecution.create({
+          data: { conversationId, dedupeKey, tool },
+        })
+      ).id;
+    } catch (err) {
+      if (!isUniqueConstraintError(err)) throw err;
+      const existing = await this.prisma.agentActionExecution.findUnique({
+        where: { conversationId_dedupeKey: { conversationId, dedupeKey } },
+      });
+      if (!existing) throw err;
+      if (
+        existing.status === AgentActionStatus.COMPLETED &&
+        existing.resultJson
+      )
+        return existing.resultJson as unknown as ToolExecutionResult;
+      const stale =
+        Date.now() - existing.updatedAt.getTime() > STALE_AGENT_ACTION_MS;
+      if (existing.status === AgentActionStatus.CLAIMED && !stale) {
+        return {
+          tool,
+          error: true,
+          message:
+            'ALREADY_PROCESSING: это изменение уже выполняется — подождите немного',
+        };
+      }
+      if (
+        existing.status === AgentActionStatus.CLAIMED &&
+        (await wasApplied(existing.createdAt))
+      ) {
+        const result: ToolExecutionResult = {
+          tool,
+          alreadyApplied: true,
+          ...entity,
+        };
+        await this.prisma.agentActionExecution.update({
+          where: { id: existing.id },
+          data: {
+            status: AgentActionStatus.COMPLETED,
+            resultJson: result,
+          },
+        });
+        return result;
+      }
+      await this.prisma.agentActionExecution.update({
+        where: { id: existing.id },
+        data: { status: AgentActionStatus.CLAIMED, errorMessage: null },
+      });
+      executionId = existing.id;
+    }
+
+    let result: ToolExecutionResult;
+    try {
+      result = await run();
+    } catch (err) {
+      const expected = taskWriteError(tool, err);
+      await this.prisma.agentActionExecution
+        .update({
+          where: { id: executionId },
+          data: {
+            status: AgentActionStatus.FAILED,
+            errorMessage:
+              expected?.message ??
+              (err instanceof Error ? err.message : String(err)),
+          },
+        })
+        .catch(() => {});
+      if (expected) return expected;
+      throw err;
+    }
+    // Отказ проверки до изменения (неверное время и т.п.) — FAILED: повтор
+    // с исправленным вводом в том же ходе невозможен, но и «выполнено» не пишем.
+    await this.prisma.agentActionExecution.update({
+      where: { id: executionId },
+      data:
+        'error' in result
+          ? { status: AgentActionStatus.FAILED, errorMessage: result.message }
+          : {
+              status: AgentActionStatus.COMPLETED,
+              resultJson: result as unknown as Prisma.InputJsonValue,
+            },
+    });
+    return result;
+  }
+
+  // ── Единый агент A3: календарь ──────────────────────────────────────────
+  // Владелец данных — сам пользователь (ADMIN — свой календарь, как у
+  // ассистента и голоса); права перепроверяются здесь: модель могла вызвать
+  // инструмент из старой истории после смены роли.
+
+  private async findEvents(
+    input: unknown,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
+    if (!isManager(user.role))
+      return {
+        tool: 'find_events',
+        error: true,
+        message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству',
+      };
+    const parsed = parseFindEventsInput(input);
+    let participantId: string | undefined;
+    if (parsed.participantRawText) {
+      const found = await this.resolveEmployees([parsed.participantRawText]);
+      if ('message' in found)
+        return { tool: 'find_events', error: true, message: found.message };
+      participantId = found.ids[0];
+    }
+    const query = parsed.query?.toLowerCase();
+    const events = (
+      await this.events.findAll(user.id, { from: parsed.from, to: parsed.to })
+    ).filter(
+      (e) =>
+        e.status !== EventStatus.CANCELLED &&
+        (!query ||
+          [e.title, e.location, e.description].some((v) =>
+            v?.toLowerCase().includes(query),
+          )) &&
+        (!participantId || e.participants.some((p) => p.id === participantId)),
+    );
+    const shown = events.slice(0, FIND_EVENTS_LIMIT);
+    return {
+      tool: 'find_events',
+      items: shown.map(toFoundEvent),
+      totalCount: events.length,
+      cards: shown.slice(0, MAX_TOOL_ITEMS).map(toEventCard),
+    };
+  }
+
+  private async findFreeSlots(
+    input: unknown,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
+    if (!this.availability || !isManager(user.role))
+      return {
+        tool: 'find_free_slots',
+        error: true,
+        message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству',
+      };
+    const parsed = parseFreeSlotsInput(input);
+    const result = await this.availability.findSlotsForAgent(
+      user.id,
+      parsed.from,
+      parsed.to,
+      parsed.durationMinutes,
+      parsed.maxResults,
+    );
+    return {
+      tool: 'find_free_slots',
+      slots: result.slots.map(toSlotData),
+      durationMinutes: parsed.durationMinutes,
+      googleChecked: result.googleChecked,
+    };
+  }
+
+  // Сотрудники по именам, как прозвучали (тот же резолвер, что у задач):
+  // хоть одно неоднозначное или ненайденное — понятная модели ошибка, ничего
+  // не меняем.
+  private async resolveEmployees(
+    rawNames: string[],
+  ): Promise<{ ids: string[] } | { message: string }> {
+    if (rawNames.length === 0) return { ids: [] };
+    const employees = await this.prisma.employee.findMany({
+      where: { status: 'ACTIVE' },
+      select: { id: true, fullName: true },
+    });
+    const ids: string[] = [];
+    for (const raw of rawNames) {
+      const resolution = await this.employeeResolver.resolve(raw, employees);
+      if (resolution.status !== 'RESOLVED' || !resolution.employeeId) {
+        return {
+          message:
+            resolution.status === 'AMBIGUOUS'
+              ? `EMPLOYEE_AMBIGUOUS: по имени «${raw}» подходят несколько сотрудников — уточните у пользователя`
+              : `EMPLOYEE_NOT_FOUND: не нашёл сотрудника «${raw}» — уточните у пользователя`,
+        };
+      }
+      ids.push(resolution.employeeId);
+    }
+    return { ids: [...new Set(ids)] };
+  }
+
+  private async runEventWrite(
+    tool: EventWriteToolName,
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    if (!isManager(user.role))
+      return {
+        tool,
+        error: true,
+        message: 'CALENDAR_FORBIDDEN: календарь доступен только руководству',
+      };
+
+    if (tool === 'create_event') {
+      const parsed = parseCreateEventInput(input);
+      if ('error' in parsed)
+        return { tool, error: true, message: parsed.error };
+      const people = await this.resolveEmployees(parsed.participants);
+      if ('message' in people)
+        return { tool, error: true, message: people.message };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        {},
+        () => this.createEvent(parsed, people.ids, user, conversationId),
+        async (since) =>
+          (await this.prisma.event.count({
+            where: {
+              createdById: user.id,
+              title: parsed.title,
+              startAt: parsed.startAt,
+              createdAt: { gte: since },
+            },
+          })) > 0,
+      );
+    }
+
+    const eventId =
+      typeof (input as { eventId?: unknown } | null)?.eventId === 'string'
+        ? (input as { eventId: string }).eventId.trim()
+        : '';
+    if (!eventId)
+      return {
+        tool,
+        error: true,
+        message: 'INVALID_INPUT: не указан id события',
+      };
+
+    if (tool === 'update_event') {
+      const parsed = parseUpdateEventInput(input);
+      const [add, remove] = await Promise.all([
+        this.resolveEmployees(parsed.addParticipants),
+        this.resolveEmployees(parsed.removeParticipants),
+      ]);
+      if ('message' in add) return { tool, error: true, message: add.message };
+      if ('message' in remove)
+        return { tool, error: true, message: remove.message };
+      return this.runOnce(
+        conversationId,
+        dedupeKey,
+        tool,
+        { eventId },
+        () =>
+          this.updateEvent(
+            eventId,
+            parsed,
+            add.ids,
+            remove.ids,
+            user,
+            conversationId,
+          ),
+        async () => {
+          const event = await this.prisma.event.findFirst({
+            where: { id: eventId, createdById: user.id },
+            include: { participants: { select: { employeeId: true } } },
+          });
+          if (!event) return false;
+          const people = new Set(event.participants.map((p) => p.employeeId));
+          return (
+            (parsed.title === undefined || event.title === parsed.title) &&
+            (parsed.location === undefined ||
+              (event.location ?? '') === parsed.location) &&
+            (parsed.startAt === undefined ||
+              event.startAt.getTime() === parsed.startAt.getTime()) &&
+            (parsed.endAt === undefined ||
+              event.endAt.getTime() === parsed.endAt.getTime()) &&
+            add.ids.every((id) => people.has(id)) &&
+            remove.ids.every((id) => !people.has(id))
+          );
+        },
+      );
+    }
+
+    // delete_event — без отмены, как и голосовое удаление события.
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      { eventId },
+      async () => {
+        const before = await this.events.findOne(eventId, user.id);
+        await this.events.remove(eventId, user.id);
+        void this.audit.log(user.id, 'AI_EVENT_DELETE', 'Event', eventId, {});
+        return { tool, eventId, title: before.title };
+      },
+      async () =>
+        (await this.prisma.event.count({ where: { id: eventId } })) === 0,
+    );
+  }
+
+  private async createEvent(
+    input: {
+      title: string;
+      startAt?: Date;
+      endAt?: Date;
+      allDay: boolean;
+      location?: string;
+      description?: string;
+    },
+    participantIds: string[],
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const created = await this.events.create(
+      {
+        title: input.title,
+        description: input.description,
+        location: input.location,
+        startAt: input.startAt!.toISOString(),
+        endAt: input.endAt!.toISOString(),
+        allDay: input.allDay,
+      },
+      user.id,
+    );
+    const warning = await this.applyParticipants(
+      created.id,
+      participantIds,
+      [],
+      user.id,
+    );
+    const after =
+      participantIds.length > 0
+        ? await this.events.findOne(created.id, user.id)
+        : created;
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.EVENT,
+        action: UndoRecordAction.CREATE,
+        entityId: created.id,
+      },
+      {},
+      conversationId,
+    );
+    void this.audit.log(user.id, 'AI_EVENT_CREATE', 'Event', created.id, {
+      participants: participantIds.length,
+    });
+    return {
+      tool: 'create_event',
+      event: { ...toEventCard(after), warning, ...undo },
+    };
+  }
+
+  private async updateEvent(
+    eventId: string,
+    input: ReturnType<typeof parseUpdateEventInput>,
+    addIds: string[],
+    removeIds: string[],
+    user: AuthenticatedUser,
+    conversationId: string,
+  ): Promise<ToolExecutionResult> {
+    const before = await this.events.findOne(eventId, user.id);
+    const times = nextEventTimes(before, input);
+    if ('error' in times)
+      return { tool: 'update_event', error: true, message: times.error };
+
+    const dto: UpdateEventDto = {};
+    if (input.title !== undefined && input.title !== before.title)
+      dto.title = input.title;
+    if (
+      input.location !== undefined &&
+      input.location !== (before.location ?? '')
+    )
+      dto.location = input.location;
+    if (
+      input.description !== undefined &&
+      input.description !== (before.description ?? '')
+    )
+      dto.description = input.description;
+    if (times.startAt) dto.startAt = times.startAt.toISOString();
+    if (times.endAt) dto.endAt = times.endAt.toISOString();
+    const current = new Set(before.participants.map((p) => p.id));
+    const added = addIds.filter((id) => !current.has(id));
+    const removed = removeIds.filter((id) => current.has(id));
+    if (
+      Object.keys(dto).length === 0 &&
+      added.length === 0 &&
+      removed.length === 0
+    ) {
+      return {
+        tool: 'update_event',
+        event: { ...toEventCard(before), changes: [] },
+      };
+    }
+
+    // Снимок «до» — формат голосового EventRevertPayload, откатывает его
+    // VoiceService.undo (поля, затем инверсия участников).
+    const previous: Record<string, unknown> = {};
+    if (dto.title !== undefined) previous.title = before.title;
+    if (dto.description !== undefined)
+      previous.description = before.description ?? '';
+    if (dto.location !== undefined) previous.location = before.location ?? '';
+    if (dto.startAt !== undefined)
+      previous.startAt = before.startAt.toISOString();
+    if (dto.endAt !== undefined) previous.endAt = before.endAt.toISOString();
+    // version только что прочитанного события: параллельная правка (web,
+    // Google, вторая команда) даст конфликт, а не тихую перезапись.
+    if (Object.keys(dto).length > 0)
+      await this.events.update(
+        eventId,
+        { ...dto, version: before.version },
+        user.id,
+      );
+    const warning = await this.applyParticipants(
+      eventId,
+      added,
+      removed,
+      user.id,
+    );
+    const after = await this.events.findOne(eventId, user.id);
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.EVENT,
+        action: UndoRecordAction.UPDATE,
+        entityId: eventId,
+      },
+      { previous, addedParticipantIds: added, removedParticipantIds: removed },
+      conversationId,
+    );
+    void this.audit.log(user.id, 'AI_EVENT_UPDATE', 'Event', eventId, {
+      fields: Object.keys(dto),
+      added: added.length,
+      removed: removed.length,
+    });
+    return {
+      tool: 'update_event',
+      event: {
+        ...toEventCard(after),
+        changes: describeEventChanges(before, after),
+        warning,
+        ...undo,
+      },
+    };
+  }
+
+  // Как VoiceService.applyParticipants: сбой участника — предупреждение на
+  // карточке, а не отказ всего действия (событие уже создано/изменено).
+  private async applyParticipants(
+    eventId: string,
+    addIds: string[],
+    removeIds: string[],
+    ownerId: string,
+  ): Promise<string | null> {
+    let failed = 0;
+    for (const id of addIds)
+      await this.events
+        .addParticipant(eventId, id, ownerId)
+        .catch(() => failed++);
+    for (const id of removeIds)
+      await this.events
+        .removeParticipant(eventId, id, ownerId)
+        .catch(() => failed++);
+    if (failed === 0) return null;
+    this.logger.warn(
+      `агент: не удалось изменить ${failed} участника(ов) события ${eventId}`,
+    );
+    return `Не удалось изменить участников: ${failed}`;
   }
 
   // Stage 2, Phase G — в отличие от getTasks выше, здесь НЕТ среза на
@@ -1035,25 +2787,45 @@ export class AssistantToolsService {
   // ответ), но весь смысл экспорта в файл — увидеть больше, чем 10 задач,
   // иначе экспорт был бы бесполезен ровно в том случае, ради которого его
   // и попросили.
-  private async exportTasksXlsx(user: AuthenticatedUser, filter: GetTasksFilter = 'all'): Promise<ToolExecutionResult> {
+  private async exportTasksXlsx(
+    user: AuthenticatedUser,
+    filter: GetTasksFilter = 'all',
+  ): Promise<ToolExecutionResult> {
     const tasks = await this.tasks.findAll();
-    const filtered = filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
+    const filtered =
+      filter === 'overdue' ? tasks.filter((t) => t.isOverdue) : tasks;
     const buffer = await buildTasksWorkbookBuffer(filtered);
     const label = filter === 'overdue' ? 'просроченные' : 'все';
     const name = `Задачи (${label}) ${new Date().toISOString().slice(0, 10)}.xlsx`;
-    const artifact = await this.files.createGenerated(user, buffer, name, XLSX_MIME_TYPE);
+    const artifact = await this.files.createGenerated(
+      user,
+      buffer,
+      name,
+      XLSX_MIME_TYPE,
+    );
     return {
       tool: 'export_tasks_xlsx',
       totalCount: filtered.length,
-      file: { fileId: artifact.id, name: artifact.name, mimeType: artifact.mimeType, size: artifact.size },
+      file: {
+        fileId: artifact.id,
+        name: artifact.name,
+        mimeType: artifact.mimeType,
+        size: artifact.size,
+      },
     };
   }
 
-  private async getEvents(user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async getEvents(
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const now = new Date();
     const events = await this.events.findAll(user.id);
-    const upcoming = events.filter((e) => e.status !== EventStatus.CANCELLED && e.startAt >= now);
-    const items: EventCardData[] = upcoming.slice(0, MAX_TOOL_ITEMS).map(toEventCardData);
+    const upcoming = events.filter(
+      (e) => e.status !== EventStatus.CANCELLED && e.startAt >= now,
+    );
+    const items: EventCardData[] = upcoming
+      .slice(0, MAX_TOOL_ITEMS)
+      .map(toEventCardData);
     return { tool: 'get_events', items, totalCount: upcoming.length };
   }
 
@@ -1062,7 +2834,10 @@ export class AssistantToolsService {
   // roadmap v13, MUST-FIX #1 — source прокидывается как есть в
   // findAll(), фильтрация по Meeting.plaudRecordingId живёт там же, где
   // и остальная логика видимости встреч.
-  private async getRecentMeetings(limit: number, source: 'all' | 'plaud' = 'all'): Promise<ToolExecutionResult> {
+  private async getRecentMeetings(
+    limit: number,
+    source: 'all' | 'plaud' = 'all',
+  ): Promise<ToolExecutionResult> {
     const meetings = await this.meetings.findAll(source);
     const capped = Math.min(limit, MAX_TOOL_ITEMS);
     const items: MeetingSummaryData[] = meetings.slice(0, capped).map((m) => ({
@@ -1076,7 +2851,10 @@ export class AssistantToolsService {
   // Поиск по подстроке (ILIKE через Prisma mode: 'insensitive'), не
   // полнотекстовый поиск — простой и достаточный для объёма встреч одной
   // компании, не требует отдельной tsvector-инфраструктуры.
-  private async searchMeetings(query: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async searchMeetings(
+    query: string,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const trimmed = query.trim();
     if (!trimmed) return { tool: 'search_meetings', items: [], totalCount: 0 };
 
@@ -1088,14 +2866,25 @@ export class AssistantToolsService {
         // Plaud обновил саммари, новое содержимое живёт в latestSummary,
         // не в замороженной rawSummary — поиск должен видеть его тоже.
         { latestSummary: { contains: trimmed, mode: 'insensitive' as const } },
-        { enhancedSummary: { contains: trimmed, mode: 'insensitive' as const } },
+        {
+          enhancedSummary: { contains: trimmed, mode: 'insensitive' as const },
+        },
       ],
     };
     const [meetings, totalCount] = await Promise.all([
-      this.prisma.meeting.findMany({ where, select: { id: true, title: true, meetingDate: true }, orderBy: { meetingDate: 'desc' }, take: MAX_TOOL_ITEMS }),
+      this.prisma.meeting.findMany({
+        where,
+        select: { id: true, title: true, meetingDate: true },
+        orderBy: { meetingDate: 'desc' },
+        take: MAX_TOOL_ITEMS,
+      }),
       this.prisma.meeting.count({ where }),
     ]);
-    const items: MeetingSummaryData[] = meetings.map((m) => ({ meetingId: m.id, title: m.title, meetingDate: m.meetingDate.toISOString() }));
+    const items: MeetingSummaryData[] = meetings.map((m) => ({
+      meetingId: m.id,
+      title: m.title,
+      meetingDate: m.meetingDate.toISOString(),
+    }));
 
     // Находка P2 (доп. пункт) седьмого внешнего аудита — поиск по встречам
     // через AI-ассистента раньше не оставлял следа в AuditLog вообще (в
@@ -1103,7 +2892,9 @@ export class AssistantToolsService {
     // соблюдался). entityId — сам поисковый запрос: у поиска по всем
     // встречам нет одной "целевой" записи, а по запросу можно найти, что
     // именно искали.
-    await this.audit.log(user.id, 'AI_MEETING_SEARCH', 'Meeting', trimmed, { resultCount: totalCount });
+    await this.audit.log(user.id, 'AI_MEETING_SEARCH', 'Meeting', trimmed, {
+      resultCount: totalCount,
+    });
 
     return { tool: 'search_meetings', items, totalCount };
   }
@@ -1112,7 +2903,10 @@ export class AssistantToolsService {
   // ловится общим try/catch в execute()) и тот же обязательный audit.log
   // READ (раздел 15 ТЗ: аудит обращений к протоколам встреч), не
   // задваиваем его здесь отдельным запросом.
-  private async getMeeting(meetingId: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async getMeeting(
+    meetingId: string,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const meeting = await this.meetings.findOne(meetingId, user.id);
     return {
       tool: 'get_meeting',
@@ -1123,7 +2917,10 @@ export class AssistantToolsService {
         // Находка №4 седьмого внешнего аудита (Stage 2, Phase N, "Plaud
         // summary freshness") — Assistant должен отвечать по самой свежей
         // версии, не по замороженной rawSummary, если Plaud её обновил.
-        summary: meeting.enhancedSummary ?? meeting.latestSummary ?? meeting.rawSummary,
+        summary:
+          meeting.enhancedSummary ??
+          meeting.latestSummary ??
+          meeting.rawSummary,
       },
     };
   }
@@ -1134,9 +2931,14 @@ export class AssistantToolsService {
   // результат здесь означает либо "ничего не сказали по теме", либо
   // "транскрипт этой встречи ещё не синхронизирован", промпт инструмента
   // прямо просит модель не путать одно с другим и не выдумывать ответ.
-  private async searchMeetingTranscript(query: string, meetingId: string | undefined, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async searchMeetingTranscript(
+    query: string,
+    meetingId: string | undefined,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const trimmed = query.trim();
-    if (!trimmed) return { tool: 'search_meeting_transcript', items: [], totalCount: 0 };
+    if (!trimmed)
+      return { tool: 'search_meeting_transcript', items: [], totalCount: 0 };
 
     const where = {
       text: { contains: trimmed, mode: 'insensitive' as const },
@@ -1175,7 +2977,13 @@ export class AssistantToolsService {
     // AI_MEETING_SEARCH выше, для поиска по транскриптам. entityId —
     // meetingId, если поиск сужен на конкретную встречу (реальная целевая
     // запись), иначе сам запрос (поиск по всем транскриптам).
-    await this.audit.log(user.id, 'AI_TRANSCRIPT_SEARCH', 'Meeting', meetingId ?? trimmed, { query: trimmed, meetingId: meetingId ?? null, resultCount: totalCount });
+    await this.audit.log(
+      user.id,
+      'AI_TRANSCRIPT_SEARCH',
+      'Meeting',
+      meetingId ?? trimmed,
+      { query: trimmed, meetingId: meetingId ?? null, resultCount: totalCount },
+    );
 
     return { tool: 'search_meeting_transcript', items, totalCount };
   }
@@ -1211,7 +3019,11 @@ export class AssistantToolsService {
     const meetingId = input.meetingId.trim();
     const title = input.title.trim();
     if (!meetingId || !title) {
-      return { tool: 'create_task_from_meeting', error: true, message: 'INVALID_INPUT: не указана встреча или заголовок задачи' };
+      return {
+        tool: 'create_task_from_meeting',
+        error: true,
+        message: 'INVALID_INPUT: не указана встреча или заголовок задачи',
+      };
     }
 
     // Реальный доступ (404 для чужой/несуществующей) + audit READ — тот
@@ -1220,7 +3032,11 @@ export class AssistantToolsService {
     try {
       meeting = await this.meetings.findOne(meetingId, user.id);
     } catch {
-      return { tool: 'create_task_from_meeting', error: true, message: 'MEETING_LOOKUP_FAILED: встреча не найдена' };
+      return {
+        tool: 'create_task_from_meeting',
+        error: true,
+        message: 'MEETING_LOOKUP_FAILED: встреча не найдена',
+      };
     }
 
     // Раздел 7 спеки Phase L: сегмент, если указан, обязан принадлежать
@@ -1230,9 +3046,17 @@ export class AssistantToolsService {
     let segment: { id: string; startMs: number } | null = null;
     const segmentId = input.segmentId?.trim();
     if (segmentId) {
-      const found = await this.prisma.meetingSegment.findUnique({ where: { id: segmentId }, select: { id: true, meetingId: true, startMs: true } });
+      const found = await this.prisma.meetingSegment.findUnique({
+        where: { id: segmentId },
+        select: { id: true, meetingId: true, startMs: true },
+      });
       if (!found || found.meetingId !== meetingId) {
-        return { tool: 'create_task_from_meeting', error: true, message: 'SEGMENT_MISMATCH: указанная реплика не принадлежит этой встрече' };
+        return {
+          tool: 'create_task_from_meeting',
+          error: true,
+          message:
+            'SEGMENT_MISMATCH: указанная реплика не принадлежит этой встрече',
+        };
       }
       segment = { id: found.id, startMs: found.startMs };
     }
@@ -1262,24 +3086,51 @@ export class AssistantToolsService {
     // writeToolCallIndex — число, разделитель ':' не может встретиться ни
     // в одной из частей).
     // Ключ — `${userMessageId}:${writeToolCallIndex}` (claimTaskExecution).
-    const claim = await this.claimTaskExecution(conversationId, `${userMessageId}:${writeToolCallIndex}`);
+    const claim = await this.claimTaskExecution(
+      conversationId,
+      `${userMessageId}:${writeToolCallIndex}`,
+    );
     if ('busy' in claim) {
-      return { tool: 'create_task_from_meeting', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся или недавно была создана — подождите немного' };
+      return {
+        tool: 'create_task_from_meeting',
+        error: true,
+        message:
+          'ALREADY_PROCESSING: эта задача уже создаётся или недавно была создана — подождите немного',
+      };
     }
     if ('existingTask' in claim) {
-      return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(claim.existingTask, meeting, segment, input.sourceContext) };
+      return {
+        tool: 'create_task_from_meeting',
+        task: this.buildTaskCardWithSource(
+          claim.existingTask,
+          meeting,
+          segment,
+          input.sourceContext,
+        ),
+      };
     }
     const executionId = claim.executionId;
 
     // Раздел 9 спеки Phase L: assigneeMentioned + resolver !== RESOLVED →
     // задача НЕ создаётся, никакого fallback в assigneeId: null — тот же
     // принцип, что уже применяется в voice/updateSpeakers.
-    const assignee = await this.resolveAssigneeForExecution(input.assigneeRawText, executionId);
-    if ('message' in assignee) return { tool: 'create_task_from_meeting', error: true, message: assignee.message };
+    const assignee = await this.resolveAssigneeForExecution(
+      input.assigneeRawText,
+      executionId,
+    );
+    if ('message' in assignee)
+      return {
+        tool: 'create_task_from_meeting',
+        error: true,
+        message: assignee.message,
+      };
     const assigneeId = assignee.assigneeId;
 
-    const sourceTimestamp = segment ? formatSegmentTimestamp(segment.startMs) : undefined;
-    const sourceContext = input.sourceContext?.trim().slice(0, 800) || undefined;
+    const sourceTimestamp = segment
+      ? formatSegmentTimestamp(segment.startMs)
+      : undefined;
+    const sourceContext =
+      input.sourceContext?.trim().slice(0, 800) || undefined;
 
     let task: Awaited<ReturnType<TasksService['create']>>;
     try {
@@ -1288,7 +3139,9 @@ export class AssistantToolsService {
           title,
           description: input.description?.trim() || undefined,
           assigneeId: assigneeId ?? undefined,
-          dueDate: input.dueDate ? withLocalOffset(input.dueDate) ?? undefined : undefined,
+          dueDate: input.dueDate
+            ? (withLocalOffset(input.dueDate) ?? undefined)
+            : undefined,
           sourceMeetingId: meetingId,
           sourceSegmentId: segment?.id,
           sourceExecutionId: executionId,
@@ -1299,40 +3152,113 @@ export class AssistantToolsService {
       );
     } catch (err) {
       const err2 = err instanceof Error ? err : new Error(String(err));
-      this.logger.error(`create_task_from_meeting: не удалось создать задачу: ${err2.message}`, err2.stack);
-      await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: err2.message } });
-      return { tool: 'create_task_from_meeting', error: true, message: TOOL_ERROR_MESSAGES.create_task_from_meeting };
+      this.logger.error(
+        `create_task_from_meeting: не удалось создать задачу: ${err2.message}`,
+        err2.stack,
+      );
+      await this.prisma.taskFromMeetingExecution.update({
+        where: { id: executionId },
+        data: {
+          status: TaskFromMeetingStatus.FAILED,
+          errorMessage: err2.message,
+        },
+      });
+      return {
+        tool: 'create_task_from_meeting',
+        error: true,
+        message: TOOL_ERROR_MESSAGES.create_task_from_meeting,
+      };
     }
 
-    await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id } });
+    await this.prisma.taskFromMeetingExecution.update({
+      where: { id: executionId },
+      data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id },
+    });
 
     // Раздел 21 спеки Phase L — без транскрипта целиком, только ссылки.
-    await this.audit.log(user.id, 'AI_MEETING_TASK_CREATE', 'Task', task.id, { meetingId, segmentId: segment?.id ?? null, assigneeId, dueDate: input.dueDate ?? null });
+    await this.audit.log(user.id, 'AI_MEETING_TASK_CREATE', 'Task', task.id, {
+      meetingId,
+      segmentId: segment?.id ?? null,
+      assigneeId,
+      dueDate: input.dueDate ?? null,
+    });
 
-    return { tool: 'create_task_from_meeting', task: this.buildTaskCardWithSource(task, meeting, segment, input.sourceContext) };
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.TASK,
+        action: UndoRecordAction.CREATE,
+        entityId: task.id,
+      },
+      {},
+      conversationId,
+    );
+    return {
+      tool: 'create_task_from_meeting',
+      task: {
+        ...this.buildTaskCardWithSource(
+          task,
+          meeting,
+          segment,
+          input.sourceContext,
+        ),
+        ...undo,
+      },
+    };
   }
 
   // Обычная задача из чата (25.10.2026) — та же идемпотентность и тот же
   // подбор исполнителя, что у create_task_from_meeting, без source-полей
   // встречи. Только руководство (инструмент выдаётся в buildTools).
   private async createTask(
-    input: { title: string; description?: string; assigneeRawText?: string; dueDate?: string; priority?: TaskPriority },
+    input: {
+      title: string;
+      description?: string;
+      assigneeRawText?: string;
+      dueDate?: string;
+      priority?: TaskPriority;
+    },
     user: AuthenticatedUser,
     conversationId: string,
     userMessageId: string,
     writeToolCallIndex: number,
   ): Promise<ToolExecutionResult> {
     const title = input.title.trim();
-    if (!title) return { tool: 'create_task', error: true, message: 'INVALID_INPUT: не указан заголовок задачи' };
-    if (!isManager(user.role)) return { tool: 'create_task', error: true, message: 'TASK_CREATE_FORBIDDEN: ставить задачи из чата может только руководство' };
+    if (!title)
+      return {
+        tool: 'create_task',
+        error: true,
+        message: 'INVALID_INPUT: не указан заголовок задачи',
+      };
+    if (!isManager(user.role))
+      return {
+        tool: 'create_task',
+        error: true,
+        message:
+          'TASK_CREATE_FORBIDDEN: ставить задачи из чата может только руководство',
+      };
 
-    const claim = await this.claimTaskExecution(conversationId, `${userMessageId}:${writeToolCallIndex}`);
-    if ('busy' in claim) return { tool: 'create_task', error: true, message: 'ALREADY_PROCESSING: эта задача уже создаётся — подождите немного' };
-    if ('existingTask' in claim) return { tool: 'create_task', task: toTaskCardData(claim.existingTask) };
+    const claim = await this.claimTaskExecution(
+      conversationId,
+      `${userMessageId}:${writeToolCallIndex}`,
+    );
+    if ('busy' in claim)
+      return {
+        tool: 'create_task',
+        error: true,
+        message:
+          'ALREADY_PROCESSING: эта задача уже создаётся — подождите немного',
+      };
+    if ('existingTask' in claim)
+      return { tool: 'create_task', task: toTaskCardData(claim.existingTask) };
     const executionId = claim.executionId;
 
-    const assignee = await this.resolveAssigneeForExecution(input.assigneeRawText, executionId);
-    if ('message' in assignee) return { tool: 'create_task', error: true, message: assignee.message };
+    const assignee = await this.resolveAssigneeForExecution(
+      input.assigneeRawText,
+      executionId,
+    );
+    if ('message' in assignee)
+      return { tool: 'create_task', error: true, message: assignee.message };
 
     let task: Awaited<ReturnType<TasksService['create']>>;
     try {
@@ -1341,7 +3267,9 @@ export class AssistantToolsService {
           title,
           description: input.description?.trim() || undefined,
           assigneeId: assignee.assigneeId ?? undefined,
-          dueDate: input.dueDate ? (withLocalOffset(input.dueDate) ?? undefined) : undefined,
+          dueDate: input.dueDate
+            ? (withLocalOffset(input.dueDate) ?? undefined)
+            : undefined,
           priority: input.priority,
           sourceExecutionId: executionId,
         },
@@ -1349,13 +3277,44 @@ export class AssistantToolsService {
       );
     } catch (err) {
       const err2 = err instanceof Error ? err : new Error(String(err));
-      this.logger.error(`create_task: не удалось создать задачу: ${err2.message}`, err2.stack);
-      await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: err2.message } });
-      return { tool: 'create_task', error: true, message: TOOL_ERROR_MESSAGES.create_task };
+      this.logger.error(
+        `create_task: не удалось создать задачу: ${err2.message}`,
+        err2.stack,
+      );
+      await this.prisma.taskFromMeetingExecution.update({
+        where: { id: executionId },
+        data: {
+          status: TaskFromMeetingStatus.FAILED,
+          errorMessage: err2.message,
+        },
+      });
+      return {
+        tool: 'create_task',
+        error: true,
+        message: TOOL_ERROR_MESSAGES.create_task,
+      };
     }
-    await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id } });
-    await this.audit.log(user.id, 'AI_TASK_CREATE', 'Task', task.id, { assigneeId: assignee.assigneeId, dueDate: input.dueDate ?? null });
-    return { tool: 'create_task', task: toTaskCardData(task) };
+    await this.prisma.taskFromMeetingExecution.update({
+      where: { id: executionId },
+      data: { status: TaskFromMeetingStatus.COMPLETED, taskId: task.id },
+    });
+    await this.audit.log(user.id, 'AI_TASK_CREATE', 'Task', task.id, {
+      assigneeId: assignee.assigneeId,
+      dueDate: input.dueDate ?? null,
+    });
+    // Единый агент A4: «Отменить» и для новой задачи — голосовое «поставь
+    // задачу» через агента не должно потерять отмену, которая была у голоса.
+    const undo = await this.createUndo(
+      user,
+      {
+        kind: UndoKind.TASK,
+        action: UndoRecordAction.CREATE,
+        entityId: task.id,
+      },
+      {},
+      conversationId,
+    );
+    return { tool: 'create_task', task: { ...toTaskCardData(task), ...undo } };
   }
 
   // Durable claim одного write-вызова «поставить задачу» (идемпотентность
@@ -1364,13 +3323,29 @@ export class AssistantToolsService {
   private async claimTaskExecution(
     conversationId: string,
     dedupeKey: string,
-  ): Promise<{ executionId: string } | { existingTask: { id: string; title: string; status: string; dueDate: Date | null; assignee: { id: string; fullName: string } | null } } | { busy: true }> {
+  ): Promise<
+    | { executionId: string }
+    | {
+        existingTask: {
+          id: string;
+          title: string;
+          status: string;
+          dueDate: Date | null;
+          assignee: { id: string; fullName: string } | null;
+        };
+      }
+    | { busy: true }
+  > {
     try {
-      const created = await this.prisma.taskFromMeetingExecution.create({ data: { conversationId, dedupeKey } });
+      const created = await this.prisma.taskFromMeetingExecution.create({
+        data: { conversationId, dedupeKey },
+      });
       return { executionId: created.id };
     } catch (err) {
       if (!isUniqueConstraintError(err)) throw err;
-      const existing = await this.prisma.taskFromMeetingExecution.findUnique({ where: { conversationId_dedupeKey: { conversationId, dedupeKey } } });
+      const existing = await this.prisma.taskFromMeetingExecution.findUnique({
+        where: { conversationId_dedupeKey: { conversationId, dedupeKey } },
+      });
       if (!existing) throw err;
 
       // Hardening-раунд (22.09.2026, P0 "crash-safe idempotency") —
@@ -1383,15 +3358,28 @@ export class AssistantToolsService {
       // записаться до крэша.
       const existingTask = await this.prisma.task.findUnique({
         where: { sourceExecutionId: existing.id },
-        select: { id: true, title: true, status: true, dueDate: true, assignee: { select: { id: true, fullName: true } } },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          dueDate: true,
+          assignee: { select: { id: true, fullName: true } },
+        },
       });
       if (existingTask) {
-        if (existing.status !== TaskFromMeetingStatus.COMPLETED || existing.taskId !== existingTask.id) {
+        if (
+          existing.status !== TaskFromMeetingStatus.COMPLETED ||
+          existing.taskId !== existingTask.id
+        ) {
           // Самоисцеление — execution не успел обновиться до крэша,
           // подтягиваем его в консистентное состояние заодно.
           await this.prisma.taskFromMeetingExecution.update({
             where: { id: existing.id },
-            data: { status: TaskFromMeetingStatus.COMPLETED, taskId: existingTask.id, errorMessage: null },
+            data: {
+              status: TaskFromMeetingStatus.COMPLETED,
+              taskId: existingTask.id,
+              errorMessage: null,
+            },
           });
         }
         return { existingTask };
@@ -1400,27 +3388,50 @@ export class AssistantToolsService {
       // Task ещё нет — прежняя status-based reclaim-логика: FAILED или
       // устаревший (брошенный процесс) CLAIMED можно повторить, свежий
       // CLAIMED (реально конкурентный вызов) — безопасный отказ.
-      const isStale = Date.now() - existing.updatedAt.getTime() > STALE_TASK_FROM_MEETING_MS;
-      const safeToReclaim = existing.status === TaskFromMeetingStatus.FAILED || (existing.status === TaskFromMeetingStatus.CLAIMED && isStale);
+      const isStale =
+        Date.now() - existing.updatedAt.getTime() > STALE_TASK_FROM_MEETING_MS;
+      const safeToReclaim =
+        existing.status === TaskFromMeetingStatus.FAILED ||
+        (existing.status === TaskFromMeetingStatus.CLAIMED && isStale);
       if (!safeToReclaim) return { busy: true };
-      await this.prisma.taskFromMeetingExecution.update({ where: { id: existing.id }, data: { status: TaskFromMeetingStatus.CLAIMED, errorMessage: null, taskId: null } });
+      await this.prisma.taskFromMeetingExecution.update({
+        where: { id: existing.id },
+        data: {
+          status: TaskFromMeetingStatus.CLAIMED,
+          errorMessage: null,
+          taskId: null,
+        },
+      });
       return { executionId: existing.id };
     }
   }
 
   // Исполнитель по тексту из реплики; не нашли однозначно — execution FAILED
   // и понятная модели ошибка (задача без исполнителя не создаётся).
-  private async resolveAssigneeForExecution(rawText: string | undefined, executionId: string): Promise<{ assigneeId: string | null } | { message: string }> {
+  private async resolveAssigneeForExecution(
+    rawText: string | undefined,
+    executionId: string,
+  ): Promise<{ assigneeId: string | null } | { message: string }> {
     const assigneeRawText = rawText?.trim();
     if (!assigneeRawText) return { assigneeId: null };
-    const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
-    const resolution = await this.employeeResolver.resolve(assigneeRawText, employees);
-    if (resolution.status === 'RESOLVED') return { assigneeId: resolution.employeeId };
+    const employees = await this.prisma.employee.findMany({
+      where: { status: 'ACTIVE' },
+      select: { id: true, fullName: true },
+    });
+    const resolution = await this.employeeResolver.resolve(
+      assigneeRawText,
+      employees,
+    );
+    if (resolution.status === 'RESOLVED')
+      return { assigneeId: resolution.employeeId };
     const message =
       resolution.status === 'AMBIGUOUS'
         ? 'ASSIGNEE_AMBIGUOUS: не удалось однозначно определить исполнителя — уточните у пользователя, кого из сотрудников с похожим именем он имел в виду'
         : 'ASSIGNEE_NOT_FOUND: не удалось найти сотрудника с таким именем — уточните у пользователя';
-    await this.prisma.taskFromMeetingExecution.update({ where: { id: executionId }, data: { status: TaskFromMeetingStatus.FAILED, errorMessage: message } });
+    await this.prisma.taskFromMeetingExecution.update({
+      where: { id: executionId },
+      data: { status: TaskFromMeetingStatus.FAILED, errorMessage: message },
+    });
     return { message };
   }
 
@@ -1428,7 +3439,13 @@ export class AssistantToolsService {
   // задачи, и для idempotent-повтора (возврат уже существующей) — meeting/
   // segment уже провалидированы вызывающим кодом выше.
   private buildTaskCardWithSource(
-    task: { id: string; title: string; status: string; dueDate: Date | null; assignee: { id: string; fullName: string } | null },
+    task: {
+      id: string;
+      title: string;
+      status: string;
+      dueDate: Date | null;
+      assignee: { id: string; fullName: string } | null;
+    },
     meeting: { id: string; title: string; meetingDate: Date },
     segment: { id: string; startMs: number } | null,
     rawSourceContext: string | undefined,
@@ -1454,9 +3471,15 @@ export class AssistantToolsService {
   // список 0/1/много — раздел 7 спеки: LLM сам решает, что делать с
   // результатом (продолжить/переспросить/сказать, что никто не назначен),
   // не подбирает вместо модели.
-  private async findEmployeeByCompetency(competencyId: string): Promise<ToolExecutionResult> {
+  private async findEmployeeByCompetency(
+    competencyId: string,
+  ): Promise<ToolExecutionResult> {
     if (!competencyId) {
-      return { tool: 'find_employee_by_competency', error: true, message: 'INVALID_INPUT: не указана компетенция' };
+      return {
+        tool: 'find_employee_by_competency',
+        error: true,
+        message: 'INVALID_INPUT: не указана компетенция',
+      };
     }
     const rows = await this.prisma.employeeCompetency.findMany({
       where: { competencyId, employee: { status: 'ACTIVE' } },
@@ -1474,9 +3497,15 @@ export class AssistantToolsService {
   // общую "TOOL_ERROR".
   // Все ящики пользователя (владелец 23.10.2026: их может быть несколько) —
   // поиск и чтение идут по всем сразу.
-  private async requireMailboxId(user: AuthenticatedUser): Promise<string[] | { error: true; message: string }> {
+  private async requireMailboxId(
+    user: AuthenticatedUser,
+  ): Promise<string[] | { error: true; message: string }> {
     const mailboxes = await this.mailStore.listMailboxesByEmployee(user.id);
-    if (mailboxes.length === 0) return { error: true, message: 'MAIL_NOT_CONNECTED: почта не подключена' };
+    if (mailboxes.length === 0)
+      return {
+        error: true,
+        message: 'MAIL_NOT_CONNECTED: почта не подключена',
+      };
     return mailboxes.map((m) => m.id);
   }
 
@@ -1486,7 +3515,11 @@ export class AssistantToolsService {
     fromAddress: string;
     fromName: string | null;
     receivedAt: Date | null;
-    analysis: { summary: string | null; importance: string | null; needsReply: boolean | null } | null;
+    analysis: {
+      summary: string | null;
+      importance: string | null;
+      needsReply: boolean | null;
+    } | null;
   }): MailToolEmailSummary {
     return {
       emailId: item.id,
@@ -1500,9 +3533,13 @@ export class AssistantToolsService {
     };
   }
 
-  private async searchEmails(input: unknown, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async searchEmails(
+    input: unknown,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const mailboxId = await this.requireMailboxId(user);
-    if (!Array.isArray(mailboxId)) return { tool: 'search_emails', ...mailboxId };
+    if (!Array.isArray(mailboxId))
+      return { tool: 'search_emails', ...mailboxId };
 
     const typed = input as {
       query?: unknown;
@@ -1513,7 +3550,10 @@ export class AssistantToolsService {
       needsReply?: unknown;
       readStatus?: unknown;
     } | null;
-    const date = (v: unknown) => (typeof v === 'string' && !Number.isNaN(new Date(v).getTime()) ? new Date(v) : undefined);
+    const date = (v: unknown) =>
+      typeof v === 'string' && !Number.isNaN(new Date(v).getTime())
+        ? new Date(v)
+        : undefined;
     const importances = ['CRITICAL', 'IMPORTANT', 'NORMAL', 'LOW'];
     const rawReadStatus = typed?.readStatus;
     const filters: EmailFilters = {
@@ -1522,22 +3562,51 @@ export class AssistantToolsService {
       dateFrom: date(typed?.dateFrom),
       dateTo: date(typed?.dateTo),
       importance: Array.isArray(typed?.importance)
-        ? (typed.importance.filter((i): i is string => typeof i === 'string' && importances.includes(i)) as EmailFilters['importance'])
+        ? (typed.importance.filter(
+            (i): i is string =>
+              typeof i === 'string' && importances.includes(i),
+          ) as EmailFilters['importance'])
         : undefined,
-      needsReply: typeof typed?.needsReply === 'boolean' ? typed.needsReply : undefined,
-      readStatus: rawReadStatus === 'read' || rawReadStatus === 'unread' ? rawReadStatus : undefined,
+      needsReply:
+        typeof typed?.needsReply === 'boolean' ? typed.needsReply : undefined,
+      readStatus:
+        rawReadStatus === 'read' || rawReadStatus === 'unread'
+          ? rawReadStatus
+          : undefined,
       direction: 'incoming',
     };
 
-    const { items, totalCount } = await this.mailQuery.search(mailboxId, filters, { limit: MAX_TOOL_ITEMS });
-    await this.audit.log(user.id, 'AI_MAIL_SEARCH', 'EmailMessage', filters.query || filters.sender || 'all', { resultCount: totalCount });
-    return { tool: 'search_emails', items: items.map((i) => this.toMailToolSummary(i)), totalCount };
+    const { items, totalCount } = await this.mailQuery.search(
+      mailboxId,
+      filters,
+      { limit: MAX_TOOL_ITEMS },
+    );
+    await this.audit.log(
+      user.id,
+      'AI_MAIL_SEARCH',
+      'EmailMessage',
+      filters.query || filters.sender || 'all',
+      { resultCount: totalCount },
+    );
+    return {
+      tool: 'search_emails',
+      items: items.map((i) => this.toMailToolSummary(i)),
+      totalCount,
+    };
   }
 
-  private async getEmail(emailId: string, user: AuthenticatedUser): Promise<ToolExecutionResult> {
+  private async getEmail(
+    emailId: string,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
     const mailboxId = await this.requireMailboxId(user);
     if (!Array.isArray(mailboxId)) return { tool: 'get_email', ...mailboxId };
-    if (!emailId) return { tool: 'get_email', error: true, message: 'INVALID_INPUT: не указан id письма' };
+    if (!emailId)
+      return {
+        tool: 'get_email',
+        error: true,
+        message: 'INVALID_INPUT: не указан id письма',
+      };
 
     const message = await this.mailQuery.getMessage(mailboxId, emailId);
     await this.audit.log(user.id, 'AI_MAIL_READ', 'EmailMessage', emailId, {});
@@ -1554,71 +3623,197 @@ export class AssistantToolsService {
   // Почта, этап 3 — план действий на каждый затронутый ящик; исполнение
   // только после «Подтвердить» в карточке (тот же движок согласования, что
   // вкладка «Планы действий» на /mail).
-  private async proposeMailActions(input: unknown, user: AuthenticatedUser, key: string): Promise<ToolExecutionResult> {
+  private async proposeMailActions(
+    input: unknown,
+    user: AuthenticatedUser,
+    key: string,
+  ): Promise<ToolExecutionResult> {
     const mailboxIds = await this.requireMailboxId(user);
-    if (!Array.isArray(mailboxIds)) return { tool: 'propose_mail_actions', ...mailboxIds };
+    if (!Array.isArray(mailboxIds))
+      return { tool: 'propose_mail_actions', ...mailboxIds };
     const typed = input as { request?: unknown; actions?: unknown } | null;
     const actions = parseMailToolActions(typed?.actions);
-    if (actions.length === 0) return { tool: 'propose_mail_actions', error: true, message: 'INVALID_INPUT: нет ни одного корректного действия' };
+    if (actions.length === 0)
+      return {
+        tool: 'propose_mail_actions',
+        error: true,
+        message: 'INVALID_INPUT: нет ни одного корректного действия',
+      };
 
     const messages = await this.prisma.emailMessage.findMany({
-      where: { id: { in: [...new Set(actions.map((a) => a.emailId))] }, mailboxId: { in: mailboxIds } },
-      select: { id: true, mailboxId: true, uid: true, folder: { select: { path: true, uidValidity: true } } },
+      where: {
+        id: { in: [...new Set(actions.map((a) => a.emailId))] },
+        mailboxId: { in: mailboxIds },
+      },
+      select: {
+        id: true,
+        mailboxId: true,
+        uid: true,
+        folder: { select: { path: true, uidValidity: true } },
+      },
     });
     const foldersByMailbox = new Map<string, MailToolFolder[]>();
     for (const mailboxId of new Set(messages.map((m) => m.mailboxId))) {
-      foldersByMailbox.set(mailboxId, await this.mailStore.listFolders(mailboxId));
+      foldersByMailbox.set(
+        mailboxId,
+        await this.mailStore.listFolders(mailboxId),
+      );
     }
     const draft = buildMailPlanCandidates(actions, messages, foldersByMailbox);
     if (draft.missingFolders.length > 0) {
-      const available = [...new Set([...foldersByMailbox.values()].flatMap((f) => f.map((x) => x.path)))].join(', ');
+      const available = [
+        ...new Set(
+          [...foldersByMailbox.values()].flatMap((f) => f.map((x) => x.path)),
+        ),
+      ].join(', ');
       return {
         tool: 'propose_mail_actions',
         error: true,
         message: `FOLDER_NOT_FOUND: нет папки ${[...new Set(draft.missingFolders)].map((f) => `«${f}»`).join(', ')}. Папки ящика: ${available || '(нет)'}. Выбери существующую или спроси пользователя.`,
       };
     }
-    if (draft.byMailbox.size === 0) return { tool: 'propose_mail_actions', error: true, message: 'EMAIL_NOT_FOUND: письма не найдены в почте пользователя — найди их через search_emails' };
+    if (draft.byMailbox.size === 0)
+      return {
+        tool: 'propose_mail_actions',
+        error: true,
+        message:
+          'EMAIL_NOT_FOUND: письма не найдены в почте пользователя — найди их через search_emails',
+      };
 
-    const request = typeof typed?.request === 'string' && typed.request.trim() ? typed.request.trim() : 'Действия с письмами';
+    const request =
+      typeof typed?.request === 'string' && typed.request.trim()
+        ? typed.request.trim()
+        : 'Действия с письмами';
     const plans: MailPlanCardData[] = [];
     for (const [mailboxId, candidates] of draft.byMailbox) {
       const mailbox = await this.mailStore.findOwnedMailbox(user.id, mailboxId);
       if (!mailbox) continue;
-      const plan = await this.mailPlans!.createReadyPlan(user.id, mailboxId, request, candidates, `${key}:${mailboxId}`);
-      plans.push({ planId: plan.id, mailboxId, mailboxAddress: mailbox.emailAddress, actions: summarizeCandidates(candidates), itemCount: candidates.length });
+      const plan = await this.mailPlans!.createReadyPlan(
+        user.id,
+        mailboxId,
+        request,
+        candidates,
+        `${key}:${mailboxId}`,
+      );
+      plans.push({
+        planId: plan.id,
+        mailboxId,
+        mailboxAddress: mailbox.emailAddress,
+        actions: summarizeCandidates(candidates),
+        itemCount: candidates.length,
+      });
     }
-    await this.audit.log(user.id, 'AI_MAIL_PLAN_PROPOSED', 'MailActionPlan', plans.map((p) => p.planId).join(','), { itemCount: plans.reduce((n, p) => n + p.itemCount, 0) });
-    return { tool: 'propose_mail_actions', plans, unknownEmailIds: draft.unknownEmailIds };
+    await this.audit.log(
+      user.id,
+      'AI_MAIL_PLAN_PROPOSED',
+      'MailActionPlan',
+      plans.map((p) => p.planId).join(','),
+      { itemCount: plans.reduce((n, p) => n + p.itemCount, 0) },
+    );
+    return {
+      tool: 'propose_mail_actions',
+      plans,
+      unknownEmailIds: draft.unknownEmailIds,
+    };
   }
 
   // Почта, этап 3 — черновик ответа/пересылки; уходит только по кнопке
   // «Отправить» в карточке (POST /mail/drafts/:id/send, аудит MAIL_SENT там).
-  private async draftMailReply(input: unknown, user: AuthenticatedUser, key: string): Promise<ToolExecutionResult> {
+  private async draftMailReply(
+    input: unknown,
+    user: AuthenticatedUser,
+    key: string,
+  ): Promise<ToolExecutionResult> {
     const mailboxIds = await this.requireMailboxId(user);
-    if (!Array.isArray(mailboxIds)) return { tool: 'draft_mail_reply', ...mailboxIds };
-    const typed = input as { emailId?: unknown; mode?: unknown; body?: unknown; to?: unknown } | null;
-    const modes = { reply: 'REPLY', reply_all: 'REPLY_ALL', forward: 'FORWARD' } as const;
-    const mode = typeof typed?.mode === 'string' && typed.mode in modes ? modes[typed.mode as keyof typeof modes] : null;
+    if (!Array.isArray(mailboxIds))
+      return { tool: 'draft_mail_reply', ...mailboxIds };
+    const typed = input as {
+      emailId?: unknown;
+      mode?: unknown;
+      body?: unknown;
+      to?: unknown;
+    } | null;
+    const modes = {
+      reply: 'REPLY',
+      reply_all: 'REPLY_ALL',
+      forward: 'FORWARD',
+    } as const;
+    const mode =
+      typeof typed?.mode === 'string' && typed.mode in modes
+        ? modes[typed.mode as keyof typeof modes]
+        : null;
     const body = typeof typed?.body === 'string' ? typed.body.trim() : '';
-    const to = Array.isArray(typed?.to) ? typed.to.filter((a): a is string => typeof a === 'string') : [];
-    if (typeof typed?.emailId !== 'string' || !mode || !body) return { tool: 'draft_mail_reply', error: true, message: 'INVALID_INPUT: нужны emailId, mode и body' };
-    if (mode === 'FORWARD' && to.length === 0) return { tool: 'draft_mail_reply', error: true, message: 'MISSING_RECIPIENTS: для пересылки укажи адреса в to — спроси пользователя, кому переслать' };
+    const to = Array.isArray(typed?.to)
+      ? typed.to.filter((a): a is string => typeof a === 'string')
+      : [];
+    if (typeof typed?.emailId !== 'string' || !mode || !body)
+      return {
+        tool: 'draft_mail_reply',
+        error: true,
+        message: 'INVALID_INPUT: нужны emailId, mode и body',
+      };
+    if (mode === 'FORWARD' && to.length === 0)
+      return {
+        tool: 'draft_mail_reply',
+        error: true,
+        message:
+          'MISSING_RECIPIENTS: для пересылки укажи адреса в to — спроси пользователя, кому переслать',
+      };
 
-    const message = await this.prisma.emailMessage.findFirst({ where: { id: typed.emailId, mailboxId: { in: mailboxIds } }, select: { mailboxId: true } });
-    if (!message) return { tool: 'draft_mail_reply', error: true, message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя' };
-    const owned = await this.mailStore.findOwnedMailbox(user.id, message.mailboxId);
+    const message = await this.prisma.emailMessage.findFirst({
+      where: { id: typed.emailId, mailboxId: { in: mailboxIds } },
+      select: { mailboxId: true },
+    });
+    if (!message)
+      return {
+        tool: 'draft_mail_reply',
+        error: true,
+        message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя',
+      };
+    const owned = await this.mailStore.findOwnedMailbox(
+      user.id,
+      message.mailboxId,
+    );
     const mailbox = owned ? await this.mailStore.getMailbox(owned.id) : null;
-    if (!mailbox) return { tool: 'draft_mail_reply', error: true, message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя' };
+    if (!mailbox)
+      return {
+        tool: 'draft_mail_reply',
+        error: true,
+        message: 'EMAIL_NOT_FOUND: письмо не найдено в почте пользователя',
+      };
 
     let draft: DraftView;
     try {
-      draft = await this.mailCompose!.create(mailbox, mode, typed.emailId, { body, to: mode === 'FORWARD' ? to : undefined, sourceKey: key });
+      draft = await this.mailCompose!.create(mailbox, mode, typed.emailId, {
+        body,
+        to: mode === 'FORWARD' ? to : undefined,
+        sourceKey: key,
+      });
     } catch (err) {
-      if (err instanceof BadRequestException) return { tool: 'draft_mail_reply', error: true, message: `INVALID_INPUT: ${err.message}` };
+      if (err instanceof BadRequestException)
+        return {
+          tool: 'draft_mail_reply',
+          error: true,
+          message: `INVALID_INPUT: ${err.message}`,
+        };
       throw err;
     }
-    await this.audit.log(user.id, 'AI_MAIL_DRAFT_PREPARED', 'MailDraft', draft.id, { mode });
-    return { tool: 'draft_mail_reply', draft: { draftId: draft.id, mailboxId: mailbox.id, mode, subject: draft.subject, to: draft.to } };
+    await this.audit.log(
+      user.id,
+      'AI_MAIL_DRAFT_PREPARED',
+      'MailDraft',
+      draft.id,
+      { mode },
+    );
+    return {
+      tool: 'draft_mail_reply',
+      draft: {
+        draftId: draft.id,
+        mailboxId: mailbox.id,
+        mode,
+        subject: draft.subject,
+        to: draft.to,
+      },
+    };
   }
 }

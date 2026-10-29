@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { Check, RefreshCw } from 'lucide-react';
-import type { EmployeeSummary, MailTriageActionPlan, MailTriageItem } from '@ai-task-system/shared-types';
+import type { EmployeeSummary, MailTriageActionPlan, MailTriageDraftTone, MailTriageItem } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Alert, Button, Dialog, Input, Select, cx } from '@/components/ui';
 import { useAgentContext } from '@/components/agent-panel/agent-context';
@@ -14,6 +15,19 @@ import { useMailTriage, type MailTriage, type TriageOutcome, type TriageResult }
 // очередь писем, которые ждут ответа или действия, справа текущее — суть,
 // черновик ответа и действия. После действия — следующее письмо; в конце
 // «Почта разобрана». Отправка, задача и архив — только после «Да».
+
+// Стиль руководителя (навык /тон) у черновика. «Переписать» не запускаем
+// сами: готовый черновик мог быть уже поправлен руками.
+function DraftToneNote({ tone }: { tone: MailTriageDraftTone | null }) {
+  if (!tone) return null;
+  if (tone.state === 'applied') return <span className="triage-tone">в вашем стиле · /тон</span>;
+  if (tone.state === 'outdated') return <span className="triage-tone">стиль /тон обновлён</span>;
+  return tone.skillId ? (
+    <Link href={`/skills/${tone.skillId}`} className="triage-tone is-link">
+      Стиль не настроен — собрать из писем
+    </Link>
+  ) : null;
+}
 
 const IMPORTANCE: Record<string, { label: string; tone: string }> = {
   CRITICAL: { label: 'Критично', tone: 'hot' },
@@ -331,9 +345,10 @@ function TriageCard({ t, item, position, busy, taskOpen, onTask, onTaskClose, on
           <label className="triage-draft">
             <span className="triage-draft-head">
               <span className="section-kicker">Черновик ответа</span>
+              {draft?.draftId && !draft.loading && <DraftToneNote tone={draft.tone} />}
               {draft?.draftId && !draft.loading && (
                 <button type="button" className="triage-link" onClick={() => void t.requestDraft(item.id, true)}>
-                  Написать заново
+                  {draft.tone?.state === 'outdated' ? 'Переписать в новом стиле' : 'Написать заново'}
                 </button>
               )}
             </span>

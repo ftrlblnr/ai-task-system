@@ -5,7 +5,7 @@ import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { ArrowLeft, FileText, ListTodo, Mic, Users } from 'lucide-react';
+import { ArrowLeft, FileText, ListTodo, Users } from 'lucide-react';
 import type { MeetingDetail } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
@@ -113,15 +113,9 @@ function MeetingDetailView({ id }: { id: string }) {
         kicker={`${new Date(meeting.meetingDate).toLocaleDateString('ru-RU')} · загрузил ${meeting.createdBy.fullName}`}
         title={meeting.title}
         actions={
-          <>
-            <Link href={`/voice?meetingId=${meeting.id}`} className="ds-btn ds-btn-secondary">
-              <Mic size={18} strokeWidth={1.75} />
-              Голосом
-            </Link>
-            <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
-              Поставить задачи
-            </Button>
-          </>
+          <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
+            Поставить задачи
+          </Button>
         }
       />
 

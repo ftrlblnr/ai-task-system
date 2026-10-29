@@ -5,7 +5,13 @@ import { AnswerStructuringService } from '../reception/answer-structuring.servic
 import { isWhisperArtifact } from '../reception/whisper-artifacts';
 import { DraftExtractionService } from '../voice/draft-extraction.service';
 import { WhisperService } from '../voice/whisper.service';
-import { AssistantReplyService, buildDateContext } from '../assistant/assistant-reply.service';
+import {
+  AssistantReplyService,
+  buildDateContext,
+  buildSystemBlocks,
+  DEFAULT_CALL,
+  type ReplyCallConfig,
+} from '../assistant/assistant-reply.service';
 import { AssistantToolsService } from '../assistant/assistant-tools.service';
 
 // Проверочный набор ИИ (владелец 21.10.2026): реальные случаи, на которых
@@ -26,8 +32,12 @@ const EMPLOYEES = [
   { id: 'e2', fullName: 'Иванова Ирина Петровна' },
   { id: 'e3', fullName: 'Ким Арман' },
 ];
-const VOCABULARY = 'Сергеев Азамат, Иванова Ирина Петровна, Ким Арман, Ньюлайн, вентшахта';
-const QUESTION = { title: 'Согласование отпуска', description: 'Прошу согласовать отпуск с 1 по 14 ноября' };
+const VOCABULARY =
+  'Сергеев Азамат, Иванова Ирина Петровна, Ким Арман, Ньюлайн, вентшахта';
+const QUESTION = {
+  title: 'Согласование отпуска',
+  description: 'Прошу согласовать отпуск с 1 по 14 ноября',
+};
 
 const config = new ConfigService(process.env);
 const structuring = new AnswerStructuringService(config);
@@ -39,7 +49,11 @@ function check(ok: boolean, detail: string) {
   return { ok, detail };
 }
 
-function structureCase(name: string, raw: string, test: (out: string) => boolean): Case {
+function structureCase(
+  name: string,
+  raw: string,
+  test: (out: string) => boolean,
+): Case {
   return {
     group: 'приёмная',
     name,
@@ -54,23 +68,57 @@ function artifactCase(text: string, expected: boolean): Case {
   return {
     group: 'приёмная',
     name: `фильтр тишины: «${text}»`,
-    run: () => Promise.resolve(check(isWhisperArtifact(text) === expected, String(isWhisperArtifact(text)))),
+    run: () =>
+      Promise.resolve(
+        check(
+          isWhisperArtifact(text) === expected,
+          String(isWhisperArtifact(text)),
+        ),
+      ),
   };
 }
 
 function draftCase(
   name: string,
   transcript: string,
-  test: (d: { type: string; action?: string; assigneeId?: string | null; dueDate?: string | null }[]) => boolean,
+  test: (
+    d: {
+      type: string;
+      action?: string;
+      assigneeId?: string | null;
+      dueDate?: string | null;
+    }[],
+  ) => boolean,
 ): Case {
   return {
     group: 'голосовые команды',
     name,
     run: async () => {
-      const out = await drafts.extract(transcript, EMPLOYEES, 'OWNER', [], [], null, [], 'eval');
-      const list = out.drafts as unknown as { type: string; action?: string; assigneeId?: string | null; dueDate?: string | null }[];
-      const detail = list.map((d) => `${d.type}/${d.action ?? ''} ${d.assigneeId ?? ''} ${d.dueDate ?? ''}`.trim()).join(' | ');
-      return check(test(list), `${detail}${out.escalatedToStrongModel ? ' (эскалация)' : ''}`);
+      const out = await drafts.extract(
+        transcript,
+        EMPLOYEES,
+        'OWNER',
+        [],
+        [],
+        null,
+        [],
+        'eval',
+      );
+      const list = out.drafts as unknown as {
+        type: string;
+        action?: string;
+        assigneeId?: string | null;
+        dueDate?: string | null;
+      }[];
+      const detail = list
+        .map((d) =>
+          `${d.type}/${d.action ?? ''} ${d.assigneeId ?? ''} ${d.dueDate ?? ''}`.trim(),
+        )
+        .join(' | ');
+      return check(
+        test(list),
+        `${detail}${out.escalatedToStrongModel ? ' (эскалация)' : ''}`,
+      );
     },
   };
 }
@@ -78,25 +126,54 @@ function draftCase(
 let toolsCache: Anthropic.Tool[] | null = null;
 async function assistantTools(): Promise<Anthropic.Tool[]> {
   if (!toolsCache) {
-    const svc = Object.create(AssistantToolsService.prototype) as AssistantToolsService;
+    const svc = Object.create(
+      AssistantToolsService.prototype,
+    ) as AssistantToolsService;
     Object.assign(svc, {
       prisma: { competency: { findMany: () => Promise.resolve([]) } },
       mailStore: { listMailboxesByEmployee: () => Promise.resolve([]) },
+      // Единый агент A3: find_free_slots предлагается, только если сервис есть.
+      availability: {},
     });
     toolsCache = await svc.buildTools({ id: 'eval', role: 'OWNER' } as never);
   }
   return toolsCache;
 }
 
-function assistantCase(text: string, expectedTool: string | null): Case {
+// expectedTool — один инструмент или любой из списка (для «просрочено»
+// годятся и get_tasks, и find_tasks); null — ответ без инструментов.
+function assistantCase(
+  text: string,
+  expectedTool: string | string[] | null,
+): Case {
+  const expected =
+    expectedTool === null
+      ? null
+      : Array.isArray(expectedTool)
+        ? expectedTool
+        : [expectedTool];
   return {
     group: 'ассистент',
-    name: `«${text}» → ${expectedTool ?? 'ответ без инструмента'}`,
+    name: `«${text}» → ${expected?.join(' | ') ?? 'ответ без инструмента'}`,
     run: async () => {
-      const reply = new AssistantReplyService(config, {} as never) as unknown as {
-        streamOnce: (m: Anthropic.MessageParam[], t: Anthropic.Tool[], e: undefined, s: undefined) => Promise<Anthropic.Message>;
+      // Сигнатура streamOnce — как в runReply: конфиг вызова и system
+      // первыми (28.10.2026: прежний вызов без них не работал вовсе).
+      const reply = new AssistantReplyService(
+        config,
+        {} as never,
+      ) as unknown as {
+        streamOnce: (
+          c: ReplyCallConfig,
+          sys: Anthropic.TextBlockParam[],
+          m: Anthropic.MessageParam[],
+          t: Anthropic.Tool[],
+          e: undefined,
+          s: undefined,
+        ) => Promise<Anthropic.Message>;
       };
       const message = await reply.streamOnce(
+        DEFAULT_CALL,
+        buildSystemBlocks(null),
         [
           {
             role: 'user',
@@ -110,8 +187,13 @@ function assistantCase(text: string, expectedTool: string | null): Case {
         undefined,
         undefined,
       );
-      const used = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use').map((b) => b.name);
-      const ok = expectedTool === null ? used.length === 0 : used.includes(expectedTool);
+      const used = message.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map((b) => b.name);
+      const ok =
+        expected === null
+          ? used.length === 0
+          : used.some((name) => expected.includes(name));
       return check(ok, used.join(', ') || 'без инструмента');
     },
   };
@@ -136,23 +218,41 @@ function wav(samples: number[], rate = 16000): Buffer {
 }
 
 async function speech(text: string): Promise<Buffer> {
-  const r = await openai.audio.speech.create({ model: 'gpt-4o-mini-tts', voice: 'alloy', input: text, response_format: 'wav' });
+  const r = await openai.audio.speech.create({
+    model: 'gpt-4o-mini-tts',
+    voice: 'alloy',
+    input: text,
+    response_format: 'wav',
+  });
   return Buffer.from(await r.arrayBuffer());
 }
 
-function sttCase(name: string, audio: () => Promise<Buffer>, test: (text: string) => boolean): Case {
+function sttCase(
+  name: string,
+  audio: () => Promise<Buffer>,
+  test: (text: string) => boolean,
+): Case {
   return {
     group: 'распознавание речи',
     name,
     run: async () => {
-      const { text } = await whisper.transcribe(await audio(), 'audio/wav', 'eval.wav', VOCABULARY);
+      const { text } = await whisper.transcribe(
+        await audio(),
+        'audio/wav',
+        'eval.wav',
+        VOCABULARY,
+      );
       return check(test(text), JSON.stringify(text));
     },
   };
 }
 
 const CASES: Case[] = [
-  structureCase('проверочная фраза не выбрасывается', 'Проверка, это тестовый ответ голосом.', (o) => /провер/i.test(o)),
+  structureCase(
+    'проверочная фраза не выбрасывается',
+    'Проверка, это тестовый ответ голосом.',
+    (o) => /провер/i.test(o),
+  ),
   structureCase('«да» остаётся ответом', 'да', (o) => o === 'Да.'),
   structureCase(
     'слова-паразиты убраны, решение и срок на месте',
@@ -162,41 +262,107 @@ const CASES: Case[] = [
   structureCase(
     'оговорка «то есть нет» исправлена, ничего не дописано',
     'значит так первое отпуск согласую второе до отпуска закройте отчёт по объекту третье замещать будет Ирина то есть нет Азамат',
-    (o) => /азамат/i.test(o) && !/ирин/i.test(o) && /1\./.test(o) && /3\./.test(o),
+    (o) =>
+      /азамат/i.test(o) && !/ирин/i.test(o) && /1\./.test(o) && /3\./.test(o),
   ),
   artifactCase('Продолжение следует...', true),
   artifactCase('Субтитры сделал DimaTorzok', true),
-  artifactCase('Подготовьте субтитры к видео для презентации заказчику до пятницы', false),
+  artifactCase(
+    'Подготовьте субтитры к видео для презентации заказчику до пятницы',
+    false,
+  ),
   draftCase(
     'задача сотруднику со сроком',
     'поставь задачу Азамату подготовить отчёт по объекту до пятницы',
-    (d) => d.some((x) => x.type === 'task_action' && x.action === 'create' && x.assigneeId === 'e1' && !!x.dueDate),
+    (d) =>
+      d.some(
+        (x) =>
+          x.type === 'task_action' &&
+          x.action === 'create' &&
+          x.assigneeId === 'e1' &&
+          !!x.dueDate,
+      ),
   ),
   draftCase(
     'напоминание себе на время',
     'напомни мне завтра в десять позвонить в банк',
-    (d) => d.some((x) => x.type === 'task_action' && x.action === 'create' && /T10:00/.test(x.dueDate ?? '')),
+    (d) =>
+      d.some(
+        (x) =>
+          x.type === 'task_action' &&
+          x.action === 'create' &&
+          /T10:00/.test(x.dueDate ?? ''),
+      ),
   ),
-  draftCase('вопрос — не действие', 'какие задачи сейчас просрочены', (d) => d.every((x) => x.type === 'chat')),
+  draftCase('вопрос — не действие', 'какие задачи сейчас просрочены', (d) =>
+    d.every((x) => x.type === 'chat'),
+  ),
   draftCase(
     'исполнитель по имени в косвенном падеже',
     'Ирине нужно согласовать договор поставки, срок в понедельник',
     (d) => d.some((x) => x.type === 'task_action' && x.assigneeId === 'e2'),
   ),
-  assistantCase('какие у меня просроченные задачи?', 'get_tasks'),
-  assistantCase('что у меня завтра в календаре?', 'get_events'),
+  assistantCase('какие у меня просроченные задачи?', [
+    'get_tasks',
+    'find_tasks',
+  ]),
+  assistantCase(
+    'что сейчас у Ирины в работе и что у неё просрочено?',
+    'find_tasks',
+  ),
+  assistantCase('у кого больше всего просроченных задач?', 'find_tasks'),
+  assistantCase('какие задачи по вентшахте ещё открыты?', 'find_tasks'),
+  assistantCase('что у меня завтра в календаре?', [
+    'get_events',
+    'find_events',
+  ]),
   assistantCase('найди встречу, где обсуждали бюджет', 'search_meetings'),
   assistantCase('выгрузи мои задачи в excel', 'export_tasks_xlsx'),
   assistantCase('привет', null),
-  sttCase('тишина → пусто', () => Promise.resolve(wav(new Array<number>(64000).fill(0))), (t) => isWhisperArtifact(t)),
+  // Единый агент A1–A4: первый шаг на командах изменения — найти задачу или
+  // событие (id модель не выдумывает), прямые постановки — сразу инструмент.
+  assistantCase('перенеси Азамату срок по вентшахте на пятницу', 'find_tasks'),
+  assistantCase(
+    'отметь задачу про коммерческое предложение выполненной',
+    'find_tasks',
+  ),
+  assistantCase('напомни Ирине про отчёт по объекту', 'find_tasks'),
+  assistantCase(
+    'напиши в задаче про вентшахту, что нужен новый срок',
+    'find_tasks',
+  ),
+  assistantCase(
+    'как поставить задачу на Азамата, чтобы он завтра сходил в банк',
+    'create_task',
+  ),
+  assistantCase('найди час с Арманом на следующей неделе', 'find_free_slots'),
+  assistantCase(
+    'поставь встречу с Арманом завтра в 15:00 по смете',
+    'create_event',
+  ),
+  assistantCase('перенеси планёрку на четверг', 'find_events'),
+  assistantCase('удали', null),
+  sttCase(
+    'тишина → пусто',
+    () => Promise.resolve(wav(new Array<number>(64000).fill(0))),
+    (t) => isWhisperArtifact(t),
+  ),
   sttCase(
     'тихий шум → пусто',
-    () => Promise.resolve(wav(Array.from({ length: 64000 }, () => Math.round((Math.random() - 0.5) * 300)))),
+    () =>
+      Promise.resolve(
+        wav(
+          Array.from({ length: 64000 }, () =>
+            Math.round((Math.random() - 0.5) * 300),
+          ),
+        ),
+      ),
     (t) => isWhisperArtifact(t),
   ),
   sttCase(
     'термины компании из словаря',
-    () => speech('Поручить сводку по вентшахтам на объекте Ньюлайн, срок завтра.'),
+    () =>
+      speech('Поручить сводку по вентшахтам на объекте Ньюлайн, срок завтра.'),
     (t) => /ньюлайн/i.test(t) && /вентшахт/i.test(t),
   ),
 ];
@@ -209,11 +375,16 @@ async function main() {
     try {
       result = await c.run();
     } catch (err) {
-      result = { ok: false, detail: `ошибка: ${err instanceof Error ? err.message : String(err)}` };
+      result = {
+        ok: false,
+        detail: `ошибка: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
     if (!result.ok) failed++;
     const ms = String(Date.now() - started).padStart(5);
-    console.log(`${result.ok ? 'OK  ' : 'FAIL'} ${ms} мс  [${c.group}] ${c.name}\n               → ${result.detail.replace(/\s+/g, ' ').slice(0, 160)}`);
+    console.log(
+      `${result.ok ? 'OK  ' : 'FAIL'} ${ms} мс  [${c.group}] ${c.name}\n               → ${result.detail.replace(/\s+/g, ' ').slice(0, 160)}`,
+    );
   }
   console.log(`\n${CASES.length - failed}/${CASES.length} пройдено`);
   process.exitCode = failed > 0 ? 1 : 0;

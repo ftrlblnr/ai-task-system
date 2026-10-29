@@ -1,7 +1,11 @@
-import { MessagePartType, Prisma } from '@prisma/client';
+import { MessagePartType, Prisma, type TaskStatus } from '@prisma/client';
+import { TASK_STATUS_RU } from '../tasks/tasks.service';
 import type { AssistantReplyResult } from './assistant-reply.service';
 import type { ToolExecutionResult } from './assistant-tools.service';
 import type { ToolActivityData } from './dto/message-part-data.dto';
+import { toCard } from './task-tools';
+
+const FIND_TASKS_CARDS = 10;
 
 export interface MessagePartInput {
   type: MessagePartType;
@@ -23,12 +27,15 @@ function toJson<T>(value: T): Prisma.InputJsonValue {
 // имена вроде "get_tasks()". totalCount, а не items.length — чтобы честно
 // сказать "найдено 37", даже если в карточках показаны только первые 10
 // (см. MAX_TOOL_ITEMS в assistant-tools.service.ts).
-export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData {
+export function toolActivityLabel(
+  result: ToolExecutionResult,
+): ToolActivityData {
   if ('error' in result) {
     // export_tasks_xlsx — отдельная формулировка (Stage 2, Phase G):
     // "Не удалось проверить файл" вводила бы в заблуждение, инструмент не
     // проверяет файл, а формирует его.
-    if (result.tool === 'export_tasks_xlsx') return { label: 'Не удалось сформировать файл' };
+    if (result.tool === 'export_tasks_xlsx')
+      return { label: 'Не удалось сформировать файл' };
     // Stage 2, Phase K — все четыре инструмента встреч/Plaud делят одну
     // формулировку: пользователю не важно, какой конкретно из четырёх
     // подвёл, только что раздел с встречами сейчас недоступен.
@@ -40,53 +47,171 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
     ) {
       return { label: 'Не удалось проверить встречи' };
     }
-    if (result.tool === 'find_employee_by_competency') return { label: 'Не удалось найти сотрудников по компетенции' };
+    if (result.tool === 'find_employee_by_competency')
+      return { label: 'Не удалось найти сотрудников по компетенции' };
     // Release 2 (Mail.ru Email Intelligence).
-    if (result.tool === 'search_emails' || result.tool === 'get_email') return { label: 'Не удалось проверить почту' };
-    if (result.tool === 'legal_ask') return { label: 'Агент-юрист не смог подготовить ответ' };
-    if (result.tool === 'legal_review_contract') return { label: 'Не удалось запустить разбор договора' };
-    if (result.tool === 'legal_review_status') return { label: 'Не удалось проверить разборы договоров' };
-    if (result.tool === 'propose_mail_actions') return { label: 'Не удалось подготовить действия с письмами' };
-    if (result.tool === 'draft_mail_reply') return { label: 'Не удалось подготовить письмо' };
-    if (result.tool === 'remember') return { label: 'Не удалось сохранить в память' };
-    if (result.tool === 'recall_memory') return { label: 'Не удалось проверить память' };
-    if (result.tool === 'forget_memory') return { label: 'Не удалось убрать из памяти' };
-    if (result.tool === 'propose_routine') return { label: 'Не удалось подготовить регламент' };
-    if (result.tool === 'create_task' || result.tool === 'create_task_from_meeting') return { label: 'Не удалось поставить задачу' };
+    if (result.tool === 'search_emails' || result.tool === 'get_email')
+      return { label: 'Не удалось проверить почту' };
+    if (result.tool === 'legal_ask')
+      return { label: 'Агент-юрист не смог подготовить ответ' };
+    if (result.tool === 'legal_review_contract')
+      return { label: 'Не удалось запустить разбор договора' };
+    if (result.tool === 'legal_review_status')
+      return { label: 'Не удалось проверить разборы договоров' };
+    if (result.tool === 'propose_mail_actions')
+      return { label: 'Не удалось подготовить действия с письмами' };
+    if (result.tool === 'draft_mail_reply')
+      return { label: 'Не удалось подготовить письмо' };
+    if (result.tool === 'remember')
+      return { label: 'Не удалось сохранить в память' };
+    if (result.tool === 'recall_memory')
+      return { label: 'Не удалось проверить память' };
+    if (result.tool === 'forget_memory')
+      return { label: 'Не удалось убрать из памяти' };
+    if (result.tool === 'propose_routine')
+      return { label: 'Не удалось подготовить регламент' };
+    if (
+      result.tool === 'create_task' ||
+      result.tool === 'create_task_from_meeting'
+    )
+      return { label: 'Не удалось поставить задачу' };
+    if (
+      result.tool === 'update_task' ||
+      result.tool === 'set_task_status' ||
+      result.tool === 'comment_task'
+    )
+      return { label: 'Не удалось изменить задачу' };
+    if (result.tool === 'remind_task')
+      return { label: 'Не удалось напомнить исполнителю' };
+    if (result.tool === 'delete_task')
+      return { label: 'Не удалось удалить задачу' };
+    if (result.tool === 'find_events' || result.tool === 'find_free_slots')
+      return { label: 'Не удалось проверить календарь' };
+    if (
+      result.tool === 'create_event' ||
+      result.tool === 'update_event' ||
+      result.tool === 'delete_event'
+    )
+      return { label: 'Не удалось изменить календарь' };
     const what = result.tool === 'get_events' ? 'встречи' : 'задачи';
     return { label: `Не удалось проверить ${what}` };
   }
-  if (result.tool === 'get_tasks') return { label: `Проверил задачи: найдено ${result.totalCount}` };
-  if (result.tool === 'get_events') return { label: `Проверил календарь: найдено ${result.totalCount}` };
-  if (result.tool === 'export_tasks_xlsx') return { label: `Сформировал файл: ${result.file.name}` };
-  if (result.tool === 'get_recent_meetings') return { label: `Проверил встречи: найдено ${result.totalCount}` };
-  if (result.tool === 'search_meetings') return { label: `Искал встречи: найдено ${result.totalCount}` };
-  if (result.tool === 'get_meeting') return { label: `Открыл встречу «${result.meeting.title}»` };
-  if (result.tool === 'search_meeting_transcript') return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
+  if (result.tool === 'get_tasks')
+    return { label: `Проверил задачи: найдено ${result.totalCount}` };
+  if (result.tool === 'find_tasks') {
+    const who = result.filter.assignee ? ` · ${result.filter.assignee}` : '';
+    const overdue =
+      result.overdueCount > 0 ? `, просрочено ${result.overdueCount}` : '';
+    return { label: `Нашёл задачи${who}: ${result.totalCount}${overdue}` };
+  }
+  if (result.tool === 'get_task')
+    return { label: `Открыл задачу «${result.task.title}»` };
+  // Единый агент A2.
+  if ('alreadyApplied' in result)
+    return { label: 'Изменение уже было выполнено раньше' };
+  if (result.tool === 'update_task')
+    return {
+      label: result.task.changes?.length
+        ? `Изменил задачу «${result.task.title}»`
+        : `Задача «${result.task.title}» уже такая`,
+    };
+  if (result.tool === 'set_task_status') {
+    return {
+      label: result.task.changes?.length
+        ? `Статус «${result.task.title}»: ${TASK_STATUS_RU[result.task.status as TaskStatus] ?? result.task.status}`
+        : `Задача «${result.task.title}» уже в этом статусе`,
+    };
+  }
+  if (result.tool === 'comment_task')
+    return { label: `Написал комментарий к «${result.task.title}»` };
+  if (result.tool === 'remind_task')
+    return { label: `Напомнил исполнителю о «${result.task.title}»` };
+  if (result.tool === 'delete_task')
+    return { label: `Удалил задачу «${result.title}»` };
+  // Единый агент A3 — календарь.
+  if (result.tool === 'find_events')
+    return { label: `Проверил календарь: найдено ${result.totalCount}` };
+  if (result.tool === 'find_free_slots')
+    return {
+      label: result.slots.length
+        ? `Нашёл свободное время: ${result.slots.length}`
+        : 'Свободного времени не нашёл',
+    };
+  if (result.tool === 'create_event')
+    return { label: `Поставил «${result.event.title}» в календарь` };
+  if (result.tool === 'update_event')
+    return {
+      label: result.event.changes?.length
+        ? `Изменил «${result.event.title}»`
+        : `«${result.event.title}» уже такое`,
+    };
+  if (result.tool === 'delete_event')
+    return { label: `Удалил «${result.title}» из календаря` };
+  if (result.tool === 'get_events')
+    return { label: `Проверил календарь: найдено ${result.totalCount}` };
+  if (result.tool === 'export_tasks_xlsx')
+    return { label: `Сформировал файл: ${result.file.name}` };
+  if (result.tool === 'get_recent_meetings')
+    return { label: `Проверил встречи: найдено ${result.totalCount}` };
+  if (result.tool === 'search_meetings')
+    return { label: `Искал встречи: найдено ${result.totalCount}` };
+  if (result.tool === 'get_meeting')
+    return { label: `Открыл встречу «${result.meeting.title}»` };
+  if (result.tool === 'search_meeting_transcript')
+    return { label: `Искал в транскриптах: найдено ${result.totalCount}` };
   // Stage 2, Phase P — find_employee_by_competency, единственный оставшийся
   // read-only-инструмент этого этапа.
-  if (result.tool === 'find_employee_by_competency') return { label: `Нашёл сотрудников по компетенции: ${result.employees.length}` };
+  if (result.tool === 'find_employee_by_competency')
+    return {
+      label: `Нашёл сотрудников по компетенции: ${result.employees.length}`,
+    };
   // Release 2 (Mail.ru Email Intelligence).
-  if (result.tool === 'search_emails') return { label: `Проверил почту: найдено ${result.totalCount}` };
+  if (result.tool === 'search_emails')
+    return { label: `Проверил почту: найдено ${result.totalCount}` };
   if (result.tool === 'get_email') return { label: 'Открыл письмо' };
-  if (result.tool === 'legal_ask') return { label: `Проверил по базе НПА: норм ${result.answer.citations.length}` };
+  if (result.tool === 'legal_ask')
+    return {
+      label: `Проверил по базе НПА: норм ${result.answer.citations.length}`,
+    };
   if (result.tool === 'legal_review_contract') {
-    return { label: `${result.alreadyStarted ? 'Разбор уже запущен' : 'Запустил разбор договора'}: «${result.review.fileName}»` };
+    return {
+      label: `${result.alreadyStarted ? 'Разбор уже запущен' : 'Запустил разбор договора'}: «${result.review.fileName}»`,
+    };
   }
-  if (result.tool === 'legal_review_status') return { label: `Проверил разборы договоров: ${result.items.length}` };
+  if (result.tool === 'legal_review_status')
+    return { label: `Проверил разборы договоров: ${result.items.length}` };
   if (result.tool === 'propose_mail_actions') {
     const count = result.plans.reduce((n, p) => n + p.itemCount, 0);
-    return { label: `Подготовил действия с письмами: ${count} — ждут подтверждения` };
+    return {
+      label: `Подготовил действия с письмами: ${count} — ждут подтверждения`,
+    };
   }
-  if (result.tool === 'draft_mail_reply') return { label: 'Подготовил письмо — ждёт отправки' };
+  if (result.tool === 'draft_mail_reply')
+    return { label: 'Подготовил письмо — ждёт отправки' };
   // Память (ARMS, фаза 1).
-  if (result.tool === 'remember') return { label: result.duplicate ? `Уже помню: «${result.item.text}»` : `Запомнил: «${result.item.text}»` };
-  if (result.tool === 'recall_memory') return { label: `Проверил память: найдено ${result.totalCount}` };
-  if (result.tool === 'forget_memory') return { label: `Забыл: «${result.item.text}»` };
+  if (result.tool === 'remember')
+    return {
+      label: result.duplicate
+        ? `Уже помню: «${result.item.text}»`
+        : `Запомнил: «${result.item.text}»`,
+    };
+  if (result.tool === 'recall_memory')
+    return { label: `Проверил память: найдено ${result.totalCount}` };
+  if (result.tool === 'forget_memory')
+    return { label: `Забыл: «${result.item.text}»` };
   // Регламенты (ARMS, фаза 4).
-  if (result.tool === 'propose_routine') return { label: `Подготовил регламент «${result.routine.title}» — включите в «Регламентах»` };
-  // Stage 2, Phase O — create_task_from_meeting.
-  return { label: `Поставил задачу «${result.task.title}»` };
+  if (result.tool === 'propose_routine')
+    return {
+      label: `Подготовил регламент «${result.routine.title}» — включите в «Регламентах»`,
+    };
+  // Stage 2, Phase O — create_task_from_meeting (и create_task).
+  if (
+    result.tool === 'create_task' ||
+    result.tool === 'create_task_from_meeting'
+  ) {
+    return { label: `Поставил задачу «${result.task.title}»` };
+  }
+  return { label: 'Готово' };
 }
 
 // Бэкенд-рендерер (спека §16) — LLM решает вызвать инструмент, инструмент
@@ -94,18 +219,29 @@ export function toolActivityLabel(result: ToolExecutionResult): ToolActivityData
 // какого-либо участия модели в форме карточки — taskId/eventId всегда из
 // настоящих Task/Event, не сочинены моделью. Порядок: статус инструмента →
 // текст ответа → карточки, по инструментам в порядке их вызова.
-export function buildAssistantParts(result: AssistantReplyResult): MessagePartInput[] {
+export function buildAssistantParts(
+  result: AssistantReplyResult,
+): MessagePartInput[] {
   const parts: MessagePartInput[] = [];
   let order = 0;
 
   for (const call of result.toolCalls) {
-    parts.push({ type: MessagePartType.TOOL_ACTIVITY, order: order++, data: toJson(toolActivityLabel(call.result)) });
+    parts.push({
+      type: MessagePartType.TOOL_ACTIVITY,
+      order: order++,
+      data: toJson(toolActivityLabel(call.result)),
+    });
   }
 
-  parts.push({ type: MessagePartType.MARKDOWN, order: order++, data: { content: result.text } });
+  parts.push({
+    type: MessagePartType.MARKDOWN,
+    order: order++,
+    data: { content: result.text },
+  });
 
   for (const call of result.toolCalls) {
-    for (const part of toolCardParts(call.result)) parts.push({ ...part, order: order++ });
+    for (const part of toolCardParts(call.result))
+      parts.push({ ...part, order: order++ });
   }
 
   return parts;
@@ -114,41 +250,115 @@ export function buildAssistantParts(result: AssistantReplyResult): MessagePartIn
 // Карточки одного инструмента (order проставляет вызывающий).
 function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
   const parts: MessagePartInput[] = [];
-  if ('error' in result) return parts;
-  if (result.tool === 'get_tasks') {
+  if ('error' in result || 'alreadyApplied' in result) return parts;
+  if (
+    result.tool === 'update_task' ||
+    result.tool === 'set_task_status' ||
+    result.tool === 'comment_task' ||
+    result.tool === 'remind_task'
+  ) {
+    // Единый агент A2 — карточка с «было → стало» и «Отменить» (если есть undoToken).
+    parts.push({
+      type: MessagePartType.TASK_CARD,
+      order: 0,
+      data: toJson(result.task),
+    });
+  } else if (result.tool === 'create_event' || result.tool === 'update_event') {
+    // Единый агент A3 — карточка события с изменениями и «Отменить».
+    parts.push({
+      type: MessagePartType.EVENT_CARD,
+      order: 0,
+      data: toJson(result.event),
+    });
+  } else if (result.tool === 'find_events') {
+    for (const card of result.cards)
+      parts.push({
+        type: MessagePartType.EVENT_CARD,
+        order: 0,
+        data: toJson(card),
+      });
+  } else if (result.tool === 'get_tasks') {
     for (const item of result.items) {
-      parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(item) });
+      parts.push({
+        type: MessagePartType.TASK_CARD,
+        order: 0,
+        data: toJson(item),
+      });
     }
+  } else if (result.tool === 'find_tasks') {
+    // Карточек — не больше, чем у get_tasks: остальное модель говорит по
+    // счётчикам, лента не превращается в простыню из 30 задач.
+    for (const item of result.items.slice(0, FIND_TASKS_CARDS)) {
+      parts.push({
+        type: MessagePartType.TASK_CARD,
+        order: 0,
+        data: toJson(toCard(item)),
+      });
+    }
+  } else if (result.tool === 'get_task') {
+    parts.push({
+      type: MessagePartType.TASK_CARD,
+      order: 0,
+      data: toJson(toCard(result.task)),
+    });
   } else if (result.tool === 'get_events') {
     for (const item of result.items) {
-      parts.push({ type: MessagePartType.EVENT_CARD, order: 0, data: toJson(item) });
+      parts.push({
+        type: MessagePartType.EVENT_CARD,
+        order: 0,
+        data: toJson(item),
+      });
     }
   } else if (result.tool === 'export_tasks_xlsx') {
     // export_tasks_xlsx — один сгенерированный файл, не список карточек
     // (Stage 2, Phase G). Тот же FILE-тип части, что и пользовательские
     // вложения (Phase F) — FilePartView на фронте уже умеет его отрендерить
     // и скачать без каких-либо изменений.
-    parts.push({ type: MessagePartType.FILE, order: 0, data: toJson(result.file) });
+    parts.push({
+      type: MessagePartType.FILE,
+      order: 0,
+      data: toJson(result.file),
+    });
   } else if (result.tool === 'create_task') {
-    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
+    parts.push({
+      type: MessagePartType.TASK_CARD,
+      order: 0,
+      data: toJson(result.task),
+    });
   } else if (result.tool === 'create_task_from_meeting') {
     // Stage 2, Phase O — та же карточка, что у get_tasks (TaskCardData),
     // но с заполненным source (Task.sourceMeetingId/sourceSegmentId/
     // sourceTimestamp/sourceContext) — TaskCardView на фронте показывает
     // происхождение задачи прямо под карточкой.
-    parts.push({ type: MessagePartType.TASK_CARD, order: 0, data: toJson(result.task) });
+    parts.push({
+      type: MessagePartType.TASK_CARD,
+      order: 0,
+      data: toJson(result.task),
+    });
   } else if (result.tool === 'propose_mail_actions') {
     // Почта, этап 3 — карточка с кнопкой «Подтвердить»: без неё ничего не исполняется.
     for (const plan of result.plans) {
-      parts.push({ type: MessagePartType.MAIL_PLAN_CARD, order: 0, data: toJson(plan) });
+      parts.push({
+        type: MessagePartType.MAIL_PLAN_CARD,
+        order: 0,
+        data: toJson(plan),
+      });
     }
   } else if (result.tool === 'draft_mail_reply') {
-    parts.push({ type: MessagePartType.MAIL_DRAFT_CARD, order: 0, data: toJson(result.draft) });
+    parts.push({
+      type: MessagePartType.MAIL_DRAFT_CARD,
+      order: 0,
+      data: toJson(result.draft),
+    });
   } else if (result.tool === 'legal_ask') {
     // Ответ агента-юриста — отдельным блоком, собранным сервером из
     // проверенных цитат: модель чата его не пересказывает (иначе цитаты
     // норм прошли бы через перефразирование и перестали быть дословными).
-    parts.push({ type: MessagePartType.MARKDOWN, order: 0, data: { content: result.markdown } });
+    parts.push({
+      type: MessagePartType.MARKDOWN,
+      order: 0,
+      data: { content: result.markdown },
+    });
   }
   // Stage 2, Phase K — инструменты встреч намеренно не строят
   // отдельный тип карточки (нет MEETING_CARD/UI под неё в этом заходе,
@@ -162,8 +372,27 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
 // действий терять нельзя: без карточки плана/письма нечем подтвердить
 // (инцидент 23.10.2026 — «перенеси в архив» голосом, план создан, кнопки нет).
 // Списки get_tasks/get_events и ответ юриста голос по-прежнему пересказывает.
-const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>(['propose_mail_actions', 'draft_mail_reply', 'create_task', 'create_task_from_meeting', 'export_tasks_xlsx']);
+const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>([
+  'propose_mail_actions',
+  'draft_mail_reply',
+  'create_task',
+  'create_task_from_meeting',
+  'export_tasks_xlsx',
+  // Единый агент A2 — голосовой вопрос может закончиться изменением задачи
+  // через Assistant Core: карточка с отменой не должна теряться.
+  'update_task',
+  'set_task_status',
+  'comment_task',
+  'remind_task',
+  // A3 — календарь.
+  'create_event',
+  'update_event',
+]);
 
-export function voiceActionCardParts(result: AssistantReplyResult): MessagePartInput[] {
-  return result.toolCalls.filter((call) => VOICE_CARD_TOOLS.has(call.result.tool)).flatMap((call) => toolCardParts(call.result));
+export function voiceActionCardParts(
+  result: AssistantReplyResult,
+): MessagePartInput[] {
+  return result.toolCalls
+    .filter((call) => VOICE_CARD_TOOLS.has(call.result.tool))
+    .flatMap((call) => toolCardParts(call.result));
 }

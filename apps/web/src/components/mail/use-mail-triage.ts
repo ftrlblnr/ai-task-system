@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { MailActionItemStatus, MailActionPlanItems, MailDraftView, MailTriageActionPlan, MailTriageActionType, MailTriageItem } from '@ai-task-system/shared-types';
+import type { MailActionItemStatus, MailActionPlanItems, MailTriageActionPlan, MailTriageActionType, MailTriageDraftTone, MailTriageDraftView, MailTriageItem } from '@ai-task-system/shared-types';
 import { MAIL_ACTION_ERROR_LABELS } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 
@@ -25,6 +25,8 @@ export interface TriageDraft {
   text: string;
   loading: boolean;
   error: string | null;
+  // Стиль /тон у черновика; null — черновика ещё нет.
+  tone: MailTriageDraftTone | null;
 }
 
 const OUTCOME_BY_TYPE: Record<MailTriageActionType, TriageOutcome> = { SEND_REPLY: 'SENT', CREATE_TASK: 'TASK', ARCHIVE: 'ARCHIVED' };
@@ -49,7 +51,7 @@ export function useMailTriage(initialMessageId: string | null) {
         setLoadError(null);
         setQueue(items);
         setResults({});
-        setDrafts(Object.fromEntries(items.filter((i) => i.draft).map((i) => [i.id, { draftId: i.draft!.id, text: i.draft!.body ?? '', loading: false, error: null }])));
+        setDrafts(Object.fromEntries(items.filter((i) => i.draft).map((i) => [i.id, { draftId: i.draft!.id, text: i.draft!.body ?? '', loading: false, error: null, tone: i.draft!.tone }])));
         setCurrentId((id) => (id && items.some((i) => i.id === id) ? id : (items[0]?.id ?? null)));
       })
       .catch(() => setLoadError('Не удалось загрузить очередь писем'));
@@ -62,10 +64,10 @@ export function useMailTriage(initialMessageId: string | null) {
 
   // Черновик для письма, которое ждёт ответа, — если фон ещё не успел.
   async function requestDraft(id: string, regenerate = false) {
-    setDrafts((d) => ({ ...d, [id]: { draftId: d[id]?.draftId ?? null, text: d[id]?.text ?? '', loading: true, error: null } }));
+    setDrafts((d) => ({ ...d, [id]: { draftId: d[id]?.draftId ?? null, text: d[id]?.text ?? '', loading: true, error: null, tone: d[id]?.tone ?? null } }));
     try {
-      const draft = await api.post<MailDraftView>(`/mail/messages/${id}/draft-reply${regenerate ? '?regenerate=true' : ''}`);
-      setDrafts((d) => ({ ...d, [id]: { draftId: draft.id, text: draft.body, loading: false, error: null } }));
+      const draft = await api.post<MailTriageDraftView>(`/mail/messages/${id}/draft-reply${regenerate ? '?regenerate=true' : ''}`);
+      setDrafts((d) => ({ ...d, [id]: { draftId: draft.id, text: draft.body, loading: false, error: null, tone: draft.tone } }));
     } catch (err) {
       setDrafts((d) => ({ ...d, [id]: { ...d[id], loading: false, error: errorText(err, 'Не удалось подготовить черновик') } }));
     }
@@ -77,7 +79,7 @@ export function useMailTriage(initialMessageId: string | null) {
   }, [current?.id]);
 
   function setDraftText(id: string, text: string) {
-    setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? { draftId: null, loading: false, error: null }), text } }));
+    setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? { draftId: null, loading: false, error: null, tone: null }), text } }));
   }
 
   // Следующее необработанное после текущего (по кругу); нет — конец разбора.

@@ -28,6 +28,11 @@ export interface TaskCardData {
     timestamp?: string | null;
     context?: string | null;
   } | null;
+  // Единый агент A2: задачу только что изменил ассистент — что изменилось и
+  // токен отмены (POST /voice/undo) до undoExpiresAt (время сервера).
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface EventCardData {
@@ -39,6 +44,10 @@ export interface EventCardData {
   participants: { id: string; name: string }[];
   // Зеркало packages/shared-types — подробные комментарии там.
   warning?: string | null;
+  // Единый агент A3 — как у TaskCardData: изменения и отмена.
+  changes?: { label: string; from: string | null; to: string | null }[];
+  undoToken?: string | null;
+  undoExpiresAt?: string | null;
 }
 
 export interface ToolActivityData {

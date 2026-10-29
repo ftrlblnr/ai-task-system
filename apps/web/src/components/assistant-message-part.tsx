@@ -20,6 +20,7 @@ import type {
 import { STATUS_LABELS } from '@/lib/labels';
 import { api } from '@/lib/api';
 import { MailDraftCard, MailPlanCard } from './assistant-mail-cards';
+import { ChangeFooter } from './assistant/change-footer';
 import { StreamingText, ThinkingLine, ThinkingGroup, EntityCard, FileChip, Alert, Button, StatusBadge } from '@/components/ui';
 
 // Дизайн-система «Адъютант» (владелец 04.10.2026, implementation.md шаг 7)
@@ -140,16 +141,20 @@ const KNOWN_STATUS = new Set(Object.keys(STATUS_LABELS));
 function TaskCardView({ data, fresh }: { data: TaskCardData; fresh?: boolean }) {
   const router = useRouter();
   return (
-    <EntityCard
-      kind="task"
-      title={data.title}
-      status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
-      due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
-      assignee={data.assignee?.name}
-      source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
-      fresh={fresh}
-      onOpen={() => router.push(`/tasks/${data.taskId}`)}
-    />
+    <>
+      <EntityCard
+        kind="task"
+        title={data.title}
+        status={KNOWN_STATUS.has(data.status) ? <StatusBadge status={data.status as TaskStatus} /> : undefined}
+        due={data.dueDate ? new Date(data.dueDate).toLocaleDateString('ru-RU') : undefined}
+        assignee={data.assignee?.name}
+        source={data.source ? { title: data.source.meetingTitle, ts: data.source.timestamp } : null}
+        fresh={fresh}
+        onOpen={() => router.push(`/tasks/${data.taskId}`)}
+      />
+      {/* Задачу изменил ассистент (единый агент A2) — «было → стало» и отмена. */}
+      <ChangeFooter data={data} />
+    </>
   );
 }
 
@@ -161,15 +166,19 @@ function EventCardView({ data, fresh }: { data: EventCardData; fresh?: boolean }
   const end = new Date(data.endAt);
   const time = `${start.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} – ${end.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
   return (
-    <EntityCard
-      kind="event"
-      title={data.title}
-      time={time}
-      location={data.location}
-      participants={data.participants.map((p) => p.name)}
-      warning={data.warning}
-      fresh={fresh}
-    />
+    <>
+      <EntityCard
+        kind="event"
+        title={data.title}
+        time={time}
+        location={data.location}
+        participants={data.participants.map((p) => p.name)}
+        warning={data.warning}
+        fresh={fresh}
+      />
+      {/* Событие поставил/изменил ассистент (единый агент A3) — «было → стало» и отмена. */}
+      <ChangeFooter data={data} />
+    </>
   );
 }
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConversationMessage, ConversationSummary, MessagePart, StreamEvent, UploadedFileInfo } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { haptic } from '@/lib/telegram';
+import { onAssistantRefresh } from '@/lib/assistant-refresh';
 
 // Переписка с ассистентом: история с сервера и отправка со стримингом (SSE).
 // Вынесено из assistant-screen.tsx (редизайн M5, MINIAPP_REDESIGN.md §4.6)
@@ -127,6 +128,19 @@ export function useAssistantStream() {
       })
       .catch(() => undefined);
   }, []);
+
+  // «Отменить» на карточке задачи (единый агент A2): сервер дописал
+  // «Отменено.» — подтягиваем. Пока идёт ответ, не перечитываем (затёрли бы
+  // стрим) — сообщение появится при следующей загрузке.
+  const sendingRef = useRef(false);
+  sendingRef.current = sending;
+  useEffect(
+    () =>
+      onAssistantRefresh(() => {
+        if (!sendingRef.current) refreshMessagesSilently();
+      }),
+    [refreshMessagesSilently],
+  );
 
   // .then()-цепочка, не async/await — тот же стиль, что tasks-screen.tsx
   // (тоже вызывается из useEffect по active): react-hooks/set-state-in-effect
