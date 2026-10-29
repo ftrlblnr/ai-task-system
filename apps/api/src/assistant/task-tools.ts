@@ -201,7 +201,8 @@ export function toGroupData(
 
 export interface TaskDetailData extends FoundTaskData {
   description: string | null;
-  source: {
+  // origin, а не source: у TaskCardData свой source (карточка задачи из встречи).
+  origin: {
     meetingId: string;
     meetingTitle: string;
     timestamp: string | null;
@@ -270,7 +271,8 @@ export function toTaskDetail(
       oldValue: string | null;
       newValue: string | null;
       createdAt: Date;
-      changedBy: { fullName: string };
+      // null — изменение системой (сотрудник удалён и т.п.).
+      changedBy: { fullName: string } | null;
     }[];
     comments: { body: string; createdAt: Date; author: { fullName: string } }[];
   },
@@ -288,7 +290,7 @@ export function toTaskDetail(
     description: t.description
       ? clip(t.description, TASK_DETAIL_DESCRIPTION_MAX)
       : null,
-    source: t.sourceMeeting
+    origin: t.sourceMeeting
       ? {
           meetingId: t.sourceMeeting.id,
           meetingTitle: t.sourceMeeting.title,
@@ -305,7 +307,7 @@ export function toTaskDetail(
       field: h.field,
       from: shown(h.field, h.oldValue),
       to: shown(h.field, h.newValue),
-      by: h.changedBy.fullName,
+      by: h.changedBy?.fullName ?? 'система',
       at: h.createdAt.toISOString(),
     })),
     comments: t.comments.slice(-TASK_DETAIL_COMMENTS_LIMIT).map((c) => ({
@@ -332,7 +334,7 @@ const WRITE_RULES =
   'Вызывай только по прямой просьбе пользователя. id задачи — только из find_tasks/get_task, пометки [shown_task] или блока [page_context]; если пользователь говорит «эту задачу», а какую — неясно, сначала найди через find_tasks и переспроси при нескольких кандидатах. Выполняется сразу; у пользователя 30 секунд, чтобы отменить кнопкой на карточке.';
 
 // Статусы, которые можно поставить из чата: черновик — служебный.
-export const SETTABLE_TASK_STATUSES = TASK_STATUSES.filter(
+export const SETTABLE_TASK_STATUSES: TaskStatus[] = TASK_STATUSES.filter(
   (s) => s !== TaskStatus.DRAFT,
 );
 

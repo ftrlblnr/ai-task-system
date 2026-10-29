@@ -1883,7 +1883,7 @@ export class AssistantToolsService {
     const resolveName = async (
       raw: string,
       role: 'исполнителя' | 'постановщика',
-    ) => {
+    ): Promise<{ id: string; name: string } | { error: string }> => {
       const resolution = await this.employeeResolver.resolve(raw, employees);
       if (resolution.status === 'RESOLVED' && resolution.employeeId) {
         return {
