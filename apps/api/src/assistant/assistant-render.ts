@@ -70,6 +70,13 @@ export function toolActivityLabel(
       return { label: 'Не удалось убрать из памяти' };
     if (result.tool === 'propose_routine')
       return { label: 'Не удалось подготовить регламент' };
+    // Поручения из встреч (B5).
+    if (result.tool === 'analyze_meeting')
+      return { label: 'Не удалось запустить разбор встречи' };
+    if (result.tool === 'get_meeting_proposals')
+      return { label: 'Не удалось проверить поручения встречи' };
+    if (result.tool === 'approve_meeting_proposals')
+      return { label: 'Не удалось утвердить поручения' };
     if (
       result.tool === 'create_task' ||
       result.tool === 'create_task_from_meeting'
@@ -204,6 +211,23 @@ export function toolActivityLabel(
     return {
       label: `Подготовил регламент «${result.routine.title}» — включите в «Регламентах»`,
     };
+  // Поручения из встреч (B5).
+  if (result.tool === 'analyze_meeting')
+    return { label: 'Запустил разбор встречи — поручения будут через пару минут' };
+  if (result.tool === 'get_meeting_proposals') {
+    const pending = result.proposals.filter((p) => p.status === 'PROPOSED').length;
+    return {
+      label: result.run
+        ? `Проверил поручения встречи: ждут решения ${pending}`
+        : 'Встречу ещё не разбирали',
+    };
+  }
+  if (result.tool === 'approve_meeting_proposals') {
+    const parts = [`утверждено ${result.approved.length}`];
+    if (result.rejected > 0) parts.push(`отклонено ${result.rejected}`);
+    if (result.failed.length > 0) parts.push(`не получилось ${result.failed.length}`);
+    return { label: `Поручения встречи: ${parts.join(', ')}` };
+  }
   // Stage 2, Phase O — create_task_from_meeting (и create_task).
   if (
     result.tool === 'create_task' ||
@@ -335,6 +359,14 @@ function toolCardParts(result: ToolExecutionResult): MessagePartInput[] {
       order: 0,
       data: toJson(result.task),
     });
+  } else if (result.tool === 'approve_meeting_proposals') {
+    // Поручения из встреч (B5) — карточки созданных задач, как у create_task.
+    for (const task of result.approved)
+      parts.push({
+        type: MessagePartType.TASK_CARD,
+        order: 0,
+        data: toJson(task),
+      });
   } else if (result.tool === 'propose_mail_actions') {
     // Почта, этап 3 — карточка с кнопкой «Подтвердить»: без неё ничего не исполняется.
     for (const plan of result.plans) {
@@ -387,6 +419,8 @@ const VOICE_CARD_TOOLS = new Set<ToolExecutionResult['tool']>([
   // A3 — календарь.
   'create_event',
   'update_event',
+  // B5 — «утверди все поручения с планёрки» голосом.
+  'approve_meeting_proposals',
 ]);
 
 export function voiceActionCardParts(
