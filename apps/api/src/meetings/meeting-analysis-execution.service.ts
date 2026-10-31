@@ -4,7 +4,9 @@ import { MeetingAnalysisRun, MeetingAnalysisStatus, MeetingProposalStatus, Prism
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { MeetingTaskExtractionService, type MeetingTaskDraft } from './meeting-task-extraction.service';
-import { MeetingAnalysisService } from './meeting-analysis.service';
+import { analysisInputHash, MeetingAnalysisService } from './meeting-analysis.service';
+import { MeetingsService } from './meetings.service';
+import { hasSpeakerNames, MeetingSpeakersService, shouldAutoApply, speakerLabels, type SpeakerSuggestion } from './meeting-speakers.service';
 
 // Воркер разбора встреч — тот же приём, что LegalReviewRun
 // (legal-review-execution.service.ts): строка в БД + @Cron + claim
@@ -12,9 +14,9 @@ import { MeetingAnalysisService } from './meeting-analysis.service';
 // контейнера), блокировка 15 минут, две попытки — повтор стоит ещё одного
 // полного разбора.
 //
-// B1: поручения извлекаются прежним MeetingTaskExtractionService по
-// саммари. Говорящие (B2) и разбор расшифровки со ссылками на реплики (B3)
-// встанут в process() следующими шагами.
+// Шаги: говорящие (B.3, MeetingSpeakersService) → поручения. Поручения
+// пока извлекаются прежним MeetingTaskExtractionService по саммари; разбор
+// расшифровки со ссылками на реплики (B3) заменит этот шаг.
 
 const LOCK_TTL_MS = 15 * 60 * 1000;
 export const MAX_ANALYSIS_ATTEMPTS = 2;
@@ -58,6 +60,8 @@ export class MeetingAnalysisExecutionService {
     private readonly audit: AuditService,
     private readonly analysis: MeetingAnalysisService,
     private readonly extraction: MeetingTaskExtractionService,
+    private readonly meetings: MeetingsService,
+    private readonly speakers: MeetingSpeakersService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_SECONDS)
@@ -106,11 +110,19 @@ export class MeetingAnalysisExecutionService {
 
   async process(run: MeetingAnalysisRun): Promise<void> {
     try {
-      const meeting = await this.prisma.meeting.findUnique({ where: { id: run.meetingId }, select: { title: true, meetingDate: true } });
-      const input = await this.analysis.loadInput(run.meetingId);
+      const meeting = await this.prisma.meeting.findUnique({
+        where: { id: run.meetingId },
+        select: { title: true, meetingDate: true, createdById: true, speakerNames: true },
+      });
       // Встречу удалили, пока запуск стоял в очереди, — строка запуска ушла
       // каскадом вместе с ней, писать некуда.
-      if (!meeting || !input) return;
+      if (!meeting) return;
+
+      const speakerSuggestions = await this.matchSpeakers(run, meeting);
+      // Вход читается ПОСЛЕ шага говорящих: применённые имена уже в
+      // enhancedSummary, извлечение видит людей, а не «Speaker 2».
+      const input = await this.analysis.loadInput(run.meetingId);
+      if (!input) return;
 
       const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
       const drafts = await this.extraction.extract(input.summary, meeting.title, meeting.meetingDate.toLocaleDateString('ru-RU'), employees);
@@ -129,7 +141,16 @@ export class MeetingAnalysisExecutionService {
         }
         await tx.meetingAnalysisRun.update({
           where: { id: run.id },
-          data: { status: MeetingAnalysisStatus.DONE, lockedAt: null, finishedAt: new Date() },
+          data: {
+            status: MeetingAnalysisStatus.DONE,
+            // Хэш того, что реально разобрано: после применения имён
+            // саммари другое, и без этого кнопка решила бы, что запись
+            // изменилась.
+            inputHash: analysisInputHash(input),
+            speakerSuggestions: speakerSuggestions ? (speakerSuggestions as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
+            lockedAt: null,
+            finishedAt: new Date(),
+          },
         });
       });
 
@@ -152,6 +173,35 @@ export class MeetingAnalysisExecutionService {
           ? { status: MeetingAnalysisStatus.FAILED, error: message, lockedAt: null, finishedAt: new Date() }
           : { status: MeetingAnalysisStatus.QUEUED, error: message, lockedAt: null },
       });
+    }
+  }
+
+  // Шаг 1 — говорящие (B.3). null — шаг не делался: имена уже есть (их не
+  // перезаписываем), нет расшифровки или сбой. Best-effort: без имён
+  // поручения всё равно извлекаются, просто исполнители реже сопоставлены.
+  private async matchSpeakers(
+    run: MeetingAnalysisRun,
+    meeting: { title: string; meetingDate: Date; createdById: string; speakerNames: Prisma.JsonValue },
+  ): Promise<SpeakerSuggestion[] | null> {
+    if (hasSpeakerNames(meeting.speakerNames)) return null;
+    const segments = await this.prisma.meetingSegment.findMany({
+      where: { meetingId: run.meetingId },
+      orderBy: { order: 'asc' },
+      select: { speakerLabel: true, startMs: true, text: true },
+    });
+    if (segments.length === 0) return null;
+
+    try {
+      const suggestions = await this.speakers.suggest(meeting, segments);
+      if (!shouldAutoApply(speakerLabels(segments), suggestions)) return suggestions;
+      // Пока модель думала, руководитель мог вписать имена сам — его ввод важнее.
+      const fresh = await this.prisma.meeting.findUnique({ where: { id: run.meetingId }, select: { speakerNames: true } });
+      if (!fresh || hasSpeakerNames(fresh.speakerNames)) return suggestions;
+      await this.meetings.updateSpeakers(run.meetingId, Object.fromEntries(suggestions.map((s) => [s.label, s.name ?? ''])));
+      return suggestions.map((s) => ({ ...s, applied: true }));
+    } catch (err) {
+      this.logger.warn(`meeting analysis ${run.id}: говорящие не сопоставлены: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
     }
   }
 }

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { MeetingAnalysisStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { SpeakerSuggestion } from './meeting-speakers.service';
 
 // Поручения из встреч (AGENT_AND_MEETINGS.md, B.2). Разбор запускает только
 // руководитель — кнопкой на странице встречи или фразой ассистенту (решение
@@ -36,6 +37,8 @@ export interface MeetingAnalysisState {
   // Запись изменилась с последнего успешного разбора — для «Запись не
   // менялась. Разобрать ещё раз?» на кнопке.
   inputChanged: boolean;
+  // Подсказки «Speaker 2 — это …» для формы имён; null — шаг не делался.
+  speakerSuggestions: SpeakerSuggestion[] | null;
 }
 
 @Injectable()
@@ -106,6 +109,7 @@ export class MeetingAnalysisService {
       createdAt: run.createdAt,
       finishedAt: run.finishedAt,
       inputChanged: !lastDone || !input || analysisInputHash(input) !== lastDone.inputHash,
+      speakerSuggestions: Array.isArray(run.speakerSuggestions) ? (run.speakerSuggestions as unknown as SpeakerSuggestion[]) : null,
     };
   }
 }

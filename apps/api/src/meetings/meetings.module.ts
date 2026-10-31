@@ -7,6 +7,7 @@ import { MeetingTaskExtractionService } from './meeting-task-extraction.service'
 import { SpeakerSubstitutionService } from './speaker-substitution.service';
 import { MeetingAnalysisService } from './meeting-analysis.service';
 import { MeetingAnalysisExecutionService } from './meeting-analysis-execution.service';
+import { MeetingSpeakersService } from './meeting-speakers.service';
 import { IdempotencyService } from '../common/idempotency.service';
 
 @Module({
@@ -21,6 +22,7 @@ import { IdempotencyService } from '../common/idempotency.service';
     SpeakerSubstitutionService,
     MeetingAnalysisService,
     MeetingAnalysisExecutionService,
+    MeetingSpeakersService,
     IdempotencyService,
   ],
   // MeetingAnalysisService — для инструмента ассистента analyze_meeting (B5).

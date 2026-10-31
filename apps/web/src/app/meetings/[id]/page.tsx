@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { ArrowLeft, FileText, ListTodo, Users } from 'lucide-react';
-import type { MeetingDetail } from '@ai-task-system/shared-types';
+import type { MeetingAnalysisState, MeetingDetail, MeetingSpeakerSuggestion } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
@@ -32,6 +32,16 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
   const [names, setNames] = useState<Record<string, string>>(meeting.speakerNames ?? {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Подсказки последнего разбора «Найти поручения» (шаг «говорящие»).
+  // Без них форма работает как раньше — ошибка загрузки не показывается.
+  const [suggestions, setSuggestions] = useState<MeetingSpeakerSuggestion[]>([]);
+
+  useEffect(() => {
+    api
+      .get<{ run: MeetingAnalysisState | null }>(`/meetings/${meeting.id}/analysis`)
+      .then(({ run }) => setSuggestions(run?.speakerSuggestions ?? []))
+      .catch(() => setSuggestions([]));
+  }, [meeting.id]);
 
   // Подстройка state под изменившийся проп (сохранение имён вызывает
   // onSaved → родитель перезагружает meeting) — по рекомендованному React-
@@ -64,16 +74,33 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
     <Panel icon={Users} title="Спикеры">
       <p className="panel-hint">Впишите имена вместо номеров — саммари станет понятнее, а исполнители точнее.</p>
       <div className="meeting-speakers">
-        {labels.map((label) => (
-          <label key={label} className="ds-field-label">
-            {label}
-            <Input
-              value={names[label] ?? ''}
-              onChange={(e) => setNames((prev) => ({ ...prev, [label]: e.target.value }))}
-              placeholder="Имя"
-            />
-          </label>
-        ))}
+        {labels.map((label) => {
+          // Подсказка — только пока поле пустое и имя не применено само:
+          // вписанное человеком не перебиваем. «Верно» лишь заполняет
+          // поле, сохраняет по-прежнему «Сохранить имена».
+          const hint = suggestions.find((s) => s.label === label && s.name && !s.applied);
+          const showHint = hint?.name && !(names[label] ?? '').trim();
+          return (
+            <div key={label}>
+              <label className="ds-field-label">
+                {label}
+                <Input
+                  value={names[label] ?? ''}
+                  onChange={(e) => setNames((prev) => ({ ...prev, [label]: e.target.value }))}
+                  placeholder="Имя"
+                />
+              </label>
+              {showHint && (
+                <p className="ds-field-hint">
+                  Похоже, это {hint.name}{' '}
+                  <Button variant="ghost" size="sm" onClick={() => setNames((prev) => ({ ...prev, [label]: hint.name ?? '' }))}>
+                    Верно
+                  </Button>
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
       {error && <Alert tone="danger">{error}</Alert>}
       <div className="panel-actions">

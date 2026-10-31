@@ -229,6 +229,32 @@ export interface MeetingDetail extends MeetingSummary {
   tasks: MeetingTaskRef[];
 }
 
+// Поручения из встреч (AGENT_AND_MEETINGS.md, часть B) — разбор по кнопке.
+export type MeetingAnalysisStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED';
+
+// «Speaker 2 — это …»: подсказка шага «говорящие». applied — имена
+// применены сами (модель уверена во всех метках).
+export interface MeetingSpeakerSuggestion {
+  label: string;
+  employeeId: string | null;
+  name: string | null;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  applied: boolean;
+}
+
+// GET /meetings/:id/analysis → { run: MeetingAnalysisState | null }.
+export interface MeetingAnalysisState {
+  runId: string;
+  status: MeetingAnalysisStatus;
+  hadTranscript: boolean;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  // Запись изменилась с последнего успешного разбора.
+  inputChanged: boolean;
+  speakerSuggestions: MeetingSpeakerSuggestion[] | null;
+}
+
 export interface CreateMeetingInput {
   title: string;
   meetingDate: string;

@@ -12,23 +12,62 @@ const DRAFT = {
   sourceContext: 'Жандос подготовит смету к среде.',
 };
 
-function make(extract: jest.Mock, opts: { meeting?: boolean; auditFails?: boolean } = {}) {
+const SEGMENTS = [
+  { speakerLabel: 'Speaker 1', startMs: 0, text: 'Жандос, подготовь смету к среде.' },
+  { speakerLabel: 'Speaker 2', startMs: 4000, text: 'Хорошо, подготовлю.' },
+];
+const MEETING = { title: 'Планёрка', meetingDate: new Date('2026-11-02T04:00:00Z'), createdById: 'owner', speakerNames: null };
+
+function suggestion(label: string, name: string | null, confidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH') {
+  return { label, employeeId: null, name, confidence, applied: false };
+}
+
+interface Opts {
+  meeting?: Record<string, unknown> | null;
+  // Имена, которые «вписал руководитель», пока модель сопоставляла говорящих.
+  freshSpeakerNames?: unknown;
+  segments?: typeof SEGMENTS;
+  suggest?: jest.Mock;
+  auditFails?: boolean;
+}
+
+function make(extract: jest.Mock, opts: Opts = {}) {
   const calls: { op: string; args: unknown }[] = [];
   const record = (op: string) => jest.fn().mockImplementation((args: unknown) => (calls.push({ op, args }), Promise.resolve({ count: 0 })));
   const tx = {
     meetingProposal: { updateMany: record('supersede'), createMany: record('create') },
     meetingAnalysisRun: { update: record('done') },
   };
+  const meeting = opts.meeting === undefined ? MEETING : opts.meeting;
   const prisma = {
-    meeting: { findUnique: jest.fn().mockResolvedValue(opts.meeting === false ? null : { title: 'Планёрка', meetingDate: new Date('2026-11-02T04:00:00Z') }) },
+    meeting: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(meeting)
+        .mockResolvedValue(meeting && { speakerNames: opts.freshSpeakerNames ?? null }),
+    },
+    meetingSegment: { findMany: jest.fn().mockResolvedValue(opts.segments ?? []) },
     employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Жандос Ахметов' }]) },
     meetingAnalysisRun: { updateMany: record('fail') },
     $transaction: jest.fn().mockImplementation((fn: (t: typeof tx) => unknown) => fn(tx)),
   };
   const analysis = { loadInput: jest.fn().mockResolvedValue({ summary: 'Саммари', segments: [] }) };
   const audit = { log: opts.auditFails ? jest.fn().mockRejectedValue(new Error('db')) : jest.fn().mockResolvedValue(undefined) };
-  const service = new MeetingAnalysisExecutionService(prisma as never, audit as never, analysis as never, { extract } as never);
-  return { service, calls, audit };
+  const meetings = { updateSpeakers: jest.fn().mockResolvedValue({}) };
+  const speakers = { suggest: opts.suggest ?? jest.fn().mockResolvedValue([]) };
+  const service = new MeetingAnalysisExecutionService(
+    prisma as never,
+    audit as never,
+    analysis as never,
+    { extract } as never,
+    meetings as never,
+    speakers as never,
+  );
+  return { service, calls, audit, meetings, speakers };
+}
+
+function doneData(calls: { op: string; args: unknown }[]) {
+  return (calls.find((c) => c.op === 'done')?.args as { data: Record<string, unknown> }).data;
 }
 
 describe('MeetingAnalysisExecutionService.process', () => {
@@ -81,10 +120,67 @@ describe('MeetingAnalysisExecutionService.process', () => {
 
   it('встречу удалили, пока запуск ждал, — ничего не пишем', async () => {
     const extract = jest.fn();
-    const { service, calls } = make(extract, { meeting: false });
+    const { service, calls } = make(extract, { meeting: null });
     await service.process(RUN);
     expect(extract).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('MeetingAnalysisExecutionService — шаг «говорящие»', () => {
+  const extract = () => jest.fn().mockResolvedValue([]);
+
+  it('все метки HIGH и разные имена — применяются сами, подсказки помечены applied', async () => {
+    const suggest = jest.fn().mockResolvedValue([suggestion('Speaker 1', 'Арман Ким'), suggestion('Speaker 2', 'Жандос Ахметов')]);
+    const { service, calls, meetings } = make(extract(), { segments: SEGMENTS, suggest });
+    await service.process(RUN);
+    expect(meetings.updateSpeakers).toHaveBeenCalledWith('m1', { 'Speaker 1': 'Арман Ким', 'Speaker 2': 'Жандос Ахметов' });
+    expect(doneData(calls).speakerSuggestions).toEqual([
+      expect.objectContaining({ label: 'Speaker 1', applied: true }),
+      expect.objectContaining({ label: 'Speaker 2', applied: true }),
+    ]);
+  });
+
+  it('хоть одна метка не HIGH — только подсказки, имена не трогаем', async () => {
+    const suggest = jest.fn().mockResolvedValue([suggestion('Speaker 1', 'Арман Ким'), suggestion('Speaker 2', 'Жандос Ахметов', 'MEDIUM')]);
+    const { service, calls, meetings } = make(extract(), { segments: SEGMENTS, suggest });
+    await service.process(RUN);
+    expect(meetings.updateSpeakers).not.toHaveBeenCalled();
+    expect(doneData(calls).speakerSuggestions).toEqual([
+      expect.objectContaining({ applied: false }),
+      expect.objectContaining({ applied: false }),
+    ]);
+  });
+
+  it('имена уже заданы человеком — шаг пропускается, модель не вызывается', async () => {
+    const suggest = jest.fn();
+    const { service, meetings } = make(extract(), { meeting: { ...MEETING, speakerNames: { 'Speaker 1': 'Арман Ким' } }, segments: SEGMENTS, suggest });
+    await service.process(RUN);
+    expect(suggest).not.toHaveBeenCalled();
+    expect(meetings.updateSpeakers).not.toHaveBeenCalled();
+  });
+
+  it('руководитель вписал имена, пока шёл разбор, — его ввод не перезаписывается', async () => {
+    const suggest = jest.fn().mockResolvedValue([suggestion('Speaker 1', 'Арман Ким'), suggestion('Speaker 2', 'Жандос Ахметов')]);
+    const { service, meetings } = make(extract(), { segments: SEGMENTS, suggest, freshSpeakerNames: { 'Speaker 2': 'Ирина' } });
+    await service.process(RUN);
+    expect(meetings.updateSpeakers).not.toHaveBeenCalled();
+  });
+
+  it('нет расшифровки — шаг пропускается', async () => {
+    const suggest = jest.fn();
+    const { service, calls } = make(extract(), { suggest });
+    await service.process(RUN);
+    expect(suggest).not.toHaveBeenCalled();
+    expect(doneData(calls).speakerSuggestions).toBeDefined();
+  });
+
+  it('сбой сопоставления не мешает извлечению поручений', async () => {
+    const ex = jest.fn().mockResolvedValue([DRAFT]);
+    const { service, calls } = make(ex, { segments: SEGMENTS, suggest: jest.fn().mockRejectedValue(new Error('overloaded')) });
+    await service.process(RUN);
+    expect(ex).toHaveBeenCalled();
+    expect(calls.map((c) => c.op)).toEqual(['supersede', 'create', 'done']);
   });
 });
 
