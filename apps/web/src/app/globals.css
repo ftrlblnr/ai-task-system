@@ -3178,6 +3178,12 @@ a.row-item-title:hover { text-decoration: underline; }
 
 /* Встреча: саммари слева, задачи и спикеры справа. */
 .meeting-speakers { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+/* Поручения из встречи: галочка, поля строки, цитата-источник. */
+.proposal-row { justify-content: flex-start; }
+.proposal-row > input[type='checkbox'] { flex: none; margin-top: 12px; }
+.proposal-row .row-item-main { display: flex; flex-direction: column; gap: 6px; }
+.proposal-fields { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 8px; }
+@media (max-width: 640px) { .proposal-fields { grid-template-columns: 1fr; } }
 .meeting-speakers .ds-field-label { display: flex; flex-direction: column; gap: 4px; margin: 0; }
 .detail-grid .ds-md { overflow-wrap: anywhere; }
 .detail-grid .ds-md table { display: block; max-width: 100%; overflow-x: auto; }

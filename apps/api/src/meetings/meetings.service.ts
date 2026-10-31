@@ -38,12 +38,16 @@ export class MeetingsService {
   // Meeting.plaudRecordingId (заполняется только PlaudSyncService).
   // Единственный другой caller (MeetingsController → GET /meetings) не
   // передаёт аргумент — поведение для него не меняется.
-  findAll(source: 'all' | 'plaud' = 'all') {
-    return this.prisma.meeting.findMany({
+  //
+  // pendingProposals — неутверждённые поручения разбора «Найти поручения»
+  // (тихая отметка в списке встреч; встречи без разбора — 0).
+  async findAll(source: 'all' | 'plaud' = 'all') {
+    const meetings = await this.prisma.meeting.findMany({
       where: source === 'plaud' ? { plaudRecordingId: { not: null } } : undefined,
-      select: LIST_SELECT,
+      select: { ...LIST_SELECT, _count: { select: { proposals: { where: { status: 'PROPOSED' } } } } },
       orderBy: { meetingDate: 'desc' },
     });
+    return meetings.map(({ _count, ...m }) => ({ ...m, pendingProposals: _count?.proposals ?? 0 }));
   }
 
   async findOne(id: string, viewerId: string) {

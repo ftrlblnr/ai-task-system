@@ -10,7 +10,7 @@ import type { MeetingAnalysisState, MeetingDetail, MeetingSpeakerSuggestion } fr
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
-import { TaskExtractionModal } from '@/components/task-extraction-modal';
+import { MeetingProposalsPanel } from '@/components/meetings/meeting-proposals-panel';
 import { PageHeader } from '@/components/ui/card';
 import { Panel, StatusTag } from '@/components/ui/panel';
 import { Button } from '@/components/ui/button';
@@ -115,7 +115,6 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
 function MeetingDetailView({ id }: { id: string }) {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showExtraction, setShowExtraction] = useState(false);
 
   function load() {
     api
@@ -139,11 +138,6 @@ function MeetingDetailView({ id }: { id: string }) {
       <PageHeader
         kicker={`${new Date(meeting.meetingDate).toLocaleDateString('ru-RU')} · загрузил ${meeting.createdBy.fullName}`}
         title={meeting.title}
-        actions={
-          <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
-            Поставить задачи
-          </Button>
-        }
       />
 
       <div className="detail-grid">
@@ -159,9 +153,13 @@ function MeetingDetailView({ id }: { id: string }) {
         </Panel>
 
         <div className="detail-col">
+          {/* Поручения из встречи — разбор по кнопке, задачи только после
+              утверждения (AGENT_AND_MEETINGS.md, B.5). Прежнюю модалку
+              «Поставить задачи» панель заменила. */}
+          <MeetingProposalsPanel meetingId={meeting.id} onMeetingChanged={load} />
           <Panel icon={ListTodo} title="Задачи из встречи" aside={meeting.tasks.length > 0 && <StatusTag tone="muted">{meeting.tasks.length}</StatusTag>}>
             {meeting.tasks.length === 0 ? (
-              <p className="panel-hint">Пока ни одной — «Поставить задачи» разберёт саммари.</p>
+              <p className="panel-hint">Пока ни одной — утвердите поручения выше.</p>
             ) : (
               <ul className="row-list">
                 {meeting.tasks.map((t) => (
@@ -181,14 +179,6 @@ function MeetingDetailView({ id }: { id: string }) {
           <SpeakerNamesSection meeting={meeting} onSaved={load} />
         </div>
       </div>
-
-      {showExtraction && (
-        <TaskExtractionModal
-          meetingId={meeting.id}
-          onClose={() => setShowExtraction(false)}
-          onCreated={load}
-        />
-      )}
     </div>
   );
 }
