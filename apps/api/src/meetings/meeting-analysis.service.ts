@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
-import { MeetingAnalysisStatus } from '@prisma/client';
+import { MeetingAnalysisStatus, type Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { SpeakerSuggestion } from './meeting-speakers.service';
+import type { TranscriptLine } from './meeting-task-extraction.service';
 
 // Поручения из встреч (AGENT_AND_MEETINGS.md, B.2). Разбор запускает только
 // руководитель — кнопкой на странице встречи или фразой ассистенту (решение
@@ -11,9 +12,28 @@ import type { SpeakerSuggestion } from './meeting-speakers.service';
 
 const ACTIVE_STATUSES: MeetingAnalysisStatus[] = [MeetingAnalysisStatus.QUEUED, MeetingAnalysisStatus.RUNNING];
 
+export interface MeetingAnalysisSegment {
+  id: string;
+  text: string;
+  startMs?: number;
+  speakerLabel?: string;
+}
+
 export interface MeetingAnalysisInput {
   summary: string;
-  segments: { id: string; text: string }[];
+  segments: MeetingAnalysisSegment[];
+  speakerNames?: Prisma.JsonValue;
+}
+
+// Реплики для извлечения поручений: говорящий — по сопоставленному имени
+// (Meeting.speakerNames), иначе меткой Plaud.
+export function transcriptLines(input: MeetingAnalysisInput): TranscriptLine[] {
+  const names = input.speakerNames && typeof input.speakerNames === 'object' && !Array.isArray(input.speakerNames) ? (input.speakerNames as Record<string, unknown>) : {};
+  return input.segments.map((s) => {
+    const label = s.speakerLabel ?? '';
+    const name = names[label];
+    return { segmentId: s.id, startMs: s.startMs ?? 0, speaker: typeof name === 'string' && name.trim() ? name.trim() : label, text: s.text };
+  });
 }
 
 // Тот же порядок полей, что видит модель: саммари, затем реплики по порядку.
@@ -48,15 +68,15 @@ export class MeetingAnalysisService {
   async loadInput(meetingId: string): Promise<MeetingAnalysisInput | null> {
     const meeting = await this.prisma.meeting.findUnique({
       where: { id: meetingId },
-      select: { rawSummary: true, latestSummary: true, enhancedSummary: true },
+      select: { rawSummary: true, latestSummary: true, enhancedSummary: true, speakerNames: true },
     });
     if (!meeting) return null;
     const segments = await this.prisma.meetingSegment.findMany({
       where: { meetingId },
       orderBy: { order: 'asc' },
-      select: { id: true, text: true },
+      select: { id: true, text: true, startMs: true, speakerLabel: true },
     });
-    return { summary: currentSummary(meeting), segments };
+    return { summary: currentSummary(meeting), segments, speakerNames: meeting.speakerNames };
   }
 
   async start(meetingId: string, requestedById: string) {

@@ -6,17 +6,26 @@ const DRAFT = {
   title: 'Подготовить смету',
   description: null,
   assigneeId: 'e1',
-  dueDate: '2026-11-04T18:00:00+05:00',
+  assigneeRawText: 'Жандос',
+  dueDate: new Date('2026-11-04T13:00:00Z'),
   priority: null,
   confidence: 'HIGH' as const,
   sourceContext: 'Жандос подготовит смету к среде.',
+  segmentId: 'seg-a',
+  sourceTimestamp: '00:00',
 };
 
 const SEGMENTS = [
   { speakerLabel: 'Speaker 1', startMs: 0, text: 'Жандос, подготовь смету к среде.' },
   { speakerLabel: 'Speaker 2', startMs: 4000, text: 'Хорошо, подготовлю.' },
 ];
-const MEETING = { title: 'Планёрка', meetingDate: new Date('2026-11-02T04:00:00Z'), createdById: 'owner', speakerNames: null };
+const MEETING = {
+  title: 'Планёрка',
+  meetingDate: new Date('2026-11-02T04:00:00Z'),
+  createdById: 'owner',
+  speakerNames: null,
+  createdBy: { fullName: 'Арман Ким' },
+};
 
 function suggestion(label: string, name: string | null, confidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH') {
   return { label, employeeId: null, name, confidence, applied: false };
@@ -48,6 +57,7 @@ function make(extract: jest.Mock, opts: Opts = {}) {
     },
     meetingSegment: { findMany: jest.fn().mockResolvedValue(opts.segments ?? []) },
     employee: { findMany: jest.fn().mockResolvedValue([{ id: 'e1', fullName: 'Жандос Ахметов' }]) },
+    task: { findMany: jest.fn().mockResolvedValue([{ id: 't1', title: 'Подготовить смету', assigneeId: 'e1', sourceMeetingId: null }]) },
     meetingAnalysisRun: { updateMany: record('fail') },
     $transaction: jest.fn().mockImplementation((fn: (t: typeof tx) => unknown) => fn(tx)),
   };
@@ -76,8 +86,17 @@ describe('MeetingAnalysisExecutionService.process', () => {
     const { service, calls, audit } = make(extract);
     await service.process(RUN);
 
-    expect(extract).toHaveBeenCalledWith('Саммари', 'Планёрка', expect.any(String), [{ id: 'e1', fullName: 'Жандос Ахметов' }]);
+    expect(extract).toHaveBeenCalledWith({
+      meetingTitle: 'Планёрка',
+      meetingDate: MEETING.meetingDate,
+      summary: 'Саммари',
+      transcript: [],
+      ownerName: 'Арман Ким',
+      employees: [{ id: 'e1', fullName: 'Жандос Ахметов' }],
+    });
     expect(calls.map((c) => c.op)).toEqual(['supersede', 'create', 'done']);
+    // Уже есть такая же открытая задача у того же исполнителя — помечена.
+    expect(calls[1].args).toEqual({ data: [expect.objectContaining({ similarTaskId: 't1', sourceSegmentId: 'seg-a', sourceTimestamp: '00:00' })] });
     // Только PROPOSED прошлых запусков — решения руководителя не трогаем.
     expect(calls[0].args).toEqual({
       where: { meetingId: 'm1', runId: { not: 'run2' }, status: 'PROPOSED' },
@@ -185,9 +204,11 @@ describe('MeetingAnalysisExecutionService — шаг «говорящие»', ()
 });
 
 describe('toProposalRows', () => {
-  it('порядок, дата срока, неразборчивая дата → null', () => {
-    const rows = toProposalRows('m1', 'r1', [DRAFT, { ...DRAFT, title: 'Второе', dueDate: 'в среду' }]);
-    expect(rows[0]).toMatchObject({ meetingId: 'm1', runId: 'r1', order: 0, assigneeId: 'e1', dueDate: new Date('2026-11-04T13:00:00Z') });
-    expect(rows[1]).toMatchObject({ order: 1, dueDate: null });
+  it('порядок, источник, похожая задача только при совпадении', () => {
+    const rows = toProposalRows('m1', 'r1', [DRAFT, { ...DRAFT, title: 'Согласовать договор', segmentId: null, sourceTimestamp: null }], [
+      { id: 't1', title: 'Подготовить смету', assigneeId: 'e1', sourceMeetingId: null },
+    ]);
+    expect(rows[0]).toMatchObject({ meetingId: 'm1', runId: 'r1', order: 0, assigneeRawText: 'Жандос', sourceSegmentId: 'seg-a', similarTaskId: 't1' });
+    expect(rows[1]).toMatchObject({ order: 1, sourceSegmentId: null, similarTaskId: null });
   });
 });

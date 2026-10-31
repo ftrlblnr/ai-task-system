@@ -3,8 +3,10 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { MeetingAnalysisRun, MeetingAnalysisStatus, MeetingProposalStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { MeetingTaskExtractionService, type MeetingTaskDraft } from './meeting-task-extraction.service';
-import { analysisInputHash, MeetingAnalysisService } from './meeting-analysis.service';
+import { CLOSED_TASK_STATUSES } from '../tasks/tasks.service';
+import { MeetingTaskExtractionService, type ExtractedProposal } from './meeting-task-extraction.service';
+import { analysisInputHash, MeetingAnalysisService, transcriptLines } from './meeting-analysis.service';
+import { findSimilarTask, type ExistingTask } from './meeting-proposal-similarity';
 import { MeetingsService } from './meetings.service';
 import { hasSpeakerNames, MeetingSpeakersService, shouldAutoApply, speakerLabels, type SpeakerSuggestion } from './meeting-speakers.service';
 
@@ -14,9 +16,9 @@ import { hasSpeakerNames, MeetingSpeakersService, shouldAutoApply, speakerLabels
 // контейнера), блокировка 15 минут, две попытки — повтор стоит ещё одного
 // полного разбора.
 //
-// Шаги: говорящие (B.3, MeetingSpeakersService) → поручения. Поручения
-// пока извлекаются прежним MeetingTaskExtractionService по саммари; разбор
-// расшифровки со ссылками на реплики (B3) заменит этот шаг.
+// Шаги: говорящие (B.3, MeetingSpeakersService) → поручения по саммари и
+// расшифровке (B.4, MeetingTaskExtractionService) → пометка похожих на уже
+// существующие задачи.
 
 const LOCK_TTL_MS = 15 * 60 * 1000;
 export const MAX_ANALYSIS_ATTEMPTS = 2;
@@ -29,24 +31,31 @@ function failureMessage(err: unknown): { message: string; permanent: boolean } {
   return { message: GENERIC_FAILURE, permanent: false };
 }
 
-function parseDueDate(value: string | null): Date | null {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
+// Похожие задачи ищем среди открытых задач этой встречи и открытых задач
+// тех же исполнителей за последние 30 дней.
+const SIMILAR_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
-export function toProposalRows(meetingId: string, runId: string, drafts: MeetingTaskDraft[]): Prisma.MeetingProposalCreateManyInput[] {
-  return drafts.map((d, i) => ({
+export function toProposalRows(
+  meetingId: string,
+  runId: string,
+  proposals: ExtractedProposal[],
+  existing: ExistingTask[],
+): Prisma.MeetingProposalCreateManyInput[] {
+  return proposals.map((p, i) => ({
     meetingId,
     runId,
     order: i,
-    title: d.title,
-    description: d.description,
-    assigneeId: d.assigneeId,
-    dueDate: parseDueDate(d.dueDate),
-    priority: d.priority,
-    confidence: d.confidence,
-    sourceContext: d.sourceContext,
+    title: p.title,
+    description: p.description,
+    assigneeId: p.assigneeId,
+    assigneeRawText: p.assigneeRawText,
+    dueDate: p.dueDate,
+    priority: p.priority,
+    confidence: p.confidence,
+    sourceContext: p.sourceContext,
+    sourceSegmentId: p.segmentId,
+    sourceTimestamp: p.sourceTimestamp,
+    similarTaskId: findSimilarTask(p, meetingId, existing),
   }));
 }
 
@@ -112,7 +121,7 @@ export class MeetingAnalysisExecutionService {
     try {
       const meeting = await this.prisma.meeting.findUnique({
         where: { id: run.meetingId },
-        select: { title: true, meetingDate: true, createdById: true, speakerNames: true },
+        select: { title: true, meetingDate: true, createdById: true, speakerNames: true, createdBy: { select: { fullName: true } } },
       });
       // Встречу удалили, пока запуск стоял в очереди, — строка запуска ушла
       // каскадом вместе с ней, писать некуда.
@@ -125,7 +134,15 @@ export class MeetingAnalysisExecutionService {
       if (!input) return;
 
       const employees = await this.prisma.employee.findMany({ where: { status: 'ACTIVE' }, select: { id: true, fullName: true } });
-      const drafts = await this.extraction.extract(input.summary, meeting.title, meeting.meetingDate.toLocaleDateString('ru-RU'), employees);
+      const drafts = await this.extraction.extract({
+        meetingTitle: meeting.title,
+        meetingDate: meeting.meetingDate,
+        summary: input.summary,
+        transcript: transcriptLines(input),
+        ownerName: meeting.createdBy?.fullName ?? null,
+        employees,
+      });
+      const existing = await this.openTasksFor(run.meetingId, drafts);
 
       // Одной транзакцией: неутверждённые предложения прошлых разборов
       // заменяются новыми (APPROVED/REJECTED — уже решения руководителя, их
@@ -137,7 +154,7 @@ export class MeetingAnalysisExecutionService {
           data: { status: MeetingProposalStatus.SUPERSEDED },
         });
         if (drafts.length > 0) {
-          await tx.meetingProposal.createMany({ data: toProposalRows(run.meetingId, run.id, drafts) });
+          await tx.meetingProposal.createMany({ data: toProposalRows(run.meetingId, run.id, drafts, existing) });
         }
         await tx.meetingAnalysisRun.update({
           where: { id: run.id },
@@ -174,6 +191,18 @@ export class MeetingAnalysisExecutionService {
           : { status: MeetingAnalysisStatus.QUEUED, error: message, lockedAt: null },
       });
     }
+  }
+
+  private async openTasksFor(meetingId: string, proposals: ExtractedProposal[]): Promise<ExistingTask[]> {
+    if (proposals.length === 0) return [];
+    const assigneeIds = [...new Set(proposals.map((p) => p.assigneeId).filter((id): id is string => id !== null))];
+    return this.prisma.task.findMany({
+      where: {
+        status: { notIn: CLOSED_TASK_STATUSES },
+        OR: [{ sourceMeetingId: meetingId }, { assigneeId: { in: assigneeIds }, createdAt: { gte: new Date(Date.now() - SIMILAR_LOOKBACK_MS) } }],
+      },
+      select: { id: true, title: true, assigneeId: true, sourceMeetingId: true },
+    });
   }
 
   // Шаг 1 — говорящие (B.3). null — шаг не делался: имена уже есть (их не

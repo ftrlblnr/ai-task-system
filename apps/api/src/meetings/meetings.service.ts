@@ -7,6 +7,7 @@ import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import type { CreateTaskDto } from '../tasks/dto/create-task.dto';
 import { CreateMeetingDto } from './dto/create-meeting.dto';
 import { MeetingTaskExtractionService } from './meeting-task-extraction.service';
+import { MeetingAnalysisService, transcriptLines } from './meeting-analysis.service';
 import { SpeakerSubstitutionService } from './speaker-substitution.service';
 
 const LIST_SELECT = {
@@ -27,6 +28,7 @@ export class MeetingsService {
     private readonly extraction: MeetingTaskExtractionService,
     private readonly speakerSubstitution: SpeakerSubstitutionService,
     private readonly employeeResolver: EmployeeResolverService,
+    private readonly analysis: MeetingAnalysisService,
   ) {}
 
   // roadmap v13, MUST-FIX #1 (23.09.2026) — "О чём последняя запись из
@@ -144,34 +146,42 @@ export class MeetingsService {
 
   // Черновики эфемерны — ничего не пишем в БД здесь, только возвращаем
   // список (владелец 09.09.2026, тот же принцип, что VoiceService.parse).
+  // Тот же разбор, что у кнопки «Найти поручения» (саммари + расшифровка,
+  // самая свежая версия саммари — находка №4 седьмого аудита); модалка,
+  // которая сюда ходит, уйдёт, когда панель поручений её заменит.
   async extractTasks(id: string, viewerId: string) {
     const meeting = await this.prisma.meeting.findUnique({
       where: { id },
-      select: { title: true, meetingDate: true, rawSummary: true, latestSummary: true, enhancedSummary: true },
+      select: { title: true, meetingDate: true, createdBy: { select: { fullName: true } } },
     });
-    if (!meeting) throw new NotFoundException('Встреча не найдена');
+    const input = meeting ? await this.analysis.loadInput(id) : null;
+    if (!meeting || !input) throw new NotFoundException('Встреча не найдена');
 
     const employees = await this.prisma.employee.findMany({
       where: { status: 'ACTIVE' },
       select: { id: true, fullName: true },
     });
 
-    // Находка №4 седьмого внешнего аудита (Stage 2, Phase N) — извлечение
-    // задач должно смотреть на самую свежую версию саммари, не на
-    // замороженную rawSummary, если Plaud её с тех пор обновил.
-    const summary = meeting.enhancedSummary ?? meeting.latestSummary ?? meeting.rawSummary;
-    const drafts = await this.extraction.extract(
-      summary,
-      meeting.title,
-      meeting.meetingDate.toLocaleDateString('ru-RU'),
+    const proposals = await this.extraction.extract({
+      meetingTitle: meeting.title,
+      meetingDate: meeting.meetingDate,
+      summary: input.summary,
+      transcript: transcriptLines(input),
+      ownerName: meeting.createdBy.fullName,
       employees,
-    );
+    });
 
-    await this.audit.log(viewerId, 'AI_EXTRACT', 'Meeting', id, { draftCount: drafts.length });
+    await this.audit.log(viewerId, 'AI_EXTRACT', 'Meeting', id, { draftCount: proposals.length });
 
-    return drafts.map((d) => ({
-      ...d,
-      assigneeName: d.assigneeId ? (employees.find((e) => e.id === d.assigneeId)?.fullName ?? null) : null,
+    return proposals.map((p) => ({
+      title: p.title,
+      description: p.description,
+      assigneeId: p.assigneeId,
+      assigneeName: p.assigneeId ? (employees.find((e) => e.id === p.assigneeId)?.fullName ?? null) : null,
+      dueDate: p.dueDate ? p.dueDate.toISOString() : null,
+      priority: p.priority,
+      confidence: p.confidence,
+      sourceContext: p.sourceContext,
     }));
   }
 
