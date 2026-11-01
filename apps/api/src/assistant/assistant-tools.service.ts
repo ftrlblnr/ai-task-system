@@ -38,6 +38,9 @@ import {
 } from '../mail/mail-query.service';
 import { MailStore } from '../mail/mail-store';
 import { MeetingsService } from '../meetings/meetings.service';
+import { MeetingAnalysisService } from '../meetings/meeting-analysis.service';
+import { MeetingProposalsService } from '../meetings/meeting-proposals.service';
+import { parseLocalDue } from '../meetings/meeting-task-extraction.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { EmployeeResolverService } from '../employees/employee-resolver.service';
@@ -85,6 +88,7 @@ import {
   describeEventChanges,
   EVENT_READ_TOOLS,
   EVENT_WRITE_TOOLS,
+  localIso,
   nextEventTimes,
   parseCreateEventInput,
   parseFindEventsInput,
@@ -111,6 +115,13 @@ import {
   type FoundTaskData,
   type TaskDetailData,
 } from './task-tools';
+import {
+  MEETING_TOOLS,
+  parseApproveMeetingProposalsInput,
+  parseMeetingId,
+  type ApproveMeetingProposalsData,
+  type MeetingProposalData,
+} from './meeting-tools';
 
 // Тот же P2002-чек, что уже есть в assistant-chat.service.ts
 // (isUniqueConstraintError) — не импортируется оттуда напрямую: это
@@ -289,7 +300,10 @@ type KnownToolName =
   | 'remember'
   | 'recall_memory'
   | 'forget_memory'
-  | 'propose_routine';
+  | 'propose_routine'
+  | 'analyze_meeting'
+  | 'get_meeting_proposals'
+  | 'approve_meeting_proposals';
 
 function resolveToolName(name: string): KnownToolName {
   if (name === 'find_tasks') return 'find_tasks';
@@ -319,6 +333,9 @@ function resolveToolName(name: string): KnownToolName {
   if (name === 'recall_memory') return 'recall_memory';
   if (name === 'forget_memory') return 'forget_memory';
   if (name === 'propose_routine') return 'propose_routine';
+  if (name === 'analyze_meeting') return 'analyze_meeting';
+  if (name === 'get_meeting_proposals') return 'get_meeting_proposals';
+  if (name === 'approve_meeting_proposals') return 'approve_meeting_proposals';
   return 'get_tasks';
 }
 
@@ -356,7 +373,13 @@ type EventWriteToolName = 'create_event' | 'update_event' | 'delete_event';
 const EVENT_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set<EventWriteToolName>(
   ['create_event', 'update_event', 'delete_event'],
 );
-type AgentWriteToolName = TaskWriteToolName | EventWriteToolName;
+// Поручения из встреч (B5): разбор стоит вызова Opus, утверждение создаёт
+// задачи — оба через AgentActionExecution, повтор хода не задвоит.
+type MeetingWriteToolName = 'analyze_meeting' | 'approve_meeting_proposals';
+type AgentWriteToolName =
+  | TaskWriteToolName
+  | EventWriteToolName
+  | MeetingWriteToolName;
 const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'create_task',
   'create_task_from_meeting',
@@ -368,6 +391,8 @@ const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'propose_routine',
   ...TASK_WRITE_TOOL_NAMES,
   ...EVENT_WRITE_TOOL_NAMES,
+  'analyze_meeting',
+  'approve_meeting_proposals',
 ]);
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOL_NAMES.has(name);
@@ -420,6 +445,11 @@ const TOOL_ERROR_MESSAGES: Record<KnownToolName, string> = {
   recall_memory: 'MEMORY_LOOKUP_FAILED: не удалось проверить память',
   forget_memory: 'MEMORY_FORGET_FAILED: не удалось убрать пункт из памяти',
   propose_routine: 'ROUTINE_PROPOSE_FAILED: не удалось подготовить регламент',
+  analyze_meeting: 'MEETING_ANALYSIS_FAILED: не удалось запустить разбор встречи',
+  get_meeting_proposals:
+    'MEETING_LOOKUP_FAILED: не удалось получить поручения встречи',
+  approve_meeting_proposals:
+    'MEETING_PROPOSALS_FAILED: не удалось утвердить поручения',
 };
 
 // Stage 2, Phase K (внешний аудит 21.09.2026, "Assistant meeting/Plaud
@@ -602,6 +632,27 @@ export type ToolExecutionResult =
         channel: RoutineChannel;
       };
     }
+  | {
+      tool: 'analyze_meeting';
+      meetingId: string;
+      runId: string;
+      hadTranscript: boolean;
+    }
+  | {
+      tool: 'get_meeting_proposals';
+      meetingId: string;
+      run: {
+        status: string;
+        hadTranscript: boolean;
+        error: string | null;
+        inputChanged: boolean;
+      } | null;
+      proposals: MeetingProposalData[];
+    }
+  | ({
+      tool: 'approve_meeting_proposals';
+      meetingId: string;
+    } & ApproveMeetingProposalsData)
   | { tool: KnownToolName; error: true; message: string };
 
 // Что видит модель чата в tool_result. Ответ агента-юриста ей не отдаётся:
@@ -685,6 +736,22 @@ export function toolResultForModel(result: ToolExecutionResult): unknown {
   ) {
     return { ...result, note: 'Выполнено. Подтверди одной фразой.' };
   }
+  if (result.tool === 'analyze_meeting') {
+    return {
+      ...result,
+      note: 'Разбор запущен и идёт пару минут в фоне — ждать его в этом ответе не нужно. Скажи, что поручения появятся на странице встречи, и предложи спросить «что нашёл» позже (get_meeting_proposals). Задачи ещё не поставлены.',
+    };
+  }
+  if (result.tool === 'approve_meeting_proposals') {
+    return {
+      tool: result.tool,
+      approvedCount: result.approved.length,
+      approvedTitles: result.approved.map((t) => t.title),
+      rejected: result.rejected,
+      failed: result.failed,
+      note: 'Пользователь видит карточки созданных задач. Подтверди одной фразой; если есть failed — назови, что не получилось и почему.',
+    };
+  }
   if (result.tool === 'propose_routine') {
     return {
       ...result,
@@ -733,6 +800,9 @@ export class AssistantToolsService {
     @Optional() private readonly routines?: RoutinesService,
     // Единый агент A3 — без него (юнит-тесты) find_free_slots не предлагается.
     @Optional() private readonly availability?: CalendarAvailabilityService,
+    // Поручения из встреч (B5) — без них (юнит-тесты) инструменты разбора не предлагаются.
+    @Optional() private readonly meetingAnalysis?: MeetingAnalysisService,
+    @Optional() private readonly meetingProposals?: MeetingProposalsService,
   ) {}
 
   // Память — сначала руководству (план ARMS: всё новое — OWNER/ADMIN).
@@ -867,6 +937,9 @@ export class AssistantToolsService {
           required: ['meetingId'],
         },
       });
+      // Поручения из встреч (B5): разбор по просьбе и утверждение фразой.
+      if (this.meetingAnalysis && this.meetingProposals)
+        tools.push(...MEETING_TOOLS);
       tools.push({
         name: 'search_meeting_transcript',
         description:
@@ -1294,6 +1367,31 @@ export class AssistantToolsService {
           conversationId,
           `${userMessageId}:${writeToolCallIndex}`,
         );
+      }
+      if (name === 'get_meeting_proposals')
+        return await this.getMeetingProposals(parseMeetingId(input), user);
+      if (
+        name === 'analyze_meeting' ||
+        name === 'approve_meeting_proposals'
+      ) {
+        if (
+          !conversationId ||
+          !userMessageId ||
+          writeToolCallIndex === undefined
+        ) {
+          throw new Error(
+            `${name}: отсутствует conversationId/userMessageId/writeToolCallIndex`,
+          );
+        }
+        const dedupeKey = `${userMessageId}:${writeToolCallIndex}`;
+        return name === 'analyze_meeting'
+          ? await this.analyzeMeeting(input, user, conversationId, dedupeKey)
+          : await this.approveMeetingProposals(
+              input,
+              user,
+              conversationId,
+              dedupeKey,
+            );
       }
       if (name === 'get_events') return await this.getEvents(user);
       if (name === 'export_tasks_xlsx') {
@@ -2401,6 +2499,312 @@ export class AssistantToolsService {
             },
     });
     return result;
+  }
+
+  // ── Поручения из встреч (B5) ────────────────────────────────────────────
+  // Те же сервисы, что у кнопок на странице встречи. Права перепроверяются
+  // здесь: модель могла вызвать инструмент из старой истории после смены роли.
+
+  private meetingToolsAllowed(user: AuthenticatedUser): boolean {
+    return !!this.meetingAnalysis && !!this.meetingProposals && isManager(user.role);
+  }
+
+  private async analyzeMeeting(
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    const tool = 'analyze_meeting' as const;
+    const analysis = this.meetingAnalysis;
+    if (!analysis || !this.meetingToolsAllowed(user))
+      return {
+        tool,
+        error: true,
+        message: 'FORBIDDEN: разбор встреч доступен только руководству',
+      };
+    const meetingId = parseMeetingId(input);
+    if (!meetingId)
+      return {
+        tool,
+        error: true,
+        message: 'INVALID_INPUT: не указан id встречи',
+      };
+
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      {},
+      async () => {
+        try {
+          const run = await analysis.start(meetingId, user.id);
+          return {
+            tool,
+            meetingId,
+            runId: run.runId,
+            hadTranscript: run.hadTranscript,
+          };
+        } catch (err) {
+          if (err instanceof NotFoundException)
+            return {
+              tool,
+              error: true,
+              message:
+                'MEETING_NOT_FOUND: встреча не найдена — найди её через get_recent_meetings/search_meetings',
+            };
+          if (err instanceof ConflictException)
+            return {
+              tool,
+              error: true,
+              message:
+                'ANALYSIS_IN_PROGRESS: разбор этой встречи уже идёт — результат появится через пару минут',
+            };
+          if (
+            err instanceof HttpException &&
+            err.getStatus() === Number(HttpStatus.UNPROCESSABLE_ENTITY)
+          )
+            return {
+              tool,
+              error: true,
+              message:
+                'NOTHING_TO_ANALYZE: у встречи нет ни саммари, ни расшифровки',
+            };
+          throw err;
+        }
+      },
+      async (since) =>
+        (await this.prisma.meetingAnalysisRun.count({
+          where: { meetingId, requestedById: user.id, createdAt: { gte: since } },
+        })) > 0,
+    );
+  }
+
+  private async getMeetingProposals(
+    meetingId: string,
+    user: AuthenticatedUser,
+  ): Promise<ToolExecutionResult> {
+    const tool = 'get_meeting_proposals' as const;
+    const proposals = this.meetingProposals;
+    if (!proposals || !this.meetingToolsAllowed(user))
+      return {
+        tool,
+        error: true,
+        message: 'FORBIDDEN: поручения встреч доступны только руководству',
+      };
+    if (!meetingId)
+      return {
+        tool,
+        error: true,
+        message: 'INVALID_INPUT: не указан id встречи',
+      };
+    try {
+      const listed = await proposals.list(meetingId);
+      return {
+        tool,
+        meetingId,
+        run: listed.run
+          ? {
+              status: listed.run.status,
+              hadTranscript: listed.run.hadTranscript,
+              error: listed.run.error,
+              inputChanged: listed.run.inputChanged,
+            }
+          : null,
+        proposals: listed.proposals.map(
+          (p): MeetingProposalData => ({
+            n: p.order + 1,
+            status: p.status,
+            title: p.title,
+            assignee: p.assignee?.fullName ?? null,
+            assigneeAsHeard: p.assigneeRawText,
+            dueDate: p.dueDate ? localIso(p.dueDate) : null,
+            confidence: p.confidence,
+            source: p.sourceContext,
+            timestamp: p.sourceTimestamp,
+            similarTo: p.similarTask?.title ?? null,
+          }),
+        ),
+      };
+    } catch (err) {
+      if (err instanceof NotFoundException)
+        return {
+          tool,
+          error: true,
+          message: 'MEETING_NOT_FOUND: встреча не найдена',
+        };
+      throw err;
+    }
+  }
+
+  private async approveMeetingProposals(
+    input: unknown,
+    user: AuthenticatedUser,
+    conversationId: string,
+    dedupeKey: string,
+  ): Promise<ToolExecutionResult> {
+    const tool = 'approve_meeting_proposals' as const;
+    const service = this.meetingProposals;
+    if (!service || !this.meetingToolsAllowed(user))
+      return {
+        tool,
+        error: true,
+        message: 'FORBIDDEN: поручения встреч доступны только руководству',
+      };
+    const parsed = parseApproveMeetingProposalsInput(input);
+    const { meetingId } = parsed;
+    if (!meetingId)
+      return {
+        tool,
+        error: true,
+        message: 'INVALID_INPUT: не указан id встречи',
+      };
+    if (parsed.approve.length === 0 && parsed.reject.length === 0)
+      return {
+        tool,
+        error: true,
+        message:
+          'INVALID_INPUT: не указано, какие поручения утвердить или отклонить',
+      };
+
+    return this.runOnce(
+      conversationId,
+      dedupeKey,
+      tool,
+      {},
+      async () => {
+        let listed: Awaited<ReturnType<MeetingProposalsService['list']>>;
+        try {
+          listed = await service.list(meetingId);
+        } catch (err) {
+          if (err instanceof NotFoundException)
+            return {
+              tool,
+              error: true,
+              message: 'MEETING_NOT_FOUND: встреча не найдена',
+            };
+          throw err;
+        }
+        // Номер n — порядок в последнем разборе (get_meeting_proposals), он
+        // не меняется, пока руководитель утверждает по частям.
+        const byN = new Map(listed.proposals.map((p) => [p.order + 1, p]));
+        const notPending = [...parsed.approve, ...parsed.reject].filter(
+          (n) => byN.get(n)?.status !== 'PROPOSED',
+        );
+        if (notPending.length > 0)
+          return {
+            tool,
+            error: true,
+            message: `PROPOSAL_NOT_PENDING: поручений ${notPending.join(', ')} нет среди ждущих решения — перечитай get_meeting_proposals`,
+          };
+
+        // Правки — до любых изменений: неоднозначное имя или срок не
+        // должны оставить половину поручений утверждёнными.
+        const needsEmployees = parsed.edits.some((e) => e.assigneeRawText);
+        const employees = needsEmployees
+          ? await this.prisma.employee.findMany({
+              where: { status: 'ACTIVE' },
+              select: { id: true, fullName: true },
+            })
+          : [];
+        const items: {
+          id: string;
+          version: number;
+          title?: string;
+          assigneeId?: string | null;
+          dueDate?: string | null;
+        }[] = [];
+        for (const n of parsed.approve) {
+          const p = byN.get(n)!;
+          const item: (typeof items)[number] = { id: p.id, version: p.version };
+          const edit = parsed.edits.find((e) => e.n === n);
+          if (edit?.title) item.title = edit.title;
+          if (edit?.assigneeRawText) {
+            const resolution = await this.employeeResolver.resolve(
+              edit.assigneeRawText,
+              employees,
+            );
+            if (resolution.status !== 'RESOLVED' || !resolution.employeeId)
+              return {
+                tool,
+                error: true,
+                message:
+                  resolution.status === 'AMBIGUOUS'
+                    ? `ASSIGNEE_AMBIGUOUS: «${edit.assigneeRawText}» подходит нескольким сотрудникам — уточни у пользователя`
+                    : `ASSIGNEE_NOT_FOUND: сотрудник «${edit.assigneeRawText}» не найден`,
+              };
+            item.assigneeId = resolution.employeeId;
+          }
+          if (edit?.dueDate) {
+            const due = parseLocalDue(edit.dueDate);
+            if (!due)
+              return {
+                tool,
+                error: true,
+                message: `INVALID_INPUT: срок «${edit.dueDate}» — нужен формат ГГГГ-ММ-ДД или ГГГГ-ММ-ДДTчч:мм`,
+              };
+            item.dueDate = due.toISOString();
+          }
+          items.push(item);
+        }
+
+        const results =
+          items.length > 0
+            ? (await service.approve(meetingId, items, user)).results
+            : [];
+        const rejected =
+          parsed.reject.length > 0
+            ? (
+                await service.reject(
+                  meetingId,
+                  parsed.reject.map((n) => byN.get(n)!.id),
+                  user,
+                )
+              ).rejected
+            : 0;
+
+        const taskIds = results.flatMap((r) => ('taskId' in r ? [r.taskId] : []));
+        const tasks =
+          taskIds.length > 0
+            ? await this.prisma.task.findMany({
+                where: { id: { in: taskIds } },
+                select: {
+                  id: true,
+                  title: true,
+                  status: true,
+                  dueDate: true,
+                  assignee: { select: { id: true, fullName: true } },
+                },
+              })
+            : [];
+        const nOf = (id: string) =>
+          listed.proposals.find((p) => p.id === id)?.order ?? 0;
+        return {
+          tool,
+          meetingId,
+          approved: taskIds.flatMap((id) => {
+            const task = tasks.find((t) => t.id === id);
+            return task ? [toTaskCardData(task)] : [];
+          }),
+          rejected,
+          failed: results.flatMap((r) =>
+            'error' in r
+              ? [
+                  {
+                    n: nOf(r.id) + 1,
+                    title: byN.get(nOf(r.id) + 1)?.title ?? '',
+                    message: r.message,
+                  },
+                ]
+              : [],
+          ),
+        };
+      },
+      async (since) =>
+        (await this.prisma.meetingProposal.count({
+          where: { meetingId, decidedById: user.id, decidedAt: { gte: since } },
+        })) > 0,
+    );
   }
 
   // ── Единый агент A3: календарь ──────────────────────────────────────────

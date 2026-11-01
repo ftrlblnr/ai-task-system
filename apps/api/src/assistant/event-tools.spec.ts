@@ -207,6 +207,11 @@ describe('разбор входа и время', () => {
 });
 
 describe('CalendarAvailabilityService.findSlotsForAgent', () => {
+  // Прошедшие окна сервис отбрасывает — без фиксированных часов тест падал,
+  // как только реальная дата уходила за 29.10.2026.
+  beforeEach(() => jest.useFakeTimers({ now: new Date('2026-10-28T00:00:00Z') }));
+  afterEach(() => jest.useRealTimers());
+
   it('Google не подключён — занятость из календаря Адъютанта, googleChecked=false', async () => {
     const policy = {
       getOrDefault: jest.fn().mockResolvedValue({

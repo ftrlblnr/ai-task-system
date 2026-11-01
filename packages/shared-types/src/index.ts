@@ -210,6 +210,8 @@ export interface MeetingSummary {
   // Заполнено только у встреч, импортированных синхронизацией Plaud
   // (владелец 08.09.2026) — null у вручную созданных.
   plaudRecordingId: string | null;
+  // Неутверждённые поручения разбора «Найти поручения» (только в списке).
+  pendingProposals?: number;
 }
 
 export interface MeetingTaskRef {
@@ -228,6 +230,64 @@ export interface MeetingDetail extends MeetingSummary {
   audioUrl: string | null;
   tasks: MeetingTaskRef[];
 }
+
+// Поручения из встреч (AGENT_AND_MEETINGS.md, часть B) — разбор по кнопке.
+export type MeetingAnalysisStatus = 'QUEUED' | 'RUNNING' | 'DONE' | 'FAILED';
+
+// «Speaker 2 — это …»: подсказка шага «говорящие». applied — имена
+// применены сами (модель уверена во всех метках).
+export interface MeetingSpeakerSuggestion {
+  label: string;
+  employeeId: string | null;
+  name: string | null;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  applied: boolean;
+}
+
+// GET /meetings/:id/analysis → { run: MeetingAnalysisState | null }.
+export interface MeetingAnalysisState {
+  runId: string;
+  status: MeetingAnalysisStatus;
+  hadTranscript: boolean;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  // Запись изменилась с последнего успешного разбора.
+  inputChanged: boolean;
+  speakerSuggestions: MeetingSpeakerSuggestion[] | null;
+}
+
+export type MeetingProposalStatus = 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'SUPERSEDED';
+
+export interface MeetingProposal {
+  id: string;
+  status: MeetingProposalStatus;
+  version: number;
+  order: number;
+  title: string;
+  description: string | null;
+  // Как исполнитель прозвучал в записи — подсказка, если не сопоставлен.
+  assigneeRawText: string | null;
+  dueDate: string | null;
+  priority: TaskPriority | null;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  sourceContext: string;
+  sourceTimestamp: string | null;
+  assignee: { id: string; fullName: string } | null;
+  similarTask: { id: string; title: string; status: TaskStatus } | null;
+  task: { id: string; title: string; status: TaskStatus } | null;
+}
+
+// GET /meetings/:id/proposals
+export interface MeetingProposalsResponse {
+  run: MeetingAnalysisState | null;
+  hasTranscript: boolean;
+  proposals: MeetingProposal[];
+}
+
+export type ApproveMeetingProposalResult =
+  | { id: string; status: 'APPROVED'; taskId: string }
+  | { id: string; error: 'NOT_FOUND' | 'ALREADY_DECIDED' | 'VERSION_CONFLICT' | 'TASK_CREATE_FAILED'; message: string };
 
 export interface CreateMeetingInput {
   title: string;

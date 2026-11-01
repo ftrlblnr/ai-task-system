@@ -1,3 +1,4 @@
+import { MeetingAnalysisService } from './meeting-analysis.service';
 import { MeetingsService } from './meetings.service';
 
 // Находка №7 пятого внешнего аудита (Stage 2, Phase L) —
@@ -116,17 +117,20 @@ describe('MeetingsService.extractTasks — источник саммари (Stag
           rawSummary: 'исходное',
           latestSummary: 'обновлённое с Plaud',
           enhancedSummary: null,
+          speakerNames: null,
+          createdBy: { fullName: 'Арман Ким' },
         }),
       },
+      meetingSegment: { findMany: jest.fn().mockResolvedValue([]) },
       employee: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const extraction = { extract: jest.fn().mockResolvedValue([]) };
     const audit = { log: jest.fn() };
-    const service = new MeetingsService(prisma as any, audit as any, {} as any, extraction as any, {} as any, {} as any);
+    const service = new MeetingsService(prisma as any, audit as any, {} as any, extraction as any, {} as any, {} as any, new MeetingAnalysisService(prisma as any));
 
     await service.extractTasks('m1', 'viewer1');
 
-    expect(extraction.extract).toHaveBeenCalledWith('обновлённое с Plaud', 'Встреча', expect.any(String), []);
+    expect(extraction.extract).toHaveBeenCalledWith(expect.objectContaining({ summary: 'обновлённое с Plaud', meetingTitle: 'Встреча', transcript: [] }));
   });
 });
 

@@ -12,6 +12,7 @@ import { ConnectionBar } from '@/components/ui/connection-bar';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Chip } from '@/components/ui/chip';
 import { Field, Input } from '@/components/ui/field';
 import { EmptyState } from '@/components/ui/empty-state';
 
@@ -190,6 +191,9 @@ function MeetingsList() {
                 <span className="row-item-title">
                   <Link href={`/meetings/${m.id}`}>{m.title}</Link>
                   {m.plaudRecordingId && <Badge>Plaud</Badge>}
+                  {/* Тихая отметка: разбор запускали, а решение по
+                      поручениям ещё не принято. Уведомлений нет. */}
+                  {!!m.pendingProposals && <Chip>{`${m.pendingProposals} не утверждено`}</Chip>}
                 </span>
               </td>
               <td>{new Date(m.meetingDate).toLocaleDateString('ru-RU')}</td>

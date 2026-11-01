@@ -112,6 +112,9 @@ model Employee {
   fileArtifacts              FileArtifact[]
   aliases                    EmployeeAlias[]
   meetingSegmentsSpoken      MeetingSegment[]
+  meetingAnalysesRequested   MeetingAnalysisRun[]
+  meetingProposalsAssigned   MeetingProposal[]         @relation("MeetingProposalAssignee")
+  meetingProposalsDecided    MeetingProposal[]         @relation("MeetingProposalDecider")
 
   receptionRequestsAuthored  ReceptionRequest[]
   receptionEventsActed       ReceptionEvent[]
@@ -437,6 +440,8 @@ model Meeting {
   tasks         Task[]
   plaudSyncItem PlaudSyncItem?
   segments      MeetingSegment[]
+  analysisRuns  MeetingAnalysisRun[]
+  proposals     MeetingProposal[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -475,8 +480,102 @@ model MeetingSegment {
   // Phase L — задачи, поставленные Assistant'ом из этого конкретного
   // сегмента (create_task_from_meeting), см. Task.sourceSegmentId.
   sourcedTasks Task[]
+  proposals    MeetingProposal[]
 
   @@index([meetingId, order])
+}
+
+// Поручения из встреч (AGENT_AND_MEETINGS.md, часть B). Разбор запускает
+// только руководитель кнопкой «Найти поручения» (решение владельца
+// 01.11.2026: не все записи требуют задач, поэтому ни автозапуска из синка
+// Plaud, ни уведомлений). Один запуск — одна строка; воркер
+// MeetingAnalysisExecutionService забирает QUEUED через FOR UPDATE SKIP
+// LOCKED, как LegalReviewRun.
+enum MeetingAnalysisStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+model MeetingAnalysisRun {
+  id                 String                @id @default(cuid())
+  meetingId          String
+  meeting            Meeting               @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  requestedById      String?
+  requestedBy        Employee?             @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  status             MeetingAnalysisStatus @default(QUEUED)
+  // sha256 саммари и реплик расшифровки на момент запуска: по нему UI
+  // понимает, что запись с прошлого разбора не менялась («Разобрать ещё
+  // раз?» — это ещё один вызов Opus).
+  inputHash          String
+  // Без расшифровки разбор идёт по саммари — поручения без ссылок на реплики.
+  hadTranscript      Boolean
+  attempts           Int                   @default(0)
+  lockedAt           DateTime?
+  // [{label, employeeId|null, name, confidence, applied}] — шаг «говорящие» (B2).
+  speakerSuggestions Json?
+  error              String?
+  tokensIn           Int?
+  tokensOut          Int?
+  createdAt          DateTime              @default(now())
+  startedAt          DateTime?
+  finishedAt         DateTime?
+
+  proposals MeetingProposal[]
+
+  @@index([meetingId, createdAt])
+  @@index([status, createdAt])
+}
+
+// Предложенное поручение — отдельная таблица, не Task в статусе DRAFT:
+// черновик-задача попала бы в общий список, канбан, дайджесты, счётчики и
+// уведомления исполнителю. Задача создаётся только после утверждения.
+enum MeetingProposalStatus {
+  PROPOSED
+  APPROVED
+  REJECTED
+  // Заменено более поздним разбором той же встречи (только из PROPOSED).
+  SUPERSEDED
+}
+
+model MeetingProposal {
+  id              String                @id @default(cuid())
+  meetingId       String
+  meeting         Meeting               @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  runId           String
+  run             MeetingAnalysisRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  order           Int
+  title           String
+  description     String?
+  assigneeId      String?
+  assignee        Employee?             @relation("MeetingProposalAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  // Как исполнитель прозвучал в записи — подсказка, если не сопоставлен.
+  assigneeRawText String?
+  dueDate         DateTime?
+  priority        TaskPriority?
+  confidence      ConfidenceLevel
+  // Безопасно показать исполнителю (он не видит саму встречу).
+  sourceContext   String
+  sourceSegmentId String?
+  sourceSegment   MeetingSegment?       @relation(fields: [sourceSegmentId], references: [id], onDelete: SetNull)
+  sourceTimestamp String?
+  // Похоже на уже существующую задачу — в UI по умолчанию не выбрано.
+  similarTaskId   String?
+  similarTask     Task?                 @relation("MeetingProposalSimilarTask", fields: [similarTaskId], references: [id], onDelete: SetNull)
+  status          MeetingProposalStatus @default(PROPOSED)
+  // Созданная при утверждении задача.
+  taskId          String?               @unique
+  task            Task?                 @relation("MeetingProposalTask", fields: [taskId], references: [id], onDelete: SetNull)
+  version         Int                   @default(1)
+  decidedById     String?
+  decidedBy       Employee?             @relation("MeetingProposalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt       DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  @@index([meetingId, status])
+  @@index([runId])
 }
 
 enum PlaudSyncStatus {
@@ -690,6 +789,9 @@ model Task {
   watchers    TaskWatcher[]
 
   receptionRequests ReceptionRequest[]
+
+  meetingProposal         MeetingProposal?  @relation("MeetingProposalTask")
+  similarMeetingProposals MeetingProposal[] @relation("MeetingProposalSimilarTask")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -948,11 +1050,11 @@ model UndoRecord {
   // таймеру) — теперь это ГРАНИЦА, проверяемая на сервере: раньше ничто
   // не мешало вызвать /voice/undo намного позже 30 секунд напрямую
   // (не через кнопку), полагаясь только на клиентский таймер.
-  expiresAt  DateTime
+  expiresAt      DateTime
   // Ставится только при переходе в COMPLETED — "когда откат реально
   // произошёл", не "когда его застолбили" (см. status выше).
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
+  consumedAt     DateTime?
+  createdAt      DateTime  @default(now())
   // Разговор, где показана карточка с «Отменить» (единый агент A2): туда же
   // пишется «Отменено.». Null — голосовые записи до A2 и голос без
   // разговора: подтверждение уходит в основной разговор, как раньше.

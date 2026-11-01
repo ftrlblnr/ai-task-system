@@ -6,11 +6,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { ArrowLeft, FileText, ListTodo, Users } from 'lucide-react';
-import type { MeetingDetail } from '@ai-task-system/shared-types';
+import type { MeetingAnalysisState, MeetingDetail, MeetingSpeakerSuggestion } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES } from '@ai-task-system/shared-types';
 import { api, ApiError } from '@/lib/api';
 import { Protected } from '@/components/protected';
-import { TaskExtractionModal } from '@/components/task-extraction-modal';
+import { MeetingProposalsPanel } from '@/components/meetings/meeting-proposals-panel';
 import { PageHeader } from '@/components/ui/card';
 import { Panel, StatusTag } from '@/components/ui/panel';
 import { Button } from '@/components/ui/button';
@@ -32,6 +32,16 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
   const [names, setNames] = useState<Record<string, string>>(meeting.speakerNames ?? {});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Подсказки последнего разбора «Найти поручения» (шаг «говорящие»).
+  // Без них форма работает как раньше — ошибка загрузки не показывается.
+  const [suggestions, setSuggestions] = useState<MeetingSpeakerSuggestion[]>([]);
+
+  useEffect(() => {
+    api
+      .get<{ run: MeetingAnalysisState | null }>(`/meetings/${meeting.id}/analysis`)
+      .then(({ run }) => setSuggestions(run?.speakerSuggestions ?? []))
+      .catch(() => setSuggestions([]));
+  }, [meeting.id]);
 
   // Подстройка state под изменившийся проп (сохранение имён вызывает
   // onSaved → родитель перезагружает meeting) — по рекомендованному React-
@@ -64,16 +74,33 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
     <Panel icon={Users} title="Спикеры">
       <p className="panel-hint">Впишите имена вместо номеров — саммари станет понятнее, а исполнители точнее.</p>
       <div className="meeting-speakers">
-        {labels.map((label) => (
-          <label key={label} className="ds-field-label">
-            {label}
-            <Input
-              value={names[label] ?? ''}
-              onChange={(e) => setNames((prev) => ({ ...prev, [label]: e.target.value }))}
-              placeholder="Имя"
-            />
-          </label>
-        ))}
+        {labels.map((label) => {
+          // Подсказка — только пока поле пустое и имя не применено само:
+          // вписанное человеком не перебиваем. «Верно» лишь заполняет
+          // поле, сохраняет по-прежнему «Сохранить имена».
+          const hint = suggestions.find((s) => s.label === label && s.name && !s.applied);
+          const showHint = hint?.name && !(names[label] ?? '').trim();
+          return (
+            <div key={label}>
+              <label className="ds-field-label">
+                {label}
+                <Input
+                  value={names[label] ?? ''}
+                  onChange={(e) => setNames((prev) => ({ ...prev, [label]: e.target.value }))}
+                  placeholder="Имя"
+                />
+              </label>
+              {showHint && (
+                <p className="ds-field-hint">
+                  Похоже, это {hint.name}{' '}
+                  <Button variant="ghost" size="sm" onClick={() => setNames((prev) => ({ ...prev, [label]: hint.name ?? '' }))}>
+                    Верно
+                  </Button>
+                </p>
+              )}
+            </div>
+          );
+        })}
       </div>
       {error && <Alert tone="danger">{error}</Alert>}
       <div className="panel-actions">
@@ -88,7 +115,6 @@ function SpeakerNamesSection({ meeting, onSaved }: { meeting: MeetingDetail; onS
 function MeetingDetailView({ id }: { id: string }) {
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showExtraction, setShowExtraction] = useState(false);
 
   function load() {
     api
@@ -112,11 +138,6 @@ function MeetingDetailView({ id }: { id: string }) {
       <PageHeader
         kicker={`${new Date(meeting.meetingDate).toLocaleDateString('ru-RU')} · загрузил ${meeting.createdBy.fullName}`}
         title={meeting.title}
-        actions={
-          <Button variant="primary" icon={ListTodo} onClick={() => setShowExtraction(true)}>
-            Поставить задачи
-          </Button>
-        }
       />
 
       <div className="detail-grid">
@@ -132,9 +153,13 @@ function MeetingDetailView({ id }: { id: string }) {
         </Panel>
 
         <div className="detail-col">
+          {/* Поручения из встречи — разбор по кнопке, задачи только после
+              утверждения (AGENT_AND_MEETINGS.md, B.5). Прежнюю модалку
+              «Поставить задачи» панель заменила. */}
+          <MeetingProposalsPanel meetingId={meeting.id} onMeetingChanged={load} />
           <Panel icon={ListTodo} title="Задачи из встречи" aside={meeting.tasks.length > 0 && <StatusTag tone="muted">{meeting.tasks.length}</StatusTag>}>
             {meeting.tasks.length === 0 ? (
-              <p className="panel-hint">Пока ни одной — «Поставить задачи» разберёт саммари.</p>
+              <p className="panel-hint">Пока ни одной — утвердите поручения выше.</p>
             ) : (
               <ul className="row-list">
                 {meeting.tasks.map((t) => (
@@ -154,14 +179,6 @@ function MeetingDetailView({ id }: { id: string }) {
           <SpeakerNamesSection meeting={meeting} onSaved={load} />
         </div>
       </div>
-
-      {showExtraction && (
-        <TaskExtractionModal
-          meetingId={meeting.id}
-          onClose={() => setShowExtraction(false)}
-          onCreated={load}
-        />
-      )}
     </div>
   );
 }
