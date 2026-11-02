@@ -24,7 +24,8 @@ import { newClientRequestId } from './use-assistant-stream';
 // полноэкранного состояния записи) — во время записи кнопка микрофона
 // становится кнопкой "стоп" с таймером рядом, тот же принцип, что у обычных
 // мессенджеров.
-const MAX_VOICE_DURATION_MS = 100_000;
+// 5 минут: руководитель часто диктует долго (владелец 02.11.2026).
+const MAX_VOICE_DURATION_MS = 300_000;
 const VOICE_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 // Undo активен ~30 секунд после голосового действия (владелец 10.09.2026,
 // см. исходный комментарий в прежнем voice-screen.tsx) — та же логика,

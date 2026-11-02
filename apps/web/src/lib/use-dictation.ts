@@ -6,7 +6,8 @@ import { LiveTranscriber, prefetchLiveTranscription } from './live-transcription
 // Тот же MediaRecorder-флоу и формулировки ошибок, что у голоса в
 // assistant/page.tsx; распознанный текст отдаётся в onText, дальше его
 // можно поправить руками перед отправкой.
-const MAX_DURATION_MS = 120_000;
+// 5 минут, как у голосовой команды ассистента (владелец 02.11.2026).
+const MAX_DURATION_MS = 300_000;
 const MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 
 export type DictationPhase = 'idle' | 'recording' | 'processing';

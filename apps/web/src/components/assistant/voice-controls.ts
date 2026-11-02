@@ -14,7 +14,8 @@ import { newClientRequestId } from './use-assistant-stream';
 // Голос — тот же MediaRecorder-флоу и те же (desktop-формулировки, не
 // Telegram-специфичные) сообщения об ошибках доступа к микрофону, что уже
 // используются в apps/web/src/app/voice/page.tsx.
-const MAX_VOICE_DURATION_MS = 100_000;
+// 5 минут: руководитель часто диктует долго (владелец 02.11.2026).
+const MAX_VOICE_DURATION_MS = 300_000;
 const VOICE_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
 const VOICE_UNDO_WINDOW_MS = 30_000;
 // Пока идёт живой разговор (GPT-Live), реплики/карточки появляются на сервере
