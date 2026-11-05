@@ -73,6 +73,9 @@ describe('MeetingTaskExtractionService.extract', () => {
     expect((params as unknown as { output_config: { format: { type: string } } }).output_config.format.type).toBe('json_schema');
     expect(params.system).toContain('дата: 2026-11-02');
     expect(params.system).toContain('Его собственные обещания');
+    // Пункты «Следующих шагов» из саммари — тоже кандидаты (владелец 05.11.2026).
+    expect(params.system).toContain('ПУНКТЫ ИЗ САММАРИ');
+    expect(params.system).not.toContain('Сомневаешься — не включай');
     expect(params.messages[0].content).toContain('[S2] 01:15 Жандос Ахметов: Сделаю.');
   });
 
