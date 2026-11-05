@@ -95,7 +95,7 @@ function RegisterForm() {
         <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} required />
       </Field>
 
-      <Field label="Должность">
+      <Field label="Должность" hint="Нет вашей? Оставьте «—» и добавьте её в «Моём профиле» после регистрации.">
         <Select
           value={positionId}
           onChange={(e) => setPositionId(e.target.value)}
@@ -103,7 +103,7 @@ function RegisterForm() {
         />
       </Field>
 
-      <Field label="Направление">
+      <Field label="Направление" hint="Нет нужного? Его тоже можно добавить в профиле.">
         <Select
           value={directionId}
           onChange={(e) => setDirectionId(e.target.value)}
