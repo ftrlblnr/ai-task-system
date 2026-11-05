@@ -132,12 +132,11 @@ export function mergeProposals(lists: RawProposal[][]): RawProposal[] {
   return merged;
 }
 
-function buildExtractionTool(): Anthropic.Tool {
+// Ответ — JSON по схеме (output_config.format), а не принудительный вызов
+// инструмента: tool_choice tool/any на Opus 5.5 даёт 400, и разбор встреч
+// падал целиком (прод 05.11.2026).
+function buildExtractionSchema(): Record<string, unknown> {
   return {
-    name: 'extract_tasks',
-    description: 'Извлечь из встречи список явных, однозначных поручений и договорённостей — не общих тем обсуждения.',
-    strict: true,
-    input_schema: {
       type: 'object',
       properties: {
         tasks: {
@@ -164,7 +163,6 @@ function buildExtractionTool(): Anthropic.Tool {
       },
       required: ['tasks'],
       additionalProperties: false,
-    },
   };
 }
 
@@ -179,7 +177,7 @@ function buildSystemPrompt(input: MeetingExtractionInput, hasTranscript: boolean
     ? 'Ниже — саммари встречи и расшифровка: строки «[S12] мм:сс Говорящий: текст». Поручения ищи прежде всего в расшифровке, саммари — для общего контекста.'
     : 'Расшифровки нет — только саммари. ref всегда null.';
 
-  return `Ты помогаешь руководителю превратить запись встречи в список поручений. Вызови инструмент extract_tasks ровно один раз.
+  return `Ты помогаешь руководителю превратить запись встречи в список поручений. Ответ — JSON-объект { "tasks": [...] } по заданной схеме.
 
 Встреча: «${input.meetingTitle}», дата: ${meetingDate}. ${owner}
 ${source}${windowNote}
@@ -230,22 +228,28 @@ export class MeetingTaskExtractionService {
       // 4096 не хватало: на совещании с ~50 поручениями ответ обрывался и
       // задачи не извлекались вовсе (прод 21.10.2026).
       max_tokens: 16000,
-      output_config: { effort: 'low' },
+      output_config: { effort: 'low', format: { type: 'json_schema', schema: buildExtractionSchema() } },
       system,
-      tools: [buildExtractionTool()],
-      tool_choice: { type: 'tool', name: 'extract_tasks' },
       messages: [{ role: 'user', content }],
     });
 
     if (response.stop_reason === 'max_tokens') {
       throw new InternalServerErrorException('Встреча слишком длинная: список задач не поместился в ответ модели');
     }
-    const block = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-    const tasks = (block?.input as { tasks?: RawProposal[] } | undefined)?.tasks;
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+    let tasks: unknown;
+    try {
+      tasks = (JSON.parse(text) as { tasks?: unknown }).tasks;
+    } catch {
+      tasks = undefined;
+    }
     if (!Array.isArray(tasks)) {
       throw new InternalServerErrorException('Claude не вернул структурированный список задач');
     }
-    return tasks;
+    return tasks as RawProposal[];
   }
 
   async extract(input: MeetingExtractionInput): Promise<ExtractedProposal[]> {

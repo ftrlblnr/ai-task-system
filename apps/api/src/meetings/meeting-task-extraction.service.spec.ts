@@ -50,16 +50,16 @@ function make(responses: object[], resolve = jest.fn().mockResolvedValue({ statu
   return { service, create, resolve };
 }
 
-const toolResponse = (tasks: object[]) => ({ stop_reason: 'tool_use', content: [{ type: 'tool_use', input: { tasks } }] });
+const toolResponse = (tasks: object[]) => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ tasks }) }] });
 
 describe('MeetingTaskExtractionService.extract', () => {
   it('ответ оборван по max_tokens — понятная ошибка, а не падение на undefined', async () => {
-    const { service } = make([{ stop_reason: 'max_tokens', content: [{ type: 'tool_use', input: {} }] }]);
+    const { service } = make([{ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"tasks": [' }] }]);
     await expect(service.extract(input())).rejects.toThrow('Встреча слишком длинная');
   });
 
   it('нет списка задач в ответе — ошибка', async () => {
-    const { service } = make([{ stop_reason: 'tool_use', content: [{ type: 'tool_use', input: {} }] }]);
+    const { service } = make([{ stop_reason: 'end_turn', content: [{ type: 'text', text: '{}' }] }]);
     await expect(service.extract(input())).rejects.toThrow('не вернул структурированный список задач');
   });
 
@@ -68,6 +68,9 @@ describe('MeetingTaskExtractionService.extract', () => {
     await service.extract(input());
     const params = create.mock.calls[0][0] as { model: string; system: string; messages: { content: string }[] };
     expect(params.model).toBe('claude-opus-5-5');
+    // Принудительный tool_choice на Opus 5.5 даёт 400 — только JSON по схеме.
+    expect(params).not.toHaveProperty('tool_choice');
+    expect((params as unknown as { output_config: { format: { type: string } } }).output_config.format.type).toBe('json_schema');
     expect(params.system).toContain('дата: 2026-11-02');
     expect(params.system).toContain('Его собственные обещания');
     expect(params.messages[0].content).toContain('[S2] 01:15 Жандос Ахметов: Сделаю.');
