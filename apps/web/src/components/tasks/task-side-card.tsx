@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import Link from 'next/link';
-import { Bell, Maximize2, Sparkles, X } from 'lucide-react';
+import { Bell, Maximize2, Sparkles, Trash2, X } from 'lucide-react';
 import type { TaskDetail } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
@@ -34,9 +34,11 @@ interface TaskSideCardProps {
   onClose: () => void;
   onAskAgent: () => void;
   onChanged: (task: TaskDetail) => void;
+  // Задачу удалили из карточки — список перечитывается, карточка закрывается.
+  onDeleted: () => void;
 }
 
-export function TaskSideCard({ taskId, onClose, onAskAgent, onChanged }: TaskSideCardProps) {
+export function TaskSideCard({ taskId, onClose, onAskAgent, onChanged, onDeleted }: TaskSideCardProps) {
   const { user } = useAuth();
   const t = useTaskDetail(taskId);
   const remindKey = useIdempotencyKey();
@@ -49,6 +51,15 @@ export function TaskSideCard({ taskId, onClose, onAskAgent, onChanged }: TaskSid
   }, [task]);
 
   const can = task ? taskPermissions(task, user) : null;
+
+  // Удаление прямо из карточки (владелец 06.11.2026): раньше кнопка была
+  // только на полной странице. Права — те же canDelete: руководитель,
+  // администратор или постановщик; сервер проверяет сам.
+  async function removeTask() {
+    if (!task) return;
+    if (!window.confirm(`Удалить задачу «${task.title}»? Это действие необратимо.`)) return;
+    if (await t.remove()) onDeleted();
+  }
   const closed = task?.status === 'DONE' || task?.status === 'CANCELLED';
   const canRemind = !!task && !!can && (can.isManager || task.creator.id === user?.id) && !!task.assignee && task.assignee.id !== user?.id && !closed;
   const reminded = task ? lastRemindAt(task) : null;
@@ -60,6 +71,7 @@ export function TaskSideCard({ taskId, onClose, onAskAgent, onChanged }: TaskSid
       <header className="task-side-head">
         <span className="section-kicker">Задача</span>
         <span className="ds-spacer" />
+        {can?.canDelete && <IconButton icon={Trash2} label="Удалить задачу" size="sm" onClick={() => void removeTask()} disabled={t.busy} />}
         <Link href={`/tasks/${taskId}`} className="ds-iconbtn ds-iconbtn-sm" title="Развернуть" aria-label="Развернуть">
           <Maximize2 size={16} strokeWidth={1.9} />
         </Link>
