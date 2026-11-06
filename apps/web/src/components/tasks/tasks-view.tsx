@@ -262,7 +262,12 @@ export function TasksView() {
           )}
         </div>
         {cardVisible && selectedId && (
-          <TaskSideCard key={selectedId} taskId={selectedId} onClose={closeCard} onAskAgent={panel.openAndFocus} onChanged={list.syncFromDetail} />
+          <TaskSideCard key={selectedId} taskId={selectedId} onClose={closeCard} onAskAgent={panel.openAndFocus} onChanged={list.syncFromDetail}
+            onDeleted={() => {
+              closeCard();
+              list.reload();
+            }}
+          />
         )}
       </div>
     </div>
