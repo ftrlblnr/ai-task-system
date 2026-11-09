@@ -103,6 +103,26 @@ export class EmployeesService {
       }
       this.assertCanAssignRole(dto.role, actor);
     }
+    if (dto.status === 'INACTIVE') {
+      if (id === actor.id) {
+        throw new ForbiddenException('Нельзя отключить собственную учётную запись');
+      }
+      // Иначе администраторы могли бы отключать друг друга.
+      if (current.role === Role.ADMIN && actor.role !== Role.OWNER) {
+        throw new ForbiddenException('Отключить администратора может только руководитель');
+      }
+      if (current.role === Role.OWNER) {
+        const otherOwners = await this.prisma.employee.count({
+          where: { role: Role.OWNER, status: 'ACTIVE', id: { not: id } },
+        });
+        if (otherOwners === 0) {
+          throw new BadRequestException('Нельзя отключить руководителя — в системе не останется ни одного OWNER');
+        }
+      }
+    }
+    if (dto.status === 'ACTIVE' && current.role === Role.ADMIN && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Включить администратора может только руководитель');
+    }
     if (dto.role !== undefined && dto.role !== Role.OWNER && current.role === Role.OWNER) {
       const otherOwners = await this.prisma.employee.count({
         where: { role: Role.OWNER, status: 'ACTIVE', id: { not: id } },

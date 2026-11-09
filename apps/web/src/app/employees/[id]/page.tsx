@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Compass, KeyRound, Plus, Send, Shield, Award, Trash2 } from 'lucide-react';
+import { ArrowLeft, Compass, KeyRound, Plus, Send, Shield, Award, Trash2, UserX } from 'lucide-react';
 import type { Direction, EmployeeDetail, PasswordResetLink, Role, TelegramInvite } from '@ai-task-system/shared-types';
 import { MANAGER_ROLES, ROLE_LABELS } from '@ai-task-system/shared-types';
 import { useAuth } from '@/lib/auth-context';
@@ -393,6 +393,44 @@ function RoleSection({ employee, onChange }: { employee: EmployeeDetail; onChang
   );
 }
 
+// Отключение вместо удаления (владелец 09.11.2026): вход закрыт сразу,
+// задачи и история остаются; включить можно обратно. Администратора
+// отключает только руководитель, себя — никто (сервер проверяет сам).
+function AccountStatusSection({ employee, onChange }: { employee: EmployeeDetail; onChange: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const active = employee.status === 'ACTIVE';
+
+  async function toggle() {
+    const question = active
+      ? `Отключить учётную запись «${employee.fullName}»? Сотрудник сразу потеряет доступ к сайту, Mini App и боту. Задачи и история останутся, включить можно обратно.`
+      : `Включить учётную запись «${employee.fullName}» снова?`;
+    if (!window.confirm(question)) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api.patch(`/employees/${employee.id}`, { status: active ? 'INACTIVE' : 'ACTIVE' });
+      onChange();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось изменить учётную запись');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel icon={UserX} title="Учётная запись" aside={<StatusTag tone={active ? 'ok' : 'muted'}>{active ? 'Активна' : 'Отключена'}</StatusTag>}>
+      <p className="panel-hint">
+        {active ? 'Отключённый сотрудник не сможет войти; его задачи и история сохранятся.' : 'Вход закрыт. Задачи и история сохранены.'}
+      </p>
+      <Button variant={active ? 'danger' : 'secondary'} size="sm" onClick={toggle} disabled={busy} loading={busy}>
+        {active ? 'Отключить учётную запись' : 'Включить снова'}
+      </Button>
+      {error && <Alert tone="danger">{error}</Alert>}
+    </Panel>
+  );
+}
+
 function EmployeeDetailView({ id }: { id: string }) {
   const { user } = useAuth();
   const [employee, setEmployee] = useState<EmployeeDetail | null>(null);
@@ -474,6 +512,9 @@ function EmployeeDetailView({ id }: { id: string }) {
             <DirectionSection employee={employee} onChange={load} />
             <TelegramSection employee={employee} onChange={load} />
             <PasswordResetSection employeeId={employee.id} />
+            {employee.role !== 'OWNER' && employee.id !== user?.id && (employee.role === 'EMPLOYEE' || user?.role === 'OWNER') && (
+              <AccountStatusSection employee={employee} onChange={load} />
+            )}
           </div>
         )}
       </div>
