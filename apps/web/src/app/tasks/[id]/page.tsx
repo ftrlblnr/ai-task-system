@@ -100,7 +100,7 @@ function TaskDetailView({ id }: { id: string }) {
       <TaskStatusCard task={task} canChange={can.canChangeStatus} statuses={can.availableStatuses} busy={t.busy} onChange={(s) => void t.changeStatus(s)} />
       <TaskComments task={task} busy={t.busy} onSubmit={t.addComment} />
       {!task.parentTask && <TaskSubtasks task={task} employees={t.employees} busy={t.busy} onAdd={t.addSubtask} />}
-      <TaskHistory task={task} employees={t.employees} />
+      <TaskHistory task={task} employees={t.allEmployees} />
     </div>
   );
 }

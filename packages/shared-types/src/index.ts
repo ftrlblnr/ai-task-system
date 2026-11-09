@@ -38,6 +38,8 @@ export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export interface EmployeeSummary {
   id: string;
   fullName: string;
+  // Приходит только руководству и только с ?includeInactive=1 имеет смысл.
+  status?: EmployeeStatus;
 }
 
 // TaskListItem.assignee (владелец 30.09.2026) — направление нужно только

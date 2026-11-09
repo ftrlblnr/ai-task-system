@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -32,8 +33,8 @@ export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @Get()
-  findAll(@CurrentUser() user: AuthenticatedUser) {
-    return this.employeesService.findAll(user);
+  findAll(@CurrentUser() user: AuthenticatedUser, @Query('includeInactive') includeInactive?: string) {
+    return this.employeesService.findAll(user, includeInactive === '1' || includeInactive === 'true');
   }
 
   @Get(':id')
