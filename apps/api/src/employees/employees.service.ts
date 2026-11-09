@@ -36,9 +36,13 @@ export class EmployeesService {
   // список коллег, чтобы выбрать исполнителя. Полный каталог (email,
   // телеграм, статус, роль…) по-прежнему не публичный: подчинённый
   // получает только имена, руководитель/администратор — весь профиль.
-  findAll(viewer: AuthenticatedUser) {
+  // Отключённые (владелец 09.11.2026) не попадают в списки выбора
+  // исполнителя: по умолчанию — только активные. Полный каталог руководству —
+  // с includeInactive (страница «Сотрудники», подписи в истории задачи).
+  findAll(viewer: AuthenticatedUser, includeInactive = false) {
     if (isManager(viewer.role)) {
       return this.prisma.employee.findMany({
+        where: includeInactive ? undefined : { status: 'ACTIVE' },
         select: EMPLOYEE_SELECT,
         orderBy: { fullName: 'asc' },
       });

@@ -22,7 +22,7 @@ export function useTaskDetail(id: string) {
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
+  const [allEmployees, setAllEmployees] = useState<EmployeeSummary[]>([]);
 
   function load() {
     api
@@ -32,11 +32,13 @@ export function useTaskDetail(id: string) {
   }
 
   useEffect(load, [id]);
-  // Список сотрудников — для форм «исполнитель», «добавить наблюдателя» и
-  // для подписей в истории.
+  // Список сотрудников — для подписей в истории (с отключёнными: бывший
+  // исполнитель остаётся именем, а не id) и, без отключённых, — для форм
+  // «исполнитель», «добавить наблюдателя».
   useEffect(() => {
-    api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
+    api.get<EmployeeSummary[]>('/employees?includeInactive=1').then(setAllEmployees).catch(() => {});
   }, []);
+  const employees = allEmployees.filter((e) => e.status !== 'INACTIVE');
 
   // Общая обёртка действий: busy на время запроса, ошибка — в баннер.
   async function mutate(action: () => Promise<void>, failure: string): Promise<boolean> {
@@ -119,7 +121,7 @@ export function useTaskDetail(id: string) {
       }
     }, 'Не удалось отправить напоминание');
 
-  return { task, error, busy, employees, changeStatus, remind, addComment, remove, addSubtask, saveEdit, toggleWatch, addWatcher, removeWatcher };
+  return { task, error, busy, employees, allEmployees, changeStatus, remind, addComment, remove, addSubtask, saveEdit, toggleWatch, addWatcher, removeWatcher };
 }
 
 // Кто что может с задачей — только для показа кнопок; реальная граница —

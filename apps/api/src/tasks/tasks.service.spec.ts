@@ -218,3 +218,37 @@ describe('TasksService.remind', () => {
     expect(prisma.taskHistory.create).not.toHaveBeenCalled();
   });
 });
+
+// Отключённая учётка (владелец 09.11.2026) не получает новых задач.
+describe('TasksService — отключённый исполнитель', () => {
+  function serviceWith(status: 'ACTIVE' | 'INACTIVE') {
+    const prisma = {
+      task: {
+        findUnique: jest.fn().mockResolvedValue({ id: 't1', creatorId: 'u1', assigneeId: 'old', title: 'Т', priority: 'MEDIUM', status: 'NEW', dueDate: null, description: null, taskProfileId: null }),
+        create: jest.fn(),
+      },
+      employee: { findUnique: jest.fn().mockResolvedValue({ status }) },
+      $transaction: jest.fn().mockResolvedValue([]),
+    };
+    return { service: new TasksService(prisma as any, {} as any), prisma };
+  }
+
+  it('создать задачу на отключённого нельзя', async () => {
+    const { service, prisma } = serviceWith('INACTIVE');
+    await expect(service.create({ title: 'Т', assigneeId: 'gone' } as any, user())).rejects.toThrow('отключена');
+    expect(prisma.task.create).not.toHaveBeenCalled();
+  });
+
+  it('переназначить на отключённого нельзя', async () => {
+    const { service, prisma } = serviceWith('INACTIVE');
+    await expect(service.update('t1', { assigneeId: 'gone' } as any, user())).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('правка задачи без смены исполнителя статус не проверяет', async () => {
+    const { service, prisma } = serviceWith('INACTIVE');
+    await service.update('t1', { title: 'Новое' } as any, user()).catch(() => undefined);
+    expect(prisma.employee.findUnique).not.toHaveBeenCalled();
+  });
+});
+

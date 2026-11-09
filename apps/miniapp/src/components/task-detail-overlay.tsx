@@ -39,7 +39,9 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
-  const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
+  const [allEmployees, setAllEmployees] = useState<EmployeeSummary[]>([]);
+  // Выбор исполнителя/наблюдателя — без отключённых; история — по всем.
+  const employees = allEmployees.filter((e) => e.status !== 'INACTIVE');
   const [subtaskTitle, setSubtaskTitle] = useState('');
   const [subtaskAssigneeId, setSubtaskAssigneeId] = useState('');
   const [addWatcherId, setAddWatcherId] = useState('');
@@ -59,7 +61,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
 
   useEffect(load, [currentId]);
   useEffect(() => {
-    api.get<EmployeeSummary[]>('/employees').then(setEmployees).catch(() => {});
+    api.get<EmployeeSummary[]>('/employees?includeInactive=1').then(setAllEmployees).catch(() => {});
   }, []);
 
   const nativeBack = useBackButton(goBack);
@@ -211,7 +213,7 @@ export function TaskDetailOverlay({ taskId, onClose }: { taskId: string; onClose
 
   function formatHistoryValue(field: string, value: string | null): string {
     if (value === null) return '—';
-    if (field === 'assigneeId') return employees.find((e) => e.id === value)?.fullName ?? value;
+    if (field === 'assigneeId') return allEmployees.find((e) => e.id === value)?.fullName ?? value;
     if (field === 'priority') return PRIORITY_LABELS[value as TaskPriority] ?? value;
     if (field === 'status') return STATUS_LABELS[value as TaskStatus] ?? value;
     if (field === 'dueDate') return new Date(value).toLocaleDateString('ru-RU');

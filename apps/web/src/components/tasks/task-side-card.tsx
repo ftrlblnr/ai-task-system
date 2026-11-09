@@ -134,7 +134,7 @@ export function TaskSideCard({ taskId, onClose, onAskAgent, onChanged, onDeleted
 
           <TaskStatusCard task={task} canChange={can.canChangeStatus} statuses={can.availableStatuses} busy={t.busy} onChange={(s) => void t.changeStatus(s)} />
           <TaskComments task={task} busy={t.busy} onSubmit={t.addComment} />
-          <TaskHistory task={task} employees={t.employees} />
+          <TaskHistory task={task} employees={t.allEmployees} />
         </div>
       )}
     </aside>

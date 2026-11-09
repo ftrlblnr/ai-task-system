@@ -89,7 +89,7 @@ function EmployeesList() {
 
   useEffect(() => {
     api
-      .get<EmployeeProfile[]>('/employees')
+      .get<EmployeeProfile[]>('/employees?includeInactive=1')
       .then(setEmployees)
       .catch(() => setError('Не удалось загрузить список сотрудников'));
   }, []);

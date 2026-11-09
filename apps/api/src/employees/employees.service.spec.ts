@@ -95,4 +95,16 @@ describe('EmployeesService — права ролей', () => {
       expect(prisma.employee.update).not.toHaveBeenCalled();
     });
   });
+
+  describe('список сотрудников', () => {
+    it('по умолчанию руководству — только активные, с includeInactive — все', async () => {
+      const prisma = { employee: { findMany: jest.fn().mockResolvedValue([]) } };
+      const service = new EmployeesService(prisma as never);
+      await service.findAll(ADMIN);
+      expect(prisma.employee.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { status: 'ACTIVE' } }));
+      await service.findAll(ADMIN, true);
+      expect(prisma.employee.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: undefined }));
+    });
+  });
 });
+

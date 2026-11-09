@@ -465,6 +465,8 @@ export class TasksService {
       }
     }
 
+    if (dto.assigneeId) await this.assertActiveAssignee(dto.assigneeId);
+
     const task = await this.prisma.task.create({
       data: {
         title: dto.title,
@@ -514,6 +516,10 @@ export class TasksService {
       throw new ForbiddenException(
         'Редактировать задачу может только её постановщик или руководитель',
       );
+    }
+
+    if (dto.assigneeId && dto.assigneeId !== task.assigneeId) {
+      await this.assertActiveAssignee(dto.assigneeId);
     }
 
     const changes = this.diff(task, dto);
@@ -752,6 +758,16 @@ export class TasksService {
       );
     }
     await this.prisma.task.delete({ where: { id } });
+  }
+
+  // Отключённая учётка (владелец 09.11.2026) не получает новых задач —
+  // ни с сайта, ни из Mini App, ни через ассистента.
+  private async assertActiveAssignee(employeeId: string) {
+    const employee = await this.prisma.employee.findUnique({ where: { id: employeeId }, select: { status: true } });
+    if (!employee) throw new BadRequestException('Исполнитель не найден');
+    if (employee.status !== 'ACTIVE') {
+      throw new BadRequestException('Учётная запись сотрудника отключена — выберите другого исполнителя');
+    }
   }
 
   private async getOrThrow(id: string) {
