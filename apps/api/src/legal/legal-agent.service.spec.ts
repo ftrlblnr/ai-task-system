@@ -146,3 +146,66 @@ describe('LegalAgentService.review', () => {
     expect(JSON.stringify(requests[1].messages.at(-1)!.content)).toContain('фрагмент «как есть» не найден в договоре');
   });
 });
+
+describe('LegalAgentService.review: контрагент и веб-поиск', () => {
+  const CONTRACT = 'Субподрядчик: ТОО «Альфа», БИН 040540001230. п. 4.1. Гарантийный срок на выполненные работы составляет 10 (десять) лет.';
+  const submitWith = (url: string) =>
+    tool('r', 'submit_review', {
+      contract: 'Договор',
+      gc_role: 'заказчик',
+      applicable_acts: 'СК',
+      summary: 'Итог.',
+      findings: [],
+      general_issues: [],
+      not_checked: [],
+      financial: {
+        verdict: 'невыгоден',
+        verdict_reason: 'Нет удержания.',
+        gc_pays: true,
+        price: '',
+        cash_flow: '',
+        liability_balance: '',
+        terms: [],
+        money_risks: [],
+      },
+      negotiation: [{ priority: 'обязательно', clause: 'п. 7', ask: 'Удержание 5%', fallback: 'гарантия', argument: 'практика' }],
+      counterparty: {
+        name: 'ТОО «Альфа»',
+        bin: '040540001230',
+        verdict: 'рисков не выявлено',
+        facts: [{ fact: 'Действует', source: 'stat.gov.kz', url }],
+        red_flags: [],
+        not_verified: [],
+      },
+    });
+  const searchResult = {
+    type: 'web_search_tool_result',
+    tool_use_id: 'srv',
+    content: [{ type: 'web_search_result', url: 'https://stat.gov.kz/jur/040540001230', title: 'Альфа' }],
+  };
+
+  it('pause_turn — ход отправляется обратно как есть; БИН из договора — во вступлении; выдуманный адрес — на исправление', async () => {
+    const { agent, requests } = makeAgent([
+      msg([{ type: 'server_tool_use', id: 'srv', name: 'web_search', input: { query: 'ТОО Альфа 040540001230' } }, searchResult], 'pause_turn'),
+      msg([submitWith('https://kgd.gov.kz/ne-bylo')]),
+      msg([submitWith('https://stat.gov.kz/jur/040540001230/')]),
+    ]);
+    const r = await agent.review(CONTRACT, 'Договор.docx');
+    expect(r.rounds).toBe(3);
+    // После паузы последним в истории идёт ход ассистента, без нового сообщения пользователя.
+    expect(requests[1].messages.at(-1)).toMatchObject({ role: 'assistant' });
+    expect(JSON.stringify(requests[0].messages[0].content)).toContain('нашёл сервер): 040540001230');
+    expect(requests[0].tools!.map((t) => t.name)).toEqual(expect.arrayContaining(['web_search', 'web_fetch']));
+    expect(JSON.stringify(requests[2].messages.at(-1)!.content)).toContain('https://kgd.gov.kz/ne-bylo');
+    expect(r.counterparty).toMatchObject({ bin: '040540001230', binInContract: true, binChecksumOk: true });
+    expect(r.counterparty!.facts[0].verified).toBe(true);
+    expect(r.financial!.verdict).toBe('невыгоден');
+    expect(r.negotiation).toHaveLength(1);
+  });
+
+  it('бесконечные паузы обрываются', async () => {
+    const pause = msg([{ type: 'server_tool_use', id: 'srv', name: 'web_search', input: {} }], 'pause_turn');
+    const { agent } = makeAgent(Array.from({ length: 7 }, () => pause));
+    await expect(agent.review(CONTRACT, 'Д.docx')).rejects.toMatchObject({ code: 'TOO_MANY_ROUNDS' });
+  });
+});

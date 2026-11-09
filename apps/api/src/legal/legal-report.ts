@@ -12,7 +12,20 @@ import {
   TextRun,
   WidthType,
 } from 'docx';
-import { riskCounts, sortFindings, type LegalReview, type RiskLevel, type VerifiedFinding } from './legal-agent';
+import {
+  manualCheckLinks,
+  riskCounts,
+  sortFindings,
+  sortNegotiation,
+  type CounterpartyCheck,
+  type FinancialAssessment,
+  type LegalReview,
+  type NegotiationItem,
+  type NegotiationPriority,
+  type RiskLevel,
+  type TermAssessment,
+  type VerifiedFinding,
+} from './legal-agent';
 
 // Отчёт по разбору договора в Word (handoff, раздел 3.2) — порт вёрстки
 // legal-agent/tools/build_review_docx.py: альбомная A4, сводка, общие
@@ -31,6 +44,13 @@ export interface ReportMeta {
 
 const RISK_COLOR: Record<RiskLevel, string> = { высокий: 'F8CBAD', средний: 'FFF2CC', низкий: 'E2EFDA' };
 const HEADER_FILL = '1F2A44';
+const ASSESSMENT_COLOR: Record<TermAssessment, string> = { выгодно: 'E2EFDA', нейтрально: 'FFFFFF', невыгодно: 'F8CBAD', отсутствует: 'FFF2CC' };
+const PRIORITY_COLOR: Record<NegotiationPriority, string> = { обязательно: 'F8CBAD', желательно: 'FFF2CC', 'можно уступить': 'E2EFDA' };
+// Ширины таблиц новых разделов, см; итого те же 26,7 см.
+const TERMS_CM = [3.2, 1.8, 6.0, 2.3, 5.4, 8.0];
+const MONEY_CM = [7.5, 9.6, 9.6];
+const NEGOTIATION_CM = [2.4, 2.0, 8.1, 7.1, 7.1];
+const FACTS_CM = [12.7, 5.0, 9.0];
 const UNVERIFIED_FILL = 'F8CBAD';
 // Ширины колонок таблицы находок, см (как в эталоне); итого 26,7 см —
 // ширина альбомной A4 за вычетом полей 1,5 см.
@@ -73,6 +93,124 @@ function bullet(value: string): Paragraph {
   return new Paragraph({ bullet: { level: 0 }, children: [text(value, { size: 20 })] });
 }
 
+function heading1(value: string, pageBreakBefore = false): Paragraph {
+  return new Paragraph({ heading: HeadingLevel.HEADING_1, pageBreakBefore, children: [text(value, { size: 28, bold: true })] });
+}
+
+function heading2(value: string): Paragraph {
+  return new Paragraph({ heading: HeadingLevel.HEADING_2, spacing: { before: 200 }, children: [text(value, { size: 24, bold: true })] });
+}
+
+function labeled(label: string, value: string): Paragraph {
+  return new Paragraph({ spacing: { after: 80 }, children: [text(`${label}: `, { bold: true, size: 20 }), text(value, { size: 20 })] });
+}
+
+function simpleTable(titles: string[], widthsCm: number[], rows: { cells: string[]; fills?: (string | undefined)[] }[]): Table {
+  return new Table({
+    columnWidths: widthsCm.map((w) => Math.round(w * TWIPS_PER_CM)),
+    rows: [
+      headerRow(titles, widthsCm),
+      ...rows.map((r) => new TableRow({ children: r.cells.map((v, i) => cell(paragraphs(v || '—'), widthsCm[i], r.fills?.[i])) })),
+    ],
+  });
+}
+
+function financialSection(f: FinancialAssessment): (Paragraph | Table)[] {
+  const out: (Paragraph | Table)[] = [heading1('Финансовая оценка для генподрядчика', true)];
+  out.push(new Paragraph({ spacing: { after: 120 }, children: [text(`Итог: договор ${f.verdict}. `, { bold: true, size: 22 }), text(f.verdict_reason, { size: 20 })] }));
+  if (f.gc_pays !== null) out.push(labeled('Деньги по договору', f.gc_pays ? 'генподрядчик платит' : 'генподрядчик получает'));
+  if (f.price) out.push(labeled('Цена и модель', f.price));
+  if (f.cash_flow) out.push(labeled('Кассовый разрыв', f.cash_flow));
+  if (f.liability_balance) out.push(labeled('Баланс ответственности', f.liability_balance));
+  if (f.terms.length) {
+    out.push(heading2('Ключевые финансовые условия'));
+    out.push(
+      simpleTable(
+        ['Условие', 'Пункт', 'Как в договоре', 'Оценка для ГП', 'Ориентир практики (оценка)', 'Предложение'],
+        TERMS_CM,
+        f.terms.map((t) => ({
+          cells: [t.topic, t.clause, t.as_is, t.assessment, t.practice, t.proposed],
+          fills: [undefined, undefined, undefined, ASSESSMENT_COLOR[t.assessment]],
+        })),
+      ),
+    );
+  }
+  if (f.money_risks.length) {
+    out.push(heading2('Денежные риски'));
+    out.push(simpleTable(['Риск', 'Расчёт', 'Как снизить'], MONEY_CM, f.money_risks.map((r) => ({ cells: [r.risk, r.calculation, r.mitigation] }))));
+  }
+  return out;
+}
+
+function negotiationSection(items: NegotiationItem[]): (Paragraph | Table)[] {
+  return [
+    heading1('План переговоров'),
+    new Paragraph({
+      spacing: { after: 120 },
+      children: [
+        text('«Обязательно» — без этого подписывать опасно; «желательно» — заметно улучшает условия; «можно уступить» — разменная монета в торге.', {
+          size: 20,
+          italics: true,
+        }),
+      ],
+    }),
+    simpleTable(
+      ['Приоритет', 'Пункт', 'Что просить', 'Запасная позиция', 'Аргумент'],
+      NEGOTIATION_CM,
+      sortNegotiation(items).map((n) => ({ cells: [n.priority, n.clause, n.ask, n.fallback, n.argument], fills: [PRIORITY_COLOR[n.priority]] })),
+    ),
+  ];
+}
+
+function counterpartySection(c: CounterpartyCheck): (Paragraph | Table)[] {
+  const out: (Paragraph | Table)[] = [heading1('Проверка контрагента', true)];
+  out.push(labeled('Контрагент', c.name || 'не указан'));
+  const binNote = !c.bin
+    ? 'в договоре не найден'
+    : [
+        c.bin,
+        c.binInContract ? 'есть в реквизитах договора' : 'не найден в тексте договора',
+        c.binChecksumOk ? 'контрольная цифра верна' : 'КОНТРОЛЬНАЯ ЦИФРА НЕ СХОДИТСЯ — сверьте реквизиты',
+      ].join('; ');
+  out.push(labeled('БИН/ИИН', binNote));
+  out.push(new Paragraph({ spacing: { after: 120 }, children: [text(`Итог: ${c.verdict}.`, { bold: true, size: 22 })] }));
+  if (c.red_flags.length) {
+    out.push(heading2('Красные флаги'));
+    out.push(...c.red_flags.map(bullet));
+  }
+  if (c.facts.length) {
+    out.push(heading2('Найдено в открытых источниках'));
+    out.push(
+      simpleTable(
+        ['Факт', 'Источник', 'Ссылка'],
+        FACTS_CM,
+        c.facts.map((f) => ({
+          cells: [f.fact, f.source, f.verified ? f.url : `${f.url || '—'}\nНЕ ПОДТВЕРЖДЕНО: адреса нет в результатах поиска`],
+          fills: [undefined, undefined, f.verified ? undefined : UNVERIFIED_FILL],
+        })),
+      ),
+    );
+  }
+  if (c.not_verified.length) {
+    out.push(heading2('Не удалось проверить'));
+    out.push(...c.not_verified.map(bullet));
+  }
+  out.push(heading2('Проверить вручную'));
+  out.push(...manualCheckLinks(c.bin).map((l) => bullet(`${l.title} — ${l.url}: ${l.what}`)));
+  out.push(
+    new Paragraph({
+      spacing: { before: 120 },
+      children: [
+        text('Отсутствие сведений в найденных источниках не означает благонадёжности контрагента: часть госреестров РК доступна только вручную.', {
+          italics: true,
+          size: 18,
+        }),
+      ],
+    }),
+  );
+  return out;
+}
+
 function findingRow(f: VerifiedFinding, n: number): TableRow {
   const reasoning = [f.gc_impact ? `Для генподрядчика: ${f.gc_impact}` : '', f.reasoning].filter(Boolean).join('\n');
   const basis = [...paragraphs(reasoning)];
@@ -106,7 +244,7 @@ export function buildReviewDocument(review: LegalReview, meta: ReportMeta): Docu
       children: [
         text('Проект. Требует проверки юристом. ', { bold: true, size: 20 }),
         text(
-          `Проверка выполнена агентом-юристом по ${base} в интересах генподрядчика. Каждая ссылка на норму сверена с текстом статьи: дословность цитаты и наличие фрагмента «как есть» в договоре проверены программно. ID статьи: КОД:ст.N — код акта в «Әділет».`,
+          `Проверка выполнена агентом-юристом по ${base} в интересах генподрядчика. Каждая ссылка на норму сверена с текстом статьи: дословность цитаты и наличие фрагмента «как есть» в договоре проверены программно. ID статьи: КОД:ст.N — код акта в «Әділет». Финансовые ориентиры — оценка агента, а не норма; сведения о контрагенте — из открытых источников со ссылками.`,
           { size: 20 },
         ),
       ],
@@ -142,6 +280,10 @@ export function buildReviewDocument(review: LegalReview, meta: ReportMeta): Docu
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [text('Общие проблемы', { size: 28, bold: true })] }));
     children.push(...review.generalIssues.map(bullet));
   }
+
+  if (review.financial) children.push(...financialSection(review.financial));
+  if (review.negotiation?.length) children.push(...negotiationSection(review.negotiation));
+  if (review.counterparty) children.push(...counterpartySection(review.counterparty));
 
   children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, pageBreakBefore: true, children: [text('Находки', { size: 28, bold: true })] }));
   if (findings.length) {

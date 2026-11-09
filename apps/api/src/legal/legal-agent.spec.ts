@@ -1,5 +1,13 @@
+import type Anthropic from '@anthropic-ai/sdk';
 import {
+  binChecksumValid,
   buildLegalSystemPrompt,
+  collectSeenUrls,
+  counterpartyProblemsReport,
+  extractBins,
+  manualCheckLinks,
+  sortNegotiation,
+  verifyCounterparty,
   buildLegalTools,
   citationProblemsReport,
   findingProblemsReport,
@@ -39,7 +47,7 @@ describe('legal-agent: промпт и схемы', () => {
   });
 
   it('инструменты: все strict, без лишних полей, код акта — закрытый enum', () => {
-    const tools = buildLegalTools(DOCS);
+    const tools = buildLegalTools(DOCS) as Anthropic.Tool[];
     expect(tools.map((t) => t.name)).toEqual(['search_npa', 'get_article', 'verify_quote', 'term', 'submit_answer']);
     for (const t of tools) {
       expect(t.strict).toBe(true);
@@ -129,7 +137,7 @@ describe('legal-agent: разбор и проверка ответа', () => {
       const names = tools.map((t) => t.name);
       expect(names).toContain('submit_review');
       expect(names).not.toContain('submit_answer');
-      const submit = tools.find((t) => t.name === 'submit_review')!;
+      const submit = tools.find((t) => t.name === 'submit_review') as Anthropic.Tool;
       expect(submit.strict).toBe(true);
       expect(submit.input_schema.additionalProperties).toBe(false);
       expect(buildLegalSystemPrompt(DOCS, 'review')).toContain('<contract>');
@@ -214,5 +222,152 @@ describe('legal-agent: разбор и проверка ответа', () => {
       expect(md).toContain('**Не подтверждено проверкой по базе: 1**');
       expect(md).toContain('Проект. Требует проверки юристом.');
     });
+  });
+});
+
+describe('legal-agent: финансы, переговоры, контрагент', () => {
+  it('review: веб-поиск и веб-чтение только в разборе, с потолками; в вопросе по НПА их нет', () => {
+    const review = buildLegalTools(DOCS, 'review');
+    expect(review.slice(0, 2)).toEqual([
+      expect.objectContaining({ type: 'web_search_20260209', name: 'web_search', max_uses: 8 }),
+      expect.objectContaining({ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6 }),
+    ]);
+    expect(buildLegalTools(DOCS, 'ask').map((t) => t.name)).not.toContain('web_search');
+    const prompt = buildLegalSystemPrompt(DOCS, 'review');
+    expect(prompt).toContain('только для фактов о контрагенте');
+    expect(prompt).toContain('«не нашёл» ≠ «чисто»');
+    expect(prompt).toContain('Закону о государственных закупках');
+    expect(buildLegalSystemPrompt(DOCS, 'ask')).not.toContain('web_search');
+  });
+
+  it('схема submit_review: новые разделы обязательны, вложенные объекты строгие', () => {
+    const submit = buildLegalTools(DOCS, 'review').find((t) => t.name === 'submit_review') as Anthropic.Tool;
+    const props = submit.input_schema.properties as Record<string, { required?: string[]; additionalProperties?: boolean; items?: { required: string[] } }>;
+    expect(submit.input_schema.required).toEqual(expect.arrayContaining(['financial', 'negotiation', 'counterparty']));
+    expect(props.financial.additionalProperties).toBe(false);
+    expect(props.financial.required).toContain('money_risks');
+    expect(props.negotiation.items!.required).toEqual(['priority', 'clause', 'ask', 'fallback', 'argument']);
+    expect(props.counterparty.required).toEqual(['name', 'bin', 'verdict', 'facts', 'red_flags', 'not_verified']);
+  });
+
+  it('parseSubmittedReview: разделы разбираются с проверкой, пустые — null', () => {
+    const r = parseSubmittedReview({
+      summary: 'Итог',
+      findings: [],
+      financial: {
+        verdict: 'очень плохо',
+        verdict_reason: 'Аванса нет, оплата через 90 дней.',
+        gc_pays: false,
+        price: 'Твёрдая, 500 млн тг с НДС',
+        cash_flow: '',
+        liability_balance: '',
+        terms: [{ topic: 'Аванс', clause: 'отсутствует', as_is: 'нет', assessment: 'отсутствует', practice: 'обычно 20–30%', proposed: '30%' }, { topic: '' }],
+        money_risks: [{ risk: 'Неустойка ГП', calculation: '0,1% × 500 млн × 30 = 15 млн', mitigation: 'потолок 10%' }],
+      },
+      negotiation: [{ priority: 'срочно', clause: 'п. 3', ask: 'Аванс 30%', fallback: '15%', argument: 'закупка металла' }, { ask: '' }],
+      counterparty: {
+        name: 'ТОО «Альфа»',
+        bin: '040 540 001 230',
+        verdict: '?',
+        facts: [{ fact: 'Действует', source: 'stat', url: 'https://stat.gov.kz/x' }],
+        red_flags: ['долг'],
+        not_verified: [],
+      },
+    })!;
+    expect(r.financial).toMatchObject({ verdict: 'сбалансирован', gc_pays: false });
+    expect(r.financial!.terms).toHaveLength(1);
+    expect(r.negotiation).toEqual([expect.objectContaining({ priority: 'желательно', ask: 'Аванс 30%' })]);
+    expect(r.counterparty).toMatchObject({ bin: '040540001230', verdict: 'не удалось проверить' });
+    const empty = parseSubmittedReview({ summary: 'И', findings: [], financial: { verdict: 'выгоден', verdict_reason: '', terms: [], money_risks: [] } })!;
+    expect(empty.financial).toBeNull();
+    expect(empty.negotiation).toEqual([]);
+    expect(empty.counterparty).toBeNull();
+  });
+
+  it('БИН: контрольная цифра и поиск в реквизитах', () => {
+    expect(binChecksumValid('040540001230')).toBe(true);
+    expect(binChecksumValid('120340500125')).toBe(true);
+    expect(binChecksumValid('040540001231')).toBe(false);
+    expect(binChecksumValid('12345')).toBe(false);
+    const contract =
+      'Подрядчик: ТОО «Альфа», БИН: 040540001230, ИИК KZ12. Субподрядчик: ТОО «Бета» БИН/ИИН 1203 4050 0125; повторно БИН 040540001230. Тел. 777012345678';
+    expect(extractBins(contract)).toEqual(['040540001230', '120340500125']);
+  });
+
+  it('контрагент: факт с адресом вне результатов поиска не подтверждён, БИН сверяется с договором', () => {
+    const seen = new Set<string>();
+    collectSeenUrls(
+      [
+        { type: 'text' },
+        { type: 'server_tool_use' },
+        { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'https://www.Stat.gov.kz/jur/1/', title: 't' }] } as { type: string },
+        { type: 'tool_result', content: 'https://evil.example/' } as { type: string },
+      ],
+      seen,
+    );
+    expect(seen.has('stat.gov.kz/jur/1')).toBe(true);
+    expect(seen.has('evil.example')).toBe(false);
+
+    const c = verifyCounterparty(
+      {
+        name: 'ТОО «Альфа»',
+        bin: '',
+        verdict: 'есть риски',
+        facts: [
+          { fact: 'Действует', source: 'stat', url: 'http://stat.gov.kz/jur/1#top' },
+          { fact: 'Банкрот', source: 'сайт', url: 'https://kgd.gov.kz/bankrupt' },
+        ],
+        red_flags: [],
+        not_verified: [],
+      },
+      ['040540001230'],
+      seen,
+    );
+    expect(c.bin).toBe('040540001230');
+    expect(c).toMatchObject({ binInContract: true, binChecksumOk: true });
+    expect(c.facts.map((f) => f.verified)).toEqual([true, false]);
+    expect(counterpartyProblemsReport(c)).toContain('«Банкрот» — https://kgd.gov.kz/bankrupt');
+    expect(counterpartyProblemsReport({ ...c, facts: [c.facts[0]] })).toBeNull();
+    expect(manualCheckLinks('040540001230')[0].what).toContain('БИН 040540001230');
+  });
+
+  it('formatReviewSummary: финансовый итог, «обязательно» по приоритету, контрагент и неверный БИН', () => {
+    const md = formatReviewSummary(
+      {
+        contract: 'Д',
+        gcRole: '',
+        applicableActs: '',
+        summary: 'Итог.',
+        findings: [],
+        generalIssues: [],
+        notChecked: [],
+        financial: { verdict: 'невыгоден', verdict_reason: 'Нет аванса.', gc_pays: false, price: '', cash_flow: '', liability_balance: '', terms: [], money_risks: [] },
+        negotiation: [
+          { priority: 'желательно', clause: 'п. 9', ask: 'Потолок неустойки', fallback: '', argument: '' },
+          { priority: 'обязательно', clause: 'п. 3', ask: 'Аванс 30%', fallback: '', argument: '' },
+        ],
+        counterparty: {
+          name: 'ТОО «Альфа»',
+          bin: '040540001231',
+          verdict: 'высокий риск',
+          facts: [],
+          red_flags: ['налоговый долг'],
+          not_verified: [],
+          binInContract: true,
+          binChecksumOk: false,
+        },
+        model: 'm',
+      },
+      'Д.docx',
+    );
+    expect(md).toContain('**Финансово для ГП: невыгоден.** Нет аванса.');
+    expect(md).toContain('**Добиваться обязательно:**\n1. **п. 3**: Аванс 30%');
+    expect(md).not.toContain('Потолок неустойки');
+    expect(md).toContain('**Контрагент ТОО «Альфа»: высокий риск.** Красные флаги: налоговый долг.');
+    expect(md).toContain('не проходит проверку контрольной цифры');
+    expect(sortNegotiation([{ priority: 'можно уступить' }, { priority: 'обязательно' }] as never).map((n: { priority: string }) => n.priority)).toEqual([
+      'обязательно',
+      'можно уступить',
+    ]);
   });
 });
