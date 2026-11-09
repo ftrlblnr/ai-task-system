@@ -7,12 +7,16 @@ import {
   buildLegalSystemPrompt,
   buildLegalTools,
   citationProblemsReport,
+  collectSeenUrls,
+  counterpartyProblemsReport,
+  extractBins,
   findingProblemsReport,
   LEGAL_MODEL,
   parseSubmittedAnswer,
   parseSubmittedReview,
   sortFindings,
   verifyCitations,
+  verifyCounterparty,
   verifyFindings,
   type LegalAnswer,
   type LegalMode,
@@ -29,12 +33,17 @@ import { NpaSearchService } from './npa-search.service';
 // Раунды = обращения к модели. Вопрос по НПА: поиск → 2–4 статьи →
 // проверка цитат → ответ, обычно 4–8 раундов; потолок — от зацикливания.
 const ASK_MAX_ROUNDS = 12;
-// Разбор договора: применимые акты, десятки статей, проверка цитат — до 25.
-const REVIEW_MAX_ROUNDS = 25;
+// Разбор договора: применимые акты, десятки статей, проверка цитат и
+// контрагента в интернете (каждая пауза серверного поиска — тоже раунд).
+const REVIEW_MAX_ROUNDS = 35;
 // Размышления Opus входят в max_tokens; запрос стримится (finalMessage),
 // поэтому большой потолок не грозит таймаутом HTTP. Итог разбора — до ~25
 // находок с цитатами, ему нужен запас.
-const MAX_TOKENS: Record<LegalMode, number> = { ask: 16000, review: 48000 };
+// Финансовый раздел, план переговоров и контрагент добавили объёма итогу.
+const MAX_TOKENS: Record<LegalMode, number> = { ask: 16000, review: 64000 };
+// pause_turn — сервер прервал длинный ход с поиском; продолжаем, но не
+// бесконечно.
+const MAX_PAUSE_CONTINUATIONS = 5;
 // Длинные статьи (кодексы — до ~50 тыс. символов) режем: цитата нужна из
 // начала нормы почти всегда, а контекст не раздувается на каждом раунде.
 const ARTICLE_TEXT_LIMIT = 30000;
@@ -67,6 +76,11 @@ export interface LegalReviewResult extends LegalReview {
 
 // Итог одного submit_*: принят (done) или вернуть агенту на исправление.
 type SubmitOutcome<T> = { done: T } | { retry: string };
+// Что сервер знает о ходе работы к моменту сдачи итога.
+interface RunContext {
+  // Адреса страниц из результатов web_search / web_fetch.
+  seenUrls: Set<string>;
+}
 
 @Injectable()
 export class LegalAgentService {
@@ -135,6 +149,12 @@ export class LegalAgentService {
     const started = Date.now();
     const intro = [`Договор: файл «${fileName}».`];
     if (focus?.trim()) intro.push(`Юрист просит обратить особое внимание: ${focus.trim()}`);
+    const bins = extractBins(contractText);
+    intro.push(
+      bins.length
+        ? `БИН/ИИН в реквизитах договора (нашёл сервер): ${bins.join(', ')}. Определи, какой из них — контрагента, и проверь его.`
+        : 'БИН/ИИН в тексте договора сервер не нашёл — ищи контрагента по наименованию и отметь это в not_verified.',
+    );
     intro.push(`<contract>\n${contractText}\n</contract>`);
     const result = await this.run<LegalReview>({
       mode: 'review',
@@ -142,12 +162,13 @@ export class LegalAgentService {
       maxRounds: REVIEW_MAX_ROUNDS,
       submitTool: 'submit_review',
       intro,
-      onSubmit: async (input, canRetry) => {
+      onSubmit: async (input, canRetry, ctx) => {
         const submitted = parseSubmittedReview(input);
         if (!submitted) return { retry: 'Разбор пуст: нужны summary и массив findings.' };
         const ids = submitted.findings.map((f) => f.norm_id).filter(Boolean);
         const findings = verifyFindings(submitted.findings, await this.npa.lookupArticles(ids), contractText);
-        const problems = findingProblemsReport(findings);
+        const counterparty = submitted.counterparty ? verifyCounterparty(submitted.counterparty, bins, ctx.seenUrls) : null;
+        const problems = [findingProblemsReport(findings), counterpartyProblemsReport(counterparty)].filter(Boolean).join('\n\n');
         if (problems && canRetry) return { retry: problems };
         return {
           done: {
@@ -158,6 +179,9 @@ export class LegalAgentService {
             findings: sortFindings(findings),
             generalIssues: submitted.general_issues,
             notChecked: submitted.not_checked,
+            financial: submitted.financial,
+            negotiation: submitted.negotiation,
+            counterparty,
             model: LEGAL_MODEL,
           },
         };
@@ -165,7 +189,11 @@ export class LegalAgentService {
     });
     const durationMs = Date.now() - started;
     const unverified = result.value.findings.filter((f) => !f.verified).length;
-    this.logger.log(`legal.review: раундов ${result.rounds}, находок ${result.value.findings.length}, не подтверждено ${unverified}, ${Math.round(durationMs / 1000)} с`);
+    const cp = result.value.counterparty;
+    const cpLog = cp ? `, контрагент «${cp.verdict}», фактов ${cp.facts.length} (без источника ${cp.facts.filter((f) => !f.verified).length})` : ', контрагент не проверен';
+    this.logger.log(
+      `legal.review: раундов ${result.rounds}, находок ${result.value.findings.length}, не подтверждено ${unverified}${cpLog}, ${Math.round(durationMs / 1000)} с`,
+    );
     return { ...result.value, rounds: result.rounds, durationMs };
   }
 
@@ -177,7 +205,7 @@ export class LegalAgentService {
     maxRounds: number;
     submitTool: string;
     intro: string[];
-    onSubmit: (input: unknown, canRetry: boolean) => Promise<SubmitOutcome<T>>;
+    onSubmit: (input: unknown, canRetry: boolean, ctx: RunContext) => Promise<SubmitOutcome<T>>;
   }): Promise<{ value: T; rounds: number }> {
     const documents = await this.listDocuments();
     const system = buildLegalSystemPrompt(documents, opts.mode);
@@ -194,13 +222,24 @@ export class LegalAgentService {
 
     let fixRequested = false;
     let nudged = false;
+    let pauses = 0;
+    const ctx: RunContext = { seenUrls: new Set() };
     for (let round = 1; round <= opts.maxRounds; round++) {
       const message = await this.callModel(opts.feature, opts.mode, system, tools, messages, round);
       if (message.stop_reason === 'refusal') throw new LegalAgentError('REFUSED', 'Модель отказалась отвечать');
       if (message.stop_reason === 'max_tokens') throw new LegalAgentError('OUTPUT_TOO_LONG', 'Ответ не поместился в лимит токенов');
+      if (message.stop_reason === 'model_context_window_exceeded') throw new LegalAgentError('OUTPUT_TOO_LONG', 'Переполнено окно контекста модели');
       // Ответ модели — как есть, вместе с блоками размышлений: Opus 5.5
       // привязывает их к беседе, правка истории ломает префикс.
       messages.push({ role: 'assistant', content: message.content });
+      collectSeenUrls(message.content, ctx.seenUrls);
+
+      // Серверный поиск не уложился в один ход: отправляем ход обратно как
+      // есть — сервер продолжит с того же места.
+      if (message.stop_reason === 'pause_turn') {
+        if (++pauses > MAX_PAUSE_CONTINUATIONS) throw new LegalAgentError('TOO_MANY_ROUNDS', 'Слишком много пауз серверного поиска');
+        continue;
+      }
 
       const toolUses = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
       if (toolUses.length === 0) {
@@ -217,7 +256,7 @@ export class LegalAgentService {
       const results = await Promise.all(
         toolUses.map(async (block): Promise<Anthropic.ToolResultBlockParam | { done: T }> => {
           if (block.name !== opts.submitTool) return this.runTool(block);
-          const outcome = await opts.onSubmit(block.input, !fixRequested && round < opts.maxRounds);
+          const outcome = await opts.onSubmit(block.input, !fixRequested && round < opts.maxRounds, ctx);
           if ('done' in outcome) return outcome;
           return { type: 'tool_result', tool_use_id: block.id, is_error: true, content: outcome.retry };
         }),
@@ -241,7 +280,7 @@ export class LegalAgentService {
     feature: string,
     mode: LegalMode,
     system: string,
-    tools: Anthropic.Tool[],
+    tools: Anthropic.ToolUnion[],
     messages: Anthropic.MessageParam[],
     round: number,
   ): Promise<Anthropic.Message> {
