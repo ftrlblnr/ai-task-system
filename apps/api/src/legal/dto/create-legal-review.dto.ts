@@ -10,4 +10,10 @@ export class CreateLegalReviewDto {
   @IsString()
   @MaxLength(2000)
   focus?: string;
+
+  // В чьих интересах разбор: наименование и/или роль нашей стороны.
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  party?: string;
 }

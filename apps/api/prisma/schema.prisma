@@ -2758,6 +2758,9 @@ model LegalReviewRun {
   fileId          String
   fileName        String
   focus           String?
+  // В чьих интересах разбор: наименование и/или роль нашей стороны в
+  // договоре («ТОО „Альфа“ — покупатель»).
+  party           String?
   status          LegalReviewStatus @default(QUEUED)
   // Ключ идемпотентности: Idempotency-Key страницы или
   // userMessageId:writeIndex инструмента чата.

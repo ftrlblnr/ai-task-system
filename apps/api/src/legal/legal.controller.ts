@@ -68,7 +68,7 @@ export class LegalController {
   ) {
     this.assertAvailable(user);
     if (!idemKey) throw new BadRequestException('Заголовок Idempotency-Key обязателен для этого действия');
-    const { run, created } = await this.reviews.create(user, { fileId: dto.fileId, focus: dto.focus, dedupeKey: `http:${user.id}:${idemKey}` });
+    const { run, created } = await this.reviews.create(user, { fileId: dto.fileId, focus: dto.focus, party: dto.party, dedupeKey: `http:${user.id}:${idemKey}` });
     if (created) {
       void this.audit.log(user.id, 'LEGAL_REVIEW_REQUESTED', 'LegalReviewRun', run.id, { fileId: run.fileId, source: 'web' });
       this.realtime.publish('legal', user.id);

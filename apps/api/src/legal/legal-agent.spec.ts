@@ -38,9 +38,15 @@ const ART_122: ArticleLookup = {
 };
 
 describe('legal-agent: промпт и схемы', () => {
-  it('промпт: позиция генподрядчика, только база, список актов', () => {
+  it('промпт: позиция компании, только база, список актов', () => {
     const p = buildLegalSystemPrompt(DOCS);
-    expect(p).toContain('только интересы генподрядчика');
+    expect(p).toContain('## Позиция: интересы компании');
+    expect(p).not.toContain('генподрядчик');
+    // В разборе — интересы стороны, которую указал юрист, любой договор.
+    const review = buildLegalSystemPrompt(DOCS, 'review');
+    expect(review).toContain('только интересы нашей стороны');
+    expect(review).toContain('«Наша сторона: …»');
+    expect(review).toContain('Определи вид договора (подряд, поставка');
     expect(p).toContain('Общие знания о праве');
     expect(p).toContain('K2600000253 — Строительный кодекс');
     expect(p).toContain('submit_answer');
@@ -124,7 +130,7 @@ describe('legal-agent: разбор и проверка ответа', () => {
       as_is: 'Гарантийный срок на выполненные работы составляет 8 (восемь) лет',
       proposed: 'Гарантийный срок — 10 лет',
       reasoning: 'Императивный минимум.',
-      gc_impact: 'ГП отвечает перед заказчиком 10 лет.',
+      impact: 'ГП отвечает перед заказчиком 10 лет.',
       norm_id: 'K2600000253:ст.122',
       quote: 'не менее десяти лет',
       risk: 'высокий',
@@ -208,7 +214,7 @@ describe('legal-agent: разбор и проверка ответа', () => {
 
       const review: LegalReview = {
         contract: 'Договор субподряда',
-        gcRole: 'генподрядчик — заказчик',
+        ourRole: 'генподрядчик — заказчик',
         applicableActs: 'ГК, Строительный кодекс',
         summary: 'Договор невыгоден ГП.',
         findings,
@@ -257,7 +263,7 @@ describe('legal-agent: финансы, переговоры, контраген�
       financial: {
         verdict: 'очень плохо',
         verdict_reason: 'Аванса нет, оплата через 90 дней.',
-        gc_pays: false,
+        we_pay: false,
         price: 'Твёрдая, 500 млн тг с НДС',
         cash_flow: '',
         liability_balance: '',
@@ -274,7 +280,7 @@ describe('legal-agent: финансы, переговоры, контраген�
         not_verified: [],
       },
     })!;
-    expect(r.financial).toMatchObject({ verdict: 'сбалансирован', gc_pays: false });
+    expect(r.financial).toMatchObject({ verdict: 'сбалансирован', we_pay: false });
     expect(r.financial!.terms).toHaveLength(1);
     expect(r.negotiation).toEqual([expect.objectContaining({ priority: 'желательно', ask: 'Аванс 30%' })]);
     expect(r.counterparty).toMatchObject({ bin: '040540001230', verdict: 'не удалось проверить' });
@@ -335,13 +341,13 @@ describe('legal-agent: финансы, переговоры, контраген�
     const md = formatReviewSummary(
       {
         contract: 'Д',
-        gcRole: '',
+        ourRole: '',
         applicableActs: '',
         summary: 'Итог.',
         findings: [],
         generalIssues: [],
         notChecked: [],
-        financial: { verdict: 'невыгоден', verdict_reason: 'Нет аванса.', gc_pays: false, price: '', cash_flow: '', liability_balance: '', terms: [], money_risks: [] },
+        financial: { verdict: 'невыгоден', verdict_reason: 'Нет аванса.', we_pay: false, price: '', cash_flow: '', liability_balance: '', terms: [], money_risks: [] },
         negotiation: [
           { priority: 'желательно', clause: 'п. 9', ask: 'Потолок неустойки', fallback: '', argument: '' },
           { priority: 'обязательно', clause: 'п. 3', ask: 'Аванс 30%', fallback: '', argument: '' },
@@ -360,7 +366,7 @@ describe('legal-agent: финансы, переговоры, контраген�
       },
       'Д.docx',
     );
-    expect(md).toContain('**Финансово для ГП: невыгоден.** Нет аванса.');
+    expect(md).toContain('**Финансово для нас: невыгоден.** Нет аванса.');
     expect(md).toContain('**Добиваться обязательно:**\n1. **п. 3**: Аванс 30%');
     expect(md).not.toContain('Потолок неустойки');
     expect(md).toContain('**Контрагент ТОО «Альфа»: высокий риск.** Красные флаги: налоговый долг.');

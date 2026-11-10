@@ -144,10 +144,16 @@ export class LegalAgentService {
   }
 
   // Разбор договора: текст уже извлечён (contract-text.ts), лежит в первом
-  // сообщении целиком; focus — «на что обратить внимание» от юриста.
-  async review(contractText: string, fileName: string, focus?: string | null): Promise<LegalReviewResult> {
+  // сообщении целиком; focus — «на что обратить внимание» от юриста, party —
+  // в чьих интересах разбор (наименование и/или роль нашей стороны).
+  async review(contractText: string, fileName: string, focus?: string | null, party?: string | null): Promise<LegalReviewResult> {
     const started = Date.now();
     const intro = [`Договор: файл «${fileName}».`];
+    intro.push(
+      party?.trim()
+        ? `Наша сторона (в чьих интересах разбор): ${party.trim()}`
+        : 'Наша сторона не указана: определи её по тексту договора и явно напиши это допущение первым предложением summary.',
+    );
     if (focus?.trim()) intro.push(`Юрист просит обратить особое внимание: ${focus.trim()}`);
     const bins = extractBins(contractText);
     intro.push(
@@ -173,7 +179,8 @@ export class LegalAgentService {
         return {
           done: {
             contract: submitted.contract || fileName,
-            gcRole: submitted.gc_role,
+            party: party?.trim() || null,
+            ourRole: submitted.our_role,
             applicableActs: submitted.applicable_acts,
             summary: submitted.summary,
             findings: sortFindings(findings),

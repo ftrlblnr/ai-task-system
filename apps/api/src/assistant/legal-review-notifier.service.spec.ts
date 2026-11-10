@@ -1,7 +1,7 @@
 import { AssistantChatService } from './assistant-chat.service';
 import { LegalReviewNotifier } from './legal-review-notifier.service';
 
-const REVIEW = { contract: 'Договор', gcRole: '', applicableActs: '', summary: 'Итог разбора', findings: [], generalIssues: [], notChecked: [], model: 'm' };
+const REVIEW = { contract: 'Договор', ourRole: '', applicableActs: '', summary: 'Итог разбора', findings: [], generalIssues: [], notChecked: [], model: 'm' };
 const run = (over: Record<string, unknown> = {}) => ({
   id: 'r1',
   employeeId: 'u1',
