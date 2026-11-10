@@ -44,7 +44,16 @@ export function LoginScreen() {
           вход происходит автоматически).
         </p>
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Input
+            type="text"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            placeholder="Email или логин"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
           <Input type="password" placeholder="Пароль" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {error && <Alert tone="danger">{error}</Alert>}
           <Button type="submit" variant="primary" block disabled={busy} loading={busy}>

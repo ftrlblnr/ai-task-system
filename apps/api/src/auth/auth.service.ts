@@ -38,7 +38,7 @@ export class AuthService {
   async login(email: string, password: string) {
     const employee = await this.validateCredentials(email, password);
     if (!employee) {
-      throw new UnauthorizedException('Неверный email или пароль');
+      throw new UnauthorizedException('Неверный логин или пароль');
     }
     return this.issueTokenFor(employee);
   }

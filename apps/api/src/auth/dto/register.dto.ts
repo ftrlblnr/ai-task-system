@@ -3,8 +3,8 @@ import { IsOptional, IsString, Length, MinLength } from 'class-validator';
 // Логин — любая строка, не обязательно похожая на email (владелец
 // 02.10.2026): поле `email` в базе нигде не используется для отправки
 // писем, чисто идентификатор входа, поэтому @IsEmail() здесь намеренно НЕ
-// используется (в отличие от LoginDto/CreateEmployeeDto, которые описывают
-// уже существующие учётки с настоящими email).
+// используется (в отличие от CreateEmployeeDto). LoginDto с 10.11.2026 тоже
+// принимает любую строку — иначе такой логин не смог бы войти.
 export class RegisterDto {
   @IsString()
   @Length(3, 100)
