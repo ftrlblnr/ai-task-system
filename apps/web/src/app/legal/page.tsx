@@ -9,7 +9,7 @@ import { api, ApiError } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/use-idempotency-key';
 import { useRealtime } from '@/lib/use-realtime';
 import { Protected } from '@/components/protected';
-import { Alert, Badge, Button, Card, EmptyState, Field, FileChip, PageHeader, SegmentedControl, Textarea, type BadgeTone } from '@/components/ui';
+import { Alert, Badge, Button, Card, EmptyState, Field, FileChip, Input, PageHeader, SegmentedControl, Textarea, type BadgeTone } from '@/components/ui';
 
 // Агент-юрист (handoff, этап 4): разбор договора в фоне с отчётом Word и
 // вопрос по НПА РК. Тот же API, что инструменты ассистента
@@ -22,6 +22,7 @@ interface LegalReviewView {
   status: ReviewStatus;
   fileName: string;
   focus: string | null;
+  party: string | null;
   reportFileId: string | null;
   findingsCount: number | null;
   unverifiedCount: number | null;
@@ -45,6 +46,24 @@ const ACCEPT = '.pdf,.docx';
 const CONTRACT_EXT = /\.(pdf|docx)$/i;
 // Подстраховка к realtime: пока разбор идёт, раз в 30 секунд.
 const ACTIVE_POLL_MS = 30_000;
+// Последняя указанная «наша сторона» — подставляется в следующий разбор.
+const PARTY_STORAGE_KEY = 'legal.review.party';
+
+function readStoredParty(): string {
+  try {
+    return typeof window === 'undefined' ? '' : (window.localStorage.getItem(PARTY_STORAGE_KEY) ?? '');
+  } catch {
+    return '';
+  }
+}
+
+function storeParty(value: string) {
+  try {
+    window.localStorage.setItem(PARTY_STORAGE_KEY, value);
+  } catch {
+    // Хранилище недоступно (приватный режим) — просто не запоминаем.
+  }
+}
 
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -89,6 +108,7 @@ function ReviewRow({ review }: { review: LegalReviewView }) {
     details.push(`находок: ${review.findingsCount}`);
     if (review.unverifiedCount) details.push(`не подтверждено: ${review.unverifiedCount}`);
   }
+  if (review.party) details.push(`наша сторона: ${review.party}`);
   if (review.focus) details.push(`фокус: ${review.focus}`);
 
   return (
@@ -124,6 +144,8 @@ function ReviewsTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [focus, setFocus] = useState('');
+  // Страница рендерится только на клиенте (Protected), localStorage доступен.
+  const [party, setParty] = useState(readStoredParty);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const idem = useIdempotencyKey();
@@ -161,15 +183,16 @@ function ReviewsTab() {
   }
 
   async function submit() {
-    if (!file) return;
+    if (!file || !party.trim()) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       const uploaded = await api.postForm<UploadedFileInfo>('/files/upload', formData);
-      await api.post<LegalReviewView>('/legal/reviews', { fileId: uploaded.fileId, focus: focus.trim() || undefined }, { 'Idempotency-Key': idem.key() });
+      await api.post<LegalReviewView>('/legal/reviews', { fileId: uploaded.fileId, focus: focus.trim() || undefined, party: party.trim() }, { 'Idempotency-Key': idem.key() });
       idem.reset();
+      storeParty(party.trim());
       setFile(null);
       setFocus('');
       load();
@@ -196,10 +219,13 @@ function ReviewsTab() {
             </label>
           )}
         </div>
+        <Field label="Наша сторона" hint="В чьих интересах разбор: наименование компании и/или её роль в договоре.">
+          <Input value={party} maxLength={300} onChange={(e) => setParty(e.target.value)} placeholder="Например: ТОО «Альфа» — покупатель" />
+        </Field>
         <Field label="На что обратить внимание (необязательно)">
           <Textarea value={focus} maxLength={2000} onChange={(e) => setFocus(e.target.value)} placeholder="Например: сроки, гарантии, штрафы" />
         </Field>
-        <Button variant="primary" icon={Scale} onClick={submit} loading={submitting} disabled={!file}>
+        <Button variant="primary" icon={Scale} onClick={submit} loading={submitting} disabled={!file || !party.trim()}>
           Разобрать
         </Button>
       </Card>
@@ -270,7 +296,7 @@ function LegalView() {
   const [tab, setTab] = useState<'reviews' | 'ask'>('reviews');
   return (
     <>
-      <PageHeader title="Юрист" description="Разбор договоров в интересах генподрядчика и вопросы по НПА РК. Проект — требует проверки юристом." />
+      <PageHeader title="Юрист" description="Разбор договоров в интересах нашей стороны и вопросы по НПА РК. Проект — требует проверки юристом." />
       <div style={{ marginBottom: 16, maxWidth: 360 }}>
         <SegmentedControl
           label="Раздел"

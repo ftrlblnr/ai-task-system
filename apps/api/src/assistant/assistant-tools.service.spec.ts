@@ -2057,7 +2057,7 @@ describe('AssistantToolsService — разбор договора (legal_review_
     const { service, audit } = make(ON, { create });
     const result = await service.execute(
       'legal_review_contract',
-      { fileId: 'f1', focus: 'гарантии' },
+      { fileId: 'f1', focus: 'гарантии', party: 'ТОО «Альфа» — покупатель' },
       user(),
       'c1',
       'm1',
@@ -2066,6 +2066,7 @@ describe('AssistantToolsService — разбор договора (legal_review_
     expect(create).toHaveBeenCalledWith(user(), {
       fileId: 'f1',
       focus: 'гарантии',
+      party: 'ТОО «Альфа» — покупатель',
       conversationId: 'c1',
       dedupeKey: 'chat:m1:0',
     });

@@ -43,7 +43,7 @@ describe('LegalReviewService', () => {
     expect(created).toBe(true);
     expect(files.assertOwnedFile).toHaveBeenCalledWith(USER, 'f1');
     expect(prisma.legalReviewRun.create).toHaveBeenCalledWith({
-      data: { employeeId: 'u1', conversationId: 'c1', fileId: 'f1', fileName: 'Договор.docx', focus: null, dedupeKey: 'k' },
+      data: { employeeId: 'u1', conversationId: 'c1', fileId: 'f1', fileName: 'Договор.docx', focus: null, party: null, dedupeKey: 'k' },
     });
     expect(run.status).toBe('QUEUED');
   });

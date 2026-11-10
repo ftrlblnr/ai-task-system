@@ -98,7 +98,7 @@ export class LegalReviewExecutionService {
     try {
       const { buffer, file } = await this.files.readBufferForProcessing(run.fileId);
       const text = await extractContractText(buffer, file.mimeType);
-      const review = await this.agent.review(text, run.fileName, run.focus);
+      const review = await this.agent.review(text, run.fileName, run.focus, run.party);
 
       const docs = await this.prisma.npaDocument.findMany({ select: { sourceDate: true } });
       const sourceDate = docs.map((d) => d.sourceDate).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0];

@@ -116,9 +116,9 @@ function simpleTable(titles: string[], widthsCm: number[], rows: { cells: string
 }
 
 function financialSection(f: FinancialAssessment): (Paragraph | Table)[] {
-  const out: (Paragraph | Table)[] = [heading1('Финансовая оценка для генподрядчика', true)];
+  const out: (Paragraph | Table)[] = [heading1('Финансовая оценка для нашей стороны', true)];
   out.push(new Paragraph({ spacing: { after: 120 }, children: [text(`Итог: договор ${f.verdict}. `, { bold: true, size: 22 }), text(f.verdict_reason, { size: 20 })] }));
-  if (f.gc_pays !== null) out.push(labeled('Деньги по договору', f.gc_pays ? 'генподрядчик платит' : 'генподрядчик получает'));
+  if (f.we_pay !== null) out.push(labeled('Деньги по договору', f.we_pay ? 'мы платим' : 'мы получаем'));
   if (f.price) out.push(labeled('Цена и модель', f.price));
   if (f.cash_flow) out.push(labeled('Кассовый разрыв', f.cash_flow));
   if (f.liability_balance) out.push(labeled('Баланс ответственности', f.liability_balance));
@@ -126,7 +126,7 @@ function financialSection(f: FinancialAssessment): (Paragraph | Table)[] {
     out.push(heading2('Ключевые финансовые условия'));
     out.push(
       simpleTable(
-        ['Условие', 'Пункт', 'Как в договоре', 'Оценка для ГП', 'Ориентир практики (оценка)', 'Предложение'],
+        ['Условие', 'Пункт', 'Как в договоре', 'Оценка для нас', 'Ориентир практики (оценка)', 'Предложение'],
         TERMS_CM,
         f.terms.map((t) => ({
           cells: [t.topic, t.clause, t.as_is, t.assessment, t.practice, t.proposed],
@@ -212,7 +212,7 @@ function counterpartySection(c: CounterpartyCheck): (Paragraph | Table)[] {
 }
 
 function findingRow(f: VerifiedFinding, n: number): TableRow {
-  const reasoning = [f.gc_impact ? `Для генподрядчика: ${f.gc_impact}` : '', f.reasoning].filter(Boolean).join('\n');
+  const reasoning = [f.impact ? `Для нас: ${f.impact}` : '', f.reasoning].filter(Boolean).join('\n');
   const basis = [...paragraphs(reasoning)];
   if (f.quote) basis.push(new Paragraph({ children: [text(`«${f.quote}»`, { italics: true })] }));
   const normTitle = [f.documentShort, f.articleTitle ? `«${f.articleTitle}»` : null].filter(Boolean).join(', ');
@@ -244,7 +244,7 @@ export function buildReviewDocument(review: LegalReview, meta: ReportMeta): Docu
       children: [
         text('Проект. Требует проверки юристом. ', { bold: true, size: 20 }),
         text(
-          `Проверка выполнена агентом-юристом по ${base} в интересах генподрядчика. Каждая ссылка на норму сверена с текстом статьи: дословность цитаты и наличие фрагмента «как есть» в договоре проверены программно. ID статьи: КОД:ст.N — код акта в «Әділет». Финансовые ориентиры — оценка агента, а не норма; сведения о контрагенте — из открытых источников со ссылками.`,
+          `Проверка выполнена агентом-юристом по ${base} в интересах нашей стороны${review.party ? ` (${review.party})` : ''}. Каждая ссылка на норму сверена с текстом статьи: дословность цитаты и наличие фрагмента «как есть» в договоре проверены программно. ID статьи: КОД:ст.N — код акта в «Әділет». Финансовые ориентиры — оценка агента, а не норма; сведения о контрагенте — из открытых источников со ссылками.`,
           { size: 20 },
         ),
       ],
@@ -255,7 +255,7 @@ export function buildReviewDocument(review: LegalReview, meta: ReportMeta): Docu
       ],
     }),
   ];
-  if (review.gcRole) children.push(new Paragraph({ children: [text('Роль генподрядчика: ', { bold: true, size: 20 }), text(review.gcRole, { size: 20 })] }));
+  if (review.ourRole) children.push(new Paragraph({ children: [text('Наша сторона: ', { bold: true, size: 20 }), text(review.ourRole, { size: 20 })] }));
   if (review.applicableActs) {
     children.push(new Paragraph({ children: [text('Вид договора и применимые акты: ', { bold: true, size: 20 }), text(review.applicableActs, { size: 20 })] }));
   }
@@ -291,7 +291,7 @@ export function buildReviewDocument(review: LegalReview, meta: ReportMeta): Docu
       new Table({
         columnWidths: COLUMNS_CM.map((w) => Math.round(w * TWIPS_PER_CM)),
         rows: [
-          headerRow(['№', 'Пункт', 'Как есть', 'Правка в пользу генподрядчика', 'Последствия для ГП, обоснование и цитата нормы', 'Ссылка', 'Риск / тип'], COLUMNS_CM),
+          headerRow(['№', 'Пункт', 'Как есть', 'Правка в нашу пользу', 'Последствия для нас, обоснование и цитата нормы', 'Ссылка', 'Риск / тип'], COLUMNS_CM),
           ...findings.map((f, i) => findingRow(f, i + 1)),
         ],
       }),

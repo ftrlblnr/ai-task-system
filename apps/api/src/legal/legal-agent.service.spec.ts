@@ -110,7 +110,7 @@ describe('LegalAgentService.review', () => {
   const submitReview = (asIs: string) =>
     tool('r', 'submit_review', {
       contract: '',
-      gc_role: 'заказчик',
+      our_role: 'заказчик',
       applicable_acts: 'СК',
       summary: 'Гарантия ниже минимума.',
       findings: [
@@ -119,7 +119,7 @@ describe('LegalAgentService.review', () => {
           as_is: asIs,
           proposed: '10 лет',
           reasoning: 'r',
-          gc_impact: 'g',
+          impact: 'g',
           norm_id: 'K2600000253:ст.122',
           quote: 'не менее десяти лет',
           risk: 'высокий',
@@ -135,13 +135,15 @@ describe('LegalAgentService.review', () => {
       msg([submitReview('Гарантийный срок на работы составляет пять лет')]),
       msg([submitReview('Гарантийный срок на выполненные работы составляет 8 (восемь) лет')]),
     ]);
-    const r = await agent.review(CONTRACT, 'Договор.docx', ' гарантии ');
+    const r = await agent.review(CONTRACT, 'Договор.docx', ' гарантии ', ' ТОО «Альфа» — заказчик ');
     expect(r.rounds).toBe(2);
     expect(r.contract).toBe('Договор.docx');
     expect(r.findings[0]).toMatchObject({ verified: true, documentShort: 'Строительный кодекс' });
     const first = JSON.stringify(requests[0].messages[0].content);
     expect(first).toContain('<contract>');
     expect(first).toContain('обратить особое внимание: гарантии');
+    expect(first).toContain('Наша сторона (в чьих интересах разбор): ТОО «Альфа» — заказчик');
+    expect(r.party).toBe('ТОО «Альфа» — заказчик');
     expect(requests[0].tools!.map((t) => (t as Anthropic.Tool).name)).toContain('submit_review');
     expect(JSON.stringify(requests[1].messages.at(-1)!.content)).toContain('фрагмент «как есть» не найден в договоре');
   });
@@ -152,7 +154,7 @@ describe('LegalAgentService.review: контрагент и веб-поиск', 
   const submitWith = (url: string) =>
     tool('r', 'submit_review', {
       contract: 'Договор',
-      gc_role: 'заказчик',
+      our_role: 'заказчик',
       applicable_acts: 'СК',
       summary: 'Итог.',
       findings: [],
@@ -161,7 +163,7 @@ describe('LegalAgentService.review: контрагент и веб-поиск', 
       financial: {
         verdict: 'невыгоден',
         verdict_reason: 'Нет удержания.',
-        gc_pays: true,
+        we_pay: true,
         price: '',
         cash_flow: '',
         liability_balance: '',
@@ -192,6 +194,9 @@ describe('LegalAgentService.review: контрагент и веб-поиск', 
     ]);
     const r = await agent.review(CONTRACT, 'Договор.docx');
     expect(r.rounds).toBe(3);
+    // Сторона не указана — агент определяет её сам и пишет допущение.
+    expect(JSON.stringify(requests[0].messages[0].content)).toContain('Наша сторона не указана');
+    expect(r.party).toBeNull();
     // После паузы последним в истории идёт ход ассистента, без нового сообщения пользователя.
     expect(requests[1].messages.at(-1)).toMatchObject({ role: 'assistant' });
     expect(JSON.stringify(requests[0].messages[0].content)).toContain('нашёл сервер): 040540001230');

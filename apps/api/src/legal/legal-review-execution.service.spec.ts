@@ -27,10 +27,10 @@ function make(review: jest.Mock, mimeType = DOCX_MIME) {
 
 const REVIEW = {
   contract: 'Договор',
-  gcRole: '',
+  ourRole: '',
   applicableActs: '',
   summary: 'Итог',
-  findings: [{ risk: 'высокий', type: 'несоответствие НПА', verified: false, problems: ['x'], clause: 'п. 1', as_is: '', proposed: '', reasoning: '', gc_impact: '', norm_id: '', quote: '' }],
+  findings: [{ risk: 'высокий', type: 'несоответствие НПА', verified: false, problems: ['x'], clause: 'п. 1', as_is: '', proposed: '', reasoning: '', impact: '', norm_id: '', quote: '' }],
   generalIssues: [],
   notChecked: [],
   model: 'm',
@@ -43,7 +43,7 @@ describe('LegalReviewExecutionService.process', () => {
     const review = jest.fn().mockResolvedValue(REVIEW);
     const { service, updates, files, realtime } = make(review);
     await service.process(RUN);
-    expect(review).toHaveBeenCalledWith(expect.stringContaining(CLAUSE), 'Договор.docx', null);
+    expect(review).toHaveBeenCalledWith(expect.stringContaining(CLAUSE), 'Договор.docx', null, undefined);
     expect(files.createGeneratedForEmployee).toHaveBeenCalledWith('u1', expect.any(Buffer), 'Разбор — Договор.docx', DOCX_MIME);
     expect(updates[0]).toMatchObject({ status: 'SUCCEEDED', reportFileId: 'report1', findingsCount: 1, unverifiedCount: 1, lockedAt: null });
     // rounds/durationMs — в лог, не в результат.

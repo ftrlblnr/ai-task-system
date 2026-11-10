@@ -7,7 +7,7 @@ const base: Omit<VerifiedFinding, 'verified' | 'problems'> = {
   as_is: 'Гарантийный срок 8 лет',
   proposed: 'Гарантийный срок 10 лет',
   reasoning: 'Императивный минимум.',
-  gc_impact: 'ГП отвечает перед заказчиком 10 лет.',
+  impact: 'ГП отвечает перед заказчиком 10 лет.',
   norm_id: 'K2600000253:ст.122',
   quote: 'не менее десяти лет',
   risk: 'высокий',
@@ -18,7 +18,7 @@ const base: Omit<VerifiedFinding, 'verified' | 'problems'> = {
 
 const review: LegalReview = {
   contract: 'Договор субподряда № 15',
-  gcRole: 'заказчик по договору субподряда',
+  ourRole: 'заказчик по договору субподряда',
   applicableActs: 'ГК, Строительный кодекс',
   summary: 'Договор смещён в пользу субподрядчика.',
   findings: [
@@ -60,10 +60,11 @@ describe('legal-report: финансы, переговоры, контраген
   it('новые разделы: оценка, условия с цветом, план переговоров по приоритету, контрагент со ссылками для ручной проверки', async () => {
     const full: LegalReview = {
       ...review,
+      party: 'ТОО «Бета» — покупатель',
       financial: {
         verdict: 'невыгоден',
         verdict_reason: 'Оплата через 90 дней без аванса.',
-        gc_pays: false,
+        we_pay: false,
         price: 'Твёрдая, 500 млн тг с НДС',
         cash_flow: 'ГП финансирует 3 месяца работ',
         liability_balance: 'Неустойка ГП без потолка, заказчика — 0,01%',
@@ -82,14 +83,18 @@ describe('legal-report: финансы, переговоры, контраген
           { fact: 'Действующее ТОО', source: 'stat.gov.kz', url: 'https://stat.gov.kz/x', verified: true },
           { fact: 'Иск на 40 млн', source: 'новости', url: 'https://news.kz/y', verified: false },
         ],
-        red_flags: ['Судебный спор с прошлым генподрядчиком'],
+        red_flags: ['Судебный спор с прошлым покупателем'],
         not_verified: ['Налоговая задолженность — kgd.gov.kz недоступен'],
         binInContract: true,
         binChecksumOk: true,
       },
     };
     const xml = await documentXml(await buildReviewDocx(full, { fileName: 'Д.docx', documentsCount: 22, sourceDate: null, createdAt: new Date('2026-11-09T10:00:00Z') }));
-    expect(xml).toContain('Финансовая оценка для генподрядчика');
+    expect(xml).toContain('Финансовая оценка для нашей стороны');
+    expect(xml).toContain('в интересах нашей стороны (ТОО «Бета» — покупатель)');
+    expect(xml).toContain('Наша сторона: ');
+    expect(xml).toContain('Правка в нашу пользу');
+    expect(xml).not.toContain('генподрядчика');
     expect(xml).toContain('Итог: договор невыгоден.');
     expect(xml).toContain('0,1% × 500 млн × 30 дн. = 15 млн тг');
     expect(xml).toContain('Ориентир практики (оценка)');

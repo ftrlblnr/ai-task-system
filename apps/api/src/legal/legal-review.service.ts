@@ -17,6 +17,7 @@ const ACTIVE: LegalReviewStatus[] = [LegalReviewStatus.QUEUED, LegalReviewStatus
 export interface CreateReviewInput {
   fileId: string;
   focus?: string | null;
+  party?: string | null;
   conversationId?: string | null;
   dedupeKey: string;
 }
@@ -27,6 +28,7 @@ export interface LegalReviewView {
   fileId: string;
   fileName: string;
   focus: string | null;
+  party: string | null;
   conversationId: string | null;
   reportFileId: string | null;
   findingsCount: number | null;
@@ -48,6 +50,7 @@ export function toReviewView(r: LegalReviewRun): LegalReviewView {
     fileId: r.fileId,
     fileName: r.fileName,
     focus: r.focus,
+    party: r.party,
     conversationId: r.conversationId,
     reportFileId: r.reportFileId,
     findingsCount: r.findingsCount,
@@ -100,6 +103,7 @@ export class LegalReviewService {
           fileId: file.id,
           fileName: file.name,
           focus: input.focus?.trim() || null,
+          party: input.party?.trim() || null,
           dedupeKey: input.dedupeKey,
         },
       });

@@ -1168,7 +1168,7 @@ export class AssistantToolsService {
         tools.push({
           name: 'legal_review_contract',
           description:
-            'Запустить разбор договора агентом-юристом в интересах генподрядчика: находки по пунктам, правки, нормы с цитатами и отчёт Word. Используй, когда пользователь прикрепил договор (PDF или DOCX, пометка [attached_file] или ранее [file]) и просит проверить/разобрать/оценить его. Разбор идёт в фоне 5–10 минут; итог с отчётом придёт в эту беседу сам — скажи об этом пользователю. Содержимое файла ты не видишь — его читает агент-юрист.',
+            'Запустить разбор договора агентом-юристом в интересах нашей стороны: находки по пунктам, правки, финансовая оценка, план переговоров, проверка контрагента и отчёт Word. Перед запуском нужно знать, в чьих интересах разбор (party): если пользователь не сказал и из беседы это неясно — спроси одним вопросом, какую сторону договора мы представляем. Используй, когда пользователь прикрепил договор (PDF или DOCX, пометка [attached_file] или ранее [file]) и просит проверить/разобрать/оценить его. Разбор идёт в фоне 5–10 минут; итог с отчётом придёт в эту беседу сам — скажи об этом пользователю. Содержимое файла ты не видишь — его читает агент-юрист.',
           input_schema: {
             type: 'object',
             properties: {
@@ -1182,8 +1182,13 @@ export class AssistantToolsService {
                 description:
                   'На что пользователь просит обратить особое внимание (если сказал); иначе пустая строка',
               },
+              party: {
+                type: 'string',
+                description:
+                  'В чьих интересах разбор: наименование нашей компании и/или её роль в договоре (например «ТОО „Альфа“ — покупатель», «арендатор»)',
+              },
             },
-            required: ['fileId'],
+            required: ['fileId', 'party'],
           },
         });
         tools.push({
@@ -1595,10 +1600,12 @@ export class AssistantToolsService {
         const typedInput = input as {
           fileId?: unknown;
           focus?: unknown;
+          party?: unknown;
         } | null;
         return await this.legalReviewContract(
           typeof typedInput?.fileId === 'string' ? typedInput.fileId : '',
           typeof typedInput?.focus === 'string' ? typedInput.focus : '',
+          typeof typedInput?.party === 'string' ? typedInput.party : '',
           user,
           conversationId,
           `chat:${userMessageId}:${writeToolCallIndex}`,
@@ -1859,6 +1866,7 @@ export class AssistantToolsService {
   private async legalReviewContract(
     fileId: string,
     focus: string,
+    party: string,
     user: AuthenticatedUser,
     conversationId: string,
     dedupeKey: string,
@@ -1874,6 +1882,7 @@ export class AssistantToolsService {
       const { run, created } = await this.legalReviews.create(user, {
         fileId,
         focus,
+        party,
         conversationId,
         dedupeKey,
       });
