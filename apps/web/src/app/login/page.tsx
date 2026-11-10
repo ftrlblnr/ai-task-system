@@ -36,8 +36,17 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="ds-card">
           <h1 style={{ fontSize: 32, lineHeight: '38px', fontWeight: 650, letterSpacing: '-0.025em' }}>Вход</h1>
           <p className="auth-subtitle">Закрытая система задач — доступ только по приглашению</p>
-          <Field label="Email">
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Field label="Логин">
+            <Input
+              type="text"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="Email или логин"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
           </Field>
           <Field label="Пароль">
             <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
